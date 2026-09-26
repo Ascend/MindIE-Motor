@@ -28,6 +28,7 @@ from motor.coordinator.metrics.metrics_collector import (
     MetricType,
     Metric,
     _filter_kvstore_metrics,
+    _filter_motor_only_metrics,
 )
 from motor.coordinator.api_client.native_engine_api_client import NativeEngineApiClient
 from motor.config.coordinator import CoordinatorConfig
@@ -1255,6 +1256,343 @@ def test_get_metrics_full():
 
 
 @patch("threading.Thread.start", MagicMock())
+def test_get_metrics_includes_endpoint_kv_usage():
+    """collects 中已采集的 vllm:kv_cache_usage_perc 以 motor:endpoint_state 的 stat="kv_usage" 样本输出。
+
+    无需 scheduler 回路：直接复用本进程已抓取的指标，带 instance_id/endpoint_id/role/stat 标签。
+    """
+    _cleanup_singletons()
+    config = CoordinatorConfig()
+    collector = MetricsCollector(config)
+
+    kv_usage_metric = Metric()
+    kv_usage_metric.name = "vllm:kv_cache_usage_perc"
+    kv_usage_metric.help = "KV cache usage."
+    kv_usage_metric.type = MetricType.GAUGE
+    kv_usage_metric.label = ['vllm:kv_cache_usage_perc{engine="0"}']
+    kv_usage_metric.value = [0.55]
+
+    collector._last_collects = {
+        1: {"role": "decode", "endpoints": {1: {"metrics": [kv_usage_metric], "pod_ip": "10.0.0.1"}}},
+    }
+    collector._collects_version = 1
+
+    result = collector.get_metrics(metrics_type="full")
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="decode",stat="kv_usage"} 0.55' in result
+
+    # motor: 前缀族在 type=motor 过滤后同样保留。
+    motor_result = collector.get_metrics(metrics_type="motor")
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="decode",stat="kv_usage"} 0.55' in motor_result
+    _cleanup_singletons()
+
+
+@patch("threading.Thread.start", MagicMock())
+def test_get_metrics_includes_endpoint_running_waiting():
+    """collects 中已采集的 vllm:num_requests_running / vllm:num_requests_waiting
+    以 motor:endpoint_state 的 stat="running" / stat="waiting" 样本输出。
+
+    无需 scheduler 回路：直接复用本进程已抓取的指标，带 instance_id/endpoint_id/role/stat 标签。
+    缺失的指标被跳过，不会输出对应样本。
+    """
+    _cleanup_singletons()
+    config = CoordinatorConfig()
+    collector = MetricsCollector(config)
+
+    def _gauge(name: str, value: float) -> Metric:
+        m = Metric()
+        m.name = name
+        m.help = f"{name} gauge"
+        m.type = MetricType.GAUGE
+        m.label = [f'{name}{{engine="0",model_name="glm-5"}}']
+        m.value = [value]
+        return m
+
+    # 端点同时上报 running/waiting，且运行/等待数量按标签值求和。
+    collector._last_collects = {
+        1: {
+            "role": "decode",
+            "endpoints": {
+                1: {
+                    "metrics": [
+                        _gauge("vllm:num_requests_running", 2.0),
+                        _gauge("vllm:num_requests_waiting", 3.0),
+                    ],
+                    "pod_ip": "10.0.0.1",
+                },
+            },
+        },
+    }
+    collector._collects_version = 1
+
+    result = collector.get_metrics(metrics_type="full")
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="decode",stat="running"} 2.0' in result
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="decode",stat="waiting"} 3.0' in result
+
+    # motor: 前缀族在 type=motor 过滤后同样保留。
+    motor_result = collector.get_metrics(metrics_type="motor")
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="decode",stat="running"} 2.0' in motor_result
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="decode",stat="waiting"} 3.0' in motor_result
+    _cleanup_singletons()
+
+
+@patch("threading.Thread.start", MagicMock())
+def test_get_metrics_skips_missing_running_waiting():
+    """端点未上报 num_requests_running/waiting 时，不输出对应样本、也不报错。"""
+    _cleanup_singletons()
+    config = CoordinatorConfig()
+    collector = MetricsCollector(config)
+
+    other_metric = Metric()
+    other_metric.name = "vllm:kv_cache_usage_perc"
+    other_metric.help = "KV cache usage."
+    other_metric.type = MetricType.GAUGE
+    other_metric.label = ['vllm:kv_cache_usage_perc{engine="0"}']
+    other_metric.value = [0.55]
+
+    collector._last_collects = {
+        1: {"role": "decode", "endpoints": {1: {"metrics": [other_metric], "pod_ip": "10.0.0.1"}}},
+    }
+    collector._collects_version = 1
+
+    result = collector.get_metrics(metrics_type="full")
+    assert 'stat="running"' not in result
+    assert 'stat="waiting"' not in result
+    _cleanup_singletons()
+
+
+@patch("threading.Thread.start", MagicMock())
+def test_get_metrics_merges_endpoint_state_family():
+    """sched provider 与 kv usage 样本合并为同一个 motor:endpoint_state 族（单一 HELP/TYPE）。"""
+    _cleanup_singletons()
+    config = CoordinatorConfig()
+    collector = MetricsCollector(config)
+
+    kv_usage_metric = Metric()
+    kv_usage_metric.name = "vllm:kv_cache_usage_perc"
+    kv_usage_metric.help = "KV cache usage."
+    kv_usage_metric.type = MetricType.GAUGE
+    kv_usage_metric.label = ['vllm:kv_cache_usage_perc{engine="0"}']
+    kv_usage_metric.value = [0.55]
+
+    collector._last_collects = {
+        1: {"role": "decode", "endpoints": {1: {"metrics": [kv_usage_metric], "pod_ip": "10.0.0.1"}}},
+    }
+    collector._collects_version = 1
+
+    sched_metric = Metric(
+        name="motor:endpoint_state",
+        help="Per-endpoint scheduling state (request_count / fresh_load / active_tokens / total_cnt / kv_usage)",
+        type=MetricType.GAUGE,
+        label=[
+            'motor:endpoint_state{instance_id="1",endpoint_id="1",role="decode",stat="request_count"}',
+            'motor:endpoint_state{instance_id="1",endpoint_id="1",role="decode",stat="total_cnt"}',
+        ],
+        value=[3.0, 100.0],
+    )
+    collector.set_sched_metrics_provider(lambda: [sched_metric])
+
+    result = collector.get_metrics(metrics_type="full")
+    # 合并后 HELP/TYPE 只出现一次，且各 stat 样本都在同一族内。
+    assert result.count("# HELP motor:endpoint_state") == 1
+    assert result.count("# TYPE motor:endpoint_state") == 1
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="decode",stat="kv_usage"} 0.55' in result
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="decode",stat="request_count"} 3.0' in result
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="decode",stat="total_cnt"} 100.0' in result
+    _cleanup_singletons()
+
+
+@patch("threading.Thread.start", MagicMock())
+def test_get_metrics_excludes_endpoint_state_from_reduced_views():
+    """附加 motor: 族只随 full/motor 视图输出；instance/role/dp/node 视图不含 motor:endpoint_state。"""
+    _cleanup_singletons()
+    config = CoordinatorConfig()
+    collector = MetricsCollector(config)
+
+    kv_usage_metric = Metric()
+    kv_usage_metric.name = "vllm:kv_cache_usage_perc"
+    kv_usage_metric.help = "KV cache usage."
+    kv_usage_metric.type = MetricType.GAUGE
+    kv_usage_metric.label = ['vllm:kv_cache_usage_perc{engine="0"}']
+    kv_usage_metric.value = [0.55]
+
+    collector._last_collects = {
+        1: {"role": "decode", "endpoints": {1: {"metrics": [kv_usage_metric], "pod_ip": "10.0.0.1"}}},
+    }
+    collector._collects_version = 1
+
+    sched_metric = Metric(
+        name="motor:endpoint_state",
+        help="Per-endpoint scheduling state (request_count / fresh_load / active_tokens / total_cnt / kv_usage)",
+        type=MetricType.GAUGE,
+        label=['motor:endpoint_state{instance_id="1",endpoint_id="1",role="decode",stat="request_count"}'],
+        value=[3.0],
+    )
+    collector.set_sched_metrics_provider(lambda: [sched_metric])
+
+    for view in ("instance", "role", "dp", "node"):
+        result = collector.get_metrics(metrics_type=view)
+        assert "motor:endpoint_state" not in result, f"view={view} should not contain motor:endpoint_state"
+
+    assert "motor:endpoint_state" in collector.get_metrics(metrics_type="full")
+    assert "motor:endpoint_state" in collector.get_metrics(metrics_type="motor")
+    # 非法 type 回退 full 语义，附加族仍然输出。
+    assert "motor:endpoint_state" in collector.get_metrics(metrics_type="unknown-view")
+    _cleanup_singletons()
+
+
+@patch("threading.Thread.start", MagicMock())
+def test_get_metrics_includes_prefill_kv_hit_rate():
+    """P 实例节点以 motor:endpoint_state 的 kv_hit_tokens/kv_input_tokens/kv_hit_rate 样本输出命中率。
+
+    命中率统计最近 5 分钟窗口增量：命中增量 = 本地 HBM 缓存命中
+    （vllm:prefix_cache_hits_total）+ 外部缓存命中（vllm:external_prefix_cache_hits_total）
+    在窗口内的差值；输入增量 = 累计请求输入长度（vllm:prefix_cache_queries_total）差值。
+    仅对 role="prefill" 的节点统计。
+    """
+    _cleanup_singletons()
+    config = CoordinatorConfig()
+    collector = MetricsCollector(config)
+
+    def _counter(name: str, value: float) -> Metric:
+        m = Metric()
+        m.name = name
+        m.help = f"{name} counter"
+        m.type = MetricType.COUNTER
+        m.label = [f'{name}{{engine="0"}}']
+        m.value = [value]
+        return m
+
+    # P 实例（prefill）：本地命中 30 + 外部命中 10 = 窗口命中增量 40 / 输入增量 100 -> 命中率 0.4
+    collector._last_collects = {
+        1: {
+            "role": "prefill",
+            "endpoints": {
+                1: {
+                    "metrics": [
+                        _counter("vllm:prefix_cache_hits_total", 30.0),
+                        _counter("vllm:external_prefix_cache_hits_total", 10.0),
+                        _counter("vllm:prefix_cache_queries_total", 100.0),
+                    ],
+                    "pod_ip": "10.0.0.1",
+                },
+            },
+        },
+        # D 实例（decode）：不应输出命中率样本
+        2: {
+            "role": "decode",
+            "endpoints": {
+                1: {
+                    "metrics": [
+                        _counter("vllm:prefix_cache_hits_total", 10.0),
+                        _counter("vllm:prefix_cache_queries_total", 50.0),
+                    ],
+                    "pod_ip": "10.0.0.2",
+                },
+            },
+        },
+    }
+    collector._collects_version = 1
+    # 预置窗口内基线采样点（60 秒前 hit=0/input=0），本次采样输出窗口增量 delta=(40,100)。
+    collector._kv_hit_window = {(1, 1): [(time.time() - 60, 0.0, 0.0)]}
+
+    result = collector.get_metrics(metrics_type="full")
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="prefill",stat="kv_hit_tokens"} 40.0' in result
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="prefill",stat="kv_input_tokens"} 100.0' in result
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="prefill",stat="kv_hit_rate"} 0.4' in result
+    # decode 节点不生成命中率样本。
+    assert 'role="decode",stat="kv_hit_tokens"' not in result
+    assert 'role="decode",stat="kv_hit_rate"' not in result
+    # motor: 前缀族在 type=motor 过滤后同样保留。
+    motor_result = collector.get_metrics(metrics_type="motor")
+    assert 'role="prefill",stat="kv_hit_rate"} 0.4' in motor_result
+    _cleanup_singletons()
+
+
+@patch("threading.Thread.start", MagicMock())
+def test_get_metrics_prefill_kv_hit_rate_window_expired():
+    """窗口内最早采样点超过 5 分钟被丢弃 → 无基线，窗口增量归零。"""
+    _cleanup_singletons()
+    config = CoordinatorConfig()
+    collector = MetricsCollector(config)
+
+    def _counter(name: str, value: float) -> Metric:
+        m = Metric()
+        m.name = name
+        m.help = f"{name} counter"
+        m.type = MetricType.COUNTER
+        m.label = [f'{name}{{engine="0"}}']
+        m.value = [value]
+        return m
+
+    collector._last_collects = {
+        1: {
+            "role": "prefill",
+            "endpoints": {
+                1: {
+                    "metrics": [
+                        _counter("vllm:prefix_cache_hits_total", 30.0),
+                        _counter("vllm:external_prefix_cache_hits_total", 10.0),
+                        _counter("vllm:prefix_cache_queries_total", 100.0),
+                    ],
+                    "pod_ip": "10.0.0.1",
+                },
+            },
+        },
+    }
+    collector._collects_version = 1
+    # 基线采样点在 400 秒前，超出 5 分钟窗口，应被丢弃。
+    collector._kv_hit_window = {(1, 1): [(time.time() - 400, 0.0, 0.0)]}
+
+    result = collector.get_metrics(metrics_type="full")
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="prefill",stat="kv_hit_tokens"} 0.0' in result
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="prefill",stat="kv_input_tokens"} 0.0' in result
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="prefill",stat="kv_hit_rate"} 0.0' in result
+    _cleanup_singletons()
+
+
+@patch("threading.Thread.start", MagicMock())
+def test_get_metrics_prefill_kv_hit_rate_engine_restart():
+    """引擎重启（计数回退）→ 窗口清空，增量从当前值重新累计（本次为 0）。"""
+    _cleanup_singletons()
+    config = CoordinatorConfig()
+    collector = MetricsCollector(config)
+
+    def _counter(name: str, value: float) -> Metric:
+        m = Metric()
+        m.name = name
+        m.help = f"{name} counter"
+        m.type = MetricType.COUNTER
+        m.label = [f'{name}{{engine="0"}}']
+        m.value = [value]
+        return m
+
+    collector._last_collects = {
+        1: {
+            "role": "prefill",
+            "endpoints": {
+                1: {
+                    "metrics": [
+                        _counter("vllm:prefix_cache_hits_total", 30.0),
+                        _counter("vllm:external_prefix_cache_hits_total", 10.0),
+                        _counter("vllm:prefix_cache_queries_total", 100.0),
+                    ],
+                    "pod_ip": "10.0.0.1",
+                },
+            },
+        },
+    }
+    collector._collects_version = 1
+    # 窗口内最近采样值（hit=100/input=200）大于当前值（40/100）→ 判定引擎重启，窗口清空。
+    collector._kv_hit_window = {(1, 1): [(time.time() - 60, 100.0, 200.0)]}
+
+    result = collector.get_metrics(metrics_type="full")
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="prefill",stat="kv_hit_tokens"} 0.0' in result
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="prefill",stat="kv_input_tokens"} 0.0' in result
+    assert 'motor:endpoint_state{instance_id="1",endpoint_id="1",role="prefill",stat="kv_hit_rate"} 0.0' in result
+    _cleanup_singletons()
+
+
+@patch("threading.Thread.start", MagicMock())
 def test_get_metrics_instance():
     _cleanup_singletons()
     config = CoordinatorConfig()
@@ -1335,7 +1673,10 @@ def test_get_metrics_role_filtered():
     result = collector.get_metrics(metrics_type="role", role="prefill")
     assert isinstance(result, str)
     assert "prefill" in result
-    assert "decode" not in result
+    # role 过滤作用于引擎指标族（label 前置 role="prefill"）；motor:endpoint_state
+    # 附加样本（running/waiting 等）按设计跨角色全量输出，不参与 role 过滤。
+    assert 'vllm:num_requests_running{role="prefill",model="qwen"}' in result
+    assert 'vllm:num_requests_running{role="decode",model="qwen"}' not in result
     _cleanup_singletons()
 
 
@@ -2311,3 +2652,103 @@ def test_collect_metrics_survives_planner_exception():
     assert collects == {}
     assert collector._motor_computer._planner_output == {"prefill_replicas_required": 3.0}
     _cleanup_singletons()
+
+
+# ---------------------------------------------------------------------------
+# Tests for /metrics?type=motor (only Motor's own metrics)
+# ---------------------------------------------------------------------------
+
+
+def test_motor_metrics_only_disabled_by_default():
+    """Without type=motor, /metrics returns all families (engine + motor)."""
+    _cleanup_singletons()
+    config = CoordinatorConfig()
+    collector = MetricsCollector(config)
+
+    engine_metric = Metric(
+        name="vllm:num_requests_running",
+        help="Number of requests running.",
+        type=MetricType.GAUGE,
+        label=['vllm:num_requests_running{model="qwen"}'],
+        value=[5.0],
+    )
+    motor_metric = Metric(
+        name="motor:active_prefill_workers",
+        help="Number of active prefill instances",
+        type=MetricType.GAUGE,
+        label=["motor:active_prefill_workers"],
+        value=[1.0],
+    )
+    collector._last_collects = {
+        0: {
+            "role": "prefill",
+            "endpoints": {
+                0: {"metrics": [engine_metric], "pod_ip": "10.0.0.1"},
+                1: {"metrics": [motor_metric], "pod_ip": "10.0.0.2"},
+            },
+        },
+    }
+    collector._collects_version = 1
+
+    result = collector.get_metrics(metrics_type="full")
+    assert "vllm:num_requests_running" in result
+    assert "motor:active_prefill_workers" in result
+    _cleanup_singletons()
+
+
+def test_motor_metrics_only_keeps_motor_families():
+    """With type=motor, /metrics returns only motor: families."""
+    _cleanup_singletons()
+    config = CoordinatorConfig()
+    collector = MetricsCollector(config)
+
+    engine_metric = Metric(
+        name="vllm:num_requests_running",
+        help="Number of requests running.",
+        type=MetricType.GAUGE,
+        label=['vllm:num_requests_running{model="qwen"}'],
+        value=[5.0],
+    )
+    motor_metric = Metric(
+        name="motor:active_prefill_workers",
+        help="Number of active prefill instances",
+        type=MetricType.GAUGE,
+        label=["motor:active_prefill_workers"],
+        value=[1.0],
+    )
+    collector._last_collects = {
+        0: {
+            "role": "prefill",
+            "endpoints": {
+                0: {"metrics": [engine_metric], "pod_ip": "10.0.0.1"},
+                1: {"metrics": [motor_metric], "pod_ip": "10.0.0.2"},
+            },
+        },
+    }
+    collector._collects_version = 1
+
+    result = collector.get_metrics(metrics_type="motor")
+    assert "motor:active_prefill_workers" in result
+    assert "vllm:num_requests_running" not in result
+    _cleanup_singletons()
+
+
+def test_filter_motor_only_metrics_utility():
+    """_filter_motor_only_metrics drops non-motor families from Prometheus text."""
+    text = (
+        "# HELP vllm:num_requests_running Number of requests running.\n"
+        "# TYPE vllm:num_requests_running gauge\n"
+        'vllm:num_requests_running{model="qwen"} 5.0\n'
+        "# HELP motor:active_prefill_workers Number of active prefill instances\n"
+        "# TYPE motor:active_prefill_workers gauge\n"
+        "motor:active_prefill_workers 1.0\n"
+    )
+    filtered = _filter_motor_only_metrics(text)
+    assert "motor:active_prefill_workers" in filtered
+    assert "vllm:num_requests_running" not in filtered
+
+
+def test_filter_motor_only_metrics_empty():
+    """Empty / non-motor-only text degrade gracefully."""
+    assert _filter_motor_only_metrics("") == ""
+    assert _filter_motor_only_metrics("# HELP vllm:x a\n# TYPE vllm:x gauge\nvllm:x 1.0\n") == ""

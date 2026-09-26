@@ -18,6 +18,7 @@ IPC paths remain scheduler_frontend / scheduler_instance_pub (bound by Mgmt).
 import asyncio
 import os
 import time
+from multiprocessing import shared_memory
 from typing import Awaitable, Callable
 
 import zmq.asyncio
@@ -33,8 +34,24 @@ from motor.coordinator.domain.circuit_breaker import (
 )
 from motor.coordinator.models.constants import DEFAULT_REQUEST_ID, REQUEST_ID_KEY
 from motor.coordinator.domain.instance_manager import InstanceManager
+from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
 from motor.coordinator.domain.instance_status import build_instance_status_response
 from motor.coordinator.scheduler.scheduler import Scheduler
+from motor.coordinator.scheduler.runtime.kv_usage import (
+    DEFAULT_KV_USAGE_SHM_MAX_ENTRIES,
+    KvUsageShmReader,
+    KvUsageShmWriter,
+    get_endpoint_kv_cache_usage,
+    kv_usage_shm_total_size,
+    set_kv_usage_reader,
+)
+from motor.coordinator.scheduler.runtime.scheduler_metrics import (
+    DEFAULT_SCHED_METRICS_SHM_MAX_ENTRIES,
+    SchedulerMetricsCollector,
+    SchedulerMetricsShmWriter,
+    _pack_role,
+    sched_metrics_shm_total_size,
+)
 from motor.coordinator.scheduler.runtime.workload_shm import WorkloadSharedMemoryOwner
 from motor.coordinator.scheduler.runtime.workload_shm.layout import (
     DEFAULT_WORKLOAD_SHM_MAX_ENTRIES,
@@ -62,6 +79,51 @@ _RECOVERY_PROBE_TIMEOUT_SECS = 2.0
 # loading / not-ready it returns 503. So a 200 answer means the instance is
 # not merely reachable but actually usable.
 _PROBE_HEALTH_PATH = "/health"
+
+
+def _create_kv_usage_shared_memory(shm_module, shm_name: str, shm_size: int):
+    """Create POSIX kv usage SharedMemory; recover from orphan segment like workload SHM."""
+    try:
+        return shm_module.SharedMemory(name=shm_name, create=True, size=shm_size)
+    except FileExistsError:
+        logger.warning(
+            "KV usage SHM %s already exists (likely orphan from a prior run or PID reuse); unlinking and recreating",
+            shm_name,
+        )
+        try:
+            stale = shm_module.SharedMemory(name=shm_name, create=False)
+        except FileNotFoundError:
+            return shm_module.SharedMemory(name=shm_name, create=True, size=shm_size)
+        try:
+            stale.close()
+            stale.unlink()
+        except Exception as e:
+            logger.error("Failed to unlink stale kv usage SHM %s: %s", shm_name, e)
+            raise
+        return shm_module.SharedMemory(name=shm_name, create=True, size=shm_size)
+
+
+def _create_sched_metrics_shared_memory(shm_module, shm_name: str, shm_size: int):
+    """Create POSIX scheduling-metrics SharedMemory; recover from orphan segment like workload SHM."""
+    try:
+        return shm_module.SharedMemory(name=shm_name, create=True, size=shm_size)
+    except FileExistsError:
+        logger.warning(
+            "Sched metrics SHM %s already exists (orphan from prior run or PID reuse); unlinking and recreating",
+            shm_name,
+        )
+        try:
+            stale = shm_module.SharedMemory(name=shm_name, create=False)
+        except FileNotFoundError:
+            return shm_module.SharedMemory(name=shm_name, create=True, size=shm_size)
+        try:
+            stale.close()
+            stale.unlink()
+        except Exception as e:
+            logger.error("Failed to unlink stale sched metrics SHM %s: %s", shm_name, e)
+            raise
+        return shm_module.SharedMemory(name=shm_name, create=True, size=shm_size)
+
 
 InstanceRefreshCallback = Callable[[EventType, list[Instance]], None | Awaitable[None]]
 
@@ -102,11 +164,15 @@ class _SchedulerRequestDispatcher:
         on_instance_refresh_done: InstanceRefreshCallback | None = None,
         circuit_breaker_manager: CircuitBreakerManager | None = None,
         pub_socket: zmq.asyncio.Socket | None = None,
+        kv_usage_writer: KvUsageShmWriter | None = None,
+        sched_metrics_writer: SchedulerMetricsShmWriter | None = None,
     ):
         self._instance_manager = instance_manager
         self._scheduler = scheduler
         self._config = config
         self._workload_writer = workload_writer
+        self._kv_usage_writer = kv_usage_writer
+        self._sched_metrics_writer = sched_metrics_writer
         self._on_instance_refresh_done = on_instance_refresh_done
         self._cb_manager = circuit_breaker_manager or CircuitBreakerManager(self._config.circuit_config)
         self._pub_socket = pub_socket
@@ -153,6 +219,10 @@ class _SchedulerRequestDispatcher:
         }
         if self._workload_writer:
             data["workload_shm_name"] = self._workload_writer.shm_name
+        if self._kv_usage_writer:
+            data["kv_usage_shm_name"] = self._kv_usage_writer.shm_name
+        if self._sched_metrics_writer:
+            data["sched_metrics_shm_name"] = self._sched_metrics_writer.shm_name
         return SchedulerResponse(
             response_type=SchedulerResponseType.SUCCESS,
             request_id=request.request_id,
@@ -632,6 +702,10 @@ class _SchedulerFrontendTransport:
     async def bind(self, address: str) -> None:
         """Create ROUTER socket and bind."""
         self._socket = self._context.socket(zmq.ROUTER)
+        # Make send() fail loudly (EHOSTUNREACH) when routing to a peer that is no longer in the
+        # ROUTER table (e.g. worker DEALER disconnected mid-request), instead of silently dropping
+        # the response -- silent drops hide lost control-plane replies from operators.
+        self._socket.setsockopt(zmq.ROUTER_MANDATORY, 1)
         self._socket.bind(address)
 
     async def recv(self) -> tuple[bytes | None, list]:
@@ -650,7 +724,18 @@ class _SchedulerFrontendTransport:
             return
         send_frames = pack_send_frames([client_id, b""], response_frames)
         async with self._send_lock:
-            await self._socket.send_multipart(send_frames)
+            try:
+                await self._socket.send_multipart(send_frames)
+            except zmq.ZMQError as e:
+                # ROUTER_MANDATORY: a peer that left the ROUTER table (worker DEALER
+                # disconnected mid-request) raises instead of silently dropping the
+                # response. Log and move on -- the client retries at its own layer.
+                logger.warning(
+                    "Dropped response to client %s: zmq errno=%s (%s)",
+                    client_id,
+                    e.errno,
+                    e,
+                )
 
     async def disconnect(self) -> None:
         """Close socket; do not term context (Server owns context)."""
@@ -687,6 +772,11 @@ class AsyncSchedulerServer:
 
         self.instance_manager = instance_manager if instance_manager is not None else InstanceManager(config)
         self.scheduler = Scheduler(instance_provider=self.instance_manager, config=config)
+        # 与 _SchedulerRequestDispatcher 保持一致（快照调度指标时计算 fresh_load 用）。
+        self._endpoint_instance_score_weight = max(
+            0.0,
+            getattr(config.scheduler_config, "endpoint_instance_score_weight", 0.05),
+        )
 
         self.context: zmq.asyncio.Context | None = None
         self._transport: _SchedulerFrontendTransport | None = None
@@ -710,6 +800,12 @@ class AsyncSchedulerServer:
         self._pub_socket: zmq.asyncio.Socket | None = None
         self._cb_manager: CircuitBreakerManager | None = None
         self._loop_task: asyncio.Task | None = None
+        self._kv_usage_reader: KvUsageShmReader | None = None
+        self._kv_usage_writer: KvUsageShmWriter | None = None
+        self._kv_usage_shm = None
+        self._sched_metrics_collector: SchedulerMetricsCollector | None = None
+        self._sched_metrics_writer: SchedulerMetricsShmWriter | None = None
+        self._sched_metrics_shm = None
 
     async def apply_refresh(self, event_type: EventType, instances: list[Instance]) -> bool:
         """In-process instance refresh (HTTP /instances/refresh). Returns whether membership changed."""
@@ -737,6 +833,41 @@ class AsyncSchedulerServer:
                 pass
             self._loop_task = None
 
+        if self._kv_usage_reader is not None:
+            set_kv_usage_reader(None)
+            try:
+                self._kv_usage_reader.detach()
+            except Exception as e:
+                logger.warning("Failed to detach kv usage reader: %s", e)
+            self._kv_usage_reader = None
+        if self._kv_usage_writer is not None:
+            self._kv_usage_writer.release()
+            self._kv_usage_writer = None
+        if self._kv_usage_shm:
+            try:
+                self._kv_usage_shm.close()
+                self._kv_usage_shm.unlink()
+            except Exception as e:
+                logger.warning("Error closing kv usage shared memory: %s", e)
+            self._kv_usage_shm = None
+
+        if self._sched_metrics_collector is not None:
+            try:
+                self._sched_metrics_collector.stop()
+            except Exception as e:
+                logger.warning("Failed to stop sched metrics collector: %s", e)
+            self._sched_metrics_collector = None
+        if self._sched_metrics_writer is not None:
+            self._sched_metrics_writer.release()
+            self._sched_metrics_writer = None
+        if self._sched_metrics_shm:
+            try:
+                self._sched_metrics_shm.close()
+                self._sched_metrics_shm.unlink()
+            except Exception as e:
+                logger.warning("Error closing sched metrics shared memory: %s", e)
+            self._sched_metrics_shm = None
+
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
             try:
@@ -763,7 +894,7 @@ class AsyncSchedulerServer:
                 logger.warning("Error releasing workload writer: %s", e)
             self._workload_writer = None
         if self._dispatcher is not None:
-            for key, task in list(self._dispatcher._recovery_timers.items()):
+            for task in list(self._dispatcher._recovery_timers.values()):
                 if not task.done():
                     task.cancel()
             self._dispatcher._recovery_timers.clear()
@@ -813,6 +944,47 @@ class AsyncSchedulerServer:
         self._workload_writer.write_snapshot()
         logger.info("Workload shared memory enabled: %s", shm_name)
 
+        # KV usage shared memory: MetricsCollector (Obs) writes per-endpoint usage,
+        # SchedulingServer reads and serves to Infer Workers via GET_AVAILABLE_INSTANCES.
+        kv_usage_shm_name = f"mindie_kvusage_{os.getpid()}"
+        self._kv_usage_shm = _create_kv_usage_shared_memory(
+            shared_memory,
+            kv_usage_shm_name,
+            kv_usage_shm_total_size(DEFAULT_KV_USAGE_SHM_MAX_ENTRIES),
+        )
+        self._kv_usage_writer = KvUsageShmWriter(
+            self._kv_usage_shm,
+            max_entries=DEFAULT_KV_USAGE_SHM_MAX_ENTRIES,
+        )
+        logger.info("KV usage shared memory enabled: %s", kv_usage_shm_name)
+        self._kv_usage_reader = KvUsageShmReader(kv_usage_shm_name)
+        try:
+            self._kv_usage_reader.attach()
+        except FileNotFoundError:
+            logger.warning(
+                "KV usage shm %s not attachable; kv usage exclusion disabled until Obs publishes",
+                kv_usage_shm_name,
+            )
+            self._kv_usage_reader = None
+        else:
+            # 注册模块级 reader：get_endpoint_kv_cache_usage 按需从共享内存拉新快照
+            # （MetricsCollector 每轮采集后推送），调度与指标路径才有 usage 数据可用。
+            set_kv_usage_reader(self._kv_usage_reader)
+
+        # 调度指标（cnt/fresh_load/a_tokens）由本进程采集并发布到共享内存，
+        # 供 Obs 进程的 MetricsCollector 读取并输出为 motor: 指标。
+        sched_metrics_shm_name = f"mindie_schedmetrics_{os.getpid()}"
+        self._sched_metrics_shm = _create_sched_metrics_shared_memory(
+            shared_memory,
+            sched_metrics_shm_name,
+            sched_metrics_shm_total_size(DEFAULT_SCHED_METRICS_SHM_MAX_ENTRIES),
+        )
+        self._sched_metrics_writer = SchedulerMetricsShmWriter(
+            self._sched_metrics_shm,
+            max_entries=DEFAULT_SCHED_METRICS_SHM_MAX_ENTRIES,
+        )
+        logger.info("Scheduling metrics shared memory enabled: %s", sched_metrics_shm_name)
+
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         self._cb_manager = CircuitBreakerManager(self.config.circuit_config)
@@ -825,7 +997,15 @@ class AsyncSchedulerServer:
             on_instance_refresh_done=self._publish_instance_changed,
             circuit_breaker_manager=self._cb_manager,
             pub_socket=self._pub_socket,
+            kv_usage_writer=self._kv_usage_writer,
+            sched_metrics_writer=self._sched_metrics_writer,
         )
+        # 后台定期采集调度指标（cnt/fresh_load/a_tokens）写入共享内存。
+        self._sched_metrics_collector = SchedulerMetricsCollector(
+            snapshot_fn=self._snapshot_sched_metrics,
+            on_publish=self._sched_metrics_writer.write_snapshot,
+        )
+        self._sched_metrics_collector.start()
 
         logger.info("Control plane started, frontend: %s", self.frontend_address)
 
@@ -842,6 +1022,68 @@ class AsyncSchedulerServer:
             logger.info("Received interrupt signal")
         finally:
             await self.stop()
+
+    def _snapshot_sched_metrics(self) -> dict[tuple[int, int], tuple[int, float, float, int, int]]:
+        """Snapshot per-endpoint scheduling metrics for the Obs metrics publisher.
+
+        For every available instance's endpoint, capture:
+          - role byte (layout encoding)
+          - fresh_load: authoritative load-balance score (calculate_endpoint_score)
+          - a_tokens: endpoint's current active tokens
+          - cnt: per-role request count (0 in this architecture; see inline note below)
+          - total_cnt: cumulative request count (0 in this architecture; see inline note below)
+        Runs on the background SchedulerMetricsCollector thread (off the hot path).
+        """
+        snapshot: dict[tuple[int, int], tuple[int, float, float, int, int]] = {}
+        score_weight = self._endpoint_instance_score_weight
+        for role in (PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U):
+            instances = self.instance_manager.get_available_instances(role).values()
+            for instance in instances:
+                try:
+                    instance_role = PDRole(instance.role)
+                except ValueError:
+                    instance_role = PDRole.ROLE_U
+                for endpoint in instance.get_all_endpoints():
+                    try:
+                        fresh_load = LoadBalancePolicy.calculate_endpoint_score(
+                            instance,
+                            endpoint,
+                            role=instance_role,
+                            instance_score_weight=score_weight,
+                        )
+                        if instance_role == PDRole.ROLE_D:
+                            # 与真实调度路径 select_endpoint_candidates_from_list 保持一致：
+                            # D 实例评分叠加 KV usage 惩罚项，指标里的 fresh_load 才是调度真正使用的分。
+                            fresh_load = LoadBalancePolicy._apply_kv_usage_penalty(
+                                fresh_load,
+                                instance,
+                                endpoint,
+                                role=instance_role,
+                                kv_usage_provider=get_endpoint_kv_cache_usage,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to score sched-metrics candidate instance_id=%s endpoint_id=%s: %s",
+                            instance.id,
+                            endpoint.id,
+                            e,
+                        )
+                        fresh_load = 0.0
+                    active_tokens = endpoint.workload.active_tokens if endpoint.workload else 0.0
+                    # 本架构中 Infer Worker 直接 CAS 提交 workload SHM，Mgmt 进程没有
+                    # 单请求可见性，无法按角色统计 endpoint 级请求数；cnt/total_cnt 暂以
+                    # 0 占位（total_cnt 为累计请求数，同样无来源），后续可由 workload SHM
+                    # 扩展字段补齐。
+                    cnt = 0
+                    total_cnt = 0
+                    snapshot[(instance.id, endpoint.id)] = (
+                        _pack_role(instance_role),
+                        fresh_load,
+                        active_tokens,
+                        cnt,
+                        total_cnt,
+                    )
+        return snapshot
 
     async def _publish_instance_changed(self, event_type=None, instances=None) -> None:
         """Publish instance list changed + version to SUB clients (no-op if PUB not enabled).

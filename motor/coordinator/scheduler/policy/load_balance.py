@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import heapq
+import random
 from typing import Callable, Iterable
 
 from motor.common.resources.instance import Instance, PDRole
@@ -61,12 +62,11 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
         Endpoint workload is the primary signal. Instance workload is averaged by endpoint count so
         larger DP instances are not penalized just because they have more endpoints.
         """
-        score_role = role if role is not None else instance.role
-        endpoint_score = endpoint.workload.calculate_workload_score(role=score_role)
+        endpoint_score = endpoint.workload.calculate_workload_score()
         if instance_score_weight <= 0:
             return endpoint_score
         endpoint_count = max(1, len(instance.get_all_endpoints()))
-        instance_score = instance.gathered_workload.calculate_workload_score(role=score_role)
+        instance_score = instance.gathered_workload.calculate_workload_score()
         return endpoint_score + instance_score_weight * (instance_score / endpoint_count)
 
     @staticmethod
@@ -75,21 +75,29 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
         role: PDRole | None = None,
         top_k: int = 1,
         instance_score_weight: float = DEFAULT_ENDPOINT_INSTANCE_SCORE_WEIGHT,
-        start_index: int = 0,
         *,
         is_blocked: Callable[[int], bool] | None = None,
         excluded_pairs: set[tuple[int, int]] | None = None,
+        exclude_highest_kv_usage: bool = False,
+        kv_usage_provider: Callable[[Instance, Endpoint], float | None] | None = None,
     ) -> list[EndpointCandidate]:
         """
         Select top-K endpoints globally across all instances.
-
-        ``start_index`` rotates traversal order and only affects ties, spreading equal-load choices
-        across worker processes without changing load-based ordering.
 
         ``is_blocked`` optional filter (instance_id) -> bool. Blocked instances are
         skipped during scoring (usually circuit-breaker OPEN instances from local PUB cache).
 
         ``excluded_pairs`` optional (instance_id, endpoint_id) pairs to skip during scoring.
+
+        ``exclude_highest_kv_usage`` (with ``kv_usage_provider``, caller gated per role, e.g.
+        D instances) enables KV cache pressure-aware scoring: instead of hard-excluding the
+        highest-usage candidate, every candidate's score gains a penalty
+        ``kv_usage * instance_score / endpoint_count``, so a heavily used instance is ranked
+        later naturally. When the flag is off or no usage data is available for a candidate,
+        the plain score is kept, preserving load-balance behavior as a fallback.
+
+        Ties (equal score) are broken uniformly at random instead of always preferring the first
+        node, so equal-load requests spread across nodes instead of piling onto node 0.
         """
         if top_k <= 0:
             return []
@@ -98,11 +106,8 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
         if not instances:
             return []
 
-        n = len(instances)
-        rotated_instances = [instances[(start_index + i) % n] for i in range(n)]
-        scored: list[tuple[float, int, EndpointCandidate]] = []
-        tie_order = 0
-        for instance in rotated_instances:
+        scored: list[tuple[float, float, EndpointCandidate]] = []
+        for instance in instances:
             for endpoint in instance.get_all_endpoints():
                 if is_blocked is not None and is_blocked(instance.id):
                     continue
@@ -115,6 +120,14 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
                         role=role,
                         instance_score_weight=instance_score_weight,
                     )
+                    if exclude_highest_kv_usage and kv_usage_provider is not None:
+                        score = LoadBalancePolicy._apply_kv_usage_penalty(
+                            score,
+                            instance,
+                            endpoint,
+                            role=role,
+                            kv_usage_provider=kv_usage_provider,
+                        )
                 except Exception as e:
                     logger.warning(
                         "Failed to calculate endpoint score for instance %s endpoint %s: %s",
@@ -123,16 +136,46 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
                         e,
                     )
                     continue
-                scored.append((score, tie_order, EndpointCandidate(instance, endpoint, score)))
-                tie_order += 1
+                scored.append((score, random.random(), EndpointCandidate(instance, endpoint, score)))  # nosec B311 -- 并列随机打散
         best = heapq.nsmallest(top_k, scored, key=lambda item: (item[0], item[1]))
         return [candidate for _, _, candidate in best]
+
+    @staticmethod
+    def _apply_kv_usage_penalty(
+        score: float,
+        instance: Instance,
+        endpoint: Endpoint,
+        *,
+        role: PDRole | str | None = None,
+        kv_usage_provider: Callable[[Instance, Endpoint], float | None],
+    ) -> float:
+        """Add a KV cache pressure penalty to an endpoint's score.
+
+        Penalty = kv_usage * instance_score / endpoint_count: an endpoint whose instance KV
+        cache is heavily used is penalized proportionally to the instance's own workload
+        pressure, averaged per endpoint so larger DP instances are not over-penalized. When
+        no usage data is available the plain score is returned unchanged.
+        """
+        try:
+            usage = kv_usage_provider(instance, endpoint)
+        except Exception as e:
+            logger.warning(
+                "Failed to get KV cache usage for instance %s endpoint %s: %s",
+                instance.id,
+                endpoint.id,
+                e,
+            )
+            return score
+        if usage is None:
+            return score
+        instance_score = instance.gathered_workload.calculate_workload_score()
+        endpoint_count = max(1, len(instance.get_all_endpoints()))
+        return score + usage * (instance_score / endpoint_count)
 
     @staticmethod
     def select_endpoint_from_list(
         instances: list[Instance] | Iterable[Instance],
         role: PDRole | None = None,
-        start_index: int = 0,
         instance_score_weight: float = DEFAULT_ENDPOINT_INSTANCE_SCORE_WEIGHT,
     ) -> tuple[Instance, Endpoint] | None:
         """Select one endpoint globally across all instances."""
@@ -141,7 +184,6 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
             role=role,
             top_k=1,
             instance_score_weight=instance_score_weight,
-            start_index=start_index,
         )
         if not candidates:
             return None
@@ -180,7 +222,7 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
                 idx = (start_index + i) % n
                 instance = instances[idx]
                 try:
-                    workload_score = instance.gathered_workload.calculate_workload_score(role=instance.role)
+                    workload_score = instance.gathered_workload.calculate_workload_score()
                     if workload_score < min_workload:
                         min_workload = workload_score
                         selected_instance = instance
@@ -192,7 +234,7 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
         # start_index == 0: single pass, no materialize, save list allocation
         for instance in instances:
             try:
-                workload_score = instance.gathered_workload.calculate_workload_score(role=instance.role)
+                workload_score = instance.gathered_workload.calculate_workload_score()
                 if workload_score < min_workload:
                     min_workload = workload_score
                     selected_instance = instance
@@ -225,7 +267,7 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
         selected_endpoint = None
         for endpoint in all_endpoints:
             try:
-                workload_score = endpoint.workload.calculate_workload_score(role=instance.role)
+                workload_score = endpoint.workload.calculate_workload_score()
                 if workload_score < min_workload:
                     min_workload = workload_score
                     selected_endpoint = endpoint

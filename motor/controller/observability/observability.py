@@ -72,7 +72,8 @@ class Observability(ThreadSafeSingleton):
         Get metrics from Coordinator (internal API, not exposed via HTTP).
         Controller components that need metrics data should call this method.
 
-        :param metrics_type: "full" (default), "instance", or "role"
+        :param metrics_type: "full" (default), "instance", "role", "dp", "node",
+            or "motor" (only Motor's own computed metrics)
         :param role: when metrics_type is "role", filter to a specific role
         :returns: Prometheus text
         """

@@ -32,10 +32,8 @@ class Workload(BaseModel):
 
         return self
 
-    def calculate_workload_score(self, role: Enum | str | None) -> float:
-        """Return the compute-load score (active_tokens) for any PD role."""
-        if role is None:
-            raise ValueError("role is required for calculate_workload_score")
+    def calculate_workload_score(self) -> float:
+        """Return the compute-load score (active_tokens); PD 角色统一按 token 记账，不再区分角色。"""
         return self.active_tokens
 
 

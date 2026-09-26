@@ -239,7 +239,10 @@ async def select_router_class(
     if has_routable_pd_pair:
         return UnifiedPDRouter
 
-    # Degrade to hybrid mode if any unblocked instance is available
+    # Degrade to hybrid mode if any unblocked instance is available. Note: a
+    # decode-only (D) instance is deliberately counted here -- with decode
+    # co-location support it can still be served by PDHybridRouter, and the
+    # exact routability check happens below (decode_colocation_available).
     get_unblocked = getattr(scheduler, "get_unblocked_instances", None)
     has_unblocked = False
     unblocked_by_role: dict[PDRole, bool] = {}

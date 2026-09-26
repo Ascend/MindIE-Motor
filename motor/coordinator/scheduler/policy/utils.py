@@ -235,6 +235,8 @@ def exchange_tools(tool: dict) -> None:
 
     max_seq = 100
     priority = {"name": 1, "description": 2, "parameters": 3}
-    tool[OpenAIField.FUNCTION] = dict(
-        sorted(tool[OpenAIField.FUNCTION].items(), key=lambda x: priority.get(x[0], max_seq))
-    )
+    function = tool[OpenAIField.FUNCTION]
+    for field in priority:
+        if field not in function:
+            function[field] = None
+    tool[OpenAIField.FUNCTION] = dict(sorted(function.items(), key=lambda x: priority.get(x[0], max_seq)))

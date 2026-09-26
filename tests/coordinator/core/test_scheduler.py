@@ -312,7 +312,7 @@ async def test_workload_calculation_accuracy(scheduler_setup):
     expected_score = selected_endpoint.workload.active_tokens
 
     # get actual computed score
-    actual_score = selected_endpoint.workload.calculate_workload_score(role=selected_instance.role)
+    actual_score = selected_endpoint.workload.calculate_workload_score()
 
     # verify that the computed score matches the expected score
     assert actual_score == expected_score
@@ -323,7 +323,7 @@ async def test_workload_calculation_accuracy(scheduler_setup):
 
     # verify that the score after release matches the expected score
     expected_score_after_release = selected_endpoint.workload.active_tokens
-    actual_score_after_release = selected_endpoint.workload.calculate_workload_score(role=selected_instance.role)
+    actual_score_after_release = selected_endpoint.workload.calculate_workload_score()
     assert actual_score_after_release == expected_score_after_release
 
 
@@ -362,7 +362,12 @@ async def test_load_balance_policy_selection_logic(scheduler_setup):
     assert res_p2 is not None, "select_instance_and_endpoint(ROLE_P) returned None."
     _, endpoint = res_p2
     assert endpoint is not None
-    assert endpoint in prefill_instance.get_all_endpoints()
+    # 平局随机打散后，两次 P 选择可能落在不同实例（负载全为 0 时得分并列随机选一）；
+    # 只需保证仍选中某个 P 实例的 endpoint，而不是固定与首次选择同实例。
+    all_p_endpoint_ids = {
+        ep.id for inst in all_instances if inst.role == PDRole.ROLE_P for ep in inst.get_all_endpoints()
+    }
+    assert endpoint.id in all_p_endpoint_ids
 
 
 @pytest.mark.asyncio

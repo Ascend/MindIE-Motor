@@ -54,6 +54,12 @@ from motor.coordinator.fault_tolerance.precision.streak_result import (
 from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
 from motor.coordinator.scheduler.policy.round_robin import RoundRobinPolicy
 from motor.coordinator.scheduler.policy.kv_cache_affinity import KvCacheAffinityPolicy
+from motor.coordinator.scheduler.runtime.kv_usage import (
+    KvUsageShmReader,
+    get_endpoint_kv_cache_usage,
+    set_kv_usage_reader,
+    update_kv_usage_cache,
+)
 from motor.coordinator.domain.workload_calculator import (
     calculate_committed_workload,
     calculate_demand_workload,
@@ -689,6 +695,12 @@ class AsyncSchedulerClient:
         self._last_instance_version: int | None = None
         self._on_instance_refreshed = config.on_instance_refreshed
         self._cb_blocked_instances: set[int] = set()
+        # KV usage 由 Obs 进程的 MetricsCollector 抓取并经 SchedulerServer 发布到共享内存，
+        # 本进程只 attach reader 读缓存，调度路径不做网络 I/O。
+        self._kv_usage_reader: KvUsageShmReader | None = None
+        # 调度指标（cnt/fresh_load/a_tokens）shm 名：SchedulerServer 采集写入，ObsServer 读取
+        # 输出 motor: 指标。仅保存名字，供 ObsServer 的 MetricsCollector attach 读取。
+        self._sched_metrics_shm_name: str | None = None
 
         instance_pub = (config.instance_pub_address or "").strip()
         self._push_subscriber = (
@@ -704,6 +716,16 @@ class AsyncSchedulerClient:
     @property
     def connected(self) -> bool:
         return self._transport.connected
+
+    @property
+    def kv_usage_shm_name(self) -> str | None:
+        """KV usage shm name this client's reader is attached to, or None before attach."""
+        return self._kv_usage_reader.shm_name if self._kv_usage_reader is not None else None
+
+    @property
+    def sched_metrics_shm_name(self) -> str | None:
+        """Scheduling-metrics shm name published by SchedulerServer, or None before sync."""
+        return self._sched_metrics_shm_name
 
     async def connect(self) -> bool:
         success = await self._transport.connect()
@@ -727,6 +749,12 @@ class AsyncSchedulerClient:
     async def disconnect(self) -> None:
         await self._stop_dp_stats_task()
         try:
+            if self._kv_usage_reader is not None:
+                try:
+                    self._kv_usage_reader.detach()
+                except Exception as e:
+                    logger.warning("Failed to detach kv usage reader: %s", e)
+                self._kv_usage_reader = None
             if self._push_subscriber:
                 await self._push_subscriber.disconnect()
             if self._workload_reader:
@@ -887,8 +915,18 @@ class AsyncSchedulerClient:
         heartbeat-stale or instance-version change.
 
         Runs before select_and_allocate so each role's selection makes load-aware decisions on
-        fresh workload and instance membership.
+        fresh workload and instance membership. KV cache usage is also synced from the
+        scheduler-published shared memory here (read-only, no engine I/O).
         """
+        if self._kv_usage_reader:
+            try:
+                # read_snapshot_ex 区分"发布端清空"与"无新快照"：空快照也会清缓存，
+                # 避免引擎重启/指标消失后旧 usage 永久残留。
+                changed, snapshot = self._kv_usage_reader.read_snapshot_ex()
+                if changed:
+                    update_kv_usage_cache(snapshot, allow_clear=True)
+            except Exception as e:
+                logger.warning("Failed to sync kv usage from shm: %s", e)
         if not self._workload_reader:
             return
         current_version, heartbeat_stale = self._workload_reader.read_and_patch_cache(self._cache, role=role)
@@ -937,6 +975,8 @@ class AsyncSchedulerClient:
             is_instance_circuit_open=self.is_instance_blocked,
             endpoint_instance_score_weight=self._endpoint_instance_score_weight,
             is_load_balance_scheduler=self._scheduler_type_for_role(role) == "load_balance",
+            # 权威重选路径与快路径使用同一 KV usage 数据源，保证 D 实例评分口径一致。
+            kv_usage_provider=get_endpoint_kv_cache_usage,
         )
 
     def _committed_workload_for(
@@ -1152,6 +1192,7 @@ class AsyncSchedulerClient:
                     normalized_engine_type or None,
                     excluded=excluded,
                     required_dispatch_capability=normalized_dispatch_capability or None,
+                    req_id=req_info.req_id,
                 )
             else:
                 selected = select_valid_candidate(
@@ -1174,6 +1215,7 @@ class AsyncSchedulerClient:
                         normalized_engine_type or None,
                         excluded=excluded,
                         required_dispatch_capability=normalized_dispatch_capability or None,
+                        req_id=req_info.req_id,
                     )
                     use_authoritative = True
             if selected is None:
@@ -1219,17 +1261,26 @@ class AsyncSchedulerClient:
                     else None
                 )
                 tier_hit = matched_load[3] if matched_load and len(matched_load) > 3 else None
+                # KV-affinity hit rate: matched prefix tokens / prompt token ids (kv_cache_affinity
+                # only; None for other policies or when token ids are unavailable).
+                matched = matched_load[0] if matched_load else None
+                token_ids = getattr(req_info, "token_ids", None)
+                hit_rate = (
+                    matched / len(token_ids)
+                    if (matched is not None and isinstance(token_ids, list) and token_ids)
+                    else None
+                )
                 logger.info(
                     "scheduled role=%s req_id=%s input_tokens=%s instance=%s endpoint=%s policy=%s matched=%s "
                     "hbm=%s cpu=%s disk=%s load=%s committed=%s score=%s fast_path=%s repicked=%s "
-                    "proposed=%s-%s",
+                    "proposed=%s-%s hit_rate=%s",
                     role_str,
                     req_info.req_id,
                     int(isl),
                     out_instance.id,
                     out_endpoint.id,
                     candidate_policy,
-                    matched_load[0] if matched_load else None,
+                    matched,
                     tier_hit[0] if tier_hit else None,
                     tier_hit[1] if tier_hit else None,
                     tier_hit[2] if tier_hit else None,
@@ -1240,6 +1291,7 @@ class AsyncSchedulerClient:
                     pair != proposed,
                     proposed_instance.id,
                     proposed_endpoint.id,
+                    hit_rate,
                 )
                 return (out_instance, out_endpoint, committed)
             if status == STATUS_CHANGED:
@@ -1525,6 +1577,30 @@ class AsyncSchedulerClient:
                         self._workload_reader = None
                     else:
                         self._last_instance_version = None
+
+            kv_usage_shm_name = data.get("kv_usage_shm_name")
+            if kv_usage_shm_name:
+                need_attach = not self._kv_usage_reader or self._kv_usage_reader.shm_name != kv_usage_shm_name
+                if need_attach:
+                    if self._kv_usage_reader:
+                        self._kv_usage_reader.detach()
+                    self._kv_usage_reader = KvUsageShmReader(kv_usage_shm_name)
+                    try:
+                        self._kv_usage_reader.attach()
+                    except FileNotFoundError:
+                        logger.debug(
+                            "KV usage shm %s not ready, will retry on next get_available_instances",
+                            kv_usage_shm_name,
+                        )
+                        self._kv_usage_reader = None
+                    else:
+                        # 注册模块级 reader：调度热路径的 get_endpoint_kv_cache_usage
+                        # 按需从共享内存拉新快照（MetricsCollector 每轮采集后推送）。
+                        set_kv_usage_reader(self._kv_usage_reader)
+
+            sched_metrics_shm_name = data.get("sched_metrics_shm_name")
+            if sched_metrics_shm_name:
+                self._sched_metrics_shm_name = sched_metrics_shm_name
 
             # Store sorted by instance.id so round-robin order is stable without sorting on each select.
             # Empty successful responses must also clear stale cache entries.
@@ -1880,14 +1956,16 @@ class AsyncSchedulerClient:
         role: PDRole,
         top_k: int = 1,
     ) -> list[tuple[Instance, Endpoint, float]]:
-        n = len(instances)
-        start_index = (n * self._client_index) // self._client_count if n else 0
+        # Equal-score (tie) requests are broken uniformly at random by the policy itself, so
+        # equal-load requests spread across nodes without a per-client rotation offset.
         candidates = LoadBalancePolicy.select_endpoint_candidates_from_list(
             instances,
             role,
             top_k=max(1, top_k),
             instance_score_weight=self._endpoint_instance_score_weight,
-            start_index=start_index,
             is_blocked=self.is_instance_blocked,
+            # D 实例：评分上叠加 KV usage 惩罚项，避免调度到 KV cache 快满的实例。
+            exclude_highest_kv_usage=(role == PDRole.ROLE_D),
+            kv_usage_provider=get_endpoint_kv_cache_usage if role == PDRole.ROLE_D else None,
         )
         return [(candidate.instance, candidate.endpoint, candidate.score) for candidate in candidates]

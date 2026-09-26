@@ -9,6 +9,9 @@
 # See the Mulan PSL v2 license for more details.
 
 import asyncio
+import os
+import time
+from multiprocessing import shared_memory
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,7 +25,15 @@ from motor.common.resources.http_msg_spec import EventType
 from motor.common.resources.instance import Instance, InsStatus, PDRole, ParallelConfig
 from motor.config.coordinator import CoordinatorConfig, SchedulerType
 from motor.coordinator.domain.instance_manager import InstanceManager
+from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
+from motor.coordinator.scheduler.runtime import kv_usage
 from motor.coordinator.scheduler.runtime.scheduler_client import _SchedulerInstanceCache
+from motor.coordinator.scheduler.runtime.scheduler_metrics import (
+    DEFAULT_SCHED_METRICS_SHM_MAX_ENTRIES,
+    SchedulerMetricsShmReader,
+    SchedulerMetricsShmWriter,
+    sched_metrics_shm_total_size,
+)
 from motor.coordinator.scheduler.runtime.scheduler_server import (
     _SchedulerFrontendTransport,
     _SchedulerRequestDispatcher,
@@ -558,6 +569,33 @@ class TestSchedulerFrontendTransport:
         assert b"client-id" in sent_frames
 
     @pytest.mark.asyncio
+    async def test_bind_sets_router_mandatory(self):
+        """ROUTER_MANDATORY makes sends to disconnected peers fail loudly instead of silently dropping."""
+        import zmq
+
+        mock_socket = MagicMock()
+        mock_context = MagicMock()
+        mock_context.socket.return_value = mock_socket
+
+        transport = _SchedulerFrontendTransport(mock_context)
+        await transport.bind("ipc:///tmp/test_scheduler_mandatory")
+
+        mock_socket.setsockopt.assert_any_call(zmq.ROUTER_MANDATORY, 1)
+
+    @pytest.mark.asyncio
+    async def test_send_swallows_peer_gone_zmq_error(self):
+        """A ZMQError (peer left the ROUTER table) is logged, not raised: the loop keeps serving."""
+        import zmq
+
+        mock_socket = AsyncMock()
+        mock_socket.send_multipart = AsyncMock(side_effect=zmq.ZMQError(zmq.EHOSTUNREACH, "Host unreachable"))
+        transport = _SchedulerFrontendTransport(MagicMock())
+        transport._socket = mock_socket
+
+        await transport.send(b"gone-client", [b"response-frame"])
+        mock_socket.send_multipart.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_bind_creates_router_socket_and_binds(self):
         import zmq
 
@@ -743,3 +781,109 @@ class TestAsyncSchedulerServerPublishInstanceChanged:
 
         frames = mock_pub.send_multipart.call_args[0][0]
         assert len(frames) == 2
+
+
+class TestSnapshotSchedMetricsKvUsagePenalty:
+    """_snapshot_sched_metrics 发布的 D 实例 fresh_load 应与真实调度分一致（叠加 KV usage 惩罚）。"""
+
+    @staticmethod
+    def _make_server_with_instances(p_inst, d_inst) -> AsyncSchedulerServer:
+        config = CoordinatorConfig()
+        config.scheduler_config.endpoint_instance_score_weight = 0.0
+        instance_manager = MagicMock()
+        instance_manager.get_available_instances.side_effect = lambda role: {
+            PDRole.ROLE_P: {p_inst.id: p_inst},
+            PDRole.ROLE_D: {d_inst.id: d_inst},
+            PDRole.ROLE_U: {},
+        }[role]
+        return AsyncSchedulerServer(config, instance_manager=instance_manager)
+
+    @pytest.mark.asyncio
+    async def test_d_role_fresh_load_includes_kv_usage_penalty(self):
+        d_inst = _make_instance(2, (1,), role=PDRole.ROLE_D)
+        d_inst.gathered_workload.active_tokens = 20.0
+        p_inst = _make_instance(1, (1,), role=PDRole.ROLE_P)
+        server = self._make_server_with_instances(p_inst, d_inst)
+
+        d_ep = d_inst.get_all_endpoints()[0]
+        p_ep = p_inst.get_all_endpoints()[0]
+        usage = 0.5
+        kv_usage.update_kv_usage_cache({(2, 1): usage})
+        try:
+            snapshot = server._snapshot_sched_metrics()
+        finally:
+            kv_usage.clear_kv_usage_cache()
+
+        plain_d = LoadBalancePolicy.calculate_endpoint_score(
+            d_inst, d_ep, role=PDRole.ROLE_D, instance_score_weight=0.0
+        )
+        expected_d = plain_d + usage * (d_inst.gathered_workload.calculate_workload_score() / 1)
+        assert snapshot[(2, 1)][1] == pytest.approx(expected_d)
+        assert snapshot[(2, 1)][1] != pytest.approx(plain_d)
+        # P 实例不叠加惩罚。
+        plain_p = LoadBalancePolicy.calculate_endpoint_score(
+            p_inst, p_ep, role=PDRole.ROLE_P, instance_score_weight=0.0
+        )
+        assert snapshot[(1, 1)][1] == pytest.approx(plain_p)
+
+    @pytest.mark.asyncio
+    async def test_d_role_fresh_load_falls_back_to_plain_score_without_usage(self):
+        """无 KV usage 数据时回退为裸分，不影响指标发布。"""
+        d_inst = _make_instance(2, (1,), role=PDRole.ROLE_D)
+        d_inst.gathered_workload.active_tokens = 20.0
+        p_inst = _make_instance(1, (1,), role=PDRole.ROLE_P)
+        server = self._make_server_with_instances(p_inst, d_inst)
+
+        d_ep = d_inst.get_all_endpoints()[0]
+        snapshot = server._snapshot_sched_metrics()
+
+        plain_d = LoadBalancePolicy.calculate_endpoint_score(
+            d_inst, d_ep, role=PDRole.ROLE_D, instance_score_weight=0.0
+        )
+        assert snapshot[(2, 1)][1] == pytest.approx(plain_d)
+
+
+class TestSnapshotSchedMetricsToShmSeam:
+    """接缝测试：_snapshot_sched_metrics 产出必须能被 SchedulerMetricsShmWriter 消费并回读。"""
+
+    @pytest.mark.asyncio
+    async def test_snapshot_round_trips_through_sched_metrics_shm(self):
+        d_inst = _make_instance(2, (1,), role=PDRole.ROLE_D)
+        d_inst.gathered_workload.active_tokens = 20.0
+        p_inst = _make_instance(1, (1,), role=PDRole.ROLE_P)
+        config = CoordinatorConfig()
+        config.scheduler_config.endpoint_instance_score_weight = 0.0
+        instance_manager = MagicMock()
+        instance_manager.get_available_instances.side_effect = lambda role: {
+            PDRole.ROLE_P: {p_inst.id: p_inst},
+            PDRole.ROLE_D: {d_inst.id: d_inst},
+            PDRole.ROLE_U: {},
+        }[role]
+        server = AsyncSchedulerServer(config, instance_manager=instance_manager)
+
+        # macOS POSIX shm 名上限 31 字符，测试名保持短前缀 + 短随机后缀。
+        name = f"tsm_{os.getpid()}_{time.monotonic_ns() % 1_000_000}"
+        shm = shared_memory.SharedMemory(
+            name=name, create=True, size=sched_metrics_shm_total_size(DEFAULT_SCHED_METRICS_SHM_MAX_ENTRIES)
+        )
+        try:
+            writer = SchedulerMetricsShmWriter(shm, max_entries=DEFAULT_SCHED_METRICS_SHM_MAX_ENTRIES)
+            snapshot = server._snapshot_sched_metrics()
+            # 全部条目都是 5 元组（role, fresh_load, active_tokens, cnt, total_cnt）。
+            assert snapshot
+            for values in snapshot.values():
+                assert len(values) == 5
+
+            writer.write_snapshot(snapshot)
+
+            reader = SchedulerMetricsShmReader(writer.shm_name)
+            reader.attach()
+            try:
+                got = reader.read_snapshot()
+                assert got == snapshot
+            finally:
+                reader.detach()
+        finally:
+            writer.release()
+            shm.close()
+            shm.unlink()

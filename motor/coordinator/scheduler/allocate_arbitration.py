@@ -17,6 +17,7 @@ candidate set) and a fresh workload view, which (instance, endpoint) wins". Infe
 Scoring formulas live in ``motor/coordinator/scheduler/policy`` and are not duplicated here.
 """
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -24,6 +25,7 @@ from motor.common.logger import get_logger
 from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.instance import Instance, PDRole
 from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
+from motor.coordinator.scheduler.runtime.kv_usage import get_endpoint_kv_cache_usage
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
     CANDIDATE_POLICY_KV_CACHE_AFFINITY,
     CANDIDATE_POLICY_LOAD_BALANCE,
@@ -33,6 +35,23 @@ from motor.coordinator.scheduler.runtime.zmq_protocol import (
 logger = get_logger(__name__)
 
 
+def _format_kv_usage(instance: Instance, endpoint: Endpoint) -> str:
+    """Human-readable cached kv usage for logs ("n/a" before the first collect)."""
+    usage = get_endpoint_kv_cache_usage(instance, endpoint)
+    return "n/a" if usage is None else f"{usage:.3f}"
+
+
+# Env switch: when set to a truthy value, log EVERY kv_cache_affinity candidate's
+# prefill_cost / fresh_load / combined on the authoritative path. Useful for observing
+# why the best-match node was not chosen.
+_ENV_LOG_ALL_AFFINITY_CANDIDATES = "KV_AFFINITY_LOG_ALL_CANDIDATES"
+
+
+def log_all_affinity_candidates_enabled() -> bool:
+    """Return True when the env switch to log all affinity candidates is on."""
+    return os.environ.get(_ENV_LOG_ALL_AFFINITY_CANDIDATES, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass
 class ArbitrationContext:
     """
@@ -40,12 +59,17 @@ class ArbitrationContext:
 
     Infer Worker ``AsyncSchedulerClient`` supplies the local instance cache and circuit-breaker
     / SHM blocked view so the same selection logic runs without a ZMQ round-trip.
+
+    ``kv_usage_provider`` mirrors the fast path's KV cache pressure scoring: when set, the
+    authoritative load-balance re-scan applies the same D-role KV usage penalty so both paths
+    rank candidates identically (see LoadBalancePolicy._apply_kv_usage_penalty).
     """
 
     get_available_instances: Callable[[PDRole | None], dict[int, Instance]]
     is_instance_circuit_open: Callable[[int], bool]
     endpoint_instance_score_weight: float = 0.05
     is_load_balance_scheduler: bool = False
+    kv_usage_provider: Callable[[Instance, Endpoint], float | None] | None = None
 
 
 def matches_engine_type(instance: Instance, required_engine_type: str | None) -> bool:
@@ -133,11 +157,14 @@ def select_global_load_balance_candidate(
     required_engine_type: str | None = None,
     excluded: set[tuple[int, int]] | None = None,
     required_dispatch_capability: str | None = None,
+    req_id: str | None = None,
 ) -> tuple[Instance, Endpoint, float] | None:
     """Select the globally lowest-score endpoint for the role from the fresh pool.
 
     Circuit-broken endpoints are filtered so the authoritative re-scan never picks one that a local
     PUB cache may not yet know about. ``excluded`` drops pairs this CAS round already rejected.
+
+    ``req_id`` is only used for log correlation (worker's ``scheduled`` line).
     """
     instances = [
         instance
@@ -145,6 +172,53 @@ def select_global_load_balance_candidate(
         if matches_engine_type(instance, required_engine_type)
         and matches_dispatch_capability(instance, required_dispatch_capability)
     ]
+    # 与快路径 _select_endpoint_candidates_by_load_balance 保持一致：D 实例评分叠加
+    # KV usage 惩罚项，权威重选才不会在 CAS 冲突时选中 KV cache 快满的节点。
+    exclude_highest_kv_usage = role == PDRole.ROLE_D and ctx.kv_usage_provider is not None
+    kv_usage_provider = ctx.kv_usage_provider if role == PDRole.ROLE_D else None
+    if log_all_affinity_candidates_enabled():
+        # Env switch: the load-balance selection path (e.g. D/decode instance scheduling) logs
+        # EVERY candidate's fresh score, mirroring the kv_affinity all-candidates log, so both
+        # scheduler paths show every node's load information.
+        for instance in instances:
+            if ctx.is_instance_circuit_open(instance.id):
+                continue
+            for endpoint in instance.get_all_endpoints():
+                try:
+                    score = LoadBalancePolicy.calculate_endpoint_score(
+                        instance,
+                        endpoint,
+                        role=role,
+                        instance_score_weight=ctx.endpoint_instance_score_weight,
+                    )
+                    if exclude_highest_kv_usage:
+                        score = LoadBalancePolicy._apply_kv_usage_penalty(
+                            score,
+                            instance,
+                            endpoint,
+                            role=role,
+                            kv_usage_provider=kv_usage_provider,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to score load_balance candidate instance_id=%s endpoint_id=%s: %s",
+                        instance.id,
+                        endpoint.id,
+                        e,
+                    )
+                    continue
+                logger.info(
+                    "load_balance all_candidates req_id=%s role=%s point=%s-%s "
+                    "score=%.2f a_tokens=%.2f i_tokens=%.2f kv_usage=%s",
+                    req_id,
+                    role.value if hasattr(role, "value") else role,
+                    instance.id,
+                    endpoint.id,
+                    score,
+                    endpoint.workload.active_tokens,
+                    instance.gathered_workload.active_tokens,
+                    _format_kv_usage(instance, endpoint),
+                )
     candidates = LoadBalancePolicy.select_endpoint_candidates_from_list(
         instances,
         role=role,
@@ -152,10 +226,20 @@ def select_global_load_balance_candidate(
         instance_score_weight=ctx.endpoint_instance_score_weight,
         is_blocked=ctx.is_instance_circuit_open,
         excluded_pairs=excluded,
+        exclude_highest_kv_usage=exclude_highest_kv_usage,
+        kv_usage_provider=kv_usage_provider,
     )
     if not candidates:
         return None
     candidate = candidates[0]
+    logger.info(
+        "load_balance global selected req_id=%s role=%s point=%s-%s score=%.2f",
+        req_id,
+        role.value if hasattr(role, "value") else role,
+        candidate.instance.id,
+        candidate.endpoint.id,
+        candidate.score,
+    )
     return (candidate.instance, candidate.endpoint, candidate.score)
 
 
@@ -168,6 +252,7 @@ def select_affinity_global(
     required_engine_type: str | None = None,
     excluded: set[tuple[int, int]] | None = None,
     required_dispatch_capability: str | None = None,
+    req_id: str | None = None,
 ) -> tuple[Instance, Endpoint, float] | None:
     """
     Global kv_cache_affinity unified selection over EVERY reported endpoint.
@@ -176,6 +261,8 @@ def select_affinity_global(
     ``combined = prefill_load_scale * prefill_cost + load_weight * fresh_load``. Pick the minimum;
     ties prefer the lower prefill_cost (better affinity). The returned score is ``combined``.
     ``excluded`` drops pairs this CAS round already rejected.
+
+    ``req_id`` is only used for log correlation (worker's ``scheduled`` line).
     """
     pscale = prefill_load_scale if prefill_load_scale is not None else 1.0
     lweight = load_weight if load_weight is not None else 1.0
@@ -215,12 +302,33 @@ def select_affinity_global(
             )
             continue
         combined = pscale * prefill_cost + lweight * load
+        if log_all_affinity_candidates_enabled():
+            logger.info(
+                "kv_affinity global candidate req_id=%s role=%s point=%s-%s "
+                "prefill_cost=%.2f fresh_load=%.2f combined=%.2f",
+                req_id,
+                role.value if hasattr(role, "value") else role,
+                instance_id,
+                endpoint_id,
+                prefill_cost,
+                load,
+                combined,
+            )
         if best is None:
             best = (instance, endpoint, combined, prefill_cost)
         elif combined < best[2] or (combined == best[2] and prefill_cost < best[3]):
             best = (instance, endpoint, combined, prefill_cost)
     if best is None:
         return None
+    logger.info(
+        "kv_affinity global selected req_id=%s role=%s point=%s-%s combined=%.2f prefill_cost=%.2f",
+        req_id,
+        role.value if hasattr(role, "value") else role,
+        best[0].id,
+        best[1].id,
+        best[2],
+        best[3],
+    )
     return (best[0], best[1], best[2])
 
 
@@ -302,6 +410,7 @@ def select_authoritative_allocate_candidate(
     required_engine_type: str | None = None,
     excluded: set[tuple[int, int]] | None = None,
     required_dispatch_capability: str | None = None,
+    req_id: str | None = None,
 ) -> tuple[Instance, Endpoint, float] | None:
     """
     Select the allocation target from a fresh workload view (the slow / re-rank path).
@@ -311,6 +420,8 @@ def select_authoritative_allocate_candidate(
     without per-endpoint prefill_cost fall back to "least-loaded among the ranked alternates". Other
     policies keep the proposed endpoint. ``excluded`` (pairs this CAS round already rejected) is
     forwarded to every branch that scans beyond ``candidates`` (which the caller already filters).
+
+    ``req_id`` is only used for log correlation (worker's ``scheduled`` line).
     """
     if should_scan_global_load_balance(ctx, candidate_policy):
         selected = select_global_load_balance_candidate(
@@ -319,6 +430,7 @@ def select_authoritative_allocate_candidate(
             required_engine_type,
             excluded=excluded,
             required_dispatch_capability=required_dispatch_capability,
+            req_id=req_id,
         )
         if selected is not None:
             return selected
@@ -333,6 +445,7 @@ def select_authoritative_allocate_candidate(
                 required_engine_type,
                 excluded=excluded,
                 required_dispatch_capability=required_dispatch_capability,
+                req_id=req_id,
             )
             if selected is not None:
                 return selected

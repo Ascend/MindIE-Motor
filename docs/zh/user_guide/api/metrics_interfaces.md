@@ -397,6 +397,7 @@ Engine 进程自身的指标，跨 Engine 求和：
 >[!NOTE]说明
 >
 > - KV Store 指标**仅随 `type=full` 视图返回**：`instance` / `role` / `dp` / `node` 视图只输出引擎指标，不含 `kv_store_*` 系列。
+> - 端点粒度的调度状态指标 `motor:endpoint_state`（含 `request_count` / `fresh_load` / `active_tokens` / `total_cnt` / `kv_usage` / `kv_hit_tokens` / `kv_input_tokens` / `kv_hit_rate` / `running` / `waiting` 样本）与 KV Store 指标一致，**仅随 `type=full`（含 `type=motor`）视图返回**，`instance` / `role` / `dp` / `node` 视图不含该族。
 > - 未在 Motor 语义注册表中的未知指标不会被丢弃，按 Prometheus 类型回退聚合：`histogram` 合并桶，`gauge` / `counter` 求和。
 > - 指标名以 `motor:` 为前缀的是 Motor 在聚合过程中计算或注入的指标，其余为 Engine 原始指标。
 

@@ -65,6 +65,11 @@ class WorkloadSharedMemoryReader:
         """Attached native handle, or None before attach()."""
         return self._native
 
+    @property
+    def shm_name(self) -> str:
+        """Public name of the workload shared memory region this reader attaches to."""
+        return self._shm_name
+
     def entry_meta(self, instance_id: int, endpoint_id: int) -> dict[str, Any] | None:
         """Last loaded schema-4 slot for (instance_id, endpoint_id), or None."""
         return self._meta.get((instance_id, endpoint_id))

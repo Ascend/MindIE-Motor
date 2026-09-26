@@ -88,6 +88,18 @@ class WorkloadActionHandler:
 
         if action == WorkloadAction.ALLOCATION:
             allocate_workload = calculate_demand_workload(role, req_info)
+            if role == PDRole.ROLE_P:
+                # kv_cache_affinity: a cached prefix does prefill work only for its non-matching
+                # tail, so charge only the unhit (cache-missed) input instead of the full length.
+                from motor.coordinator.scheduler.policy.kv_cache_affinity import KvCacheAffinityPolicy
+
+                unhit_workload = KvCacheAffinityPolicy.unhit_prefill_workload(
+                    req_info,
+                    resource.instance.id,
+                    resource.endpoint.id,
+                )
+                if unhit_workload is not None:
+                    allocate_workload = unhit_workload
             if attempt_seq is None:
                 added = await request_mgr.add_req_workload(
                     req_id,

@@ -12,6 +12,7 @@
 
 import asyncio
 import os
+import time
 from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
@@ -802,6 +803,89 @@ class TestAsyncSchedulerClient:
         selected_instance, selected_endpoint, _score = result[0]
         assert selected_instance.id == 2
         assert selected_endpoint.id == 2
+
+    def test_select_endpoint_candidates_by_load_balance_d_role_applies_kv_usage_penalty(self):
+        """For ROLE_D, the KV usage penalty can outweigh a lower endpoint workload score."""
+        client = self.client
+        client._client_index = 0
+        client._client_count = 1
+
+        # inst1: lowest endpoint workload (5.0) but highest KV usage (0.95) plus heavy instance
+        # pressure (gathered 20.0); inst2: higher endpoint workload (10.0), near-empty KV cache.
+        # The penalty term kv_usage * instance_score / endpoint_count flips the pick to inst2.
+        ep1 = _make_endpoint(endpoint_id=1, active_tokens=5.0)
+        ep2 = _make_endpoint(endpoint_id=2, active_tokens=10.0)
+        inst1 = _make_instance(instance_id=1, role="decode", endpoints={"pod1": {1: ep1}})
+        inst2 = _make_instance(instance_id=2, role="decode", endpoints={"pod2": {2: ep2}})
+        inst1.gathered_workload.active_tokens = 20.0
+
+        with patch(
+            "motor.coordinator.scheduler.runtime.scheduler_client.get_endpoint_kv_cache_usage",
+            side_effect=lambda instance, endpoint: {(1, 1): 0.95, (2, 2): 0.4}.get((instance.id, endpoint.id)),
+        ):
+            result = client._select_endpoint_candidates_by_load_balance(
+                [inst1, inst2],
+                PDRole.ROLE_D,
+                top_k=1,
+            )
+        assert len(result) == 1
+        selected_instance, selected_endpoint, _score = result[0]
+        assert selected_instance.id == 2
+        assert selected_endpoint.id == 2
+
+    @pytest.mark.asyncio
+    async def test_get_available_instances_registers_kv_usage_reader(self):
+        """After a refresh carrying kv_usage_shm_name, the module-level reader is registered.
+
+        The scheduling hot path reads usage via get_endpoint_kv_cache_usage (module cache fed
+        on demand from shared memory), so the client must register the reader it attached --
+        otherwise the KV usage penalty would silently see no data.
+        """
+        from multiprocessing import shared_memory
+
+        from motor.coordinator.scheduler.runtime import kv_usage
+
+        # macOS POSIX shm 名上限 31 字符，测试名保持短前缀 + 短随机后缀。
+        name = f"tku_{time.monotonic_ns() % 1_000_000_000}"
+        shm = shared_memory.SharedMemory(name=name, create=True, size=kv_usage.kv_usage_shm_total_size(16))
+        writer = kv_usage.KvUsageShmWriter(shm, max_entries=16)
+        try:
+            writer.write_snapshot({(1, 1): 0.42})
+            data = {"instances": [], "kv_usage_shm_name": writer.shm_name}
+            self._mock_send_request(SchedulerResponseType.SUCCESS, data)
+
+            result = await self.client.get_available_instances(PDRole.ROLE_P)
+
+            assert result == {}
+            assert self.client._kv_usage_reader is not None
+            # 公开访问器与实际 attach 的 shm 名一致。
+            assert self.client.kv_usage_shm_name == writer.shm_name
+            assert (
+                kv_usage.get_endpoint_kv_cache_usage(
+                    _make_instance(instance_id=1, role="decode"),
+                    _make_endpoint(endpoint_id=1),
+                )
+                == 0.42
+            )
+        finally:
+            kv_usage.set_kv_usage_reader(None)
+            kv_usage.clear_kv_usage_cache()
+            if self.client._kv_usage_reader:
+                self.client._kv_usage_reader.detach()
+            writer.release()
+            shm.close()
+            shm.unlink()
+
+    @pytest.mark.asyncio
+    async def test_get_available_instances_records_sched_metrics_shm_name(self):
+        """After a refresh carrying sched_metrics_shm_name, the public accessor exposes it."""
+        name = f"tsc_{time.monotonic_ns() % 1_000_000_000}"
+        data = {"instances": [], "sched_metrics_shm_name": name}
+        self._mock_send_request(SchedulerResponseType.SUCCESS, data)
+
+        await self.client.get_available_instances(PDRole.ROLE_P)
+
+        assert self.client.sched_metrics_shm_name == name
 
     # -- test_transport_timeout ---------------------------------------------
 

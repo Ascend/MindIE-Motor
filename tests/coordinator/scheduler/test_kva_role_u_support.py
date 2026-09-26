@@ -89,6 +89,8 @@ def test_register_post_uses_union_conductor_id_for_role_u() -> None:
     mock_config.scheduler_config.kv_conductor_config.replay_endpoint = ""
     # _resolve_store_backend uses _kv_reg().store_backend
     mock_config.scheduler_config.kv_conductor_config.store_backend = "Mooncake"
+    mock_config.scheduler_config.kv_conductor_config.block_size_ratio = 1.0
+    mock_config.scheduler_config.kv_conductor_config.block_size = 128
 
     with (
         patch.object(ConductorApiClient, "coordinator_config", mock_config),
@@ -123,6 +125,8 @@ def test_register_post_formats_ipv6_endpoint_and_conductor_address() -> None:
     mock_config.scheduler_config.kv_conductor_config.endpoint = "tcp://*:5557"
     mock_config.scheduler_config.kv_conductor_config.replay_endpoint = "tcp://*:6667"
     mock_config.scheduler_config.kv_conductor_config.store_backend = "Mooncake"
+    mock_config.scheduler_config.kv_conductor_config.block_size_ratio = 1.0
+    mock_config.scheduler_config.kv_conductor_config.block_size = 128
 
     with (
         patch.object(ConductorApiClient, "coordinator_config", mock_config),

@@ -28,6 +28,8 @@ from motor.coordinator.domain.probe import is_master_from_role_shm
 from motor.coordinator.metrics.metric_types import (
     AggregationContext,
     AggregationScope,
+    MOTOR_ENDPOINT_STATE_HELP,
+    MOTOR_ENDPOINT_STATE_METRIC,
     Metric,
     MetricType,
 )
@@ -41,6 +43,186 @@ logger = get_logger(__name__)
 _METRICS_FORMAT_PROMETHEUS = "prometheus"
 _METRICS_FORMAT_OPENTELEMETRY = "opentelemetry"
 _STANDBY_METRICS_TEXT = "# coordinator standby; metrics are served by the master\n"
+
+_MOTOR_METRIC_PREFIX = "motor:"
+# 引擎上报的 per-endpoint KV cache 使用率指标（collects 中已采集），
+# 以 motor:endpoint_state 族的 stat="kv_usage" 样本输出（与 SchedulerServer 侧
+# cnt/fresh_load/a_tokens/total_cnt 样本合并为同一指标族，避免重复 HELP/TYPE）。
+_KV_USAGE_METRIC_NAME = "vllm:kv_cache_usage_perc"
+_MOTOR_KV_USAGE_STAT = "kv_usage"
+
+# 引擎上报的 per-endpoint 运行/等待请求数（collects 中已采集），
+# 以 motor:endpoint_state 族的 stat="running" / stat="waiting" 样本输出。
+_REQUESTS_RUNNING_METRIC_NAME = "vllm:num_requests_running"
+_REQUESTS_WAITING_METRIC_NAME = "vllm:num_requests_waiting"
+_MOTOR_RUNNING_STAT = "running"
+_MOTOR_WAITING_STAT = "waiting"
+
+# P 实例各节点 KV 命中率：命中率 = 累计命中长度 / 累计请求输入长度。
+# 累计命中长度 = 本地 HBM 缓存命中（vllm:prefix_cache_hits_total）+ 外部缓存命中
+# （vllm:external_prefix_cache_hits_total）；累计请求输入长度统一取
+# vllm:prefix_cache_queries_total（queried tokens）。以 motor:endpoint_state
+# 族的 stat="kv_hit_tokens" / stat="kv_input_tokens" / stat="kv_hit_rate" 样本输出。
+_KV_HIT_TOKENS_METRIC_NAME = "vllm:prefix_cache_hits_total"
+_KV_EXTERNAL_HIT_TOKENS_METRIC_NAME = "vllm:external_prefix_cache_hits_total"
+_KV_INPUT_TOKENS_METRIC_NAME = "vllm:prefix_cache_queries_total"
+_MOTOR_KV_HIT_TOKENS_STAT = "kv_hit_tokens"
+_MOTOR_KV_INPUT_TOKENS_STAT = "kv_input_tokens"
+_MOTOR_KV_HIT_RATE_STAT = "kv_hit_rate"
+# KV 命中率统计窗口：仅统计最近 5 分钟的增量（命中/输入均为窗口内 delta），
+# 而非引擎侧的历史累计值。窗口内最早采样点作为基线，超过窗口则重置基线。
+_KV_HIT_WINDOW_SECONDS = 300
+
+
+def _filter_motor_only_metrics(metrics_text: str) -> str:
+    """Keep only metric families whose name starts with ``motor:``.
+
+    Prometheus text is family-based: a ``# HELP <name> ...`` / ``# TYPE <name> ...``
+    header opens a family, followed by its sample lines until the next header. Any
+    family that does not start with the ``motor:`` prefix is dropped entirely.
+    """
+    if not metrics_text:
+        return ""
+    out_lines: list[str] = []
+    keep_family = False
+    for line in metrics_text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("# HELP ") or stripped.startswith("# TYPE "):
+            parts = stripped.split()
+            name = parts[2] if len(parts) >= 3 else ""
+            keep_family = name.startswith(_MOTOR_METRIC_PREFIX)
+        if keep_family:
+            out_lines.append(line)
+    return "\n".join(out_lines)
+
+
+# 端点粒度附加 motor: 族（sched metrics / kv usage / kv hit rate / running-waiting）
+# 的视图排除表：这些视图只输出引擎聚合指标（与 kv_store_* 的视图语义一致）；
+# 其余取值（full、motor、非法 type 回退 full）均追加附加族。
+_EXTRA_METRIC_EXCLUDED_VIEWS = frozenset({"instance", "role", "dp", "node"})
+
+
+# ============================ reusable endpoint metrics helpers ============================
+# 供 kv_usage 采集复用：查询单个 PD endpoint 的 /metrics 文本，并解析 Prometheus 文本。
+_ENGINE_LABEL_RE = re.compile(r'engine="\d+",')
+
+
+def query_endpoint_metrics(endpoint, tls_config=None) -> str:
+    """查询单个 PD endpoint 的 /metrics 文本（复用 NativeEngineApiClient 查询逻辑）。
+
+    :param endpoint: Endpoint 对象（使用其 ip/business_port）
+    :param tls_config: 推理通道 TLS 配置；缺省用进程级配置
+    :returns: Prometheus 文本；失败返回空串。
+    """
+    return NativeEngineApiClient.query_metrics(
+        format_address(endpoint.ip, endpoint.business_port),
+        tls_config if tls_config is not None else CoordinatorConfig.from_json().infer_tls_config,
+    )
+
+
+def _parse_metric_help(metric: Metric, line: str) -> bool:
+    parts = line.split()
+    if len(parts) >= 4 and parts[0] == "#" and parts[1] == "HELP":
+        metric.name = parts[2]
+        metric.help = " ".join(parts[3:])
+        return True
+    logger.error("[Metrics] Parse metric help failed.")
+    return False
+
+
+def _parse_metric_type(metric: Metric, line: str) -> bool:
+    parts = line.split()
+    if len(parts) == 4 and parts[0] == "#" and parts[1] == "TYPE":
+        try:
+            metric.type = MetricType.from_string(parts[3])
+            return True
+        except KeyError:
+            logger.error("[Metrics] Illegal metric type: %s", parts[3])
+            return False
+    logger.error("[Metrics] Parse metric type failed.")
+    return False
+
+
+def _parse_metric_body_block(metric: Metric, line: str) -> bool:
+    # The value is always the last whitespace-separated token; rsplit once
+    # so label values containing spaces (e.g. name="prepare input") survive.
+    parts = line.rsplit(None, 1)
+    if len(parts) != 2:
+        return False
+
+    try:
+        value = float(parts[1])
+    except ValueError:
+        return False
+
+    # Only gauges may legitimately be negative; a negative counter/histogram
+    # is corrupt, so drop just this line rather than the whole metric text.
+    if value < 0 and metric.type != MetricType.GAUGE:
+        return False
+
+    # Append label and value together so the parallel arrays stay aligned.
+    label = _ENGINE_LABEL_RE.sub("", parts[0])
+    metric.label.append(label)
+    metric.value.append(value)
+    return True
+
+
+def parse_metric_text(metrics_str: str) -> list[Metric] | None:
+    """Parse Prometheus text into Metric families (模块级，供 kv_usage 等复用).
+
+    Returns:
+        list[Metric]: parse completed; may be empty when every family was
+            empty or dropped by per-line resilience.
+        None: structural failure (bad HELP/TYPE layout); caller must fail.
+    """
+    lines = [ln for ln in metrics_str.splitlines() if ln.strip()]
+    if not lines:
+        return []
+
+    metric_array: list[Metric] = []
+    i, n = 0, len(lines)
+    while i < n:
+        metric = Metric()
+        if not _parse_metric_help(metric, lines[i]):
+            return None
+        i += 1
+        if i >= n or not _parse_metric_type(metric, lines[i]):
+            return None
+        i += 1
+        sample_total = 0
+        sample_failed = 0
+        while i < n and not lines[i].startswith("#"):
+            # A single bad body line is skipped so the rest of this instance's
+            # metrics still parse; the per-family summary below records the
+            # impact without taking down the full metrics text.
+            sample_total += 1
+            if not _parse_metric_body_block(metric, lines[i]):
+                sample_failed += 1
+            i += 1
+        if not metric.value:
+            if sample_total != 0:
+                # Had samples but every line failed: drop the family instead of
+                # emitting empty label/value arrays to downstream consumers.
+                logger.error(
+                    "[Metrics] Drop metric %s: all %d sample line(s) failed to parse",
+                    metric.name,
+                    sample_total,
+                )
+                continue
+            # sample_total == 0: HELP/TYPE only (idle / just-started). Keep the
+            # family with empty samples; serializers emit an explicit 0.
+        elif sample_failed:
+            # One WARNING per family only; per-line detail is omitted to avoid
+            # spam when the same metric keeps emitting bad values each scrape.
+            logger.warning(
+                "[Metrics] Metric %s: skipped %d of %d bad sample line(s)",
+                metric.name,
+                sample_failed,
+                sample_total,
+            )
+        metric_array.append(metric)
+    return metric_array
+
 
 # Mooncake Master -> a few kv_store_* families with labels (cpu/ssd/all, usage/total/rate).
 _BYTES_PER_GB = 1024**3
@@ -234,7 +416,6 @@ def _filter_mooncake_metrics(raw: str) -> str:
 
 class MetricsCollector(ThreadSafeSingleton):
     METRICS_KEY = "metrics"
-    _ENGINE_LABEL_RE = re.compile(r'engine="\d+",')
 
     def __init__(self, config: CoordinatorConfig | None = None):
         if hasattr(self, "_initialized"):
@@ -252,6 +433,9 @@ class MetricsCollector(ThreadSafeSingleton):
         self._inactive_instance_metrics_aggregate: dict[str, list[Metric]] = {}
         self._instance_metrics_cached: dict[int, dict[str, list[Metric]]] = {}
         self._last_collects: dict[int, dict[str, Any]] = {}
+        # KV 命中率 5 分钟窗口状态：key=(instance_id, endpoint_id)，
+        # value=按时间升序的采样点列表 [(ts, hit_tokens, input_tokens), ...]。
+        self._kv_hit_window: dict[tuple[int, int], list[tuple[float, float, float]]] = {}
 
         self._collects_version: int = 0
         self._caches: dict[str, Any] = {}
@@ -266,6 +450,14 @@ class MetricsCollector(ThreadSafeSingleton):
         self._loop = None
         # When set, use this to get scheduler (same view as scheduling); must be set in lifespan
         self._scheduler_provider: Callable[[], Any] | None = None
+        # Optional kv-usage publisher callback: called with the latest collects after each
+        # collect cycle, so the kv_usage cache can be fed from MetricsCollector results
+        # instead of scraping engine metrics again (registered by the Obs lifespan).
+        self._kv_usage_publisher: Callable[[dict | None], None] | None = None
+        # Optional scheduler-metrics provider: called when /metrics is generated, returning
+        # extra ``motor:*`` Metric objects (e.g. per-endpoint cnt/fresh_load/a_tokens read
+        # from the SchedulerServer's shared memory). Registered by the Obs lifespan.
+        self._sched_metrics_provider: Callable[[], list[Metric]] | None = None
 
         self._aggregation_engine = SemanticAggregationEngine()
         self._motor_computer = MotorMetricComputer()
@@ -282,6 +474,22 @@ class MetricsCollector(ThreadSafeSingleton):
     def set_scheduler_provider(self, get_scheduler: Callable[[], Any]) -> None:
         """Use same instance view as scheduling: get_scheduler().get_all_instances() (call from lifespan)."""
         self._scheduler_provider = get_scheduler
+
+    def set_kv_usage_publisher(self, publisher: Callable[[dict | None], None] | None) -> None:
+        """Register a callback that receives each collect cycle's ``collects`` (Obs lifespan).
+
+        Used by kv_usage to publish per-endpoint KV cache usage from the already-scraped
+        metrics, avoiding a second engine scrape. Pass ``None`` to disable.
+        """
+        self._kv_usage_publisher = publisher
+
+    def set_sched_metrics_provider(self, provider: Callable[[], list[Metric]] | None) -> None:
+        """Register a callback returning extra ``motor:*`` Metric objects (Obs lifespan).
+
+        Used to expose SchedulerServer-side scheduling metrics (per-endpoint cnt /
+        fresh_load / a_tokens) on /metrics without engine scraping. Pass ``None`` to disable.
+        """
+        self._sched_metrics_provider = provider
 
     def start(self) -> None:
         """Start update metrics thread."""
@@ -318,7 +526,8 @@ class MetricsCollector(ThreadSafeSingleton):
         """
         Unified metrics retrieval with type and format selection.
 
-        :param metrics_type: "full" (default), "instance", "role", "dp", or "node"
+        :param metrics_type: "full" (default), "instance", "role", "dp", "node",
+            or "motor" (only Motor's own computed metrics, i.e. ``motor:`` families)
         :param role: when metrics_type is "role", filter to a specific role (e.g. "prefill", "decode")
         :param metrics_format: "prometheus" (default) or "opentelemetry"
         :returns: Prometheus text or OpenTelemetry JSON-compatible dict
@@ -329,9 +538,262 @@ class MetricsCollector(ThreadSafeSingleton):
                 return self._format_opentelemetry("")
             return _STANDBY_METRICS_TEXT
         metrics = self._get_prometheus_metrics(metrics_type, role)
+        # 收集 SchedulerServer 侧调度指标（motor:endpoint_state 的 cnt/fresh_load/a_tokens/total_cnt 样本）
+        # 与已采集的 per-endpoint KV usage（同族的 stat="kv_usage" 样本）。
+        # 视图过滤：这些端点粒度的附加 motor: 族只随 full（含非法 type 回退）与 motor
+        # 视图输出，instance/role/dp/node 视图保持引擎聚合指标语义（与 kv_store_* 一致）。
+        extra_metrics: list[Metric] = []
+        if metrics_type not in _EXTRA_METRIC_EXCLUDED_VIEWS:
+            provider = self._sched_metrics_provider
+            if provider is not None:
+                try:
+                    extra = provider()
+                    if extra:
+                        extra_metrics.extend(extra)
+                except Exception as e:
+                    logger.warning("[Metrics] sched metrics provider failed: %s", e)
+            kv_usage_metrics = self._build_kv_usage_motor_metrics()
+            if kv_usage_metrics:
+                extra_metrics.extend(kv_usage_metrics)
+            kv_hit_rate_metrics = self._build_kv_hit_rate_motor_metrics()
+            if kv_hit_rate_metrics:
+                extra_metrics.extend(kv_hit_rate_metrics)
+            running_waiting_metrics = self._build_running_waiting_motor_metrics()
+            if running_waiting_metrics:
+                extra_metrics.extend(running_waiting_metrics)
+            if extra_metrics:
+                # 合并同名族（label/value 拼接），保证每个族只有一份 HELP/TYPE。
+                extra_text = self._format_prometheus(self._merge_same_name_metrics(extra_metrics))
+                if extra_text:
+                    metrics = (metrics + "\n" + extra_text) if metrics else extra_text
+        # GET /metrics?type=motor 时，只返回 motor 自身指标（motor: 前缀族）。
+        if metrics_type == "motor":
+            metrics = _filter_motor_only_metrics(metrics)
         if normalized_format == _METRICS_FORMAT_OPENTELEMETRY:
             return self._format_opentelemetry(metrics)
         return metrics
+
+    @staticmethod
+    def _merge_same_name_metrics(metrics_list: list[Metric]) -> list[Metric]:
+        """合并同名 Metric 族（label/value 拼接），避免 Prometheus 文本重复 HELP/TYPE。
+
+        例如 SchedulerServer 侧的 ``motor:endpoint_state``（request_count/fresh_load/
+        active_tokens/total_cnt）与本进程已采集的 kv usage 样本（stat="kv_usage"）合并为一个族。
+        """
+        merged: dict[str, Metric] = {}
+        order: list[str] = []
+        for item in metrics_list:
+            if item.name not in merged:
+                merged[item.name] = Metric(
+                    name=item.name,
+                    help=item.help,
+                    type=item.type,
+                    label=list(item.label or []),
+                    value=list(item.value or []),
+                )
+                order.append(item.name)
+            else:
+                target = merged[item.name]
+                target.label.extend(item.label or [])
+                target.value.extend(item.value or [])
+        return [merged[name] for name in order]
+
+    def _build_kv_usage_motor_metrics(self) -> list[Metric]:
+        """把已采集的 per-endpoint ``vllm:kv_cache_usage_perc`` 转成 ``motor:endpoint_state`` 的 ``stat="kv_usage"`` 样本。
+
+        Data comes from the latest collect cycle (``_last_collects``), the same
+        source the kv usage publisher writes to the scheduler shm — no extra engine
+        scrape and no scheduler round-trip. Emits one labelled sample per endpoint
+        with ``instance_id`` / ``endpoint_id`` / ``role`` / ``stat="kv_usage"`` labels.
+        """
+        with self._lock:
+            collects = self._last_collects
+        labels: list[str] = []
+        values: list[float] = []
+        if isinstance(collects, dict):
+            for ins_id, ins_data in collects.items():
+                if not isinstance(ins_data, dict):
+                    continue
+                role = ins_data.get("role", "")
+                endpoints = ins_data.get("endpoints") or {}
+                for ep_id, pod_info in endpoints.items():
+                    if not isinstance(pod_info, dict):
+                        continue
+                    for metric in pod_info.get(self.METRICS_KEY) or []:
+                        if getattr(metric, "name", None) != _KV_USAGE_METRIC_NAME:
+                            continue
+                        metric_values = getattr(metric, "value", None) or []
+                        if not metric_values:
+                            continue
+                        usage = max(metric_values)
+                        base = f'instance_id="{ins_id}",endpoint_id="{ep_id}",role="{role}"'
+                        labels.append(f'{MOTOR_ENDPOINT_STATE_METRIC}{{{base},stat="{_MOTOR_KV_USAGE_STAT}"}}')
+                        values.append(usage)
+        if not labels:
+            return []
+        return [
+            Metric(
+                name=MOTOR_ENDPOINT_STATE_METRIC,
+                help=MOTOR_ENDPOINT_STATE_HELP,
+                type=MetricType.GAUGE,
+                label=labels,
+                value=values,
+            )
+        ]
+
+    def _build_running_waiting_motor_metrics(self) -> list[Metric]:
+        """把已采集的 per-endpoint ``vllm:num_requests_running`` / ``vllm:num_requests_waiting``
+        转成 ``motor:endpoint_state`` 的 ``stat="running"`` / ``stat="waiting"`` 样本。
+
+        Data comes from the latest collect cycle (``_last_collects``), the same
+        source the kv usage samples use — no extra engine scrape and no scheduler
+        round-trip. Emits two labelled samples per endpoint with ``instance_id`` /
+        ``endpoint_id`` / ``role`` / ``stat`` labels; missing metrics are skipped.
+        """
+        with self._lock:
+            collects = self._last_collects
+        labels: list[str] = []
+        values: list[float] = []
+        if isinstance(collects, dict):
+            for ins_id, ins_data in collects.items():
+                if not isinstance(ins_data, dict):
+                    continue
+                role = ins_data.get("role", "")
+                endpoints = ins_data.get("endpoints") or {}
+                for ep_id, pod_info in endpoints.items():
+                    if not isinstance(pod_info, dict):
+                        continue
+                    running = self._sum_metric_values(pod_info, _REQUESTS_RUNNING_METRIC_NAME)
+                    waiting = self._sum_metric_values(pod_info, _REQUESTS_WAITING_METRIC_NAME)
+                    if running is None and waiting is None:
+                        continue
+                    base = f'instance_id="{ins_id}",endpoint_id="{ep_id}",role="{role}"'
+                    if running is not None:
+                        labels.append(f'{MOTOR_ENDPOINT_STATE_METRIC}{{{base},stat="{_MOTOR_RUNNING_STAT}"}}')
+                        values.append(running)
+                    if waiting is not None:
+                        labels.append(f'{MOTOR_ENDPOINT_STATE_METRIC}{{{base},stat="{_MOTOR_WAITING_STAT}"}}')
+                        values.append(waiting)
+        if not labels:
+            return []
+        return [
+            Metric(
+                name=MOTOR_ENDPOINT_STATE_METRIC,
+                help=MOTOR_ENDPOINT_STATE_HELP,
+                type=MetricType.GAUGE,
+                label=labels,
+                value=values,
+            )
+        ]
+
+    def _build_kv_hit_rate_motor_metrics(self) -> list[Metric]:
+        """把已采集的 per-endpoint prefix cache 计数器转成 P 实例各节点的 KV 命中率样本。
+
+        命中率统计**最近 ``_KV_HIT_WINDOW_SECONDS`` 秒（5 分钟）窗口**内的增量，
+        而非引擎侧的历史累计值：
+
+          - 命中增量 = 本地 HBM 缓存命中（``vllm:prefix_cache_hits_total``）
+            + 外部缓存命中（``vllm:external_prefix_cache_hits_total``）在窗口内的差值
+          - 输入增量 = ``vllm:prefix_cache_queries_total``（queried tokens，统一分母）在窗口内的差值
+          - 命中率 = 命中增量 / 输入增量
+
+        窗口内最早采样点作为基线，超出窗口的采样点被丢弃（滑动窗口）；引擎重启
+        导致计数回退时窗口被清空、从当前值重新累计。仅对 role="prefill"（P 实例）
+        的节点输出，每个节点生成三个样本：``stat="kv_hit_tokens"``、
+        ``stat="kv_input_tokens"`` 与派生出的 ``stat="kv_hit_rate"``，与
+        SchedulerServer 侧的同族样本合并。
+        """
+        with self._lock:
+            collects = self._last_collects
+        labels: list[str] = []
+        values: list[float] = []
+        now = time.time()
+        if isinstance(collects, dict):
+            for ins_id, ins_data in collects.items():
+                if not isinstance(ins_data, dict):
+                    continue
+                # 命中率仅对 P 实例（prefill 角色）节点统计。
+                role = ins_data.get("role", "")
+                if role != "prefill":
+                    continue
+                endpoints = ins_data.get("endpoints") or {}
+                for ep_id, pod_info in endpoints.items():
+                    if not isinstance(pod_info, dict):
+                        continue
+                    local_hit = self._sum_metric_values(pod_info, _KV_HIT_TOKENS_METRIC_NAME) or 0.0
+                    external_hit = self._sum_metric_values(pod_info, _KV_EXTERNAL_HIT_TOKENS_METRIC_NAME) or 0.0
+                    input_tokens = self._sum_metric_values(pod_info, _KV_INPUT_TOKENS_METRIC_NAME)
+                    if input_tokens is None:
+                        continue
+                    # 累计命中长度 = 本地 HBM 命中 + 外部缓存命中，分母统一为累计请求输入长度。
+                    hit_tokens = local_hit + external_hit
+                    with self._lock:
+                        hit_delta, input_delta = self._update_kv_hit_window(
+                            (ins_id, ep_id), now, hit_tokens, input_tokens
+                        )
+                    hit_rate = hit_delta / input_delta if input_delta > 0 else 0.0
+                    base = f'instance_id="{ins_id}",endpoint_id="{ep_id}",role="{role}"'
+                    labels.append(f'{MOTOR_ENDPOINT_STATE_METRIC}{{{base},stat="{_MOTOR_KV_HIT_TOKENS_STAT}"}}')
+                    values.append(hit_delta)
+                    labels.append(f'{MOTOR_ENDPOINT_STATE_METRIC}{{{base},stat="{_MOTOR_KV_INPUT_TOKENS_STAT}"}}')
+                    values.append(input_delta)
+                    labels.append(f'{MOTOR_ENDPOINT_STATE_METRIC}{{{base},stat="{_MOTOR_KV_HIT_RATE_STAT}"}}')
+                    values.append(hit_rate)
+        if not labels:
+            return []
+        return [
+            Metric(
+                name=MOTOR_ENDPOINT_STATE_METRIC,
+                help=MOTOR_ENDPOINT_STATE_HELP,
+                type=MetricType.GAUGE,
+                label=labels,
+                value=values,
+            )
+        ]
+
+    def _update_kv_hit_window(
+        self,
+        key: tuple[int, int],
+        now: float,
+        hit_tokens: float,
+        input_tokens: float,
+    ) -> tuple[float, float]:
+        """维护 (instance_id, endpoint_id) 的 5 分钟滑动窗口，返回窗口内增量。
+
+        ``(hit_delta, input_delta)`` = 当前采样值与窗口内最早采样点之差。窗口内
+        仅保留最近 ``_KV_HIT_WINDOW_SECONDS`` 秒的采样点；引擎重启（计数回退，
+        当前值小于窗口内最近值）时清空窗口并从当前值重新累计。
+
+        调用方须持有 ``self._lock``。
+        """
+        cutoff = now - _KV_HIT_WINDOW_SECONDS
+        history = self._kv_hit_window.get(key, [])
+        # 丢弃过期采样点，仅保留窗口内的。
+        history = [(ts, h, i) for ts, h, i in history if ts >= cutoff]
+        # 引擎重启检测：当前计数小于窗口内最近一次采样值（counter 重置）。
+        if history and (hit_tokens < history[-1][1] or input_tokens < history[-1][2]):
+            history = []
+        history.append((now, hit_tokens, input_tokens))
+        self._kv_hit_window[key] = history
+        if len(history) < 2:
+            # 首个采样点无基线，窗口增量暂为 0。
+            return 0.0, 0.0
+        _base_ts, base_hit, base_input = history[0]
+        hit_delta = max(0.0, hit_tokens - base_hit)
+        input_delta = max(0.0, input_tokens - base_input)
+        return hit_delta, input_delta
+
+    @staticmethod
+    def _sum_metric_values(pod_info: dict, name: str) -> float | None:
+        """Sum all label values of metric *name* in a pod's metrics, or None if absent."""
+        total: float | None = None
+        for metric in pod_info.get(MetricsCollector.METRICS_KEY) or []:
+            if getattr(metric, "name", None) != name:
+                continue
+            metric_values = getattr(metric, "value", None) or []
+            if metric_values:
+                total = (total or 0.0) + float(sum(metric_values))
+        return total
 
     def _get_prometheus_metrics(
         self,
@@ -556,6 +1018,14 @@ class MetricsCollector(ThreadSafeSingleton):
                 with self._lock:
                     self._last_collects = collects
                     self._collects_version += 1
+                # 复用本线程已抓取的结果：把 kv_cache_usage_perc 发布给 kv_usage，
+                # 避免调度侧再单独查询引擎 /metrics。
+                publisher = self._kv_usage_publisher
+                if publisher is not None:
+                    try:
+                        publisher(collects)
+                    except Exception as e:
+                        logger.warning("[Metrics] kv usage publisher failed: %s", e)
             self._fetch_kv_store_metrics()
             with self._config_lock:
                 reuse_time = self._prometheus_metrics_config.reuse_time
@@ -759,116 +1229,15 @@ class MetricsCollector(ThreadSafeSingleton):
     def _parse_metric_text(self, metrics_str: str) -> list[Metric] | None:
         """Parse Prometheus text into Metric families.
 
+        Delegates to the module-level ``parse_metric_text`` so the same parser is
+        shared with the kv_usage collector.
+
         Returns:
             list[Metric]: parse completed; may be empty when every family was
                 empty or dropped by per-line resilience.
             None: structural failure (bad HELP/TYPE layout); caller must fail.
         """
-        lines = [ln for ln in metrics_str.splitlines() if ln.strip()]
-        if not lines:
-            return []
-
-        metric_array: list[Metric] = []
-        i, n = 0, len(lines)
-        while i < n:
-            metric = Metric()
-            if not self._parse_metric_help(metric, lines[i]):
-                return None
-            i += 1
-            if i >= n or not self._parse_metric_type(metric, lines[i]):
-                return None
-            i += 1
-            sample_total = 0
-            sample_failed = 0
-            while i < n and not lines[i].startswith("#"):
-                # A single bad body line is skipped so the rest of this instance's
-                # metrics still parse; the per-family summary below records the
-                # impact without taking down the full metrics text.
-                sample_total += 1
-                if not self._parse_metric_body_block(metric, lines[i]):
-                    sample_failed += 1
-                i += 1
-            if not metric.value:
-                if sample_total != 0:
-                    # Had samples but every line failed: drop the family instead of
-                    # emitting empty label/value arrays to downstream consumers.
-                    logger.error(
-                        "[Metrics] Drop metric %s: all %d sample line(s) failed to parse",
-                        metric.name,
-                        sample_total,
-                    )
-                    continue
-                # sample_total == 0: HELP/TYPE only (idle / just-started). Keep the
-                # family with empty samples; serializers emit an explicit 0.
-            elif sample_failed:
-                # One WARNING per family only; per-line detail is omitted to avoid
-                # spam when the same metric keeps emitting bad values each scrape.
-                logger.warning(
-                    "[Metrics] Metric %s: skipped %d of %d bad sample line(s)",
-                    metric.name,
-                    sample_failed,
-                    sample_total,
-                )
-            metric_array.append(metric)
-        return metric_array
-
-    @staticmethod
-    def _parse_metric_help(
-        metric: Metric,
-        line: str,
-    ) -> bool:
-        parts = line.split()
-        if len(parts) >= 4 and parts[0] == "#" and parts[1] == "HELP":
-            metric.name = parts[2]
-            metric.help = " ".join(parts[3:])
-            return True
-        logger.error("[Metrics] Parse metric help failed.")
-        return False
-
-    @staticmethod
-    def _parse_metric_type(
-        metric: Metric,
-        line: str,
-    ) -> bool:
-        parts = line.split()
-        if len(parts) == 4 and parts[0] == "#" and parts[1] == "TYPE":
-            try:
-                metric.type = MetricType.from_string(parts[3])
-                return True
-            except KeyError:
-                logger.error("[Metrics] Illegal metric type: %s", parts[3])
-                return False
-        logger.error("[Metrics] Parse metric type failed.")
-        return False
-
-    @classmethod
-    def _parse_metric_body_block(
-        cls,
-        metric: Metric,
-        line: str,
-    ) -> bool:
-        # The value is always the last whitespace-separated token; rsplit once
-        # so label values containing spaces (e.g. name="prepare input") survive.
-        parts = line.rsplit(None, 1)
-        if len(parts) != 2:
-            return False
-
-        try:
-            value = float(parts[1])
-        except ValueError:
-            return False
-
-        # Only gauges may legitimately be negative; a negative counter/histogram
-        # is corrupt, so drop just this line rather than the whole metric text.
-        # Per-line logging is omitted; _parse_metric_text emits one family WARNING.
-        if value < 0 and metric.type != MetricType.GAUGE:
-            return False
-
-        # Append label and value together so the parallel arrays stay aligned.
-        label = cls._ENGINE_LABEL_RE.sub("", parts[0])
-        metric.label.append(label)
-        metric.value.append(value)
-        return True
+        return parse_metric_text(metrics_str)
 
     def _fetch_instance_metrics(
         self,
@@ -921,10 +1290,7 @@ class MetricsCollector(ThreadSafeSingleton):
         collect = {"endpoints": {}}
 
         for en_info in ins_info.get_all_endpoints():
-            metrics_str = NativeEngineApiClient.query_metrics(
-                format_address(en_info.ip, en_info.business_port),
-                self._infer_tls_config,
-            )
+            metrics_str = query_endpoint_metrics(en_info, self._infer_tls_config)
             if not metrics_str:
                 return {}
             collect["endpoints"][en_info.id] = {

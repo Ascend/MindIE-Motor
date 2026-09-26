@@ -1914,12 +1914,13 @@ class TestExchangeTools:
         assert function_keys == ["name", "description", "parameters"]
 
     def test_partial_fields(self):
-        """Test: Only some fields"""
+        """Test: Only some fields — missing ones are filled with None for affinity matching."""
         tool = {"function": {"parameters": {"type": "object"}, "name": "partial_tool"}}
         exchange_tools(tool)
 
         function_keys = list(tool["function"].keys())
-        assert function_keys == ["name", "parameters"]
+        assert function_keys == ["name", "description", "parameters"]
+        assert tool["function"]["description"] is None
 
     def test_no_function_key(self):
         """Test: tool not have function key"""
@@ -2206,15 +2207,18 @@ class TestApplyChatTemplateStandard(unittest.TestCase):
 
         messages = [{"role": "user", "content": "hi"}]
         tools = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+        # The pipeline exchanges tools (missing fields filled with None) before the tokenizer call.
+        exchanged_tools = [{"type": "function", "function": {"name": "f", "description": None, "parameters": {}}}]
         result = manager.apply_chat_template(messages, tools)
         self.assertEqual(result, [9, 9, 9, 9])
 
         self.assertEqual(mock_tokenizer.apply_chat_template.call_count, 2)
         first_kwargs = mock_tokenizer.apply_chat_template.call_args_list[0].kwargs
         second_kwargs = mock_tokenizer.apply_chat_template.call_args_list[1].kwargs
+        # Primary STANDARD path passes tools through untouched; the preprocess fallback exchanges them.
         self.assertEqual(first_kwargs.get("tools"), tools)
         self.assertTrue(first_kwargs.get("tokenize"))
-        self.assertEqual(second_kwargs.get("tools"), tools)
+        self.assertEqual(second_kwargs.get("tools"), exchanged_tools)
         self.assertFalse(second_kwargs.get("tokenize", True))
         mock_tokenizer.encode.assert_called_once_with("rendered prompt")
 
@@ -2240,13 +2244,14 @@ class TestApplyChatTemplateStandard(unittest.TestCase):
 
         messages = [{"role": "user", "content": "hi"}]
         tools = [{"type": "function", "function": {"name": "f"}}]
+        exchanged_tools = [{"type": "function", "function": {"name": "f", "description": None, "parameters": None}}]
         result = manager.apply_chat_template(messages, tools)
 
         self.assertEqual(result, [5, 6, 7])
         # Non-standard path calls apply_chat_template with tokenize=False, then encodes the string.
         _, kwargs = mock_tokenizer.apply_chat_template.call_args
         self.assertFalse(kwargs.get("tokenize", True))
-        self.assertEqual(kwargs.get("tools"), tools)
+        self.assertEqual(kwargs.get("tools"), exchanged_tools)
         mock_tokenizer.encode.assert_called_once_with("rendered prompt")
 
     def test_non_standard_exception_fallback_to_standard_path_keeps_tools(self) -> None:
@@ -2260,12 +2265,14 @@ class TestApplyChatTemplateStandard(unittest.TestCase):
 
         messages = [{"role": "user", "content": "hi"}]
         tools = [{"type": "function", "function": {"name": "f"}}]
+        exchanged_tools = [{"type": "function", "function": {"name": "f", "description": None, "parameters": None}}]
         result = manager.apply_chat_template(messages, tools)
         self.assertEqual(result, [42, 43, 44])
         self.assertEqual(mock_tokenizer.apply_chat_template.call_count, 2)
-        # Both invocations must carry tools.
-        for _, kwargs in mock_tokenizer.apply_chat_template.call_args_list:
-            self.assertEqual(kwargs.get("tools"), tools)
+        # Both invocations must carry tools: first via preprocess (exchanged), fallback standard passes raw.
+        call_args_list = mock_tokenizer.apply_chat_template.call_args_list
+        self.assertEqual(call_args_list[0].kwargs.get("tools"), exchanged_tools)
+        self.assertEqual(call_args_list[1].kwargs.get("tools"), tools)
 
 
 class TestApplyChatTemplateRenamed(unittest.TestCase):

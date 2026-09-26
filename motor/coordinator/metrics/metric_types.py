@@ -70,3 +70,16 @@ class Metric:
             label=list(self.label),
             value=list(self.value),
         )
+
+
+# Motor metric family exposed on /metrics from the scheduler metrics snapshot
+# (cnt/fresh_load/a_tokens/total_cnt) plus the collector-side kv usage samples (stat="kv_usage"),
+# P-instance per-node KV hit rate samples (stat="kv_hit_tokens"/"kv_input_tokens"/"kv_hit_rate")
+# and per-endpoint running/waiting request samples (stat="running"/"waiting").
+MOTOR_ENDPOINT_STATE_METRIC = "motor:endpoint_state"
+
+# HELP 文本在 collector 与 scheduler 侧多处构建同一指标族时共用，避免重复定义。
+MOTOR_ENDPOINT_STATE_HELP = (
+    "Per-endpoint scheduling state (request_count / fresh_load / active_tokens / "
+    "total_cnt / kv_usage / kv_hit_tokens / kv_input_tokens / kv_hit_rate / running / waiting)"
+)

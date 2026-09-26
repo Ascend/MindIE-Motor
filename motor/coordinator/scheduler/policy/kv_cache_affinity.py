@@ -8,13 +8,14 @@
 
 import json
 import os
+import random
 import threading
 import time
 from pathlib import Path
 
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.utils.singleton import ThreadSafeSingleton
-from motor.common.resources.endpoint import Endpoint
+from motor.common.resources.endpoint import Endpoint, Workload
 from motor.coordinator.domain import InstanceProvider
 from motor.coordinator.domain.block_offset_translator import (
     _DSV4_ASSISTANT_MARKER,
@@ -109,6 +110,16 @@ def adapt_context_budget(
             effective_tokens,
             len(token_ids),
             max_model_len,
+        )
+    elif requested_tokens > 0:
+        logger.info(
+            "Request %s total tokens (%d input + %d output = %d) fits model max context length (%d); output field %s.",
+            req_info.req_id,
+            len(token_ids),
+            requested_tokens,
+            len(token_ids) + requested_tokens,
+            max_model_len,
+            parameter,
         )
 
 
@@ -280,6 +291,43 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             return None
         instance, endpoint, _score = ranked[0]
         return (instance, endpoint)
+
+    @staticmethod
+    def unhit_prefill_workload(
+        req_info: RequestInfo | None,
+        instance_id: int,
+        endpoint_id: int,
+        overlap_credit: float = 1.0,
+    ) -> "Workload | None":
+        """
+        Compute the prefill workload that a kv_cache_affinity allocation adds to an endpoint:
+        only the *unhit* (cache-missed) prefix tokens, never the full input length.
+
+        When a request's prompt prefix is already cached on the endpoint, only the tail that is
+        NOT cached does real prefill work. Charging the full input would over-state the endpoint
+        load and skew load-aware scheduling -- the whole point of KV affinity is that a cached
+        prefix is cheap. The unhit token count comes from the affinity debug stashed at selection
+        time (``(matched_tokens, load_cost, prefill_cost, tier_hit)``); ``prefill_cost`` is used
+        when available (unified mode), otherwise ``isl - overlap_credit * matched_tokens``.
+
+        Returns None when the request carries no affinity info for this endpoint, so callers can
+        fall back to the demand workload.
+        """
+        debug = getattr(req_info, "kv_affinity_debug", None)
+        if not isinstance(debug, dict):
+            return None
+        rec = debug.get((instance_id, endpoint_id))
+        if not isinstance(rec, (tuple, list)) or len(rec) < 2:
+            return None
+        matched_tokens = rec[0]
+        prefill_cost = rec[2] if len(rec) > 2 else None
+        if prefill_cost is not None:
+            unhit = max(0.0, float(prefill_cost))
+        else:
+            token_ids = getattr(req_info, "token_ids", None)
+            isl = len(token_ids) if isinstance(token_ids, list) and token_ids else 0
+            unhit = max(0.0, isl - overlap_credit * float(matched_tokens))
+        return Workload(active_kv_cache=unhit, active_tokens=unhit)
 
     @staticmethod
     def _ensure_token_ids(req_info: RequestInfo) -> list[int]:
@@ -473,7 +521,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
                 # cannot be longer than the prompt itself.
                 matched_tokens = min(matched, isl) if isl > 0 else 0
                 prefill_cost = max(0.0, isl - overlap_credit * matched_tokens)
-                load_cost = ep.workload.calculate_workload_score(PDRole.ROLE_P)
+                load_cost = ep.workload.calculate_workload_score()
                 tier_hit = KvCacheAffinityPolicy._tier_hit_tokens(matched_raw, block_size)
                 candidates.append((load_cost, matched_tokens, prefill_cost, instance, ep, tier_hit))
         return candidates, any_instance
@@ -568,7 +616,8 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         work plus live workload, and return the ``top_k`` lowest-scoring (best) candidates. An
         endpoint with no cached prefix can still rank high when it is far less loaded, which avoids
         herding onto a single hot-prefix endpoint. With ``load_weight == 0`` the score is
-        affinity-only (longest prefix wins).
+        affinity-only (longest prefix wins). Equal-score ties are broken uniformly at random so
+        equal-load requests spread across nodes instead of always landing on the first one.
         """
         raw, any_instance = KvCacheAffinityPolicy._collect_load_candidates(
             instances,
@@ -594,7 +643,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             (prefill_load_scale * prefill_cost + load_weight * load_cost, instance, ep, matched_tokens)
             for (load_cost, matched_tokens, prefill_cost, instance, ep, _tier_hit) in raw
         ]
-        ranked = sorted(candidates, key=lambda c: c[0])[: max(1, top_k)]
+        ranked = sorted(candidates, key=lambda c: (c[0], random.random()))[: max(1, top_k)]  # nosec B311 -- 并列随机打散
         top_score, top_inst, top_ep, top_matched = ranked[0]
         top_tier = next(
             (
@@ -644,7 +693,9 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         returning the best ``top_k``.
 
         This gives a *hard* load bound (the choice can never escape the least-loaded set) while
-        still exploiting KV-cache affinity as the tie-break inside that set.
+        still exploiting KV-cache affinity as the tie-break inside that set. Equal-score ties are
+        broken uniformly at random so equal-load requests spread across nodes instead of always
+        landing on the first one.
         """
         raw, any_instance = KvCacheAffinityPolicy._collect_load_candidates(
             instances,
@@ -666,11 +717,11 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             return []
 
         # Candidate is (load_cost, matched_tokens, prefill_cost, instance, endpoint).
-        # Stage 1: keep the N least-loaded endpoints.
+        # Stage 1: keep the N least-loaded endpoints (ties broken at random).
         topn = max(1, load_gate_topn)
-        gated = sorted(raw, key=lambda c: c[0])[:topn]
-        # Stage 2: rank the least-loaded by longest cached prefix; tie -> lighter load.
-        ranked = sorted(gated, key=lambda c: (-c[1], c[0]))[: max(1, top_k)]
+        gated = sorted(raw, key=lambda c: (c[0], random.random()))[:topn]  # nosec B311 -- 并列随机打散
+        # Stage 2: rank the least-loaded by longest cached prefix; tie -> lighter load, then random.
+        ranked = sorted(gated, key=lambda c: (-c[1], c[0], random.random()))[: max(1, top_k)]  # nosec B311
         top_load, top_matched, _prefill, top_inst, top_ep, top_tier = ranked[0]
         # DEBUG, not INFO: worker proposal only; see _select_with_load / "scheduled ..." for the
         # authoritative destination the scheduler committed.
@@ -758,10 +809,11 @@ class TokenizerManager(ThreadSafeSingleton):
         if eager_load:
             self.get_tokenizer()
         logger.info(
-            "TokenizerManager init.(model_path:%s, is_dsv4:%s, lazy_load:%s)",
+            "TokenizerManager init.(model_path:%s, is_dsv4:%s, lazy_load:%s, openai_standard:%s)",
             self.model_path,
             self._is_dsv4,
             not eager_load,
+            self.openai_standard,
         )
 
     def get_tokenizer(self):

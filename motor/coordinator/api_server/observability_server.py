@@ -32,6 +32,11 @@ from motor.coordinator.api_server.base_server import BaseCoordinatorServer
 from motor.coordinator.api_server.app_builder import AppBuilder
 from motor.coordinator.metrics.metrics_collector import MetricsCollector
 from motor.coordinator.scheduler.runtime import SchedulerConnectionManager
+from motor.coordinator.scheduler.runtime.kv_usage import KvUsageShmPublisher
+from motor.coordinator.scheduler.runtime.scheduler_metrics import (
+    SchedulerMetricsShmReader,
+    sched_metrics_snapshot_to_motor_metrics,
+)
 from motor.common.resources.instance import Instance
 
 logger = get_logger(__name__)
@@ -79,6 +84,7 @@ class ObservabilityServer(BaseCoordinatorServer):
         # client subscribes to the scheduler's instance-change pub and keeps a live view.
         self._scheduler_connection = SchedulerConnectionManager.from_config(config)
         self._instance_provider = _SchedulerInstanceProvider(self._scheduler_connection)
+        self._sched_metrics_reader = None
         self._app_builder = AppBuilder(config)
         self.observability_app = self._app_builder.create_observability_app(lifespan=self._lifespan)
         self._register_routes()
@@ -90,6 +96,11 @@ class ObservabilityServer(BaseCoordinatorServer):
         try:
             MetricsCollector().set_event_loop(asyncio.get_running_loop())
             MetricsCollector().set_scheduler_provider(lambda: self._instance_provider)
+            # 复用 MetricsCollector 已抓取的指标：把 kv_cache_usage_perc 发布到共享内存，
+            # 供 SchedulerServer/worker 读取，避免调度侧再单独查询引擎 /metrics。
+            MetricsCollector().set_kv_usage_publisher(KvUsageShmPublisher(self._get_kv_usage_shm_name).publish)
+            # 读取 SchedulerServer 发布的调度指标（cnt/fresh_load/a_tokens）并输出为 motor: 指标。
+            MetricsCollector().set_sched_metrics_provider(self._provide_sched_metrics)
             MetricsCollector().start()
         except Exception as e:
             logger.warning("Ignored error setting up metrics collector: %s", e)
@@ -106,7 +117,59 @@ class ObservabilityServer(BaseCoordinatorServer):
                 MetricsCollector().stop()
             except Exception as e:
                 logger.warning("Ignored error stopping metrics collector: %s", e)
+            if getattr(self, "_sched_metrics_reader", None) is not None:
+                try:
+                    self._sched_metrics_reader.detach()
+                except Exception as e:
+                    logger.warning("Ignored error detaching sched metrics reader: %s", e)
+                self._sched_metrics_reader = None
             await self._scheduler_connection.disconnect()
+
+    def _provide_sched_metrics(self) -> list:
+        """Return the SchedulerServer's scheduling metrics as ``motor:*`` Metric objects.
+
+        Attaches lazily to the scheduling-metrics shm (name received via the scheduler
+        client), and returns [] until the shm is available. Called by MetricsCollector
+        when /metrics is generated.
+        """
+        shm_name = self._get_sched_metrics_shm_name()
+        if not shm_name:
+            return []
+        reader = getattr(self, "_sched_metrics_reader", None)
+        if reader is None or reader.shm_name != shm_name:
+            if reader is not None:
+                try:
+                    reader.detach()
+                except Exception as e:
+                    logger.warning("Ignored error detaching sched metrics reader: %s", e)
+            reader = SchedulerMetricsShmReader(shm_name)
+            try:
+                reader.attach()
+            except FileNotFoundError:
+                logger.debug("Sched metrics shm %s not ready yet, will retry", shm_name)
+                self._sched_metrics_reader = None
+                return []
+            self._sched_metrics_reader = reader
+        return sched_metrics_snapshot_to_motor_metrics(reader.read_snapshot())
+
+    def _get_sched_metrics_shm_name(self) -> str | None:
+        """Return the scheduler-metrics shm name from the scheduler client, or None."""
+        client = self._scheduler_connection.get_client()
+        if client is None:
+            return None
+        return client.sched_metrics_shm_name
+
+    def _get_kv_usage_shm_name(self) -> str | None:
+        """Return the kv usage shm name from the scheduler client, or None.
+
+        The Obs scheduler client receives ``kv_usage_shm_name`` in the
+        GET_AVAILABLE_INSTANCES response and attaches a KvUsageShmReader; reuse that
+        name so the publisher writes into the same region SchedulerServer created.
+        """
+        client = self._scheduler_connection.get_client()
+        if client is None:
+            return None
+        return client.kv_usage_shm_name
 
     def _register_routes(self):
         @self.observability_app.get("/instances")
