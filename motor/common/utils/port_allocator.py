@@ -437,7 +437,7 @@ def apply_coordinator_ports(config: CoordinatorConfig) -> None:
         rows.append(_row("Coordinator", host, kv_cfg.http_server_port, kind_auto, "Conductor callback HTTP"))
 
     render = config.render_config
-    if render.enabled:
+    if render.enable:
         rows.append(
             _row(
                 "Render",
