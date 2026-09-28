@@ -40,6 +40,16 @@ stages:
               wget --no-host-directories -c --no-check-certificate https://pytorch-package.obs.cn-north-4.myhuaweicloud.com/pta-codecheck/gitleaks
               chmod +x gitleaks
               cd -
+          - name: Install Rust toolchain
+            run: |
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              source "$HOME/.cargo/env"
+              rustc --version
+              cargo --version
+            shell: bash
+          - name: Export cargo env
+            run: |
+              echo "PATH=$HOME/.cargo/bin:${PATH}" >> $GITHUB_ENV
           - name: pre-commit
             uses: openlibing-pre-commit-action
 
