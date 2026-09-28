@@ -33,6 +33,7 @@ nav:
           - 推理引擎对接说明: user_guide/features/supported_inference_engines.md
           - EPD 分离: user_guide/features/EPD_disaggregation.md
           - PD 分离: user_guide/features/pd_disaggregation.md
+          - 动态分桶调度: user_guide/features/dynamic_bucket.md
           - KV Cache 亲和: user_guide/features/kvcache_affinity.md
           - KV Cache Store:
               - 概述: user_guide/features/kv_cache_store/README.md

@@ -26,6 +26,7 @@ from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.scheduler import allocate_arbitration
 from motor.coordinator.scheduler.allocate_arbitration import ArbitrationContext
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
+    CANDIDATE_POLICY_DYNAMIC_BUCKET,
     CANDIDATE_POLICY_KV_CACHE_AFFINITY,
     CANDIDATE_POLICY_LOAD_BALANCE,
 )
@@ -154,6 +155,26 @@ async def test_kv_affinity_reselects_least_loaded_among_candidates():
     assert selected is not None
     instance, endpoint, score = selected
     # ep11 (load 5) is globally lightest but NOT proposed; among {ep10=20, ep20=10} ep20 wins.
+    assert (instance.id, endpoint.id) == (2, 20)
+    assert score == 10
+
+
+@pytest.mark.asyncio
+async def test_dynamic_bucket_slow_path_reselects_only_within_selected_bucket():
+    """A stale CAS view may change the endpoint, but must not cross the selected bucket boundary."""
+    im = await _two_prefill_pool({(1, 10): 20, (1, 11): 1, (2, 20): 10, (2, 21): 0}, role=PDRole.ROLE_D)
+    ctx = _context(im, is_load_balance=False)
+
+    selected = allocate_arbitration.select_authoritative_allocate_candidate(
+        ctx,
+        (1, 10),
+        [(1, 10), (2, 20)],
+        PDRole.ROLE_D,
+        candidate_policy=CANDIDATE_POLICY_DYNAMIC_BUCKET,
+    )
+
+    assert selected is not None
+    instance, endpoint, score = selected
     assert (instance.id, endpoint.id) == (2, 20)
     assert score == 10
 

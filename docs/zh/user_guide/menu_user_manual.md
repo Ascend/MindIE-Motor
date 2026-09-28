@@ -22,6 +22,7 @@
   - [支持对接的推理引擎](./features/supported_inference_engines.md)
   - [EPD分离](./features/EPD_disaggregation.md)
   - [PD分离](./features/pd_disaggregation.md)
+  - [动态分桶调度](./features/dynamic_bucket.md)
   - [KV Cache亲和性调度能力部署](./features/kvcache_affinity.md)
   - [KV池化能力部署](./features/kv_cache_store/README.md)
   - [自动弹性扩缩容](./features/auto_scaling.md)

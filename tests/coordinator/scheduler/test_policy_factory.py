@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -12,15 +11,15 @@
 """Tests for Scheduling policy factory"""
 
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from motor.coordinator.scheduler.policy.factory import (
     create,
     register,
     SchedulingPolicyFactory,
-    _REGISTRY,
 )
-from motor.config.coordinator import SchedulerType
+from motor.config.coordinator import CoordinatorConfig, SchedulerType
+from motor.coordinator.scheduler.policy.dynamic_bucket import DynamicBucketPolicy
 from motor.coordinator.scheduler.policy.base import BaseSchedulingPolicy
 from motor.coordinator.scheduler.policy.round_robin import RoundRobinPolicy
 from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
@@ -40,6 +39,14 @@ class TestPolicyFactory(unittest.TestCase):
         policy = create(SchedulerType.LOAD_BALANCE, MockInstanceProvider())
         self.assertIsInstance(policy, LoadBalancePolicy)
 
+    def test_create_dynamic_bucket_does_not_read_global_config(self):
+        """Dynamic bucket policy construction does not reload process-global config."""
+        with patch.object(CoordinatorConfig, "from_json", side_effect=AssertionError("must not read global config")):
+            policy = create(SchedulerType.DYNAMIC_BUCKET, MockInstanceProvider())
+
+        self.assertIsInstance(policy, DynamicBucketPolicy)
+        self.assertFalse(hasattr(policy, "selector"))
+
     def test_create_unknown_type_raises(self):
         """create raises ValueError for unregistered type."""
         with self.assertRaises(ValueError):
@@ -47,9 +54,7 @@ class TestPolicyFactory(unittest.TestCase):
 
     def test_scheduling_policy_factory_create(self):
         """SchedulingPolicyFactory.create delegates to the module-level create()."""
-        policy = SchedulingPolicyFactory.create(
-            SchedulerType.ROUND_ROBIN, MockInstanceProvider()
-        )
+        policy = SchedulingPolicyFactory.create(SchedulerType.ROUND_ROBIN, MockInstanceProvider())
         self.assertIsInstance(policy, RoundRobinPolicy)
 
     def test_register_custom_policy(self):

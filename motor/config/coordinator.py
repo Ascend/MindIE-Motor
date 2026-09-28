@@ -10,6 +10,7 @@
 
 import os
 import json
+import math
 import re
 import ipaddress
 import tempfile
@@ -197,6 +198,7 @@ class SchedulerType(Enum):
     LOAD_BALANCE = "load_balance"
     ROUND_ROBIN = "round_robin"
     KV_CACHE_AFFINITY = "kv_cache_affinity"
+    DYNAMIC_BUCKET = "dynamic_bucket"
 
     @classmethod
     def from_string(cls, value: str) -> Optional["SchedulerType"]:
@@ -400,6 +402,14 @@ class SchedulerConfig:
     # Weight of the instance average workload in endpoint-first load balancing.
     # 0 means pure global endpoint minimum; small values preserve instance pressure awareness.
     endpoint_instance_score_weight: float = 0.05
+    # Dynamic long/short sequence bucket tunables.
+    dynamic_bucket_short_median: int = 16 * 1024
+    dynamic_bucket_long_median: int = 96 * 1024
+    dynamic_bucket_border: int = 32 * 1024
+    dynamic_bucket_length_scale: float = 1.0
+    dynamic_bucket_load_scale: float = 4.0
+    dynamic_bucket_short_bucket_count: int = 0
+    dynamic_bucket_long_bucket_count: int = 0
     # Window (seconds) for worker-0 per-DP telemetry: one log line per DP
     # with request count and SHM active_tokens (dp_stats). Independent of
     # kv_affinity hit telemetry. 0 disables emission.
@@ -423,6 +433,10 @@ class SchedulerConfig:
     def uses_kv_cache_affinity(self) -> bool:
         """Prefill / encode / union affinity only; decode never takes the KVA path."""
         return self.prefill_scheduler_type == SchedulerType.KV_CACHE_AFFINITY
+
+    def uses_dynamic_bucket(self) -> bool:
+        """Dynamic bucket scheduling is supported only for decode."""
+        return self.decode_scheduler_type == SchedulerType.DYNAMIC_BUCKET
 
     @property
     def scheduler_type(self) -> SchedulerType:
@@ -1053,6 +1067,12 @@ class CoordinatorConfig:
             self._errors.append(f"prefill_scheduler_type must be one of: {allowed_scheduler_types}")
         if not isinstance(self.scheduler_config.decode_scheduler_type, SchedulerType):
             self._errors.append(f"decode_scheduler_type must be one of: {allowed_scheduler_types}")
+        if self.scheduler_config.prefill_scheduler_type == SchedulerType.DYNAMIC_BUCKET:
+            self._errors.append(
+                "prefill_scheduler_type does not support dynamic_bucket; "
+                "configure dynamic_bucket only for decode_scheduler_type"
+            )
+        self._validate_dynamic_bucket_config()
         if self.scheduler_config.decode_scheduler_type == SchedulerType.KV_CACHE_AFFINITY:
             logger.warning(
                 "decode_scheduler_type=kv_cache_affinity is ignored for decode instance selection; "
@@ -1494,6 +1514,42 @@ class CoordinatorConfig:
             f"    └─ Config Path: {self.config_path or 'Not set'}\n"
             f"{separator}"
         )
+
+    def _validate_dynamic_bucket_config(self) -> None:
+        """Reject invalid bucket tunables before scheduler workers are created."""
+        config = self.scheduler_config
+        for name, minimum in (
+            ("dynamic_bucket_short_median", 1),
+            ("dynamic_bucket_long_median", 1),
+            ("dynamic_bucket_border", 1),
+            ("dynamic_bucket_short_bucket_count", 0),
+            ("dynamic_bucket_long_bucket_count", 0),
+        ):
+            value = getattr(config, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                self._errors.append(f"scheduler_config.{name} must be an integer")
+            elif value < minimum:
+                self._errors.append(f"scheduler_config.{name} must be >= {minimum}")
+
+        for name in ("dynamic_bucket_length_scale", "dynamic_bucket_load_scale"):
+            value = getattr(config, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                self._errors.append(f"scheduler_config.{name} must be a number")
+            elif value <= 0 or (isinstance(value, float) and not math.isfinite(value)):
+                self._errors.append(f"scheduler_config.{name} must be finite and greater than 0")
+
+        long_median = config.dynamic_bucket_long_median
+        border = config.dynamic_bucket_border
+        if (
+            isinstance(long_median, int)
+            and not isinstance(long_median, bool)
+            and isinstance(border, int)
+            and not isinstance(border, bool)
+            and long_median <= border
+        ):
+            self._errors.append(
+                "scheduler_config.dynamic_bucket_long_median must be greater than dynamic_bucket_border"
+            )
 
     def _validate_positive_number(self, value: float | int, field_name: str, allow_zero: bool = False) -> None:
         """Validate that a number is positive (optionally allow zero)"""

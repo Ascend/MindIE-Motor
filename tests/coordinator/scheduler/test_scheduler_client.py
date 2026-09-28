@@ -521,6 +521,34 @@ class TestAsyncSchedulerClient:
 
         assert [(instance.id, endpoint.id) for instance, endpoint, _ in candidates] == [(3, 3)]
 
+    @pytest.mark.asyncio
+    async def test_dynamic_bucket_falls_back_to_load_balance_when_length_is_unavailable(self, caplog):
+        self.client._scheduler_type = "dynamic_bucket"
+        instance = _make_instance(
+            instance_id=1,
+            role="decode",
+            endpoints={"pod1": {1: _make_endpoint(endpoint_id=1, active_tokens=3)}},
+        )
+        self.mock_cache.get_instances.return_value = [instance]
+        req_info = Mock(spec=RequestInfo)
+        req_info.req_id = "req-no-length"
+
+        with (
+            patch(
+                "motor.coordinator.scheduler.runtime.scheduler_client.get_request_token_length",
+                return_value=None,
+            ),
+            caplog.at_level("WARNING"),
+        ):
+            candidates, policy = await self.client._select_endpoint_candidates_with_policy(
+                req_info,
+                PDRole.ROLE_D,
+            )
+
+        assert [(candidate.id, endpoint.id) for candidate, endpoint, _ in candidates] == [(1, 1)]
+        assert policy == CANDIDATE_POLICY_LOAD_BALANCE
+        assert "dynamic_bucket unavailable req_id=req-no-length, falling back to load_balance" in caplog.text
+
     # -- test_get_available_instances ---------------------------------------
 
     @pytest.mark.asyncio

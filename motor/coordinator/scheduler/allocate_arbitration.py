@@ -27,6 +27,7 @@ from motor.common.resources.instance import Instance, PDRole
 from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
 from motor.coordinator.scheduler.runtime.kv_usage import get_endpoint_kv_cache_usage
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
+    CANDIDATE_POLICY_DYNAMIC_BUCKET,
     CANDIDATE_POLICY_KV_CACHE_AFFINITY,
     CANDIDATE_POLICY_LOAD_BALANCE,
     KNOWN_CANDIDATE_POLICIES,
@@ -384,6 +385,44 @@ def select_lowest_load_among_candidates(
     return best
 
 
+def select_lightest_dynamic_bucket_candidate(
+    ctx: ArbitrationContext,
+    candidates: list[tuple[int, int]],
+    role: PDRole,
+    required_engine_type: str | None = None,
+    excluded: set[tuple[int, int]] | None = None,
+    required_dispatch_capability: str | None = None,
+) -> tuple[Instance, Endpoint, float] | None:
+    """Pick the lowest active-token endpoint within the worker-selected bucket."""
+    best: tuple[Instance, Endpoint, float] | None = None
+    best_key: tuple[float, int, int] | None = None
+    for instance_id, endpoint_id in candidates:
+        if excluded is not None and (instance_id, endpoint_id) in excluded:
+            continue
+        if ctx.is_instance_circuit_open(instance_id):
+            continue
+        found = find_available_instance_endpoint(ctx, instance_id, endpoint_id)
+        if found is None:
+            continue
+        instance, endpoint = found
+        if not matches_engine_type(instance, required_engine_type):
+            continue
+        if not matches_dispatch_capability(instance, required_dispatch_capability):
+            continue
+        try:
+            instance_role = PDRole(instance.role)
+        except ValueError:
+            instance_role = PDRole.ROLE_U
+        if instance_role != role:
+            continue
+        score = endpoint.workload.active_tokens
+        candidate_key = (score, instance.id, endpoint.id)
+        if best_key is None or candidate_key < best_key:
+            best = (instance, endpoint, score)
+            best_key = candidate_key
+    return best
+
+
 def should_scan_global_load_balance(ctx: ArbitrationContext, candidate_policy: str | None) -> bool:
     """Return True when candidates were selected by load-balance semantics."""
     if candidate_policy == CANDIDATE_POLICY_LOAD_BALANCE:
@@ -455,4 +494,15 @@ def select_authoritative_allocate_candidate(
             )
             if selected is not None:
                 return selected
+    if candidate_policy == CANDIDATE_POLICY_DYNAMIC_BUCKET:
+        selected = select_lightest_dynamic_bucket_candidate(
+            ctx,
+            candidates,
+            role,
+            required_engine_type,
+            excluded=excluded,
+            required_dispatch_capability=required_dispatch_capability,
+        )
+        if selected is not None:
+            return selected
     return select_valid_candidate(ctx, candidate, role, required_engine_type, required_dispatch_capability)

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -26,17 +25,26 @@ PolicyFactory = Callable[[InstanceProvider], BaseSchedulingPolicy]
 
 def _create_round_robin(instance_provider: InstanceProvider) -> BaseSchedulingPolicy:
     from motor.coordinator.scheduler.policy.round_robin import RoundRobinPolicy
+
     return RoundRobinPolicy(instance_provider=instance_provider)
 
 
 def _create_load_balance(instance_provider: InstanceProvider) -> BaseSchedulingPolicy:
     from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
+
     return LoadBalancePolicy(instance_provider=instance_provider)
 
 
 def _create_kv_cache_affinity(instance_provider: InstanceProvider) -> BaseSchedulingPolicy:
     from motor.coordinator.scheduler.policy.kv_cache_affinity import KvCacheAffinityPolicy
+
     return KvCacheAffinityPolicy(instance_provider=instance_provider)
+
+
+def _create_dynamic_bucket(instance_provider: InstanceProvider) -> BaseSchedulingPolicy:
+    from motor.coordinator.scheduler.policy.dynamic_bucket import DynamicBucketPolicy
+
+    return DynamicBucketPolicy(instance_provider=instance_provider)
 
 
 _REGISTRY: dict[SchedulerType, PolicyFactory] = {}
@@ -65,6 +73,7 @@ class SchedulingPolicyFactory:
     """
     Policy factory facade: create policy by SchedulerType (OCP).
     """
+
     create = staticmethod(create)
     register = staticmethod(register)
 
@@ -74,5 +83,7 @@ def _register_builtin() -> None:
     register(SchedulerType.ROUND_ROBIN, _create_round_robin)
     register(SchedulerType.LOAD_BALANCE, _create_load_balance)
     register(SchedulerType.KV_CACHE_AFFINITY, _create_kv_cache_affinity)
+    register(SchedulerType.DYNAMIC_BUCKET, _create_dynamic_bucket)
+
 
 _register_builtin()

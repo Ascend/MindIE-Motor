@@ -792,14 +792,18 @@ class TokenizerManager(ThreadSafeSingleton):
             kv_config = getattr(config, "prefill_kv_event_config", None)
         render_enabled = bool(getattr(getattr(config, "render_config", None), "enable", False))
         affinity_enabled = isinstance(scheduler_config, SchedulerConfig) and scheduler_config.uses_kv_cache_affinity()
+        dynamic_bucket_enabled = (
+            isinstance(scheduler_config, SchedulerConfig) and scheduler_config.uses_dynamic_bucket()
+        )
         eager_load = bool(
             (kv_config and getattr(kv_config, "conductor_service", ""))
             or affinity_enabled
+            or dynamic_bucket_enabled
             or (config.context_budget_mode == CONTEXT_BUDGET_ON and not render_enabled)
         )
         needs_tokenizer = eager_load or render_enabled
         if not needs_tokenizer:
-            logger.info("KV affinity, context budget, and Render are disabled. disable TokenizerManager!")
+            logger.info("Token-based scheduling, context budget, and Render are disabled. disable TokenizerManager!")
             return
 
         os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"

@@ -267,7 +267,11 @@ def _build_prefill_kv_event_from_engine_section(
         return None
 
     kv_events_config = engine_config.get(KV_EVENTS_CONFIG)
-    tokenizer_metadata_needed = _is_context_budget_enabled(user_config_data) or _is_render_enabled(user_config_data)
+    tokenizer_metadata_needed = (
+        _is_context_budget_enabled(user_config_data)
+        or _is_render_enabled(user_config_data)
+        or _is_dynamic_bucket_enabled(user_config_data)
+    )
     if not isinstance(kv_events_config, dict) and not tokenizer_metadata_needed:
         return None
     if not isinstance(kv_events_config, dict):
@@ -297,6 +301,16 @@ def _is_render_enabled(user_config_data: dict[str, Any]) -> bool:
         return False
     render_config = coordinator_config.get(RENDER_CONFIG)
     return isinstance(render_config, dict) and render_config.get(ENABLE) is True
+
+
+def _is_dynamic_bucket_enabled(user_config_data: dict[str, Any]) -> bool:
+    coordinator_config = user_config_data.get(ConfigKey.MOTOR_COORDINATOR.value)
+    if not isinstance(coordinator_config, dict):
+        return False
+    scheduler_config = coordinator_config.get("scheduler_config")
+    if not isinstance(scheduler_config, dict):
+        return False
+    return scheduler_config.get("decode_scheduler_type") == "dynamic_bucket"
 
 
 def _select_kv_event_engine_section(user_config_data: dict[str, Any]) -> dict[str, Any] | None:

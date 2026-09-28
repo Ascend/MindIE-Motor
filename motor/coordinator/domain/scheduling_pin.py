@@ -41,7 +41,7 @@ def select_endpoint_for_instance(
     if not instance:
         return None
     st = scheduler_type or "round_robin"
-    if st in ("load_balance", "kv_cache_affinity"):
+    if st in ("load_balance", "kv_cache_affinity", "dynamic_bucket"):
         ep = LoadBalancePolicy.select_endpoint_from_instance(instance)
         if ep and is_blocked is not None and is_blocked(instance.id):
             ep = None

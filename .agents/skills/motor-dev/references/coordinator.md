@@ -208,6 +208,7 @@ Located in `scheduler/policy/`, each policy implements `BaseSchedulingPolicy`:
 | `RoundRobinPolicy` | Simple atomic counter, mod endpoint count | Uniform workload, no KV cache locality |
 | `LoadBalancePolicy` | Reads workload SHM, picks endpoint with minimum active tokens | Heterogeneous workloads, varying request lengths |
 | `KvCacheAffinityPolicy` | Queries KV Conductor (via `ConductorApiClient`) for prefix match; prefers endpoints with cached blocks | High prefix reuse, PD disaggregation |
+| `DynamicBucketPolicy` | Splits endpoints into deterministic short/long buckets, then combines request length affinity with each bucket's active-token load | Mixed short/long decode workloads |
 
 **Conductor `/query` wire encoding** (`ConductorApiClient.query_conductor`):
 `kv_conductor_config.query_encoding` (default `"msgpack"`) selects the wire
@@ -219,12 +220,16 @@ set `query_encoding: "json"` explicitly for JSON-only conductor binaries.
 
 **Factory registration** (`factory.py`): `SchedulingPolicyFactory` maps policy name → class. New policies register here.
 
-The policy is selected per role by `SchedulerConfig.type_for_role()`: `prefill_scheduler_type` serves Prefill, Encode and Union; `decode_scheduler_type` serves Decode. Both default to `LOAD_BALANCE`; Decode supports load balance / round robin, while KV affinity applies only to P/U. Deprecated `scheduler_type` migrates to both role fields when omitted. When a role uses `kv_cache_affinity`, a sub-mode is chosen by `kv_affinity.mode`:
+The policy is selected per role by `SchedulerConfig.type_for_role()`: `prefill_scheduler_type` serves Prefill, Encode and Union; `decode_scheduler_type` serves Decode. Both default to `LOAD_BALANCE`; Decode supports load balance / round robin / dynamic bucket, while KV affinity applies only to P/U. Deprecated `scheduler_type` migrates only to role fields that are not explicitly configured. When a role uses `kv_cache_affinity`, a sub-mode is chosen by `kv_affinity.mode`:
 
 - `unified` (default) — single score fusing affinity and live load; pick the minimum
 - `load_gated` — keep the N least-loaded endpoints, then pick the longest cached prefix
 
 Tunables live under `CoordinatorConfig.scheduler_config.kv_affinity`: `mode`, `load_weight`, `overlap_credit`, `prefill_load_scale`, `load_gate_topn`, `w_npu`, `w_cpu`, `w_disk`, `hit_rate_threshold`.
+
+Dynamic-bucket tunables live directly under `scheduler_config`: `dynamic_bucket_short_median`, `dynamic_bucket_long_median`, `dynamic_bucket_border`, `dynamic_bucket_length_scale`, `dynamic_bucket_load_scale`, `dynamic_bucket_short_bucket_count`, and `dynamic_bucket_long_bucket_count`. Only decode roles use the bucket selector. Encode, prefill, and union roles use the policy configured by `prefill_scheduler_type`, which does not accept `dynamic_bucket`. Workers send every endpoint in the selected bucket so the CAS slow path can reselect the lightest member from its fresh workload view.
+
+Configuration loading validates integer lengths/counts, positive finite scales, and `long_median > border`. Dynamic-bucket selection and allocation both use tokenized prompt length from `get_request_token_length` (cached token IDs or tokenizer output). `make_dynamic_bucket_allocation_workload` commits this token count, unlike the existing Decode load-balance policy which commits request-body length (`req_info.req_len`). Selection details and candidate loads are logged at DEBUG level. The load-affinity sigmoid uses `load_scale` for its slope and a separate `load_threshold` for its midpoint (`1 / load_scale` for initially short requests, `1` for initially long requests).
 
 `hit_rate_threshold` (default `0`, range `[0, 1]`) is a pre-ranking gate: `0` disables only
 this gate, not other fallback paths. Positive values require the best weighted, prompt-capped

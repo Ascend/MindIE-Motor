@@ -330,6 +330,13 @@ motor_coordinator_config字段配置样例如下所示：
     "decode_scheduler_type": "load_balance",
     "enable_pd_separation_fallback_to_hybrid": true,
     "endpoint_instance_score_weight": 0.05,
+    "dynamic_bucket_short_median": 16384,
+    "dynamic_bucket_long_median": 98304,
+    "dynamic_bucket_border": 32768,
+    "dynamic_bucket_length_scale": 1.0,
+    "dynamic_bucket_load_scale": 4.0,
+    "dynamic_bucket_short_bucket_count": 0,
+    "dynamic_bucket_long_bucket_count": 0,
     "dp_stats_window": 60,
     "kv_affinity": {
       "mode": "unified",
@@ -533,11 +540,18 @@ motor_coordinator_config字段配置样例如下所示：
 | base_timeout_s | float | 首次熔断时长（秒），也是熔断时长指数退避的基数；每次重新熔断/探活失败按 `2^(熔断次数-1)` 倍增长。默认值：`30.0`。 |
 | max_timeout_s | float | 熔断时长上限（秒）。默认值：`300.0`。 |
 | **scheduler_config字段** |-|-|
-| prefill_scheduler_type | string | Prefill / encode / union 的调度类型，默认 `load_balance`；支持 `load_balance`、`round_robin`、`kv_cache_affinity`。 |
-| decode_scheduler_type | string | Decode 的调度类型，默认 `load_balance`；支持 `load_balance`、`round_robin`。若设置 `kv_cache_affinity` 会告警，Decode 选点仍使用负载均衡。 |
-| scheduler_type | string | **已废弃**的兼容字段。读取时把值迁移到未单独配置的 `prefill_scheduler_type` 和 `decode_scheduler_type`；新配置请使用 role 字段。 |
+| prefill_scheduler_type | string | Prefill / encode / union 实例的调度类型，默认值：load_balance。可选 `load_balance` / `round_robin` / `kv_cache_affinity`；不支持 `dynamic_bucket`。 |
+| decode_scheduler_type | string | Decode 实例的调度类型，默认值：load_balance。可选 `load_balance` / `round_robin` / `dynamic_bucket`，动态分桶详见[动态分桶调度](../features/dynamic_bucket.md)。枚举也接受 `kv_cache_affinity`，但 Decode 实例仍按 load_balance 选择并在启动时打印 warning。 |
+| scheduler_type | string | **已废弃**。存量配置仍可使用，读取时把值迁移到未单独配置的 `prefill_scheduler_type` 和 `decode_scheduler_type` 并打 warning。由于 Prefill 不支持 `dynamic_bucket`，动态分桶必须改用 `decode_scheduler_type` 单独配置。 |
 | enable_pd_separation_fallback_to_hybrid | bool | PD 分离场景下，当不存在兼容且未熔断的 P/D pair 时，是否允许降级使用混部路由，默认值为 `true`。候选优先级为 Union → Prefill → Decode；Decode 兜底仅适用于上报 `decode_colocation` capability 的 vLLM 实例，关闭后无兼容 pair 时返回 503。 |
 | endpoint_instance_score_weight | float | endpoint 优先负载均衡时实例平均负载权重。默认值：`0.05` |
+| dynamic_bucket_short_median | int | 短序列桶的特征长度（token），也是短桶长度因子的 Sigmoid 中点，必须大于 `0`。默认值：`16384` |
+| dynamic_bucket_long_median | int | 长序列桶的特征长度（token）；与 `dynamic_bucket_border` 的差值是长桶长度因子的归一化跨度。必须大于 `dynamic_bucket_border`，默认值：`98304` |
+| dynamic_bucket_border | int | 长短请求的初始分界（token）。请求长度不大于该值时初选短桶，否则初选长桶；必须大于 `0`。默认值：`32768` |
+| dynamic_bucket_length_scale | float | 长度因子的缩放系数，控制请求长度在特征长度附近的切换斜率；必须是大于 `0` 的有限数值。默认值：`1.0` |
+| dynamic_bucket_load_scale | float | 负载因子的缩放系数，同时参与短桶负载比阈值计算；必须是大于 `0` 的有限数值。默认值：`4.0` |
+| dynamic_bucket_short_bucket_count | int | 短桶 endpoint 数量或分桶比例分子，须不小于 `0`。与长桶数量均为 `0` 时自动近似均分；默认值：`0` |
+| dynamic_bucket_long_bucket_count | int | 长桶 endpoint 数量或分桶比例分子，须不小于 `0`。与短桶数量同时配置时按两者比例分配；默认值：`0` |
 | dp_stats_window | int | worker 0 周期性打印 per-DP 成功提交请求数与 SHM `active_tokens` 的窗口（秒），同一行输出（`dp_stats` 日志）。独立于 KV 亲和命中统计，所有部署与调度类型下均生效；默认 `60`；`0` 禁用 |
 | kv_affinity | object | KV Cache 亲和性调度参数（见下表） |
 | **kv_affinity 字段** |-|-|
