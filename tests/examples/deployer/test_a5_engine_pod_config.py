@@ -22,7 +22,7 @@ from lib.a5_host_nic import (  # noqa: E402
     env_requests_a5_host_nic_overlay,
 )
 from lib.generator import k8s_utils  # noqa: E402
-from lib.generator.engine import apply_a5_controller_host_network, apply_a5_engine_pod_config  # noqa: E402
+from lib.generator.engine import apply_a5_engine_pod_config  # noqa: E402
 
 
 def test_env_requests_overlay_detects_protocol_desc_tokens():
@@ -87,11 +87,10 @@ def test_apply_a5_engine_pod_config_host_nic_overlay_when_enabled():
 
     apply_a5_engine_pod_config(pod_spec, container, deploy_config)
 
-    assert pod_spec[C.HOST_NETWORK] is True
-    assert pod_spec[C.DNS_POLICY] == C.DNS_POLICY_CLUSTER_FIRST_WITH_HOST_NET
+    assert C.HOST_NETWORK not in pod_spec
+    assert pod_spec.get(C.DNS_POLICY) != C.DNS_POLICY_CLUSTER_FIRST_WITH_HOST_NET
     assert container[C.SECURITY_CONTEXT][C.PRIVILEGED] is True
-    hccl = next(item for item in container[C.ENV] if item[C.NAME] == "HCCL_IF_IP")
-    assert hccl["valueFrom"]["fieldRef"]["fieldPath"] == "status.hostIP"
+    assert not any(item.get(C.NAME) == "HCCL_IF_IP" for item in container[C.ENV])
     mounted = {m[C.NAME] for m in container[C.VOLUME_MOUNTS]}
     assert "npu-smi-bin" in mounted
     assert "hccl-rootinfo" in mounted
@@ -104,22 +103,6 @@ def test_apply_a5_engine_pod_config_host_nic_overlay_when_enabled():
     assert by_name["dev-ummu"][C.HOST_PATH]["type"] == "Directory"
     assert by_name["dev-uburma"][C.HOST_PATH]["type"] == "Directory"
     assert not any(name.startswith("atlas-topo") for name in mounted)
-
-
-def test_controller_host_network_only_for_a5_overlay():
-    deploy_config = {C.HARDWARE_TYPE: C.HARDWARE_TYPE_ASCEND950}
-    k8s_utils.g_a5_host_nic_overlay = False
-    pod_spec = {}
-    apply_a5_controller_host_network(pod_spec, deploy_config)
-    assert C.HOST_NETWORK not in pod_spec
-
-    k8s_utils.g_a5_host_nic_overlay = True
-    apply_a5_controller_host_network(pod_spec, {C.HARDWARE_TYPE: C.HARDWARE_TYPE_800I_A2})
-    assert C.HOST_NETWORK not in pod_spec
-
-    apply_a5_controller_host_network(pod_spec, deploy_config)
-    assert pod_spec[C.HOST_NETWORK] is True
-    assert pod_spec[C.DNS_POLICY] == C.DNS_POLICY_CLUSTER_FIRST_WITH_HOST_NET
 
 
 def test_apply_a5_engine_pod_config_skips_non_a5():

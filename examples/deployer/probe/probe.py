@@ -69,10 +69,14 @@ API_KEYS = {
 ENGINE_ROLES = ("union", "prefill", "decode")
 KV_STORE_ROLE = "kv_store"
 
+# New MetaService builds expose /livez so kubelet can see kill -19 (SIGSTOP).
+# Released builds answer /health and return 404 for /livez. Try /livez first.
+KV_STORE_LIVEZ_PATH = "/livez"
+KV_STORE_HEALTH_FALLBACK_PATH = "/health"
 KV_STORE_PROBE_URLS = {
-    'startup': '/health',
-    'readiness': '/health',
-    'liveness': '/health',
+    'startup': KV_STORE_LIVEZ_PATH,
+    'readiness': KV_STORE_LIVEZ_PATH,
+    'liveness': KV_STORE_LIVEZ_PATH,
 }
 
 ROLE_CONFIG_PATHS = {
@@ -86,7 +90,7 @@ ROLE_CONFIG_PATHS = {
 
 # HTTP request timeout. controller/coordinator/engine keep this value.
 TIMEOUT = 600
-# kv-store metrics port. /livez is 404; the process answers /health.
+# Short timeout so a SIGSTOP'd MetaService fails the probe instead of hanging.
 KV_STORE_HTTP_TIMEOUT = 3
 
 
@@ -198,6 +202,31 @@ def get_probe_url(role, probe_type):
     return PROBE_URLS[probe_type]
 
 
+def _http_get_status(ip, port, url_path, config, timeout=TIMEOUT):
+    """Return the HTTP status code, or None when the request does not complete."""
+    host_port = format_address(ip, port)
+    url = f"http://{host_port}{url_path}"
+    headers = {'User-Agent': 'sh-probe', 'Content-Type': 'application/json'}
+    enable_tls = get_val_by_key_path(config, f'{MGMT_TLS_CONFIG}.{ENABLE_TLS}')
+    client_kwargs = {"headers": headers, "timeout": timeout}
+
+    try:
+        if enable_tls:
+            url = f"https://{host_port}{url_path}"
+            cert_file = get_val_by_key_path(config, f'{MGMT_TLS_CONFIG}.{CERT_FILE}')
+            key_file = get_val_by_key_path(config, f'{MGMT_TLS_CONFIG}.{KEY_FILE}')
+            ca_file = get_val_by_key_path(config, f'{MGMT_TLS_CONFIG}.{CA_FILE}')
+            password = get_val_by_key_path(config, f'{MGMT_TLS_CONFIG}.passwd_file')
+            client_kwargs["cert"] = (cert_file, key_file, password if password else None)
+            client_kwargs["verify"] = ca_file
+        with httpx.Client(**client_kwargs) as client:
+            response = client.get(url)
+        return response.status_code
+    except Exception as exc:
+        logger.error("HTTP probe %s failed: %s", url_path, exc)
+        return None
+
+
 def send_http_request(ip, port, url_path, config, timeout=TIMEOUT):
     """
     Send HTTP request to the probe endpoint.
@@ -210,37 +239,28 @@ def send_http_request(ip, port, url_path, config, timeout=TIMEOUT):
     Returns:
         True if successful, False otherwise
     """
-    host_port = format_address(ip, port)
-    url = f"http://{host_port}{url_path}"
-    headers = {'User-Agent': 'sh-probe', 'Content-Type': 'application/json'}
+    status_code = _http_get_status(ip, port, url_path, config, timeout)
+    if status_code == 200:
+        return True
+    if status_code is not None:
+        logger.error("HTTP request failed with status code: %s", status_code)
+    return False
 
-    enable_tls = get_val_by_key_path(config, f'{MGMT_TLS_CONFIG}.{ENABLE_TLS}')
 
-    try:
-        if enable_tls:
-            url = f"https://{host_port}{url_path}"
+def probe_kv_store(ip, port, config, timeout=KV_STORE_HTTP_TIMEOUT):
+    """Probe MetaService without dropping kill -19 detection on new builds.
 
-            cert_file = get_val_by_key_path(config, f'{MGMT_TLS_CONFIG}.{CERT_FILE}')
-            key_file = get_val_by_key_path(config, f'{MGMT_TLS_CONFIG}.{KEY_FILE}')
-            ca_file = get_val_by_key_path(config, f'{MGMT_TLS_CONFIG}.{CA_FILE}')
-            password = get_val_by_key_path(config, f'{MGMT_TLS_CONFIG}.passwd_file')
-
-            client = httpx.Client(
-                headers=headers,
-                timeout=timeout,
-                cert=(cert_file, key_file, password if password else None),
-                verify=ca_file,
-            )
-        else:
-            client = httpx.Client(headers=headers, timeout=timeout)
-        response = client.get(url)
-        if response.status_code == 200:
-            return True
-        else:
-            logger.error("HTTP request failed with status code: %s", response.status_code)
-    except Exception as e:
-        logger.error("Unexpected error: %s", e)
-
+    /livez is the liveness path added for SIGSTOP. Released memcache builds
+    do not implement it and return 404, so only that status falls back to
+    /health. Timeouts and other errors still fail the probe.
+    """
+    livez_status = _http_get_status(ip, port, KV_STORE_LIVEZ_PATH, config, timeout)
+    if livez_status == 200:
+        return True
+    if livez_status == 404:
+        logger.info("kv_store /livez returned 404, probing /health")
+        return _http_get_status(ip, port, KV_STORE_HEALTH_FALLBACK_PATH, config, timeout) == 200
+    logger.error("kv_store /livez probe failed, status=%s", livez_status)
     return False
 
 
@@ -313,7 +333,10 @@ def main():
         url_path,
         http_timeout,
     )
-    success = send_http_request(pod_ip, port, url_path, config, http_timeout)
+    if role == KV_STORE_ROLE:
+        success = probe_kv_store(pod_ip, port, config, http_timeout)
+    else:
+        success = send_http_request(pod_ip, port, url_path, config, http_timeout)
 
     if success:
         logger.info("Service is %s", probe_type)

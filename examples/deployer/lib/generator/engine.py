@@ -95,29 +95,13 @@ def apply_a5_dns_config(pod_spec, deploy_config):
     )
 
 
-def apply_a5_controller_host_network(pod_spec, deploy_config):
-    """Put the controller in the host netns only for the A5 host-nic overlay.
-
-    IPv4 pod-network deploys do not set the overlay, so their controller stays
-    on the pod network. UBOE/UB IPv6 needs the controller on the node EID,
-    same as the engines, or registration targets an unreachable ClusterIP.
-    """
-    if not k8s_utils.g_a5_host_nic_overlay:
-        return
-    hardware_type = deploy_config.get(C.HARDWARE_TYPE) if deploy_config else None
-    if hardware_type not in C.HARDWARE_TYPE_A5:
-        return
-    pod_spec[C.HOST_NETWORK] = True
-    pod_spec[C.DNS_POLICY] = C.DNS_POLICY_CLUSTER_FIRST_WITH_HOST_NET
-    logger.info("Applied A5 hostNetwork for controller (host-nic overlay)")
-
-
 def apply_a5_engine_pod_config(pod_spec, container, deploy_config):
     """Apply A5-specific pod network and hostPath settings to engine pods.
 
     Main path (default): base hostPath + dns ndots only — same as before.
     Opt-in overlay when env.json AGRC protocol_desc is uboe/roce/ub_rtp:device:
-    extra mounts (inside _append via if), hostNetwork, privileged, HCCL_IF_IP.
+    extra mounts (inside _append via if) and privileged. Pods stay on the
+    cluster network and keep the CNI-assigned address, same as IPv4 UBOE.
     """
     hardware_type = deploy_config.get(C.HARDWARE_TYPE) if deploy_config else None
     if hardware_type not in C.HARDWARE_TYPE_A5 and hardware_type not in C.HARDWARE_TYPE_A3:
@@ -129,37 +113,9 @@ def apply_a5_engine_pod_config(pod_spec, container, deploy_config):
             sec = container.setdefault(C.SECURITY_CONTEXT, {})
             sec[C.PRIVILEGED] = True
             sec["allowPrivilegeEscalation"] = True
-            # UB/URMA only visible in host netns; align with Docker --net=host.
-            pod_spec[C.HOST_NETWORK] = True
-            pod_spec[C.DNS_POLICY] = C.DNS_POLICY_CLUSTER_FIRST_WITH_HOST_NET
-            _ensure_a5_host_nic_env(container)
             logger.info("Applied A5 host-nic overlay (AGRC protocol_desc)")
     apply_a5_dns_config(pod_spec, deploy_config)
     logger.info("Applied engine pod config for hardware_type=%s", hardware_type)
-
-
-def _ensure_a5_host_nic_env(container):
-    """Inject HCCL_IF_IP from hostIP; keep socket IFNAME from env.json / ConfigMap.
-
-    Do not hardcode IFNAME — 1825 uses eth0, UBOE may use eth2/eth4 per role.
-    """
-    env_list = container.setdefault(C.ENV, [])
-    by_name = {item.get(C.NAME): item for item in env_list if isinstance(item, dict)}
-
-    def upsert(name, value=None, field_path=None):
-        item = {C.NAME: name}
-        if field_path is not None:
-            item["valueFrom"] = {"fieldRef": {"fieldPath": field_path}}
-        else:
-            item[C.VALUE] = value
-        if name in by_name:
-            idx = env_list.index(by_name[name])
-            env_list[idx] = item
-        else:
-            env_list.append(item)
-        by_name[name] = item
-
-    upsert("HCCL_IF_IP", field_path="status.hostIP")
 
 
 def apply_a5_workload(workload, deploy_config):
@@ -455,8 +411,8 @@ def validate_instance_nums(user_config):
         raise ValueError(f"{C.P_INSTANCES_NUM} must be greater than {C.INSTANCE_NUM_ZERO}")
     if p_total > C.INSTANCE_NUM_MAX:
         raise ValueError(f"{C.P_INSTANCES_NUM} must not exceed {C.INSTANCE_NUM_MAX}")
-    if d_total <= C.INSTANCE_NUM_ZERO:
-        raise ValueError(f"{C.D_INSTANCES_NUM} must be greater than {C.INSTANCE_NUM_ZERO}")
+    if d_total < C.INSTANCE_NUM_ZERO:
+        raise ValueError(f"{C.D_INSTANCES_NUM} must be greater than or equal to {C.INSTANCE_NUM_ZERO}")
     if d_total > C.INSTANCE_NUM_MAX:
         raise ValueError(f"{C.D_INSTANCES_NUM} must not exceed {C.INSTANCE_NUM_MAX}")
 
