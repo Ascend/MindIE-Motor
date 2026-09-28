@@ -2,13 +2,17 @@
 
 ## Overview
 
-KV Conductor is a standalone Rust HTTP service (axum + tokio) that maintains **radix prefix trees** of cached KV blocks, indexed per `(model_name, tenant_id)` pair. It answers KV cache overlap queries from routers/schedulers, enabling **cache-aware request routing** — steering requests toward the worker that already has the longest matching token prefix cached.
+KV Conductor is a standalone Rust HTTP service (axum + tokio) indexed per `(model_name, tenant_id)`.
+It maintains HBM radix prefix trees and CPU/Disk continuation-edge indexes, returning raw coverage
+to Coordinator. Coordinator applies tier weights, a hit-rate gate, and load-aware routing;
+Conductor does not select the final endpoint or move KV data.
 
 Replaces Mooncake conductor for MindIE Motor. Design priorities:
 
 - **Low-latency queries**: O(path_length) radix tree traversal with `parking_lot::RwLock` read locks — multiple concurrent queries don't block each other.
 - **Per-tenant isolation**: Each `(model, tenant)` pair gets its own indexer entry.
-- **Multi-tier storage awareness**: XPU/CPU/DISK tracked independently per block with configurable weights.
+- **Multi-tier storage awareness**: NPU/CPU/Disk indexed separately; exclusive coverage returned.
+  Weights are applied by Coordinator.
 - **Push-based ingestion**: Events from vLLM engines via ZMQ SUB, HTTP `POST /events`, or Mooncake pool backends.
 
 ### References
@@ -18,40 +22,22 @@ Replaces Mooncake conductor for MindIE Motor. Design priorities:
 
 ## Architecture
 
-``` text
-┌─────────────────────────────────────────────────────────┐
-│                  KV Conductor Service                    │
-│                   (axum 0.7 / tokio)                     │
-│                                                         │
-│  ┌──────────────┐  register   ┌──────────────────────┐ │
-│  │   Engine     │────────────►│   WorkerRegistry      │ │
-│  │  (vLLM/      │◄───────────│     instances:         │ │
-│  │   SGLang)    │   query     │      RwLock<HashMap>   │ │
-│  └──────────────┘             │     indexer: Arc<>     │ │
-│                               │     zmq_subscribers    │ │
-│  ┌──────────────┐  events     │     hbm_ip_index       │ │
-│  │  Mooncake    │────────────►│                        │ │
-│  │  master (ZMQ)│  (HTTP or   └───────────┬────────────┘ │
-│  └──────────────┘   ZMQ SUB)              │              │
-│                                           ▼              │
-│  ┌──────────────┐  GET        ┌──────────────────────┐ │
-│  │  Router/     │ /health     │   Indexer             │ │
-│  │  Scheduler   │ /workers    │   DashMap<(model,     │ │
-│  └──────────────┘             │     tenant)→Entry>    │ │
-│                               │                       │ │
-│                               │  Per Entry:           │ │
-│                               │   - hbm_tree (Radix)  │ │
-│                               │   - cpu_tiers (edges) │ │
-│                               │   - disk_tiers (edges)│ │
-│                               │   - offload_pool_state│ │
-│                               └───────────────────────┘ │
-└─────────────────────────────────────────────────────────┘
+```text
+Coordinator Mgmt -- register/unregister --> WorkerRegistry
+Inference Worker -- query -------------> Indexer (model, tenant)
+Engine PUB ------ KV events -----------> HBM radix tree / offload state
+Pool PUB -------- store confirmation --> CPU/Disk continuation edges
+                                       (two-phase matching)
+WorkerRegistry -- maintenance ---------> TTL caches / empty nodes / entries
 ```
+
+Conductor SUB connects to engine/pool PUB endpoints; event data flows back toward Conductor.
+Coordinator owns registration and selection, while the engine owns cached KV data.
 
 ### HTTP Endpoints
 
 | Endpoint | Method | Purpose |
-|------|------|
+|---|---|---|
 | `/register` | POST | Register a worker instance (HBM or pool) |
 | `/unregister` | POST | Remove worker; cleans up radix-tree blocks |
 | `/query` | POST | Query KV cache overlap scores for token sequence |
@@ -82,13 +68,13 @@ Each `KvCacheEvent` accepts two JSON shapes via serde aliases:
 
 ---
 
-## Module Map (~7500 lines Rust)
+## Module Map
 
 Crate root: `motor/kv_conductor/` (paths below are relative to it).
 
 | File | Role |
-|------|------|
-| `src/main.rs` | CLI entry: host/port, tracing (UTC+8), axum serve |
+|---|---|
+| `src/main.rs` | CLI: host/port, maintenance interval and TTLs; tracing (UTC+8), axum serve |
 | `src/lib.rs` | Module declarations + re-exports |
 | `src/server.rs` | HTTP routes, `AppState { registry }`, middleware, JSON/msgpack content negotiation on query endpoints |
 | `src/registry.rs` | WorkerRegistry: register/unregister/query dispatch, ZMQ lifecycle, re-registration, replay gating |
@@ -103,10 +89,10 @@ Crate root: `motor/kv_conductor/` (paths below are relative to it).
 | `src/events/flex_hash.rs` | FlexHash: polymorphic u64 deserializer (int/binary/string) |
 | `src/events/helpers.rs` | `resolve_medium()`, `resolve_workers()` |
 | `src/events/tests.rs` | Unit tests for event parsing |
-| `src/protocols.rs` | HTTP types, WorkerKey, StorageMedium, ScoringConfig, KvCacheEventData, query/response types |
+| `src/protocols.rs` | HTTP types, WorkerKey, StorageMedium, KvCacheEventData, query/response types |
 | `src/hashing.rs` | `compute_block_hash_for_seq()` — XXH3 with rayon parallel |
 | `src/error.rs` | KvConductorError (thiserror) |
-| `tests/integration_test.rs` | HTTP API integration tests (axum test server, 17 tests) |
+| `tests/integration_test.rs` | HTTP API integration tests over an axum test server |
 
 ---
 
@@ -117,7 +103,7 @@ Crate root: `motor/kv_conductor/` (paths below are relative to it).
 Two distinct hash types serve different purposes:
 
 | Hash | Source | Purpose | Tree Role |
-|------|------|-----------|
+|---|---|---|---|
 | `LocalBlockHash(u64)` | XXH3 of token bytes in a block | Content-addressed radix tree key | Primary — determines tree position |
 | `SequenceBlockHash(u64)` | Engine-provided rolling hash (includes parent context) | Reverse lookup by engine sequence hash | Secondary — stored in `Block.block_hash` for O(1) removal |
 
@@ -130,7 +116,7 @@ pub struct WorkerKey {
     pub instance_id: String,   // e.g. "prefill-0"
     pub backend_id: String,    // may differ from instance_id for pool backends
     pub dp_rank: u32,          // data-parallel rank
-    pub medium: StorageMedium, // Xpu / Cpu / Disk
+    pub medium: StorageMedium, // Npu / Cpu / Disk / Unknown
 }
 ```
 
@@ -139,19 +125,19 @@ pub struct WorkerKey {
 ### StorageMedium (RFC #1527)
 
 | Enum | Wire Value | Source | Typical Medium |
-|------|------|---------------|
-| `Xpu` | `"xpu"`, `"hbm"`, `"device"` | Engine worker events | GPU/NPU HBM |
+|---|---|---|---|
+| `Npu` | `"npu"` (aliases: `"gpu"`, `"xpu"`, `"hbm"`, `"device"`) | Engine worker events | GPU/NPU HBM |
 | `Cpu` | `"cpu"`, `"host"`, `"memory"` | Pool backend MEMORY replica | Host DDR |
 | `Disk` | `"disk"`, `"ssd"`, `"nvme"`, `"dfs"` | Pool backend DISK replica | SSD/NVMe/DFS |
-| `Unknown` | anything else (e.g. `"unknown"`) | `StorageMedium::parse()` fallback | 4th distinct variant (not folded into Xpu) |
+| `Unknown` | anything else (e.g. `"unknown"`) | `StorageMedium::parse()` fallback | 4th distinct variant |
 
 ---
 
-## Multi-Medium Indexing: HBM Tree vs CPU/Disk Flat Maps
+## Multi-Medium Indexing: HBM Tree and CPU/Disk Continuation Edges
 
 This is the core architectural decision. Different storage media use **different data structures** because their access patterns differ.
 
-### HBM/XPU: ConcurrentRadixTree (Prefix Chain)
+### HBM/NPU: ConcurrentRadixTree (Prefix Chain)
 
 **Why a tree:** KV cache reuse depends on **contiguous prefix matching**. If a request shares the first 384 tokens with a cached sequence, the router should route to the worker that has those 384 blocks cached. A prefix tree enables O(L) traversal along the query sequence, discovering per-worker match depth at each level.
 
@@ -178,7 +164,9 @@ Each `Block` node:
 - `apply_store()`/`apply_remove()`: hand-over-hand write locks (parent → child → release parent), plus external lookup table write lock
 - Worker set uses `Arc::make_mut` — mutations clone-on-write, queries only bump refcounts
 
-**Memory reclamation:** When the last worker is removed from a block, `drop_worker()` clears `self.children` so the subtree is dropped. Orphan nodes (from worker disconnection) are cleaned up by `sweep_stale_nodes()` triggered every 1000 HBM removals.
+**Memory reclamation:** HBM removal/clear performs precise deletion. Background maintenance
+(default every 30 seconds) calls `sweep_stale_nodes()` to reclaim empty nodes, including when
+ingestion has stopped. It also sweeps matching-cache TTLs and unreferenced empty indexer entries.
 
 ### CPU/Disk: LowerTierIndexer (Continuation Edges)
 
@@ -222,10 +210,13 @@ affinity_matched = round((npu×w_npu + cpu×w_cpu + disk×w_disk) × block_size)
 ```
 
 Defaults in `SchedulerConfig.kv_affinity`: `w_npu=1.0`, `w_cpu=1.0`,
-`w_disk=0.0` (non-negative). `hit_rate_threshold` (default `0`) is applied
-by Coordinator after this weighting: if the best `affinity_matched / isl`
-is not strictly greater than the threshold, routing falls back to
-`load_balance`.
+`w_disk=0.0` (non-negative). Coordinator caps `affinity_matched` to `isl`.
+`hit_rate_threshold=0` disables only the hit-rate gate. A positive threshold requires the best
+weighted `affinity_matched / isl` to be strictly greater; equality falls back, and threshold `1`
+always declines affinity. The gate precedes load-gated filtering. Sparse query results are
+zero-filled across candidates when at least one current instance is reported; no current instance
+data yields load-balance fallback. See [Coordinator scheduling](coordinator.md)
+for CAS re-pick and ledger semantics.
 
 ---
 
@@ -255,14 +246,18 @@ Optional fields may be omitted or null; unknown fields (including `extra_keys`) 
 `type` is required. `BlockRemoved` and `AllBlocksCleared` use the same map decoder.
 Legacy arrays use `rmpv::Value` + tag-based dispatch + type-pattern parsing.
 
-**Attention-group filtering:** Following Dynamo kv-router, only `FullAttention`, `MlaAttention`, and `SinkFullAttention` events are processed. SWA, Mamba, ChunkedLocal, etc. are filtered out. This ensures all ingested events share the same `block_size`, avoiding multi-group hash granularity mismatch.
+**Attention-group filtering:** A deny-list excludes SlidingWindow, SlidingWindowMla, Mamba,
+ChunkedLocalAttention, EncoderOnlyAttention and CrossAttention (case/underscore insensitive).
+FullAttention, MlaAttention, SinkFullAttention, absent and unknown kinds are retained.
+`BlockStored` with a nonzero event block size different from the registered size is dropped as
+`block_size_mismatch`. Register the main-attention event grain, which may differ from engine page size.
 
 **`apply_vllm_event()` logic:**
 
 1. Parse the tagged map or legacy array into `VllmEvent` enum (`BlockStored` / `BlockRemoved` / `AllBlocksCleared`)
 2. Filter: skip non-main attention groups
-3. Determine `StorageMedium` from `medium` field (default `Xpu`)
-4. **HBM (Xpu) events:**
+3. Determine `StorageMedium` from `medium` field (default `Npu`)
+4. **HBM (Npu) events:**
    - Compute `tokens_hash` from `token_ids` via `compute_block_hash_for_seq(block_size)`
    - Insert into `hbm_tree` via `apply_store(worker, lookup, store_data)`
    - Update reverse lookup: `seq_hash → tree_node`
@@ -332,22 +327,28 @@ Because pool and engine offload events arrive from **different ZMQ subscribers**
                    │  under pool worker key   │
                    └──────────────────────────┘
 
-  Invariant: a block_hash exists in AT MOST ONE of the two maps.
-  Once both sides arrive, it is removed from both and enters the tree.
+  Once confirmed, the edge enters the lower-tier index; content is temporarily retained
+  for a later medium. A block_hash cannot be in both offload and content.
 ```
 
 **OffloadPoolState structure:**
 
 ```rust
 pub struct OffloadPoolState {
-    /// block_hash → tokens_hash (offload waiting for pool)
-    pub offload: FxHashMap<u64, u64>,
+    /// Unconfirmed offloads: content + insertion timestamp (TTL 600s).
+    pub offload: FxHashMap<u64, OffloadCacheEntry>,
+    /// Confirmed CPU→Disk mapping (TTL 300s), survives tier removal.
+    pub content: FxHashMap<u64, ContentEntry>,
     /// block_hash → workers (pool waiting for offload)
     pub pending_pool: FxHashMap<u64, FxHashSet<PendingPoolEvent>>,
 }
 ```
 
-**Stale entry cleanup:** `sweep_stale_pending()` runs every 100 ingest operations, evicting entries older than 60s TTL. Stale entries are also cleared on removal/cleared events.
+**Stale entry cleanup:** Background maintenance calls `sweep_stale_caches()`; defaults are
+pending 60s, content 300s, offload 600s, maintenance interval 30s. CLI overrides are
+`--pending-ttl-secs`, `--content-ttl-secs`, `--offload-ttl-secs`, `--maintenance-interval-secs`.
+Entries may remain for their TTL plus a maintenance period; matching/removal can clear them earlier.
+These TTLs apply to temporary matching caches, not engine KV eviction or a fixed memory capacity.
 
 ---
 
@@ -356,7 +357,7 @@ pub struct OffloadPoolState {
 Three pool backends supported, each with different event broadcast semantics:
 
 | Backend | Pool Model | Registration | MatchMode | HBM IP Index |
-|------|------|-----------|-------------|
+|---|---|---|---|---|
 | Mooncake | Centralized master, one ZMQ PUB | `endpoint` (pool) + `medium_endpoints` (HBM) | `IpOnly` — `backend_id`=IP → all DPs on node | Yes |
 | Memcache | Centralized master, one ZMQ PUB | Same as Mooncake | `IpOnly` — same as Mooncake | Yes |
 | YuanRong | Per-node CPU/Disk PUB + per-DP NPU | `medium_endpoints` NPU per DP; CPU/Disk once per node | NPU `None`; CPU/Disk `IpOnly` | Yes |
@@ -380,13 +381,16 @@ when `cpu` and `disk` point to the same port, only one ZMQ SUB connection is cre
 
 Events arrive via ZMQ PUB as 3-part messages: `[topic] [seq: u64 BE] [msgpack payload]`.
 
-The payload is dispatched in 3 formats, tried in order by `process_payload()`:
+`process_payload()` dispatches by registration `EventSource` and payload shape:
 
-| # | Format | Structure | Source |
-|---|------|------|
-| 1 | vLLM batch | `[ts, [events...], dp_rank]` — `parse_vllm_batch()` tries both `[ts, events, dp_rank]` and `[ts, dp_rank, events]` field orders (msgspec/version robustness); ts may be `f64` or int | vLLM engine (preferred) |
-| 2 | Pool batch | `(i64, Vec<PoolEvent>, u32)` via `rmp_serde` | Mooncake master |
-| 3 | Memcache batch | `{"events": [PoolEvent, ...]}` via `rmp_serde` (`MemcacheEventBatch`); per-event map carries `backend_id` (node Pod IP), optional fields as nil, `seq_hashes` uint64 array (`hash_as_int=true`) or hex strings | memcache MetaService (memcache PR #334) |
+| Source / shape | Format | Parser |
+|---|---|---|
+| Engine | `[ts, events, dp_rank]` or `[ts, dp_rank, events]` | `parse_vllm_batch()`; tagged map events and legacy arrays |
+| Pool + map | `{"events": [PoolEvent, ...]}` | `MemcacheEventBatch` |
+| Pool + array | `(timestamp_ms, [PoolEvent, ...], dp_rank)` | Pool batch decoder |
+
+Live pool messages are not offered to the vLLM decoder. Pool replay shares this dispatcher;
+engine replay retains its vLLM-first, legacy-pool fallback for compatibility.
 
 The former vLLM bare / Pool legacy array (`ZmqEventMap`) / Pool bare formats have been removed — the `ZmqEventMap` type no longer exists.
 
@@ -398,7 +402,8 @@ The former vLLM bare / Pool legacy array (`ZmqEventMap`) / Pool bare formats hav
 - msgpack binary ≤8 bytes → `u64` (big-endian); **>8 bytes (vLLM default 32-byte sha256) → trailing 8 bytes = low 64 bits**, matching vLLM int mode (`& (1 << 64) - 1`) and memcache `BlockHashHexToU64` — this is what makes engine offload events (sha256 bytes) match pool confirmations (u64)
 - msgpack string (hex `0xABCD` or decimal) → parsed `u64`
 
-Truncation does exist, but only in the separate `rmpv::Value::Binary` path in `events/vllm.rs` (used when parsing vLLM event arrays field-by-field): there, >8-byte binaries are truncated to their last 8 bytes instead of erroring.
+Both `FlexHash` and the field-by-field binary parser in `events/vllm.rs` accept long binary
+hashes by taking the trailing eight bytes; do not document the typed path as rejecting them.
 
 ### Replay on Registration
 
@@ -418,6 +423,14 @@ Re-registering an existing `(instance_id, dp_rank)` stops the old ZMQ subscriber
 - If the backend is unchanged → preserves tree data and only updates endpoint info
 
 This lets clients fix misconfigured endpoints by simply re-registering, without a restart or explicit unregister.
+
+Coordinator's periodic reconciliation defaults to off (`re_register_interval_sec=0`).
+When enabled, it re-registers missing P/U DPs and reconciles YuanRong node-pool caches against
+`GET /workers`; a missing node pool alone does not rebuild still-registered HBM subscribers.
+Node pools are keyed by `(IP, model)` and unregistered after their last DP reference leaves.
+Mooncake/Memcache central pools are not repaired by this periodic branch. Coordinator's YuanRong
+node-pool payload does not automatically include replay_endpoint. Rust replay is still gated by
+first instance ID, not first DP; registry readiness is not full index-recovery readiness.
 
 ---
 
@@ -550,14 +563,14 @@ Inline test modules co-located with their code:
 
 ### Integration Tests (`tests/integration_test.rs`)
 
-HTTP API tests (20) over a real axum server on a random local port (`start_test_server()` helper binds `127.0.0.1:0`), exercising `/register`, `/unregister`, `/query`, `/query_by_hash` (msgpack), `/events`, `/health`, `/workers`. Note: `test_query_after_kv_events`'s event injection is a silent 422 in the original test (`_resp` is not asserted) — `register_and_seed()` in the msgpack tests fixes this by carrying `instance_id`; treat that helper as the canonical injection pattern. The msgpack tests assert Content-Type negotiation (`application/msgpack` request → msgpack response, errors included) and structural equality between msgpack and JSON query responses.
+HTTP API tests over a real axum server on a random local port (`start_test_server()` helper binds `127.0.0.1:0`), exercising `/register`, `/unregister`, `/query`, `/query_by_hash` (msgpack), `/events`, `/health`, `/workers`. Note: `test_query_after_kv_events`'s event injection is a silent 422 in the original test (`_resp` is not asserted) — `register_and_seed()` in the msgpack tests fixes this by carrying `instance_id`; treat that helper as the canonical injection pattern. The msgpack tests assert Content-Type negotiation (`application/msgpack` request → msgpack response, errors included) and structural equality between msgpack and JSON query responses.
 
 ### Performance Profiling
 
 Three phases in the query hot path:
 
 | Phase | Keyword | Optimization |
-|------|------|
+|---|---|---|
 | XXH3 hashing | `hash_computed` | rayon parallel for >2048 hashes (PAR_THRESHOLD) |
 | Tree traversal | `find_matches` | Read-only locks, multiple concurrent readers |
 | Total | `query profile` | `total_us = hash_us + find_matches + serialize` |

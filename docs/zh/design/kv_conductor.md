@@ -3,31 +3,20 @@
 ## 架构总览
 
 ```text
-                        ┌──────────────────────────────────────┐
-                        │             KV Conductor             │
-                        │                                      │
-   Engine Worker        │  ┌──────────┐    ┌────────────────┐  │
-   (vLLM/SGLang)        │  │ Registry │    │    Indexer     │  │
-       |                │  │          │    │                │  │
-       |  register      │  │ workers  │--->│ DashMap<       │  │
-       +--------------->│  │ endpoints│    │ (model,tenant) │  │
-       |                │  └──────────┘    │   -> Entry     │  │
-       |  ZMQ / HTTP    │                  │                │  │
-       |  KV events     │                  └───┬───────┬────┘  │
-       +--------------->│                      |       |       │
-       |                │               ┌──────┘       └──┐    │
-       |  query         │               v                 v    │
-       +--------------->│    ┌──────────────┐  ┌──────────────┐│
-       |                │    │  HBM Tree    │  │  CPU/Disk    ││
-   Coordinator          │    │ (RadixTree)  │  │ (LowerTier)  ││
-       |                │    │              │  │              ││
-       |  200 OK        │    │ prefix chain │  │ continuation ││
-       <----------------│    │ matched      │  │ edges        ││
-                        │    │ block counts │  │ matched      ││
-                        │    └──────────────┘  │ block counts ││
-                        │                      └──────────────┘│
-                        └──────────────────────────────────────┘
+Coordinator Mgmt ---- register/unregister ----> Worker Registry
+Inference Worker ---- query ------------------> Indexer (model, tenant)
+                                                   |
+Engine PUB ---------- KV events --------------> HBM Radix Tree
+                         |                         |
+                         +-- offload tokens --> 两阶段匹配缓存
+                                                   |
+Pool PUB ------------ store confirmation ----> CPU/Disk Continuation Edges
+
+Conductor SUB 主动连接引擎 / pool 的 PUB 端口，事件数据流向 Conductor。
 ```
+
+注册由 Coordinator 管理面发起，查询及最终选点由 Inference Worker 执行。
+KV 数据保留在引擎或存储后端，Conductor 保存索引。
 
 模块职责：
 
@@ -238,16 +227,32 @@ CPU/DISK 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**�
     CPU/Disk: medium_endpoints={"cpu": "tcp://IP:15558", "disk": "..."}  -> once per node, IpOnly
 ```
 
+<a id="registration-lifecycle"></a>
+
 ### 注册、重注册与注销生命周期
 
 - 首次注册会创建 `(model_name, tenant_id)` 对应的 `IndexerEntry`，并按去重后的 endpoint
   创建 ZMQ subscriber；HTTP-only 注册允许 endpoint 为空。
 - 同一 `(instance_id, dp_rank)` 重注册时，旧 subscriber 会先停止。后端未变化时保留已有
   索引，仅更新 endpoint；后端变化时清除该实例/DP 的 NPU/CPU/Disk 索引和旧 HBM IP 映射。
-- `replay_endpoint` 只在该 `instance_id` 首次出现时通过 `spawn_blocking` 执行历史事件回放。
+- `replay_endpoint` 只在该 `instance_id` 首次出现时通过 `spawn_blocking` 执行历史事件回放，
+  不是按 `(instance_id, dp_rank)` 首次出现判定。因此同一实例后续注册的 DP 不会各自触发回放。
+- 回放和实时订阅共用注册时解析的路由身份、MatchMode 和 HBM IP 索引。YuanRong 节点池从
+  CPU/Disk endpoint 提取节点 IP，缺少 `backend_id` 的 pool 回放事件也能关联节点内 DP。
+  Pool 回放走 pool 格式分流，避免无 `type` 的事件被 vLLM 解析器吞掉。
+- 回放与查询并行，没有索引恢复就绪门禁；只能回放发布端仍保留的历史事件。
 - 注销会停止该实例/DP 的全部 subscriber，删除 HBM IP 映射及三层索引；删除最后一个 DP
   时，使用**注册记录中的** model/tenant 回收空 `IndexerEntry`，不信任注销请求里的同名字段。
 - `POST /events` 的 `shutdown=true` 当前只记录日志，完整释放仍需显式调用 `/unregister`。
+
+Coordinator 的 `re_register_interval_sec` 默认 0，周期对账关闭。开启后调用 `GET /workers`：
+
+- 补注册缺失的 P/U HBM DP；YuanRong 同时对账按 `(节点 IP, model_name)` 缓存的节点池标记，
+  节点池单独缺失时只重建池订阅，避免重建仍存在的 HBM 订阅。
+- YuanRong 节点池按 DP 引用计数注销；最后一个 DP 离开才注销对应节点/模型的池。
+- Mooncake/Memcache 的 `_pool_registered` 仍是进程内标记，当前周期分支不补注册中心 pool。
+- Coordinator 为 HBM 注册透传 `replay_endpoint`，当前不为 YuanRong 节点池自动附加回放地址。
+  Rust 接口支持显式携带该地址的节点池注册，但不能据此推断部署配置已启用 L2 回放。
 
 ---
 
@@ -521,16 +526,17 @@ vLLM msgspec 事件按 attention group 过滤（`is_main_attention_kind`，deny-
 
 事件通过 ZMQ PUB 以 3 段消息送达：`[topic][seq: u64 BE][msgpack payload]`。
 
-ZMQ 路径（`zmq_subscriber::process_payload`）依次尝试 **2** 种 payload：
+ZMQ 路径（`zmq_subscriber::process_payload`）根据注册来源 `EventSource` 和 payload 形状分流：
 
-1. **vLLM msgspec batch**（`parse_vllm_batch`）：
-   - Format A：`[ts, events, dp_rank]`
-   - Format B：`[ts, dp_rank, events]`
-   - 单条事件为 array_like：`[tag, block_hashes, parent_hash?, token_ids, block_size, medium, ...]`
-2. **Pool backend batch**：`(timestamp_ms, [PoolEvent...], dp_rank)`（Mooncake/Memcache 等）
+| 来源 / 形状 | 解析格式 |
+|-------------|----------|
+| Engine | vLLM msgspec batch：`[ts, events, dp_rank]` 或 `[ts, dp_rank, events]`；事件支持带 `type` 的 map 和 legacy array |
+| Pool + map | Memcache batch：`{"events": [PoolEvent, ...]}` |
+| Pool + array | Mooncake/YuanRong batch：`(timestamp_ms, [PoolEvent...], dp_rank)` |
 
-二者均失败则记 parse error。事件中缺失的 `model_name` / `block_size` / `dp_rank` /
-`medium` 使用注册时的默认值补齐。
+各分支解析失败时记 parse error，不把实时 Pool 事件先交给 vLLM 解析器。
+实时引擎事件以注册的 DP 为路由上下文；model/tenant 等上下文由注册提供，事件携带的
+block size 会与注册粒度核对。Pool 回放复用上述分流；Engine 回放仍保留 vLLM 解析后尝试 legacy pool batch 的兼容分支。
 
 ### HTTP `/events` Wire Format
 
@@ -573,6 +579,67 @@ Coordinator 侧通过 `kv_conductor_config.query_encoding`（默认 `"msgpack"`�
 | `InvalidBlockSequence` | 500 | 检测到自引用 block |
 
 ---
+
+## Coordinator 调度集成
+
+### 查询覆盖与评分长度
+
+Conductor 响应中的 `matched_tokens` 是各介质互斥覆盖的未加权总量；
+Coordinator 根据介质权重计算用于调度的匹配长度，并截断到 prompt 长度 `isl`：
+
+```text
+raw_matched_tokens = (npu_blocks + cpu_blocks + disk_blocks) × block_size
+affinity_matched_tokens = min(round((npu_blocks × w_npu + cpu_blocks × w_cpu
+                                   + disk_blocks × w_disk) × block_size), isl)
+prefill_cost = max(0, isl − overlap_credit × affinity_matched_tokens)
+```
+
+`longest_matched` 是实例内各 DP 原始覆盖的最大值；`affinity_matched_tokens` 是本文对评分量的命名，
+对应最终 `scheduled` 日志中的 `matched`。旧版裸整数或仅含 `matched_tokens` 的响应按原值兼容。
+这些量来自缓存索引，不能直接视为引擎最终实际复用量。
+
+### 候选、阈值与回退
+
+`ConductorApiClient.query_conductor()` 返回稀疏命中映射。`KvCacheAffinityPolicy` 先按 P/U
+可用候选收集 DP 结果：响应包含至少一个候选实例时，未报告的实例按零命中补齐；
+没有任何当前候选实例的数据时返回 `None`，由调用者回退 `load_balance`。
+多 HTTP endpoint 实例按 `endpoint.id` 读取 DP 条目，缺失的 DP 按零命中处理。
+单 HTTP endpoint 实例由 `_matched_raw_for_endpoint()` 折叠各引擎 DP 的命中条目，
+再为该 HTTP endpoint 计算亲和分。
+
+短于已知 `block_size` 的请求跳过查询，使用所有候选的零命中映射，仍执行命中率门槛。
+本地分词失败返回空 token IDs 时，在已知正 block size 的条件下也进入此快速路径。
+缺少 tenant 数据会触发负载均衡回退；连续 3 次查询异常后，客户端查询熔断 30 秒。
+
+评分量是按介质加权、截断到 prompt 长度的匹配长度，与协议 `matched_tokens` 的未加权覆盖不同。
+`hit_rate_threshold=0` 只关闭门槛；大于 0 时，候选最大加权匹配长度 / prompt 长度必须严格超过阈值。
+等于阈值或空 prompt 时返回 `[]`，表示正常策略回退，不作为 conductor 查询故障。
+门槛先于 `load_gated` 筛选，故不是对最终选中 endpoint 的最低命中率保证。
+例如阈值为 0.5、候选最大加权命中率恰为 0.5 时回退；阈值为 1 时，由于匹配量已截断到 `isl`，
+门槛始终不通过。介质权重参与门槛计算，原始覆盖非零也可能得到零加权匹配量。
+
+### 初选、CAS 与重选
+
+调度热路径由 Inference Worker 的 `AsyncSchedulerClient.select_and_allocate()` 执行，
+初选后通过 Rust 共享内存 `cas_add` 提交，不逐请求向 Scheduler 发送 ALLOCATE RPC。
+
+初选使用 endpoint 的当前负载：`unified` 最小化
+`prefill_load_scale × prefill_cost + load_weight × endpoint_load`；`load_gated` 先取负载最低的 N 个，
+再按加权匹配长度降序、负载升序排序。N 由 `load_gate_topn` 指定，0 使用 2。
+
+| 阶段 | `unified` | `load_gated` |
+|------|-----------|--------------|
+| 初选 | 剩余 prefill 成本与 endpoint 负载加权求和，取最小值 | 按 endpoint 负载取最低 N 个，再按加权匹配长度排序 |
+| CAS 冲突 / 候选失效后的重选 | 复用所有候选的 prefill 成本，用新负载重新评分 | 在原筛选集合内最多保留的 3 个亲和候选中，按新负载分择优；不重新计算全局 N 个集合 |
+
+重选调用 `allocate_arbitration.py`，负载分复用 `LoadBalancePolicy.calculate_endpoint_score()`：
+`endpoint_load + endpoint_instance_score_weight × 实例平均负载`，实例权重默认 `0.05`。
+亲和初选只使用 endpoint 负载，因此两个阶段的评分口径并不完全相同。
+快路径返回的 `scheduled.score` 是候选校验的负载分，不能始终视为 unified 综合分。
+
+P/U 亲和分配的记账量是 `max(0, isl − affinity_matched_tokens)`；策略的 `overlap_credit`、
+`prefill_load_scale` 和 `load_weight` 不直接写入账本。回退到负载均衡时使用需求负载计算。
+使用条件、配置与验收见[亲和调度用户指南](../user_guide/features/kvcache_affinity.md)。
 
 ## 相关文件索引
 

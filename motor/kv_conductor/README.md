@@ -1,7 +1,8 @@
 # KV Conductor
 
 基于 Rust 的 KV Cache 索引服务。订阅引擎 KV 事件，维护前缀树索引，为 Coordinator 提供
-缓存感知的请求路由——将请求导向已缓存最长 token 前缀的 Worker。已集成在 motor Python 包内。
+缓存感知的请求路由。Coordinator 对缓存命中按介质加权，结合负载及命中率门槛选点。
+Conductor 负责索引查询，实际 KV 复用和数据传输由引擎及存储后端完成。已集成在 motor Python 包内。
 
 ## 快速开始
 
@@ -14,7 +15,8 @@ cd motor/kv_conductor && cargo build --release
 # 二进制产出：target/release/kv-conductor
 ```
 
-仓库提交了 `Cargo.lock`；本地/CI 建议使用 `--locked` 以固定依赖版本。流水线加速请缓存：
+`Cargo.lock` 由构建生成，当前未纳入版本管理。需要固定依赖版本时，CI 应保存并复用锁文件，
+再使用 `--locked` 构建。流水线加速可缓存：
 
 - `~/.cargo/registry`、`~/.cargo/git`
 - `motor/kv_conductor/target`
@@ -37,7 +39,7 @@ bash build.sh
 - `SKIP_KV_CONDUCTOR_BUILD=1` → 跳过 cargo（无 bin 则省略该 crate）
 - 缺二进制、有 `cargo` 且能探测到 libzmq（`pkg-config --exists libzmq` 或 `zmq.h`）→ `cargo build --release` 并复制到 `bin/`
 - 有 `cargo` 但缺 libzmq → **WARNING 后自动跳过**（不因此让整个 `build.sh` 失败）
-- 都没有 → 跳过，wheel 不含 kv-conductor（其他功能不受影响；`libmindie_workload_shm.so` 仍必需）
+- 需要编译而没有可用 cargo → 先尝试准备 Rust 工具链；缺必需的 `libmindie_workload_shm.so` 且无法构建时，整个 wheel 构建失败。离线需同时准备该库和 conductor 二进制，不能把缺 cargo 一概当成可选组件跳过
 
 产物：`dist/motor-*.whl`
 
@@ -83,14 +85,16 @@ kv-conductor \
 TTL 清理由后台周期任务完成，ingest 路径不再执行惰性全量扫描；因此即使事件流量停止，
 过期数据也会被回收。实际最长驻留时间约为对应 TTL 加一个 maintenance 周期。
 
-> **注意**：容器部署时，镜像内二进制路径为 `/usr/local/bin/kv-conductor`，
-> 启动脚本 `kv_conductor.sh` 通过 `exec python -m motor.kv_conductor` 启动。
+Python 入口依次查找包内 `motor/kv_conductor/bin/kv-conductor`、源码
+`target/release/kv-conductor` 和 `PATH`，不要求固定安装到 `/usr/local/bin`。
+启动脚本 `kv_conductor.sh` 使用 `exec python -m motor.kv_conductor`。
 
 ## 功能
 
 KV Conductor 维护三层存储介质的 KV Cache 索引，按绝对覆盖终点做互斥切分后
 返回各介质 `*_blocks` 与未加权覆盖长度 `matched_tokens`；介质亲和权重由
-Coordinator 调度器（`kv_affinity_w_*`）在计分时应用。
+Coordinator 调度器在 `scheduler_config.kv_affinity.w_npu/w_cpu/w_disk` 中配置并应用。
+旧的平铺 `kv_affinity_*` 参数仅作兼容，新配置使用嵌套结构。
 
 ### HBM（NPU）— 统一模型
 
@@ -161,7 +165,7 @@ Engine Worker           Pool Master               KV Conductor
   - CPU：从 HBM 断点续查（仅同一 `(instance_id, dp_rank)`）；root 链（首块副本）无条件走——更长副本不会被上游较短命中掩盖
   - Disk：从 `max(HBM, CPU)` 断点续查（同样按 `(instance_id, dp_rank)` 对齐；CPU 更长时优先接 CPU）；root 链同 CPU 层无条件走
 - **连续匹配**：走到第一个缺失边即停；同一 worker 多条候选链（root + 断点）取绝对终点最远者
-- **content 保留**：pool 确认后始终保留 `(tokens_hash, parent_hash)`（无需配置），跨 tier 移除存活，CPU 已驱逐后、保留窗口（300s TTL）内仍可解析 Disk store；窗口关闭自动清除，内存有界（条目为 tier 数据拷贝 + 短暂迁移残留）。未确认的 offload **无 TTL、无硬容量上限**，随未确认块增长，仅在匹配成功或引擎驱逐时清除
+- **匹配缓存保留**：pool 确认后将 `(tokens_hash, parent_hash)` 保留在 `content`，默认 TTL 300 秒，跨 tier 移除存活，供后续 Disk store 使用。未确认的 `offload` 默认 TTL 600 秒，`pending_pool` 默认 TTL 60 秒；后台每 30 秒清扫，匹配成功或显式移除也会提前清理。这些 TTL 约束临时匹配状态，不是引擎 KV 缓存寿命，也不构成固定内存容量上限
 
 各后端的 CPU/Disk 适配差异：
 
@@ -226,6 +230,12 @@ Coordinator                                  KV Conductor
 |------|--------|------|
 | `--port` / `-p` | `13333` | HTTP 服务端口 |
 | `--host` | `::` | 绑定地址（默认双栈） |
+| `--maintenance-interval-secs` | `30` | 后台维护周期，至少按 1 秒执行 |
+| `--pending-ttl-secs` | `60` | Pool-first 等待项 TTL |
+| `--content-ttl-secs` | `300` | 跨介质迁移映射保留 TTL |
+| `--offload-ttl-secs` | `600` | 未确认 engine offload TTL |
+
+`python -m motor.kv_conductor` 将参数透传给二进制；介质评分权重配置在 Coordinator，非本组件 CLI。
 
 ## API
 
@@ -255,7 +265,8 @@ Coordinator 通过 `ConductorApiClient` 与 conductor 通信。`user_config.json
 {
   "motor_coordinator_config": {
     "scheduler_config": {
-      "scheduler_type": "kv_cache_affinity"
+      "prefill_scheduler_type": "kv_cache_affinity",
+      "decode_scheduler_type": "load_balance"
     }
   },
   "kv_conductor_config": {
@@ -266,9 +277,15 @@ Coordinator 通过 `ConductorApiClient` 与 conductor 通信。`user_config.json
 }
 ```
 
-`npu_endpoint` 必须与引擎 `--kv-events-config` 的 `endpoint` 一致（`tcp://*:5557` 为 vLLM 常用值）；
+以上为已有部署的增量，还需在 P/U 引擎启用 `kv-events-config`。
+`npu_endpoint` 用于覆盖自动从引擎配置推导的端口；应与引擎 `--kv-events-config` 的 `endpoint` 一致；
 模式中的 `*` 会被替换为 endpoint IP，端口会加上 `dp_rank`，conductor 主动 connect 到各引擎节点绑定的事件端口。
 注册时写入 conductor 的 `medium_endpoints` key 为 `"npu"`。
+
+YuanRong CPU/Disk 按 `(节点 IP, model_name)` 注册，使用 `cpu_endpoint` / `disk_endpoint` 基础端口，
+不加 DP 秩；这些 pool 事件按 IP 关联节点内各 DP。周期重注册默认关闭，启用后会补齐缺失的 HBM DP
+和 YuanRong 节点池；Mooncake/Memcache 中心 pool 不在当前周期补注册分支中。
+回放只在首次实例注册携带回放地址时启动，查询不会等待回放完成，不能以注册成功代替索引恢复验收。
 
 详见 [KV Cache 亲和性调度文档](../../docs/zh/user_guide/features/kvcache_affinity.md)。
 

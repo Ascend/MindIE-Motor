@@ -36,7 +36,7 @@ CoordinatorDaemon (parent process, async main loop)
 With `render_config.enable=true`, each inference worker prefers the local vLLM Render sidecar before context-budget
 adaptation and routing. Normalized token IDs are stored in `RequestInfo`, so scheduling and P/D routing remain
 independent of the tokenizer source. Render health does not gate Coordinator startup; sidecar availability is
-reported after Coordinator becomes ready. When using `scheduler_type=kv_cache_affinity`, enabling Render is
+reported after Coordinator becomes ready. When using `prefill_scheduler_type=kv_cache_affinity`, enabling Render is
 recommended so routing and inference reuse the same prompt IDs. Streaming requests use Render only when
 `render_config.enable_streaming=true`; it defaults to `false`, preserving the native streaming path.
 
@@ -214,19 +214,48 @@ Located in `scheduler/policy/`, each policy implements `BaseSchedulingPolicy`:
 format. MessagePack requests are sent via `SafeHTTPSClient.post_bytes()`
 (msgspec-encoded, `Content-Type: application/msgpack`) and responses are
 decoded by Content-Type (msgpack via `msgspec`, otherwise JSON — legacy
-JSON-only conductors keep working). Set `query_encoding: "json"` for older
-kv-conductor binaries.<br>
+JSON responses can still be decoded). Request encoding does not automatically downgrade:
+set `query_encoding: "json"` explicitly for JSON-only conductor binaries.
 
 **Factory registration** (`factory.py`): `SchedulingPolicyFactory` maps policy name → class. New policies register here.
 
-The policy is selected by `SchedulerType` (`config/coordinator.py`): `LOAD_BALANCE` (default) / `ROUND_ROBIN` / `KV_CACHE_AFFINITY`. For `scheduler_type=kv_cache_affinity`, a sub-mode is chosen by `kv_affinity.mode`:
+The policy is selected per role by `SchedulerConfig.type_for_role()`: `prefill_scheduler_type` serves Prefill, Encode and Union; `decode_scheduler_type` serves Decode. Both default to `LOAD_BALANCE`; Decode supports load balance / round robin, while KV affinity applies only to P/U. Deprecated `scheduler_type` migrates to both role fields when omitted. When a role uses `kv_cache_affinity`, a sub-mode is chosen by `kv_affinity.mode`:
 
 - `unified` (default) — single score fusing affinity and live load; pick the minimum
 - `load_gated` — keep the N least-loaded endpoints, then pick the longest cached prefix
 
 Tunables live under `CoordinatorConfig.scheduler_config.kv_affinity`: `mode`, `load_weight`, `overlap_credit`, `prefill_load_scale`, `load_gate_topn`, `w_npu`, `w_cpu`, `w_disk`, `hit_rate_threshold`.
 
-`hit_rate_threshold` (default `0`, range `[0, 1]`) is a pre-ranking gate: `0` keeps current affinity scoring. Values in `(0, 1]` require the best endpoint's weighted prefix hit rate `max(matched_tokens) / prompt_tokens` to be **strictly greater** than the threshold; otherwise `KvCacheAffinityPolicy` returns `[]` and the scheduler falls back to `load_balance` without treating it as a conductor failure.
+`hit_rate_threshold` (default `0`, range `[0, 1]`) is a pre-ranking gate: `0` disables only
+this gate, not other fallback paths. Positive values require the best weighted, prompt-capped
+prefix hit rate to be **strictly greater**; equality returns `[]` and falls back to load balance
+without treating it as a conductor failure. `1` always declines affinity. The gate runs over all
+collected candidates before load-gated filtering, not over the final selected endpoint alone.
+
+**Candidate and fallback contract:** Conductor responses are sparse. When at least one current
+candidate instance is reported, `_collect_load_candidates` includes every available candidate,
+treating missing instances/DPs as zero-match. No current instance data or missing tenant data
+returns `None` for load-balance fallback. Prompts shorter than a known block size (including
+empty tokenization results) skip the query and synthesize all-zero matches; the threshold still
+applies. Three consecutive query failures open a process-local circuit for 30 seconds.
+
+**Allocation contract:** Initial affinity scoring uses endpoint SHM workload. The Worker then
+CAS-commits locally. On CAS CHANGED or invalid candidates, `allocate_arbitration.py` re-picks:
+unified reuses every candidate's prefill cost with fresh composite load (endpoint +
+`endpoint_instance_score_weight` × instance mean; default weight `0.05`). Load-gated re-picks
+by fresh composite load among up to three retained affinity candidates inside the original
+gate; it does not rebuild the global N-lowest-load set or preserve longest-prefix order.
+`scheduled.score` on the fast path is the candidate-validation load score, not the unified score.
+P/U affinity commits `max(0, isl - weighted_matched_tokens)`; `overlap_credit`, `prefill_load_scale`
+and `load_weight` affect ranking, not that delta. Release uses the committed workload.
+
+**Registration config:** Runtime fields live in `scheduler_config.kv_conductor_config`.
+Deployer requires top-level `user_config.kv_conductor_config.http_server_port` to enable its service.
+Endpoint/model derivation selects Prefill before Union, never Decode. Legacy
+`prefill_kv_event_config` migrates only its old field list; `query_encoding` must use the new path.
+YuanRong registers HBM per DP (port + rank), CPU/Disk once per `(IP, model)` (base port), and
+periodic re-registration reconciles missing node pools as well as DPs. The timer defaults to off;
+Mooncake/Memcache central pool registration is not reconciled by that periodic path.
 
 Worker-local successful SHM CAS allocations feed `DpStatsLogger` for every scheduling policy.
 `scheduler_config.dp_stats_window` is the emit interval (default 60 seconds; 0 disables).

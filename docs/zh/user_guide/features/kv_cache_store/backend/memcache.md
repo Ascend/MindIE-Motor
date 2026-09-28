@@ -81,9 +81,10 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
 
     如需覆盖硬件默认值，在 `user_config.json` 中显式配置 `local_service_mode` 即可。两种模式的差异和部署示例详见 [MemCache 分离部署方案](https://gitcode.com/Ascend/memcache/wiki/MemCache+vLLM+A3%E5%88%86%E7%A6%BB%E9%83%A8%E7%BD%B2%E6%A1%88%E4%BE%8B.md)。
 
-4. （可选）开启 KV events 广播。
+4. （可选）开启 KV events 广播。<a id="kv-events-affinity"></a>
 
     启用缓存感知 prefill 调度：
+    Motor 侧配置及验收见 [池化亲和配置](../../kvcache_affinity.md#pool-affinity)。
 
     1. 开启 MetaService 广播。
       解除examples/deployer/startup/roles/kv_store_backends/memcache/memcache_meta_service.py 中「KV events 广播」配置块的注释，并按需填写 kv_events_model_name / kv_events_block_size。（需与 kv_conductor_config 中注册的 model_path / block_size 一致，否则事件无法命中索引）

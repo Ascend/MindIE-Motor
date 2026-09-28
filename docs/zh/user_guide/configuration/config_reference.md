@@ -341,6 +341,22 @@ motor_coordinator_config字段配置样例如下所示：
       "w_cpu": 1.0,
       "w_disk": 0.0,
       "hit_rate_threshold": 0.0
+    },
+    "kv_conductor_config": {
+      "conductor_service": "",
+      "http_server_port": 13333,
+      "query_encoding": "msgpack",
+      "block_size": 128,
+      "engine_type": "vLLM",
+      "model_path": "",
+      "store_backend": "",
+      "pool_endpoint": "",
+      "npu_endpoint": "",
+      "cpu_endpoint": "",
+      "disk_endpoint": "",
+      "endpoint": "",
+      "replay_endpoint": "",
+      "re_register_interval_sec": 0
     }
   },
   "inference_workers_config": {
@@ -434,16 +450,6 @@ motor_coordinator_config字段配置样例如下所示：
     "local_parent_sampled": 1.0,
     "local_parent_not_sampled": 1.0
   },
-  "prefill_kv_event_config": {
-    "conductor_service": "",
-    "http_server_port": 13333,
-    "block_size": 128,
-    "endpoint": "",
-    "replay_endpoint": "",
-    "engine_type": "vLLM",
-    "model_path": "",
-    "re_register_interval_sec": 0
-  },
   "token_sampling_config": {
     "interval_seconds": 30.0,
     "logprobs_count": 1,
@@ -527,9 +533,9 @@ motor_coordinator_config字段配置样例如下所示：
 | base_timeout_s | float | 首次熔断时长（秒），也是熔断时长指数退避的基数；每次重新熔断/探活失败按 `2^(熔断次数-1)` 倍增长。默认值：`30.0`。 |
 | max_timeout_s | float | 熔断时长上限（秒）。默认值：`300.0`。 |
 | **scheduler_config字段** |-|-|
-| prefill_scheduler_type | string | Prefill / encode / union 实例的调度类型，默认值：load_balance<ul><li>load_balance：负载均衡；</li><li>round_robin：轮询；</li><li>kv_cache_affinity：KV Cache 亲和调度。</li></ul> |
-| decode_scheduler_type | string | Decode 实例的调度类型，默认值：load_balance。可选 `load_balance` / `round_robin`。枚举也接受 `kv_cache_affinity`（旧 `scheduler_type` 会写到该字段），但选 Decode 实例时不走亲和，仍按 load_balance，启动打 warning。 |
-| scheduler_type | string | **已废弃**。存量配置仍可使用，读取时同时赋给 `prefill_scheduler_type` 与 `decode_scheduler_type` 并打 warning。新配置请分别填写上述两个字段。 |
+| prefill_scheduler_type | string | Prefill / encode / union 的调度类型，默认 `load_balance`；支持 `load_balance`、`round_robin`、`kv_cache_affinity`。 |
+| decode_scheduler_type | string | Decode 的调度类型，默认 `load_balance`；支持 `load_balance`、`round_robin`。若设置 `kv_cache_affinity` 会告警，Decode 选点仍使用负载均衡。 |
+| scheduler_type | string | **已废弃**的兼容字段。读取时把值迁移到未单独配置的 `prefill_scheduler_type` 和 `decode_scheduler_type`；新配置请使用 role 字段。 |
 | enable_pd_separation_fallback_to_hybrid | bool | PD 分离场景下，当不存在兼容且未熔断的 P/D pair 时，是否允许降级使用混部路由，默认值为 `true`。候选优先级为 Union → Prefill → Decode；Decode 兜底仅适用于上报 `decode_colocation` capability 的 vLLM 实例，关闭后无兼容 pair 时返回 503。 |
 | endpoint_instance_score_weight | float | endpoint 优先负载均衡时实例平均负载权重。默认值：`0.05` |
 | dp_stats_window | int | worker 0 周期性打印 per-DP 成功提交请求数与 SHM `active_tokens` 的窗口（秒），同一行输出（`dp_stats` 日志）。独立于 KV 亲和命中统计，所有部署与调度类型下均生效；默认 `60`；`0` 禁用 |
@@ -543,7 +549,7 @@ motor_coordinator_config字段配置样例如下所示：
 | w_npu | float | 互斥 NPU 命中块权重。默认值：`1.0` |
 | w_cpu | float | 互斥 CPU 命中块权重。默认值：`1.0` |
 | w_disk | float | 互斥 Disk 命中块权重。默认值：`0.0` |
-| hit_rate_threshold | float | 亲和性命中率门槛，取值 `[0, 1]`。默认 `0` 关闭（始终按亲和评分）。大于 0 时，最大加权前缀命中率必须 **大于** 该阈值才走亲和调度，否则回退 `load_balance` |
+| hit_rate_threshold | float | 亲和性命中率门槛，取值 `[0, 1]`。默认 `0` 只关闭该门槛，其他回退仍生效。大于 0 时，全部候选的最大加权前缀命中率必须 **严格大于** 该阈值；相等也回退 `load_balance`，`1` 始终回退。门槛在 `load_gated` 筛选之前计算，不保证最终 endpoint 自身超过阈值 |
 | **inference_workers_config字段** |-|-|
 | num_workers | int | Coordinator中业务面worker个数，默认值：4。 |
 | worker_metaserver_base_port | int | vLLM layerwise/trigger PD 时每个 Inference Worker 的 metaserver 起始端口。默认值：`12000`。Worker `i` 监听 `base+i`，仅暴露 `POST /v1/metaserver`。设为 `0` 关闭。须保证 `base+num_workers-1 <= 65535`。同一集群不可混部 handoff 与 trigger。监听地址优先 `POD_IP`，否则用 `coordinator_api_host`（不绑 loopback）。`coordinator_api_host=0.0.0.0`/`::` 仍可启动；走 Trigger 时须有 `POD_IP` 或可达的 `coordinator_api_host`，否则该请求返回 503。端口占用或 metaserver 启动失败时推理口继续服务，该 Worker 的 Trigger 请求返回 503。 |
@@ -611,16 +617,20 @@ motor_coordinator_config字段配置样例如下所示：
 | remote_parent_not_sampled |float|远程父采样率（当父Span未被采样时），当前Span的父Span来自另一个服务（远程调用），但远程的父Span没有被采样时，当前Span的采样概率。默认值：1.0，表示当前调用100%被记录。|
 | local_parent_sampled |float|本地父采样率（当父Span被采样时），当前Span的父Span来自同一个服务实例内（本地调用），且父Span已经被采样时，当前Span的采样概率。默认值：1.0，表示当前调用100%被记录。|
 | local_parent_not_sampled |float|本地父采样率（当父Span未被采样时），当前Span的父Span来自同一个服务实例内（本地调用），但父Span未被采样时，当前Span的采样概率。默认值：1.0，表示当前调用100%被记录。|
-| **prefill_kv_event_config字段** |-|-|
+| **scheduler_config.kv_conductor_config字段** |-|完整 `user_config.json` 推荐配置在顶层 `kv_conductor_config`，Coordinator 加载时合并至本节所列的运行时路径；deployer 启用服务仍要求顶层显式配置 `http_server_port`。旧 `prefill_kv_event_config` 仅保留部分字段兼容，见[自动推导与兼容](#kv_conductor_config-自动推导与兼容)。|
 | conductor_service |string|conductor服务IP或域名，默认为空。|
 | http_server_port |int|KV Conductor的HTTP服务端口，默认值：13333，取值范围：[1024,65535]。|
-| query_encoding |string|Conductor `/query` 请求的传输编码，默认值：`msgpack`，取值：`msgpack` / `json`（启动时校验，非法值直接报错）。<ul><li>`msgpack`：MessagePack 编码（默认）。1M+ 长上下文查询下，请求体积缩减约 55%，端到端查询耗时（含客户端序列化、服务端哈希/匹配/序列化、网络传输）约为 JSON 的 1/4（5M 上下文约 42ms vs 220ms）。</li><li>`json`：传统 JSON 编码，用于对接旧版本 KV Conductor。</li></ul>**滚动升级/混部注意**：请求侧无自动降级——须先升级 kv-conductor 再升级 Coordinator；若混部（新版 Coordinator + 旧版 conductor，或反之），须显式配置 `query_encoding: "json"` 直至两端同版本。|
-| block_size |int|KV Cache块大小，默认值：128。DeepSeek V4 须设为 512，并与引擎 `--block-size` 保持一致。|
-| endpoint |string|P实例发布事件端点，默认为空，取值示例：tcp://*:\<port>。|
-| replay_endpoint |string|事件回放端点，默认为空，取值示例：tcp://*:\<port>。|
+| query_encoding |string|Conductor `/query` 请求编码，默认 `msgpack`，合法值为 `msgpack` / `json`。响应按服务器 Content-Type 解码，请求不自动降级。先升级 conductor 再升级 Coordinator；新 Coordinator 对接仅支持 JSON 的旧 conductor 时显式设为 `json`。不要写在旧 `prefill_kv_event_config` 下，该字段不在旧配置迁移列表中。|
+| block_size |int|正整数，默认 `128`。必须对齐主注意力组 KV 事件的粒度；DeepSeek V4 / 混合 KV 不一定等于引擎 `--block-size`，也不固定为 512，见[混合 KV 配置](../features/kvcache_affinity.md#deepseek-v4)。|
+| endpoint |string|HBM 事件端口的回退模式，默认为空；从 Prefill 或 Union 的 `kv-events-config.endpoint` 推导。格式 `tcp://*:<port>`，注册 HBM 时替换 IP 并加 DP 秩。|
+| replay_endpoint |string|引擎回放端口模式，默认为空；从 Prefill 或 Union 事件配置推导。格式 `tcp://*:<port>`，注册 HBM 时替换 IP 并加 DP 秩。回放受历史缓冲及首次实例注册限制，不保证每个 DP 自动恢复。|
 | engine_type |string|引擎类型，默认值：vLLM。|
-| model_path |string|模型权重路径，默认为空。|
-|re_register_interval_sec|int|重注册时间间隔，默认值：0。|
+| model_path |string|Coordinator 本地 tokenizer 模型目录，默认空，可从引擎模型配置推导；中心 pool 注册也使用此值。P/U DP 的注册模型名取实例 `model_name`。|
+| store_backend |string|默认空，注册时按 `Mooncake` 处理；支持 `Mooncake` / `Memcache` / `YuanRong`。|
+| pool_endpoint |string|Mooncake/Memcache 中心 pool 的 ZMQ 地址，默认空；`*` 用 `KVS_MASTER_SERVICE` 替换。|
+| npu_endpoint |string|HBM 事件端口覆盖模式，默认空；格式 `tcp://*:<port>`，端口加 DP 秩。旧别名 `xpu_endpoint` 在本项为空时使用。|
+| cpu_endpoint / disk_endpoint |string|YuanRong 节点级 CPU/Disk 事件端口，默认空。按 `(IP, model_name)` 注册，使用基础端口，不加 DP 秩；建议显式配置，避免回退到 HBM 事件端口。|
+| re_register_interval_sec |int|周期检查缺失注册的间隔（秒），默认 `0`，小于等于 0 关闭。包含 P/U DP 和 YuanRong 节点池补注册；不等于全量缓存恢复。详见[注册与恢复说明](../../design/kv_conductor.md#registration-lifecycle)。|
 | **token_sampling_config字段** |-|-|
 | interval_seconds |float|同一 Decode 实例两次采样参数注入之间的最小间隔，默认值：30.0。|
 | logprobs_count |int|采样时需要带回多少log_prob，默认值：1。取值如下：<ul><li>1：只能检测重复。</li><li>3：可以检测重复和乱码。</li><li>5：可以检测重复、乱码和生僻字。</li></ul>|
@@ -1076,15 +1086,26 @@ PD混部场景下，union 原生引擎的环境变量配置在 `env.json` 的 `m
 | motor_common_env | 所有组件共用环境变量，如CANN安装路径、日志根目录。 |
 | motor_engine_union_env | PD混部union实例的NPU、HCCL、OMP等环境变量，可按机型与模型进行调优。 |
 
-### prefill_kv_event_config 自动推导
+<a id="prefill_kv_event_config-自动推导"></a>
 
-该字段加载 `user_config.json` 时由 Coordinator 合并，一般无需手动添加。
+### kv_conductor_config 自动推导与兼容
+
+Coordinator 的运行时入口为 `motor_coordinator_config.scheduler_config.kv_conductor_config`。
+完整部署配置推荐在 `user_config.json` 顶层配置 `kv_conductor_config`，由加载器合并。
+Deployer 只读取顶层配置决定 conductor 服务是否启用及服务端口，嵌套配置不能代替它。
+
+同一字段建议只写一处。当前合并按嵌套配置 → 顶层配置 → 旧字段 → 引擎推导的顺序补齐；
+已有非空、非零值保留，空值或 0 会被后续来源补齐，不应依靠跨层重复配置表达覆盖关系。
+旧 `prefill_kv_event_config` 迁移仅覆盖 `conductor_service`、`http_server_port`、`engine_type`、
+`model_path`、`block_size`、`endpoint`、`replay_endpoint` 和 `re_register_interval_sec`，
+不包含 `query_encoding` 及介质端口等新增字段。
 Coordinator 会根据实例角色自动识别 P/D 分离或 union 混部拓扑，并根据 `engine_type` 选择 vLLM handoff 或 SGLang bootstrap Adapter。vLLM Connector 白名单、`MultiConnector` 取 `connectors[0]` 的规则，以及未知 Connector 在启动期 fail-closed 的处理，详情请参见[PD 分离特性说明](../../design/pd_disaggregation.md#vllm-connector-识别白名单)与[PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md)。
 
-**表9** prefill_kv_event_config说明
+**表9** kv_conductor_config 自动推导来源
 
 | 来源 | 说明 |
 |------|------|
-| PD 分离 | 从 `motor_engine_prefill_config.engine_config.kv-events-config` 推导 |
-| PD 混部 | 从 `motor_engine_union_config.engine_config.kv-events-config` 推导 |
-| kv_conductor_config | `http_server_port` 写入 `prefill_kv_event_config.http_server_port`；未配置时默认 `13333` |
+| PD 分离 | 优先读取 `motor_engine_prefill_config`，事件配置提供 `endpoint` / `replay_endpoint`，模型配置提供 `model_path` |
+| PD 混部 | 无 Prefill 段时读取 `motor_engine_union_config`，推导字段相同；不从 Decode 段推导 |
+| block_size | 未显式配置时从选中引擎段的 `block-size` 推导，缺省 `128`；混合 KV 必须核对主组实际事件粒度并显式覆盖 |
+| kv_conductor_config | 顶层字段合并进 `scheduler_config.kv_conductor_config`；HTTP 端口缺省 `13333`，部署启用条件仍需显式配置 |

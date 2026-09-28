@@ -2,133 +2,96 @@
 
 ## 功能介绍
 
-KV Cache 亲和性调度通过自研 **kv-conductor** 组件（Rust 实现），维护全局 KV Cache 前缀树索引，
-将请求路由到已缓存最长 token 前缀的 Worker，减少跨实例 KV Cache 传输开销，提升推理吞吐。
+KV Cache 亲和性调度结合缓存前缀命中和当前负载，为请求选择推理 endpoint。
+kv-conductor 维护缓存索引，Coordinator 使用索引结果估计剩余 prefill 工作量并选择推理 endpoint。
+收益主要来自复用已有 KV、减少重复 prefill 计算；具体吞吐和时延收益取决于请求分布、缓存介质和负载。
 
-kv-conductor 已集成在 motor Python 包内，随 `build.sh` 条件编译进 wheel 包。
-部署时通过 `python -m motor.kv_conductor` 启动，无需额外安装独立二进制。
-不部署 Controller / Node Manager 时，见 [Coordinator 独立部署](../deployment/standalone.md)。
+- **kv-conductor**：订阅事件，维护 HBM 前缀树及 CPU/Disk 连续边索引，返回各 DP 的互斥命中块数。
+- **Coordinator**：获取请求 token IDs，对命中块按介质加权，结合当前负载计算调度分数。
+- **引擎及 KV Cache Store**：负责实际 KV 复用和数据传输。Conductor 只维护索引，不搬运 KV 数据。
 
-**分工**：
+亲和调度适用于 PD 分离的 Prefill（P）角色和 PD 混部的 Union（U）角色。
+通过 `prefill_scheduler_type` 为 P/U 开启 `kv_cache_affinity`；Decode（D）通过
+`decode_scheduler_type` 选择负载均衡或轮询。两个配置项默认均为 `load_balance`。
 
-- **kv-conductor**：索引三层介质（NPU HBM / CPU / Disk），查询时返回各 DP 的互斥命中
-  `npu_blocks` / `cpu_blocks` / `disk_blocks`，以及未加权覆盖长度 `matched_tokens`
-  （互斥块之和 × `block_size`）。
-- **Coordinator 调度器**：按 `*_blocks` 与 `scheduler_config.kv_affinity` 中的介质权重
-  加权得到亲和匹配长度，再与 endpoint 实时负载融合后选路。
+| 子策略 | 初次选点行为 |
+|--------|--------------|
+| `unified`（默认） | 对所有可用候选融合加权缓存收益与负载，选择综合成本最低的 endpoint |
+| `load_gated` | 先保留负载最低的 N 个 endpoint，再按加权前缀匹配长度择优，并列时优先低负载 |
 
-**子策略**：
+两种策略均支持 `hit_rate_threshold`，配置方法见[参数说明](#参数说明)。
+调度评分、回退及并发分配的实现原理见 [KV Conductor 设计](../../design/kv_conductor.md#coordinator-调度集成)。
 
-| 模式 | 行为 |
-|------|------|
-| `unified`（默认） | 单一评分（越低越好）= `prefill_load_scale × max(0, isl − overlap_credit × matched_tokens) + load_weight × workload_score` |
-| `load_gated` | 先保留负载最低的 N 个 endpoint，再从中选择缓存前缀最长的（`matched_tokens` 最大；并列取负载更低） |
+## 前置准备
 
-## 前置说明
-
-- 已使用 MindIE Motor 部署 PD 分离推理服务，KV Cache 亲和性调度在该服务基础上开启。
-- 开启前请参考 [MindIE Motor 快速开始](../quick_start.md)，确保基础服务部署正常。
-- 镜像需包含 kv-conductor 二进制。若使用官方发布镜像，二进制已随 motor wheel 打包；若自行构建，可通过预编译二进制（`KV_CONDUCTOR_PREBUILT`）或 Rust 工具链（cargo）打包进 whl，详见 [构建说明](#构建)。
-- 后续操作均在 K8s 集群管理节点（master 节点）执行。
+- 先完成 [PD 分离部署](../deployment/k8s/pd_disaggregation_deployment.md)或
+  [PD 混部部署](../deployment/k8s/pd_aggregation_deployment.md)，确认基础推理正常。
+  不部署 Controller / Node Manager 时，使用 [Coordinator 独立部署](../deployment/standalone.md)。
+- 本文配置示例面向 vLLM；SGLang 的基线及缓存开关见
+  [SGLang PD 分离部署](../deployment/k8s/pd_disaggregation_sglang.md)。
+- 引擎需要发布可用的 KV 事件，并具备对应的缓存复用能力。P/U 的事件端口需从 conductor 所在网络可达。
+- Coordinator 必须能得到与引擎一致的 token IDs。默认从引擎配置推导 `model_path`，本地 tokenizer
+  需要可访问对应模型目录；Render 产生的 token IDs 可复用，配置见
+  [Coordinator 组件说明](../../developer_guide/components/coordinator.md)。
+  Tokenizer、chat template、工具调用模板不一致都会影响前缀匹配。
+- 镜像中须能启动 kv-conductor，见下方组件检查方法。
 
 ## 快速实践
 
-### 确认基础服务
-
-已使用 motor 部署 PD 分离推理服务且正常运行。
-
 <a id="构建"></a>
 
-### 构建
+### 检查组件
 
-kv-conductor 已集成在 motor wheel 包内，随 `build.sh` 打包，按以下优先级获取二进制：
+在实际运行镜像内确认 kv-conductor 可用：
 
-- **已有预编译二进制**（推荐，无需 Rust 工具链）：指定路径，`build.sh` 直接复制并打包进 whl：
+```bash
+python -m motor.kv_conductor --help
+```
 
-  ```bash
-  KV_CONDUCTOR_PREBUILT=/path/to/kv-conductor bash build.sh
-  ```
+正常输出启动参数说明即可。若组件缺失，按 [KV Conductor 构建与安装](../../../../motor/kv_conductor/README.md#快速开始)
+准备包含该组件的镜像。
 
-- **已有 `bin/kv-conductor`**：默认跳过 cargo，直接打进 wheel。改过 Rust 后设 `SKIP_KV_CONDUCTOR_BUILD=0` 强制重编。
-- **有 cargo 且缺二进制**：`bash build.sh` 在探测到 libzmq 后 `cargo build --release` 并打包。
-- **两者皆无**：跳过编译并输出 [WARNING]，kv-conductor 不包含在 wheel 中（其他功能不受影响）。
+### 修改配置并部署
 
-使用官方发布镜像时，二进制已随 wheel 打包，以上均无需关心。
-
-### 修改 `user_config.json`
-
-在 `examples/infer_engines/vllm/user_config.json` 中修改以下配置项（详见[典型配置](#典型配置)）：
-
-- `motor_coordinator_config.scheduler_config.prefill_scheduler_type` → `"kv_cache_affinity"`
-- `motor_coordinator_config.scheduler_config.decode_scheduler_type` → `"load_balance"`（Decode 通常不走亲和）
-- `motor_engine_prefill_config.engine_config` → 增加 `kv-events-config`
-- 新增顶层 `kv_conductor_config`
-
-### 部署服务
+在已有 `user_config.json` 中按[典型配置](#典型配置)逐字段合并增量，保留模型、镜像、资源及基础传输配置。
+K8s 部署示例：
 
 ```bash
 cd examples/deployer
-# 方式一：指定配置目录（推荐）
+# PD 分离
 python deploy.py --config_dir ../infer_engines/vllm
 
-# 方式二：单独指定配置文件
-python deploy.py --user_config_path ../infer_engines/vllm/user_config.json --env_config_path ../infer_engines/vllm/env.json
+# PD 混部使用其独立配置目录
+python deploy.py --config_dir ../infer_engines/vllm/pd_hybrid
 ```
 
-### 验证结果
-
-```bash
-kubectl get pod -A -o wide
-```
-
-预期 P/D 实例和 kv-conductor 均启动成功，Coordinator 日志中可看到"KV Conductor registered"字样。
+部署后按[验证结果](#验证结果)检查注册、缓存命中和实际选点。
 
 ## 典型配置
 
-KV Cache 亲和性只需在已有 PD 分离配置的基础上增加三项：
-
-- `prefill_scheduler_type: "kv_cache_affinity"` — Prefill 启用亲和性调度
-- `decode_scheduler_type: "load_balance"` — Decode 使用负载均衡（可改成 `round_robin`）
-- `kv-events-config` — P 实例发布 KV Cache 事件
-- `kv_conductor_config` — kv-conductor 服务参数
-
-引擎的 `kv-transfer-config`（PD 传输）属于 PD 分离基础配置，非亲和性子系统引入；
-KV Cache Store 池化功能单独通过 `kv_cache_store_config` 开启，详见
-[KV Cache Store](kv_cache_store/README.md)。
+以下 JSON 是合并到已有配置的增量，不能作为完整部署配置直接使用。
+`block_size: 128` 假设主注意力组事件粒度为 128；混合 KV 模型需按[实际事件粒度](#deepseek-v4)修改。
+下面的 PD 分离、PD 混部示例开启 **HBM 亲和**；CPU/Disk 需在此基础上继续配置[池化亲和](#pool-affinity)。
 
 ### PD 分离配置
 
-以 [快速开始](../quick_start.md) 的 PD 分离配置为基线，仅展示增量部分（`...` 为已有不变配置）：
+基线文件：[`examples/infer_engines/vllm/user_config.json`](../../../../examples/infer_engines/vllm/user_config.json)。
 
 ```json
 {
-  "version": "v2.0",
-  "motor_deploy_config": {
-    "..."
-  },
   "motor_coordinator_config": {
     "scheduler_config": {
-      "prefill_scheduler_type": "kv_cache_affinity",
-      "decode_scheduler_type": "load_balance"
+      "prefill_scheduler_type": "kv_cache_affinity"
     }
   },
   "motor_engine_prefill_config": {
-    "engine_type": "vllm",
     "engine_config": {
-      "..."
       "kv-events-config": {
         "publisher": "zmq",
         "enable_kv_cache_events": true,
         "endpoint": "tcp://*:5557",
-        "topic": "kv-events",
-        "replay_endpoint": "tcp://*:6667"
+        "topic": "kv-events"
       }
-    }
-  },
-  "motor_engine_decode_config": {
-    "engine_type": "vllm",
-    "engine_config": {
-      "..."
     }
   },
   "kv_conductor_config": {
@@ -137,35 +100,28 @@ KV Cache Store 池化功能单独通过 `kv_cache_store_config` 开启，详见
   }
 }
 ```
+
+`kv-transfer-config` 属于 PD 分离基础传输配置，沿用已有部署设置。
 
 ### PD 混部配置
 
-PD 混部使用 `motor_engine_union_config`，将 `kv-events-config` 配置在 union 段中：
+基线文件：[`examples/infer_engines/vllm/pd_hybrid/user_config.json`](../../../../examples/infer_engines/vllm/pd_hybrid/user_config.json)。
+将事件配置放在 `motor_engine_union_config`。
 
 ```json
 {
-  "version": "v2.0",
-  "motor_deploy_config": {
-    "..."
-  },
   "motor_coordinator_config": {
     "scheduler_config": {
-      "deploy_mode": "single_node",
-      "prefill_scheduler_type": "kv_cache_affinity",
-      "decode_scheduler_type": "load_balance"
+      "prefill_scheduler_type": "kv_cache_affinity"
     }
   },
   "motor_engine_union_config": {
-    "engine_type": "vllm",
-    "enable_multi_endpoints": true,
     "engine_config": {
-      "..."
       "kv-events-config": {
         "publisher": "zmq",
         "enable_kv_cache_events": true,
         "endpoint": "tcp://*:5557",
-        "topic": "kv-events",
-        "replay_endpoint": "tcp://*:6667"
+        "topic": "kv-events"
       }
     }
   },
@@ -176,233 +132,237 @@ PD 混部使用 `motor_engine_union_config`，将 `kv-events-config` 配置在 u
 }
 ```
 
-> `kv_affinity` 子参数（`mode` / `load_weight` / `overlap_credit` / `prefill_load_scale` /
-> `w_npu` / `w_cpu` / `w_disk` / `hit_rate_threshold` 等）均有默认值，**示例中无需配置**；需要调整评分行为时按
-> [参数说明](#scheduler_config调度器亲和性参数)覆盖即可。
+### 参数说明
 
-PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/pd_aggregation_deployment.md)。
+以下以本文的 **K8s Deployer + vLLM** 部署为例，配置合并到已有 `user_config.json`。
+`scheduler_config` 位于 `motor_coordinator_config` 下，`kv_conductor_config` 写在顶层。
 
-## 参数说明
+#### 必须配置或核对
 
-### `kv_conductor_config`（kv-conductor 全局配置）
+| 配置项 | 部署要求 |
+|--------|----------|
+| `scheduler_config.prefill_scheduler_type` | 显式设为 `kv_cache_affinity`，为 P/U 开启亲和调度 |
+| P/U 的 `engine_config.kv-events-config` | 按示例设置 `publisher: zmq`、`enable_kv_cache_events: true` 和事件地址；PD 分离配置在 Prefill 段，PD 混部配置在 Union 段 |
+| `kv_conductor_config.http_server_port` | 顶层显式填写，例如 `13333`；Deployer 依靠此项启用 conductor，不能只依赖运行时默认值 |
+| `kv_conductor_config.block_size` | 必须核对主注意力组实际事件粒度，建议像示例一样显式填写。未填写时会从引擎 `block-size` 推导，缺省为 `128`；混合 KV 模型按[实际事件粒度](#deepseek-v4)覆盖 |
 
-写在 `user_config.json` **顶层**。部署脚本用它生成 K8s Service 端口；Coordinator 加载时会合并进
-`scheduler_config.kv_conductor_config`（也可直接写在 `scheduler_config` 下，效果相同）。
+事件端口需从 conductor 所在网络可达；多 DP 时需核对基础事件端口加 DP 秩后的各端口。
 
-| 配置项 | 类型 | 取值范围 | 说明 |
-|--------|------|----------|------|
-| **block_size** | uint | ≥ 1 | 注册给 conductor 的 hash 粒度。须与**主注意力组** KV 事件的 `block_size` 一致（标准模型通常等于引擎 `--block-size`，默认 128；**混合 KV / DeepSeek V4 见下节**，常 ≠ `--block-size`） |
-| **http_server_port** | int | 1024–65535 | kv-conductor HTTP API 端口，Coordinator 通过此端口查询缓存命中，默认 `13333` |
-| **re_register_interval_sec** | int | ≥ 0 | 周期性重注册间隔（秒），0 或负数禁用（默认 0） |
-| **conductor_service** | string | hostname / IP | kv-conductor 服务地址；空则禁用。部署时也可由环境变量注入 |
-| **engine_type** | string | 如 `vLLM` | 注册时上报的引擎类型，默认 `vLLM` |
-| **model_path** | string | 路径 / 名称 | 注册时的 `modelname` |
-| **image_name** | string | 镜像名 | 仅部署期使用：kv-conductor Pod 的容器镜像（K8s 部署）。不填则使用 `motor_deploy_config.image_name` |
-| **endpoint** | string | `tcp://*:<port>` | 默认端口模式：`*` 替换为 endpoint IP，端口加 `dp_rank`；注册时写入 `medium_endpoints.npu`。**自动从引擎 `kv-events-config.endpoint` 推导，无需配置** |
-| **replay_endpoint** | string | `tcp://*:<port>` | Per-DP replay 端口，conductor 重启恢复时回放缓冲的 KV 事件（可选）。**自动从引擎 `kv-events-config.replay_endpoint` 推导，无需配置** |
-| **npu_endpoint** | string | `tcp://*:<port>` | Per-DP HBM（NPU）端口模式的显式覆盖项。**一般无需配置**（见下方端口推导说明），仅在需要覆盖自动推导的默认端口时使用 |
+#### 通常无需额外配置
 
-以下参数为 CPU/Disk 二级缓存（L2）相关，开启池化后端时使用：
+- `scheduler_config.kv_affinity`：可省略整个对象，先使用默认 `unified` 策略与权重。
+  默认 `hit_rate_threshold=0` 不设置额外命中率门槛，`w_disk=0` 不计 Disk 亲和收益；
+  命中验证通过后再按[调优建议](#调优建议)调整。
+- `scheduler_config.decode_scheduler_type`、`kv_conductor_config.query_encoding`：
+  新配置可分别沿用默认 `load_balance`、`msgpack`。
+- `conductor_service`、`model_path`、conductor 侧 `endpoint`：本文部署流程会注入服务地址，
+  并从 P/U 引擎配置读取模型路径和事件地址，通常无需重复填写；Coordinator 仍须能访问该模型目录。
 
-| 配置项 | 类型 | 取值范围 | 说明 |
-|--------|------|----------|------|
-| **pool_endpoint** | string | `tcp://<host>:<port>` | 中心化后端（Mooncake/Memcache）的池服务地址 |
-| **cpu_endpoint** | string | `tcp://*:<port>` | Per-DP CPU/DDR 端口 |
-| **disk_endpoint** | string | `tcp://*:<port>` | Per-DP DISK/SSD 端口 |
-| **store_backend** | string | `Mooncake` / `Memcache` / `YuanRong` | 池化后端类型。Mooncake/Memcache：先注册 pool，再按 DP 注册 `npu`；YuanRong：按 DP 注册 `npu`/`cpu`/`disk` |
+#### 特定场景再配置
 
-> **端口推导与 DP 偏移**：注册给 kv-conductor 的事件端口**无需在 `kv_conductor_config` 中配置**，统一由引擎配置
-> `motor_engine_prefill_config.engine_config["kv-events-config"].endpoint`（如 `tcp://*:5557`）定义。
-> 启动时传入 vLLM 的即为该原始端口；vLLM 内部按 `data_parallel_rank` 对端口做偏移后实际监听
-> （如 DP0 → `tcp://*:5557`、DP1 → `tcp://*:5558`）。Coordinator 加载配置时自动将 `endpoint` /
-> `replay_endpoint` 推导进 `kv_conductor_config`，注册时按**同样的 DP 秩**将 `*` 替换为 endpoint IP、
-> 端口加 `dp_rank`（如 `tcp://10.0.0.1:5557`、`tcp://10.0.0.1:5558`），与 vLLM 实际监听端口一致。
-> 因此 prefill / decode / union 的引擎配置中配置好 `kv-events-config` 即可，`npu_endpoint` 等手动
-> 配置仅用于覆盖默认推导值。
->
-> kv-conductor 进程本身仅接受 `--host` / `--port` 启动参数，**无**介质权重配置。
+| 场景 | 配置要求 |
+|------|----------|
+| 独立部署或外接 conductor | 配置可访问的 `conductor_service` 与实际 HTTP 端口；无法从引擎配置读取时，补充 `model_path` 和 `endpoint` |
+| 使用 SGLang | 将 `kv_conductor_config.engine_type` 设为 `sglang`，并按 [SGLang 部署指导](../deployment/k8s/pd_disaggregation_sglang.md)配置引擎 |
+| 使用 CPU/Disk 池化 | 按[池化亲和配置](#pool-affinity)接通两侧事件，并配置对应后端的订阅地址 |
+| 需要重注册或历史事件回放 | 周期补注册设置正数 `re_register_interval_sec`（默认关闭）；历史回放配置引擎 `kv-events-config.replay_endpoint`。启用前确认[恢复能力边界](../../design/kv_conductor.md#registration-lifecycle) |
+| 对接仅支持 JSON 的旧 conductor | 将 `kv_conductor_config.query_encoding` 设为 `json`，见[查询异常排查](#coordinator-无法查询-conductor) |
 
-### `scheduler_config`（调度器亲和性参数）
+完整参数定义见[配置参考](../configuration/config_reference.md#motor_coordinator_config)，
+自动推导及旧配置迁移见[自动推导与兼容](../configuration/config_reference.md#kv_conductor_config-自动推导与兼容)。
 
-| 配置项 | 类型 | 取值范围 | 说明 |
-|--------|------|----------|------|
-| **prefill_scheduler_type** | string | `load_balance` / `round_robin` / `kv_cache_affinity` | Prefill（及 encode / union）调度策略。启用 KV 亲和时配 `kv_cache_affinity` |
-| **decode_scheduler_type** | string | `load_balance` / `round_robin` | Decode 调度策略，默认 `load_balance`。不要为 Decode 配 `kv_cache_affinity`：选 D 实例时不走亲和（与拆字段前全局 kva 行为一致），启动会 warning |
-| **kv_affinity.mode** | string | `unified` / `load_gated` | 评分子策略，默认 `unified` |
-| **kv_affinity.load_weight** | float | `[0, +∞)` | `unified` 下 endpoint 实时负载权重。`1.0`（默认）与亲和折扣后的 prefill 成本同等重要；`0` 表示纯亲和性 |
-| **kv_affinity.overlap_credit** | float | `[0, +∞)` | 缓存前缀对 prefill 成本的折扣系数。值越大，已缓存前缀折扣越高。默认 `1.0` |
-| **kv_affinity.prefill_load_scale** | float | `[0, +∞)` | `unified` 下亲和折扣后的 prefill 成本权重。默认 `1.0` |
-| **kv_affinity.load_gate_topn** | int | `[0, +∞)` | `load_gated` 下保留负载最低的 N 个 endpoint。`0` 时回退为 `2`（默认 `0`） |
-| **kv_affinity.w_npu** | float | `[0, +∞)` | 互斥 NPU 命中块权重。默认 `1.0` |
-| **kv_affinity.w_cpu** | float | `[0, +∞)` | 互斥 CPU 命中块权重。默认 `1.0` |
-| **kv_affinity.w_disk** | float | `[0, +∞)` | 互斥 Disk 命中块权重。默认 `0.0`（默认不计 Disk） |
-| **kv_affinity.hit_rate_threshold** | float | `[0, 1]` | 亲和性命中率门槛。默认 `0` 表示不启用（始终按亲和评分）。`(0, 1]` 时，各 endpoint 最大加权前缀命中率 `max(matched_tokens)/prompt_tokens` **大于**该阈值才走亲和调度，否则回退 `load_balance` |
+## 验证结果
 
-### `kv-events-config`（引擎侧 KV 事件发布配置）
+以下命令在能访问服务的环境执行，替换命名空间和地址为实际值：
 
-| 配置项 | 类型 | 取值范围 | 说明 |
-|--------|------|----------|------|
-| **publisher** | string | `zmq` | 事件发布后端，当前仅支持 `zmq` |
-| **enable_kv_cache_events** | bool | `true` / `false` | 是否启用 KV Cache 事件，设为 `true` |
-| **endpoint** | string | `tcp://*:<port>` | P 实例发布 KV 事件的 ZMQ 端点 |
-| **topic** | string | 自定义 | 事件 ZMQ 主题 |
-| **replay_endpoint** | string | `tcp://*:<port>` | 事件回放端点，供 conductor 重启后恢复索引（可选） |
-
-> **注意**：`kv-events-config` 是 vLLM 原生配置，控制引擎侧的 KV 事件发布行为；
-> `kv_conductor_config` 是 Motor 配置，控制 Coordinator 如何注册和查询 kv-conductor。
-> 两者的端口信息由 Coordinator 自动打通——`kv_conductor_config.endpoint` / `replay_endpoint`
-> 自动从引擎的 `kv-events-config` 推导，**无需重复配置**。
-
-<a id="deepseek-v4"></a>
-
-## DeepSeek V4 / 混合 KV Cache 模型
-
-混合 KV 下主注意力组（如 `mla_attention`）事件的 `block_size` 往往与引擎 `--block-size` 不同。
-`kv_conductor_config.block_size` 须对齐**主组事件**粒度（以 conductor 日志
-`event_parsed ... spec_kind=mla_attention` 为准），不必等于 `--block-size`。
-
-典型 Flash A2：引擎 `--block-size=128`，conductor 配 `512`：
-
-```json
-"kv_conductor_config": {
-  "block_size": 512
-}
+```bash
+NAMESPACE=mindie-motor
+CONDUCTOR_URL=http://kv-conductor:13333
+kubectl -n "$NAMESPACE" get pods,services -o wide
+curl --fail "$CONDUCTOR_URL/health"
+curl --fail "$CONDUCTOR_URL/workers"
 ```
 
-> 混合 KV 务必显式配置；若误配成引擎页大小，主组事件会被 `block_size_mismatch` 丢弃，命中率为 0。
->
-> **DCP**：若 DCP 改变了主组事件粒度，conductor 同步改为日志中的新粒度即可。
+按下面顺序验收：
 
-## 原理说明
+1. **注册**：`/workers` 中应包含每个目标 P/U DP；池化场景还应有相应 pool。
+   Coordinator 实际日志包括 `HBM DP registered`、`Pool registered`、`YuanRong node pool registered`；
+   conductor 日志为 `worker registered`。
+2. **事件**：发送推理请求后检查事件接收及解析，确认没有持续的 `block_size_mismatch`、订阅连接或解析错误。
+   CPU/Disk 命中还需要引擎 offload 与后端存储确认两阶段事件。
+3. **命中**：重复发送同一模型、同一模板且前缀超过一个 block 的请求，等待缓存事件可见后，
+   检查 `conductor query response` 中各 DP 的覆盖。不要用不足一个 block 的请求验收命中。
+4. **最终选点**：关联请求的 `scheduled` 日志，检查 `policy`、`matched`、`hbm/cpu/disk`、
+   `instance/endpoint` 和 `repicked`。`policy=load_balance` 时结合门槛及回退原因解释结果。
+5. **性能与恢复**：命中检查通过后，再用相同负载对比吞吐及 TTFT/尾延迟；需要恢复能力时，
+   在测试环境单独验证 conductor 重启后的各 DP / pool 注册和命中恢复。
 
-### 整体流程
+## 调优建议
 
-1. **KV Cache 事件发布**：P 实例完成 prefill 计算后，通过 `kv-events-config` 中配置的 ZMQ 端点发布 KV Cache 事件（包含 block hashes、token IDs、parent hash 等）。
-2. **Conductor 索引**：kv-conductor 作为 ZMQ SUB **主动 connect 到各 P 节点绑定的事件端点**（连接方向 conductor → P，事件数据流 P → conductor），根据 token IDs 重算 XXH3 内容哈希，构建 HBM RadixTree + CPU/Disk continuation-edge 索引。
-3. **亲和性调度决策**：Coordinator（`prefill_scheduler_type: kv_cache_affinity`）将 token IDs 发给 kv-conductor，按各 endpoint 的互斥 `*_blocks` 与 `kv_affinity` 介质权重加权得到亲和匹配长度。若配置了 `hit_rate_threshold > 0` 且最大命中率未超过该阈值，则回退负载均衡；否则再按评分策略选择最优 Worker。
+| 目标 | 调整方向与边界 |
+|------|----------------|
+| 起步配置 | 使用默认 `unified` 和默认权重，先确认索引、分词和注册正确 |
+| 增强负载影响 | 提高 `load_weight`，同时观察缓存复用、吞吐及尾延迟 |
+| 增强亲和偏好 | 降低 `load_weight`；0 使综合评分忽略负载，可能聚集热点，不能保证吞吐最优 |
+| 低命中时回退 | 设置正 `hit_rate_threshold`；按加权命中率选择门槛，并验证等于阈值的边界 |
+| 限制初选负载范围 | 使用 `load_gated` 和合适的 N，同时考虑其并发重选行为 |
+| 区分缓存介质 | 调整介质权重；默认 `w_disk=0`，Disk 覆盖仍会出现在原始查询结果中 |
 
-### Conductor 查询结果
+<a id="pool-affinity"></a>
 
-`POST /query` 返回（示意）：
+## 进阶配置：池化亲和（CPU/Disk）
+
+先按所选后端的 [KV 池化部署指导](kv_cache_store/README.md)完成存储池和 Store Connector 配置，
+确认 KV 能写入、读取，再叠加本节配置。开启 `kv_cache_store_config` 后，还需同时接通
+**引擎 offload 事件**和**存储后端确认事件**，conductor 才能建立 CPU/Disk 索引。
+保留上面的 HBM 事件配置和亲和调度开关。
+
+### MemCache：在 vLLM PD 分离部署上开启 CPU 亲和
+
+1. 按 [MemCache 的 KV events 配置](kv_cache_store/backend/memcache.md#kv-events-affinity)
+   开启 MetaService 广播。当前启动脚本中的 `kv_events_enable` 等配置默认被注释，需要按该指导启用，
+   设置事件端口、模型标识和块粒度，并重启 kv_store。所用 MemCache 版本须支持这些事件配置项。
+2. 检查引擎能发布 Store Connector 的 offload 事件。使用 MultiConnector 时，核对所用版本是否已支持
+   子 Connector 事件转发；缺失时按上述 MemCache 指导应用对应补丁。
+3. 在已有 `user_config.json` 顶层 `kv_conductor_config` 中合并以下增量：
+
+    ```json
+    {
+      "kv_conductor_config": {
+        "store_backend": "Memcache",
+        "pool_endpoint": "tcp://*:5557"
+      }
+    }
+    ```
+
+    `5557` 是示例广播端口，必须与 MetaService 的 `kv_events_endpoint` 和 Service 暴露端口一致。
+    这里的 `*` 由 K8s 注入的 `KVS_MASTER_SERVICE` 替换；外接存储池时填写 conductor 可访问的实际域名或 IP。
+    `pool_endpoint` 填事件广播地址，存储服务的读写端口不能用于此项。
+4. 核对 MetaService 的 `kv_events_model_name` / `kv_events_block_size` 与 pool 注册使用的
+   `kv_conductor_config.model_path` / `block_size` 一致，同时确认 pool 与目标 P/U 注册的模型标识一致。
+   后端事件携带的节点 IP 需能关联到目标 P/U 节点；MemCache 的 `backend_id` 按后端部署指导自动注入。
+5. 按[修改配置并部署](#修改配置并部署)应用 Motor 配置，再按下方[池化验收](#pool-affinity-validation)检查。
+   CPU 的默认权重 `w_cpu=1.0`，无需额外配置评分开关。
+
+### Mooncake / YuanRong：已有事件源时的 Motor 配置
+
+以下列出 Motor 的接入配置；应用前须确认后端和引擎已提供与 conductor 兼容的两侧事件。
+各后端事件发布服务的安装、启动方式以实际使用版本为准。
+
+| 后端 | 合并到顶层 `kv_conductor_config` 的配置 | 部署前需确认 |
+|------|-----------------------------------------|--------------|
+| Mooncake | `store_backend: "Mooncake"`；`pool_endpoint` 填中心 pool 的实际 ZMQ 事件广播地址 | [Mooncake 部署文档](kv_cache_store/backend/mooncake.md)当前主要覆盖存储服务，尚未给出完整的事件发布开启步骤；需先确认事件发布能力、地址及模型/块粒度 |
+| YuanRong | `store_backend: "YuanRong"`；`cpu_endpoint` / `disk_endpoint` 分别填 `tcp://*:<对应介质事件端口>` | 节点级事件地址使用节点 IP 和基础端口，不加 DP 秩。显式配置实际事件地址，避免回退到 HBM 端口；[后端部署文档](kv_cache_store/backend/yuanrong.md)仍待补全 |
+
+以上配置用于订阅已有事件源，不会替后端开启广播。接入及事件格式的详细约定见
+[KV Conductor 设计](../../design/kv_conductor.md#后端适配抽象)。
+
+### Disk 参与评分时的可选配置
+
+只有实际启用 Disk 存储、具备 Disk 事件并验证查询命中后，才需要调整 `w_disk`。
+默认 `w_disk=0`，Disk 命中不计入亲和评分；需要计入时，在
+`motor_coordinator_config.scheduler_config` 下合并，例如：
 
 ```json
 {
-  "default": {
-    "vllm-prefill-1": {
-      "longest_matched": 640,
-      "DP": {
-        "0": {
-          "matched_tokens": 640,
-          "npu_blocks": 3,
-          "cpu_blocks": 2,
-          "disk_blocks": 0
-        }
+  "motor_coordinator_config": {
+    "scheduler_config": {
+      "kv_affinity": {
+        "w_disk": 1.0
       }
     }
   }
 }
 ```
 
-| 字段 | 计算 |
-|------|------|
-| `npu_blocks` / `cpu_blocks` / `disk_blocks` | 互斥真实命中块数（优先级 NPU > CPU > Disk；同前缀副本只归最高层） |
-| `matched_tokens` | `(npu + cpu + disk) × block_size`（未加权真实覆盖） |
-| `longest_matched` | 实例内各 DP `matched_tokens` 的最大值 |
+`1.0` 仅用于演示启用 Disk 评分，实际值需结合读取成本和性能验证调整。
+修改权重不会开启 Disk 存储或补齐缺失的事件。
 
-匹配方式：
+<a id="pool-affinity-validation"></a>
 
-| 介质 | 匹配方式 |
-|------|----------|
-| HBM（NPU） | RadixTree 最长连续前缀（从 root 走到第一个缺失） |
-| CPU | continuation-edge 连续边匹配：从 HBM 断点续查（仅同一 `(instance_id, dp_rank)`）；root 链（首块副本）无条件走，更长副本不被上游较短命中掩盖 |
-| Disk | continuation-edge：从 `max(HBM, CPU)` 断点续查（同样按 `(instance_id, dp_rank)` 对齐）；root 链同 CPU 层无条件走 |
+### 池化验收
 
-### 调度评分模型
-
-调度器优先使用 `DP[<dp_rank>]` 的互斥 `*_blocks` 按介质权重计分（兼容旧版裸 `int` /
-仅有 `matched_tokens` 的响应），并截断为不超过 prompt 长度 `isl`：
-
-```text
-effective_blocks = npu×w_npu + cpu×w_cpu + disk×w_disk
-matched_tokens   = min(round(effective_blocks × block_size), isl)
-prefill_cost     = max(0, isl − overlap_credit × matched_tokens)
-load_cost        = endpoint 实时 workload
-```
-
-默认权重：`w_npu=1.0`，`w_cpu=1.0`，`w_disk=0.0`。
-
-**`unified`（默认，分数越低越好）**：
-
-```text
-score = prefill_load_scale × prefill_cost + load_weight × load_cost
-```
-
-- `load_weight = 0` → 纯亲和性（最长前缀优先）
-- 无缓存前缀但负载显著更低的 endpoint 仍可能胜出，避免热点前缀聚集
-
-**命中率门槛**（`hit_rate_threshold`，在评分之前）：
-
-```text
-hit_rate = max(matched_tokens) / isl     # 所有 endpoint 的最大加权前缀命中率
-if hit_rate_threshold > 0 and hit_rate <= hit_rate_threshold:
-    回退 load_balance
-```
-
-默认 `0` 关闭门槛，行为与改前一致。
-
-**`load_gated`**：
-
-1. 按 `load_cost` 升序保留最低的 N 个 endpoint（`N = kv_affinity.load_gate_topn`，≤0 时为 2）
-2. 在候选集内按 `matched_tokens` 降序、`load_cost` 升序排序
-
-### 部署流程
-
-`deploy.py` 执行后的关键动作：
-
-- 创建/更新 ConfigMap `motor-config`（内容来自 `user_config.json`）
-- 生成各服务 YAML 到 `output/deployment/`
-- kv-conductor 独立部署，通过 `python -m motor.kv_conductor --host … --port …` 启动
-- Coordinator 调度器按 `kv_cache_affinity` 策略进行亲和性路由
-
-## 调优建议
-
-| 场景 | 建议 |
-|------|------|
-| 纯吞吐优先 | `kv_affinity.mode: unified`，`kv_affinity.load_weight: 0`（纯亲和性，不感知负载） |
-| 负载均衡优先 | `kv_affinity.mode: unified`，`kv_affinity.load_weight: 2.0`（负载权重更高） |
-| 延迟敏感（保守） | `kv_affinity.mode: load_gated`，`kv_affinity.load_gate_topn: 3`（只在低负载中选最优前缀） |
-| 低命中不走亲和 | `kv_affinity.hit_rate_threshold: 0.3`（最大前缀命中率 > 30% 才亲和，否则负载均衡） |
-| DeepSeek V4 | `kv_conductor_config.block_size` 对齐主组 MLA 事件（常见 512；以日志为准），不必改引擎 `--block-size` |
-| `http_server_port` | 确保不与集群其他服务端口冲突，默认 `13333` |
+1. 按[验证结果](#验证结果)检查 `/workers`：除 P/U HBM DP 外，MemCache/Mooncake 还应有对应中心 pool，
+   YuanRong 应有节点池。注册成功后继续确认引擎 offload 与后端存储确认事件均已到达。
+2. 构造 **HBM 未覆盖、但 CPU 或 Disk 仍保留目标前缀**的请求，在 `conductor query response` 中检查
+   目标 DP 的 `cpu_blocks` / `disk_blocks`。返回覆盖按 HBM → CPU → Disk 互斥计算，
+   完全由 HBM 命中时，CPU/Disk 为零不能用于判定池化失败。
+3. 关联最终 `scheduled` 日志，检查实际 `policy`、`matched`、`hbm/cpu/disk` 和选中的 endpoint。
+   结合介质权重、命中率门槛及负载判断结果；索引命中仍需通过引擎日志或指标确认实际 KV 复用。
 
 ## 常见问题
 
-### 服务启动后 P/D 实例间无法传输 KV Cache
+<a id="deepseek-v4"></a>
 
-检查 `kv_transfer_config` 中 `kv_role` 是否正确（P 为 `kv_producer`，D 为 `kv_consumer`），以及 `kv_port` 是否一致。
+### DeepSeek V4 / 混合 KV Cache 模型的 block_size 不匹配
 
-### Coordinator 无法连接到 kv-conductor
+**问题描述：**
 
-1. 确认 kv-conductor pod 已启动：`kubectl get pod -A | grep kv-conductor`
-2. 检查 `kv_conductor_config.http_server_port` 是否配置正确且未被占用
-3. 查看 kv-conductor 日志：`kubectl logs <kv-conductor-pod>`
+`kv_conductor_config.block_size` 与主注意力组事件粒度不一致时，收到的 `BlockStored` 事件
+会以 `block_size_mismatch` 原因被丢弃，导致缓存索引不完整或请求无法获得亲和命中。
 
-### P 实例发布 KV Cache 事件失败
+**解决步骤：**
 
-检查 `kv-events-config` 中 `endpoint` 和 `replay_endpoint` 配置是否正确（P 侧绑定），`kv_conductor_config.npu_endpoint` 是否与其一致，以及 **conductor → P** 方向的网络是否可达（conductor 主动 connect P 的事件端口）。
+1. 短时启用 conductor 的 `RUST_LOG=trace`，查看 `event_parsed` 日志中的 `block_size` 和 `spec_kind`。
+2. 以主注意力组（如 `mla_attention`）的事件粒度为准，确认实际 `block_size`；它不一定等于引擎 `--block-size`。
+3. 按实际主组事件粒度修改配置。例如实际粒度为 512 时，在已有配置中合并以下增量；512 不是所有部署的固定值。
 
-### 命中率始终为 0
+    ```json
+    {
+      "kv_conductor_config": {
+        "block_size": 512
+      }
+    }
+    ```
 
-1. 检查 `kv_conductor_config.block_size` 是否与引擎实际的 `hash_block_size` 一致（见引擎日志）
-2. 确认 `kv-events-config.enable_kv_cache_events` 设为 `true`
-3. 确认引擎 `kv-events-config.endpoint` 配置正确（Coordinator 会自动推导注册地址并做 DP 端口偏移）
-4. 查看 Coordinator 日志检查 kv-conductor 注册和查询是否有报错
+4. 按[修改配置并部署](#修改配置并部署)应用配置后，按[验证结果](#验证结果)检查事件接收和亲和命中。
+5. DCP 配置或引擎版本变化后，重新核对事件粒度，不能只依据引擎页大小自动推导。
 
-### kv-conductor 未包含在 wheel 包中
+### 服务正常但始终没有亲和命中
 
-构建环境缺少 Rust 工具链，`build.sh` 已自动跳过。安装 rustup 后重新执行 `bash build.sh` 即可。详见 [构建](#构建)。
+**问题描述：**
 
-## 输出预算裁剪（context_budget_mode）
+基础推理请求能够完成，但重复发送长前缀请求后，仍没有观察到缓存命中或亲和调度。
 
-`max_tokens` 自适应不依赖 KV Cache 亲和调度，也适用于 `load_balance` 和 `round_robin`。
-功能原理、配置方法与边界行为请参考 [max_tokens 自适应](max_tokens_adaptation.md)。
+**解决步骤：**
+
+1. 核对 `prefill_scheduler_type` 是否为 `kv_cache_affinity`、P/U 事件发布是否开启，
+   以及 `kv_conductor_config.conductor_service` 是否指向可访问的 conductor。
+2. 检查 Coordinator 是否能加载模型目录中的 tokenizer、模板是否与引擎一致，
+   并确认请求的实际 token 数不少于一个 `block_size`。
+3. 在 `/workers` 中确认目标实例及 DP 已注册，核对事件端口、主注意力组事件粒度，
+   以及查询中的模型标识与注册值是否一致。
+4. 若 Conductor 已返回原始命中但实际 `policy=load_balance`，检查介质权重和 `hit_rate_threshold`。
+   默认 `w_disk=0`，门槛判断要求加权命中率严格大于阈值。
+
+若基础推理本身或 P/D 传输异常，先按对应的 [vLLM PD 部署](../deployment/k8s/pd_disaggregation_deployment.md)
+或 [SGLang PD 部署](../deployment/k8s/pd_disaggregation_sglang.md)指导排查。
+对于使用 `kv-transfer-config` 的 vLLM PD Connector，核对 `kv_role` 与 P/D 角色及 Connector 要求
+是否一致，并检查 `kv_port` 的分配和连通性。
+
+### Coordinator 无法查询 conductor
+
+**问题描述：**
+
+Coordinator 日志出现 conductor 连接或查询错误，请求回退到负载均衡。
+
+**解决步骤：**
+
+1. 检查 `conductor_service`、`http_server_port` 和服务状态，确认 Coordinator 能访问 conductor 的 `/health`。
+2. 新 Coordinator 对接仅支持 JSON 的旧 conductor 时，将 `kv_conductor_config.query_encoding` 设为 `json`。
+   不要将该字段写在旧 `prefill_kv_event_config` 下。
+3. 若日志显示查询熔断，修复连接或查询错误后等待 30 秒冷却窗口结束，再检查后续查询是否恢复。
+
+### HBM 命中正常，CPU/Disk 始终为零
+
+**问题描述：**
+
+Conductor 查询已有 HBM 命中，但在期望使用 CPU/Disk 缓存的请求中，未观察到对应介质的命中。
+
+**解决步骤：**
+
+1. 检查 `store_backend` 及 pool / 介质事件端口配置，确认相应服务已启动并完成注册。
+2. 确认引擎 offload 事件和后端存储确认事件均已到达 conductor。
+3. YuanRong CPU/Disk 使用节点基础端口，不加 `dp_rank`；核对节点 IP、模型标识及目标 DP。
+4. 若事件齐备仍无命中，按[跨介质匹配说明](../../design/kv_conductor.md#匹配逻辑与查询流程)
+   检查前缀是否连续、续查是否属于同一 `(instance_id, dp_rank)`。
