@@ -1078,19 +1078,39 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 return
 
             if superseded:
-                # Assembler already created a newer id for this job_name; do not
-                # stop the replacement's NodeManagers via the stale instance.
-                logger.debug(
-                    "Skip strategy for superseded instance %d (job already has a newer instance)",
-                    ins_id,
+                # Most stale-instance strategies may stop the replacement's
+                # NodeManagers and must be skipped. ScaleP2D is the exception:
+                # it resolves the current D by job name and only releases
+                # Prefill capacity, so it can verify whether reconfiguration
+                # actually recovered the replacement D.
+                from motor.controller.fault_tolerance.strategy import ScaleP2DStrategy
+
+                generated_strategy_cls = (
+                    self.strategies[fault_level](fault_code, ins_id, self.config)
+                    if fault_level >= FaultLevel.L4
+                    else None
                 )
-                new_strategy_cls = None
+                new_strategy_cls = generated_strategy_cls if generated_strategy_cls is ScaleP2DStrategy else None
+                if new_strategy_cls is None:
+                    logger.debug(
+                        "Skip strategy for superseded instance %d (job already has a newer instance)",
+                        ins_id,
+                    )
             elif fault_level != FaultLevel.HEALTHY and ins_metadata.prev_strategy_failed:
                 # Engine FT and relaunch are single-attempt recovery stages;
                 # failure advances to whole-instance reconfiguration. Other
                 # baseline strategies retain master's optional relaunch stage.
                 if ins_metadata.prev_strategy_name == "InstanceReconfigurationStrategy":
-                    new_strategy_cls = None
+                    # Reconfiguration dispatch failure is terminal for the
+                    # same evidence, but a later actionable hardware fault is
+                    # a higher-confidence recovery round. In particular, a
+                    # Decode L4-L6 fault must still be able to release Prefill
+                    # capacity through ScaleP2D.
+                    new_strategy_cls = (
+                        self.strategies[fault_level](fault_code, ins_id, self.config)
+                        if fault_level >= FaultLevel.L4 and scale_down_context.hardware_fault_observed
+                        else None
+                    )
                 elif ins_metadata.prev_strategy_name in {
                     "DpScaleDownStrategy",
                     "EngineFastRecoveryStrategy",

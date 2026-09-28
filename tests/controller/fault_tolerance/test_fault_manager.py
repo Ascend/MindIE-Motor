@@ -2120,6 +2120,30 @@ def test_failed_strategy_uses_next_fallback(
         assert metadata.strategy._controller_config is manager.config
 
 
+def test_late_hardware_fault_escalates_failed_reconfiguration_to_scale_p2d(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L6
+    metadata.fault_code = 0x1
+    metadata.prev_strategy_failed = True
+    metadata.prev_strategy_name = "InstanceReconfigurationStrategy"
+    manager.strategies[FaultLevel.L6] = lambda *_: ScaleP2DStrategy
+
+    with (
+        patch.object(manager, "_is_superseded_instance", return_value=False),
+        patch.object(
+            manager,
+            "_build_scale_down_context",
+            return_value=ScaleDownContext(source="hardware", hardware_fault_observed=True),
+        ),
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        manager._process_instance_strategy(1)
+
+    submit.assert_called_once()
+    assert isinstance(metadata.strategy, ScaleP2DStrategy)
+
+
 def test_disabled_scale_down_falls_back_to_reconfiguration(fault_manager_with_instances):
     manager = fault_manager_with_instances
     manager.config.fault_tolerance_config.enable_dp_scale_down = False
@@ -2857,6 +2881,22 @@ def test_all_dp_on_faulty_node_reconfigures_instead_of_scaling_down(fault_manage
     assert plan.strategy is InstanceReconfigurationStrategy
 
 
+def test_inactive_instance_without_fault_evidence_waits_for_rescheduling(fault_manager):
+    context = ScaleDownContext(source="software", engine_recovery_eligible=False)
+
+    plan = build_recovery_plan(
+        1,
+        fault_manager.config,
+        context,
+        None,
+        FaultLevel.L1,
+        0x00F10509,
+    )
+
+    assert plan.strategy is None
+    assert plan.fallback is InstanceReconfigurationStrategy
+
+
 def test_hardware_fault_without_engine_fault_does_not_start_l2_recovery(
     fault_manager_with_instances,
 ):
@@ -3100,6 +3140,30 @@ def test_process_instance_strategy_skips_superseded_instance(fault_manager_with_
 
     assert manager.instances[1].strategy is None
     manager.executor.shutdown(wait=False)
+
+
+def test_superseded_decode_still_checks_replacement_with_scale_p2d(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    manager.instances[1].fault_level = FaultLevel.L6
+    manager.instances[1].fault_code = 0x1
+    manager.strategies[FaultLevel.L6] = lambda *_: ScaleP2DStrategy
+
+    stale = _mk_active_instance(1, "vllm-0-d0", role="decode")
+    stale.status = InsStatus.INACTIVE
+    replacement = _mk_active_instance(4, "vllm-0-d0", role="decode")
+    replacement.status = InsStatus.INITIAL
+    mock_im = MagicMock()
+    mock_im.get_instance.return_value = stale
+    mock_im.get_instance_by_job_name.return_value = replacement
+
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager", return_value=mock_im),
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        manager._process_instance_strategy(1)
+
+    submit.assert_called_once()
+    assert isinstance(manager.instances[1].strategy, ScaleP2DStrategy)
 
 
 # -- Non-A2 linkdown handling -------------------------------------------------

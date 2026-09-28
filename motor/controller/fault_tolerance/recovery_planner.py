@@ -55,6 +55,15 @@ def build_recovery_plan(
     # original controller strategy for inactive instances and for hardware
     # evidence that cannot be mapped to a DP rank.
     if not context.engine_recovery_eligible:
+        # Heartbeat isolation is only a symptom: the instance is already
+        # INACTIVE, but no engine or hardware evidence may have arrived yet.
+        # Keep the original strategy (normally no-op for L1) so pod
+        # rescheduling gets a chance to converge before whole-instance
+        # reconfiguration is dispatched. If heartbeats do not recover,
+        # InstanceManager removes the inactive instance after
+        # CLEAR_INSTANCE_TIMEOUT.
+        if not context.engine_fault_observed and not context.hardware_fault_observed:
+            return RecoveryPlan(source, generated_strategy, context, fallback, evidence)
         return RecoveryPlan(source, generated_strategy or fallback, context, fallback, evidence)
     if context.hardware_fault_observed and (
         not context.hardware_mapping_complete or not context.hardware_affected_ranks

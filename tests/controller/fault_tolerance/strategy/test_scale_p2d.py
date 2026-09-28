@@ -239,6 +239,14 @@ def test_check_d_instance_status_accepts_inactive(bind_context):
             assert bind_context._check_d_instance_status() is True
 
 
+def test_check_d_instance_status_treats_initial_as_unrecovered_after_timeout(bind_context):
+    d_inst = _decode_instance(instance_id=5, status=InsStatus.INITIAL)
+    with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
+        mock_im_cls.return_value.get_instance_by_job_name.return_value = d_inst
+        with patch.object(bind_context, "d_instance_reinit_wait_timeout", 0):
+            assert bind_context._check_d_instance_status() is True
+
+
 def test_check_d_instance_status_rejects_when_no_instance_by_job_name(bind_context):
     with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
         mock_im_cls.return_value.get_instance_by_job_name.return_value = None

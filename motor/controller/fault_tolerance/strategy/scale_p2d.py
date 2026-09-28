@@ -390,8 +390,10 @@ class ScaleP2DStrategy(StrategyBase):
         The instance is looked up by job_name because redundant-node recovery may assign
         a new instance id while preserving the job_name.
 
-        Returns False if the current D instance is INITIAL/ACTIVE (recovered, ScaleP2D
-        not needed), missing, times out while still operational, or the strategy stops.
+        Returns False if the current D instance becomes ACTIVE (recovered, ScaleP2D
+        not needed), is missing, or the strategy stops. INITIAL is a reconfiguration
+        candidate, not proof of recovery: it may contain only part of the expected
+        endpoints, so it keeps waiting and is treated as unavailable on timeout.
         """
         self.context.current_state = RecoveryState.CHECKING
         logger.info(
@@ -428,7 +430,7 @@ class ScaleP2DStrategy(StrategyBase):
                     )
                     return False
 
-                if d_instance.status in (InsStatus.INITIAL, InsStatus.ACTIVE):
+                if d_instance.status == InsStatus.ACTIVE:
                     logger.info(
                         "D instance recovered, ScaleP2D not needed. trigger_instance_id=%d, "
                         "current_instance_id=%d, job_name=%s, status=%s",
@@ -466,7 +468,7 @@ class ScaleP2DStrategy(StrategyBase):
                 )
                 return False
 
-            if d_instance.status not in (InsStatus.INITIAL, InsStatus.ACTIVE):
+            if d_instance.status != InsStatus.ACTIVE:
                 logger.info(
                     "D instance ready for ScaleP2D. trigger_instance_id=%d, current_instance_id=%d, "
                     "job_name=%s, status=%s, waited_s=%.1f",

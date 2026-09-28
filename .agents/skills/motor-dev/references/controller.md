@@ -141,6 +141,11 @@ and does not submit the same reconfiguration again.
 - Priority is token reinference, all-UNHEALTHY fast recovery, complete UNHEALTHY+DEAD scale-down, then original
   whole-instance recovery. All-UNHEALTHY is necessary but not sufficient for `is_applicable()`. Failed fast recovery
   goes directly to reconfiguration; a running strategy is reaped before a replacement is submitted.
+- Heartbeat isolation without engine or actionable hardware evidence is not sufficient to dispatch whole-instance
+  reconfiguration: the planner waits for Pod rescheduling or authoritative evidence. A failed reconfiguration remains
+  terminal for the same evidence, but a later L4-L6 hardware fault may start the newly generated native strategy
+  (notably ScaleP2D for Decode). This preserves severity escalation when Kubernetes node-reboot evidence arrives after
+  the faster NodeManager heartbeat timeout.
 - Software FT evidence starts collection immediately and withdraws the instance from Coordinator on the first DEAD or
   UNHEALTHY report. The Controller-level `fault_collection_timeout_seconds` controls this collection window and defaults
   to 60 seconds; it is not derived from engine collective timeouts. A complete snapshot with at least one DEAD and one UNHEALTHY
@@ -182,6 +187,11 @@ and does not submit the same reconfiguration again.
 - Runtime records follow the logical instance lifecycle. Relaunch preserves committed ranks; whole-instance
   reconfiguration clears scale-down rank history. A successful scale-down round clears stale software evidence before
   replanning, preventing `WAITING_ENGINE_FAULT` from overwriting `SCALED_DOWN_RUNNING`.
+- ScaleP2D waits for D reinitialization by `job_name`. Only `ACTIVE` proves that rescheduling recovered D; an `INITIAL`
+  replacement may contain only a partial endpoint set and therefore keeps waiting. If it remains non-ACTIVE at the
+  configured deadline, ScaleP2D treats recovery as incomplete and proceeds to evaluate Prefill capacity. Superseded
+  instance ids still block strategies that could stop replacement NodeManagers, but do not block ScaleP2D: it resolves
+  the latest D by job name and either observes its ACTIVE recovery or releases Prefill capacity for it.
 
 **A2 PD-disagg isolation** (`A2_PD_ISOLATION_FAULT_CODES` in `fault_types.py`; currently `0x81078603` / `CardNetworkUnhealthy` → `PreSeparateNPU`):
 
