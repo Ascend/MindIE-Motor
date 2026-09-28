@@ -2,94 +2,46 @@
 
 ## 特性介绍
 
-PD 分离（Prefill & Decode 分离）将大语言模型推理的预填充（Prefill）与解码（Decode）两个阶段拆分到不同实例上运行。Prefill 阶段对输入 prompt 执行完整前向传播，生成初始隐藏状态（Hidden States），为计算密集型；Decode 阶段基于 Prefill 结果逐步生成后续 token，为访存密集型（以 KV Cache 等内存访问为主）。本仓库采用多机 PD 分离部署方案，通过 K8s Service 为 Coordinator 暴露推理入口，使用多个 Deployment 分别部署 Controller、Coordinator 以及 Server（P 实例与 D 实例各若干 Pod）。
+PD分离（Prefill & Decode 分离）将大语言模型推理的两个阶段部署到不同实例上，使各阶段按自身资源特征独立运行。
+
+- **Prefill（P）**：对输入prompt执行一次完整前向计算，生成该序列的KV Cache。该阶段计算密集，每个新请求均需执行一次。
+- **Decode（D）**：接收P传来的KV Cache，逐步生成后续token。单步计算量小，但需反复执行直至生成结束，主要消耗访存带宽。
+
+PD混部时，P与D共用一张卡，新请求的Prefill会中断正在进行的Decode。分离之后，P可持续处理新请求，D可持续输出token，算力与带宽按阶段分别配置，在同等时延目标下通常获得更高吞吐。
 
 ### 工作原理
 
-**依据原文上下文内容重组，请进行人工校验。**
+MindIE Motor中的PD分离调度与实例角色能力，由Coordinator统一编排，并非某一引擎的特有开关。集群中同时存在健康的Prefill、Decode实例时，Coordinator按PD分离路径选择一对P/D，再按引擎协议完成一次请求。
 
-PD 分离将推理流程拆分为两个独立阶段，分别在独立实例上执行：
+一次请求的角色分工具体如下所示：
 
-1. **Prefill 阶段**：P 实例接收用户请求，对输入 prompt 执行完整前向传播，生成初始隐藏状态。每个新输入序列都需执行一次 Prefill。
-2. **KV Cache 传输**：P 实例将计算后的 KV Cache 通过 kv_transfer_config 传输至 D 实例。
-3. **Decode 阶段**：D 实例基于 Prefill 结果逐步生成后续 token，每步仅计算最新 token 的激活与 attention，单步计算量较小，但需反复执行直至生成结束。
+![PD 分离请求路径](../../imgs/pd_disaggregation_infer_flow.png)
 
-### 核心功能
+1. **入口**：客户端请求仅发送至Coordinator。Controller负责实例注册、健康检测与生命周期管理，不参与单请求转发。
+2. **选路**：Coordinator依据当前可用实例的角色，选择一对Prefill与Decode实例。
+3. **Prefill**：Prefill实例对prompt执行完整前向计算，生成该序列的KV Cache。
+4. **KV 传输**：Prefill至Decode的KV Cache由引擎侧Connector完成传输。Coordinator仅负责选定实例并注入握手元数据，不承担KV数据搬运。
+5. **Decode**：Decode实例按token逐步解码，生成结果经Coordinator返回客户端。
 
-提高 NPU 利用率，减轻 Prefill 与 Decode 分时复用带来的相互干扰，在相同时延下提升整体吞吐。Prefill 处理新请求的同时 Decode 可持续处理已有请求的解码，整体处理能力更高，尤其在高并发场景下有助于降低时延。
+### 特性收益
+
+- **资源按阶段配置**：Prefill偏重算力，Decode偏重带宽，可依据角色选择卡型与并行度，例如Prefill部署于PR、Decode部署于DT。
+- **吞吐提升**：Prefill持续接收新请求的同时，Decode持续解码已有请求，两者不再争用同一条流水线。
+- **时延更可控**：高并发场景下，避免Prefill中断Decode所造成的排队等待。
 
 ### 约束与限制
 
-**依据原文上下文内容重组，请进行人工校验。**
-
 | 约束维度 | 要求 |
 |----------|------|
-| 硬件 | 内容缺失，需要人工补齐。 |
-| 部署场景 | 支持多机 PD 分离部署。 |
-| 引擎 | 基于 vLLM 引擎。 |
-| 特性互斥 | 内容缺失，需要人工补齐。 |
-| 软件依赖 | 需部署 Controller、Coordinator、P 实例与 D 实例；使用 K8s Service 暴露 Coordinator 推理入口。 |
-| 其他限制 | 内容缺失，需要人工补齐。 |
+| 硬件 | Atlas 800I A2推理服务器<br>Atlas 800I A3超节点服务器<br>Ascend950PR&950DT系列产品 |
+| 部署场景 | 支持K8s、Docker两种部署形态。 |
+| 引擎 | 支持vLLM与SGLang。 |
+| 特性互斥 | K8s部署支持当前代码仓所有特性。<br>Docker only仅支持整服务级RAS监控、虚推健康探测、引擎重拉、PD分离降级混部、D2D权重直传、故障请求重调度、故障实例熔断、精度异常检测等RAS特性。 |
+| 软件依赖 | K8s部署依赖Ascend HDK、Docker、Kubernetes与MindCluster。<br>Docker部署依赖Ascend HDK与Docker。 |
 
 ## 特性使用
 
-### 环境准备
+PD分离服务的部署以及更多详细内容请参见：
 
-- 已部署 K8s 集群，具备 `kubectl` 权限。
-- 已安装 MindIE Motor 推理服务组件。
-- 详细部署步骤请参考《[PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md)》。
-
-### 使用样例
-
-**内容缺失，需要补充。以下内容基于原文上下文推断，请人工确认：**
-
-PD 分离部署通过 `user_config.json` 配置 Prefill 和 Decode 实例数，并使用 `deploy.py` 完成部署。详细操作步骤请参考《[PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md)》。
-
-### 验证特性
-
-**内容缺失，需要补充。以下内容基于原文上下文推断，请人工确认：**
-
-1. 确认 P 实例和 D 实例均启动成功：
-
-   ```bash
-   kubectl get pod -A -owide
-   ```
-
-   预期输出：P 实例（prefill）和 D 实例（decode）均处于 Running 状态。
-
-2. 发送推理请求验证：
-
-   ```bash
-   curl -X POST http://{coordinator-ip}:1025/v1/chat/completions \
-     -H "Content-Type: application/json" \
-     -d '{"model": "your-model", "messages": [{"role": "user", "content": "hello"}]}'
-   ```
-
-   预期输出：返回 HTTP 200，响应体包含 `choices` 字段。
-
-## 常见问题
-
-**内容缺失，需要补充。以下内容基于原文上下文推断，请人工确认**
-
-### P 实例与 D 实例之间无法传输 KV Cache
-
-**问题描述**：P 实例与 D 实例之间无法传输 KV Cache，推理失败。
-
-**原因分析**：`kv_transfer_config` 中 `kv_role` 配置错误，或 `kv_port` 不一致。
-
-**解决步骤**：
-
-1. 检查 `kv_transfer_config` 中 `kv_role` 是否正确：P 为 `kv_producer`，D 为 `kv_consumer`。
-2. 检查 `kv_port` 是否一致。
-
-### P 实例或 D 实例启动失败
-
-**问题描述**：P 实例或 D 实例启动失败。
-
-**原因分析**：配置文件中 `user_config.json` 的实例数配置错误或引擎配置不完整。
-
-**解决步骤**：
-
-1. 检查 `user_config.json` 中 `p_instances_num` 和 `d_instances_num` 是否正确。
-2. 检查引擎 `model` 和 `max_model_len` 配置是否完整。
-3. 查看引擎日志：`kubectl logs <pod-name>`。
+- **K8s**：依赖较重，可使用Motor全部能力。RAS（高可靠、高可用）能力在出现软硬件故障时极大降低业务损失；优秀的请求调度能力（KV亲和性调度+KV Cache池化管理），明显提升推理性能。参见[PD分离服务部署](../deployment/k8s/)。
+- **Docker**：依赖较轻，可使用Motor的负载均衡能力（KV亲和性调度与池化），明显提升推理性能。参见[基于Docker的服务部署](../deployment/docker/)。
