@@ -42,14 +42,17 @@ stages:
               cd -
           - name: Install Rust toolchain
             run: |
-              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              set -e
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
               source "$HOME/.cargo/env"
+              echo 'source "$HOME/.cargo/env"' >> "$HOME/.bashrc"
+              if [ -w /usr/local/bin ]; then
+                ln -sf "$HOME/.cargo/bin/cargo" /usr/local/bin/cargo
+                ln -sf "$HOME/.cargo/bin/rustc" /usr/local/bin/rustc
+                ln -sf "$HOME/.cargo/bin/rustup" /usr/local/bin/rustup
+              fi
               rustc --version
               cargo --version
-            shell: bash
-          - name: Export cargo env
-            run: |
-              echo "PATH=$HOME/.cargo/bin:${PATH}" >> $GITHUB_ENV
           - name: pre-commit
             uses: openlibing-pre-commit-action
 
