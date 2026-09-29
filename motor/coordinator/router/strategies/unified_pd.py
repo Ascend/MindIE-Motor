@@ -2141,6 +2141,32 @@ class UnifiedPDRouter(BaseRouter):
                 )
         return req, api
 
+    def _pin_sglang_prefill_dp(self, adapter: PDProtocolAdapter, attempt: AttemptContext, req: dict[str, Any]) -> None:
+        """Send an SGLang prefill to the DP that holds the matched prefix.
+
+        One HTTP endpoint fronts every engine DP. ``routed_dp_rank`` is honored
+        before round-robin. vLLM builds its own body and never reads this field.
+        """
+        if getattr(adapter, "engine_type", None) != "sglang":
+            return
+        resource = attempt.prefill_resource
+        if resource is None or resource.instance is None or resource.endpoint is None:
+            return
+        ranks = getattr(self.req_info, "kv_routed_dp_rank", None)
+        if not isinstance(ranks, dict):
+            return
+        rank = ranks.get((resource.instance.id, resource.endpoint.id))
+        if not isinstance(rank, int) or isinstance(rank, bool) or rank < 0:
+            return
+        req["routed_dp_rank"] = rank
+        self.logger.info(
+            "sglang prefill routed_dp_rank=%s instance=%s endpoint=%s req_id=%s",
+            rank,
+            resource.instance.id,
+            resource.endpoint.id,
+            self.req_info.req_id,
+        )
+
     def _native_request_for_attempt(
         self,
         attempt: AttemptContext,
@@ -2153,6 +2179,7 @@ class UnifiedPDRouter(BaseRouter):
     ) -> tuple[dict[str, Any], str]:
         context = self._native_leg_context(attempt, role, api)
         if role == PDRole.ROLE_P:
+            self._pin_sglang_prefill_dp(adapter, attempt, req)
             engine_request = adapter.build_prefill_request(req, context)
         else:
             engine_request = adapter.build_decode_request(req, context, prefill_metadata)

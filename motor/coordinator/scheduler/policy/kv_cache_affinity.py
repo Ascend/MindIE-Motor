@@ -408,23 +408,31 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             return 0
 
     @staticmethod
-    def _matched_raw_for_endpoint(dp_map: dict, endpoint: Endpoint, fold_engine_dps: bool) -> object:
-        """Return the conductor DP payload used to score one HTTP endpoint.
+    def _matched_raw_for_endpoint(dp_map: dict, endpoint: Endpoint, fold_engine_dps: bool) -> tuple[object, int | None]:
+        """Return the conductor DP payload and, when folded, the winning DP rank.
 
         When the instance exposes a single HTTP port, take the best match
-        across every engine DP the conductor reported. Multi-endpoint
-        instances keep the 1:1 ``endpoint.id`` mapping.
+        across every engine DP the conductor reported and return that rank so
+        the SGLang prefill request can be pinned. Multi-endpoint instances keep
+        the 1:1 ``endpoint.id`` mapping and return no rank.
         """
         if not fold_engine_dps:
-            return dp_map.get(f"{endpoint.id}", 0)
+            return dp_map.get(f"{endpoint.id}", 0), None
         best_raw: object = dp_map.get(f"{endpoint.id}", 0)
         best_tokens = KvCacheAffinityPolicy._weighted_matched_tokens(best_raw, 1, 1.0, 1.0, 1.0)
-        for raw in dp_map.values():
+        best_rank: int | None = endpoint.id if best_tokens > 0 else None
+        for rank_key, raw in dp_map.items():
             tokens = KvCacheAffinityPolicy._weighted_matched_tokens(raw, 1, 1.0, 1.0, 1.0)
             if tokens > best_tokens:
                 best_tokens = tokens
                 best_raw = raw
-        return best_raw
+                try:
+                    best_rank = int(rank_key)
+                except (TypeError, ValueError):
+                    best_rank = None
+        if best_tokens <= 0:
+            best_rank = None
+        return best_raw, best_rank
 
     @staticmethod
     def _weighted_matched_tokens(
@@ -480,7 +488,8 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         w_cpu: float = 1.0,
         w_disk: float = 0.0,
         block_size: int = 0,
-    ) -> tuple[list[tuple[float, int, float, Instance, Endpoint, tuple[int, int, int] | None]], bool]:
+        req_info: RequestInfo | None = None,
+    ) -> tuple[list[tuple[float, int, float, Instance, Endpoint, tuple[int, int, int] | None]], bool, dict]:
         """
         Build the per-endpoint scoring tuples shared by the load-aware selection modes.
 
@@ -488,13 +497,15 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         tier_hit_tokens)`` where ``load_cost`` is the SHM-reported live workload,
         ``matched_tokens`` is the tier-weighted affinity match capped at the prompt, and
         ``tier_hit_tokens`` is ``(hbm, cpu, disk)`` exclusive hit token counts when the conductor
-        reports per-medium blocks. Returns ``(candidates, any_instance)``; ``any_instance`` is
+        reports per-medium blocks. Returns ``(candidates, any_instance, routed_dp_ranks)``;
+        ``any_instance`` is
         True when the conductor tenant map contains at least one of *our* instances (fall back
         to load_balance when False). Instances absent from a partial tenant map are scored as
         zero-match rather than skipped, so they can still win on load when other instances
         already have KV indexes.
         """
         candidates: list[tuple[float, int, float, Instance, Endpoint, tuple[int, int, int] | None]] = []
+        routed_dp_ranks: dict[tuple, int] = {}
         any_instance = False
         for instance in instances:
             # The conductor tenant map is index-driven: instances with no cached KV blocks
@@ -515,16 +526,19 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             # HTTP endpoint so instance pick can see hits on DP>0.
             fold_engine_dps = len(endpoints) == 1
             for ep in endpoints:
-                matched_raw = KvCacheAffinityPolicy._matched_raw_for_endpoint(dp_map, ep, fold_engine_dps)
+                matched_raw, folded_rank = KvCacheAffinityPolicy._matched_raw_for_endpoint(dp_map, ep, fold_engine_dps)
                 matched = KvCacheAffinityPolicy._weighted_matched_tokens(matched_raw, block_size, w_npu, w_cpu, w_disk)
                 # Cap at the prompt length as a safety bound, since a matched prefix
                 # cannot be longer than the prompt itself.
                 matched_tokens = min(matched, isl) if isl > 0 else 0
+                if fold_engine_dps and folded_rank is not None and matched_tokens > 0:
+                    routed_dp_ranks[(instance.id, ep.id)] = folded_rank
                 prefill_cost = max(0.0, isl - overlap_credit * matched_tokens)
                 load_cost = ep.workload.calculate_workload_score()
                 tier_hit = KvCacheAffinityPolicy._tier_hit_tokens(matched_raw, block_size)
                 candidates.append((load_cost, matched_tokens, prefill_cost, instance, ep, tier_hit))
-        return candidates, any_instance
+        KvCacheAffinityPolicy._set_routed_dp_ranks(req_info, routed_dp_ranks)
+        return candidates, any_instance, routed_dp_ranks
 
     @staticmethod
     def _hit_rate_below_threshold(
@@ -596,6 +610,16 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             logger.debug("Could not cache kv_affinity_debug on req_info: %s", e)
 
     @staticmethod
+    def _set_routed_dp_ranks(req_info: RequestInfo | None, ranks: dict | None) -> None:
+        """Remember which engine DP holds the folded prefix hit. Empty clears the pin."""
+        if req_info is None:
+            return
+        try:
+            req_info.kv_routed_dp_rank = ranks or None
+        except Exception as e:  # pragma: no cover - req_info may be immutable in some callers
+            logger.debug("Could not cache kv_routed_dp_rank on req_info: %s", e)
+
+    @staticmethod
     def _select_with_load(
         instances: list[Instance],
         tenant: dict,
@@ -619,7 +643,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         affinity-only (longest prefix wins). Equal-score ties are broken uniformly at random so
         equal-load requests spread across nodes instead of always landing on the first one.
         """
-        raw, any_instance = KvCacheAffinityPolicy._collect_load_candidates(
+        raw, any_instance, _routed = KvCacheAffinityPolicy._collect_load_candidates(
             instances,
             tenant,
             isl,
@@ -628,6 +652,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             w_cpu=w_cpu,
             w_disk=w_disk,
             block_size=block_size,
+            req_info=req_info,
         )
         if not any_instance:
             logger.warning("kv_cache_affinity(load-aware): no instance data")
@@ -636,6 +661,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             logger.warning("kv_cache_affinity(load-aware): no endpoint selected")
             return None
         if KvCacheAffinityPolicy._hit_rate_below_threshold(raw, isl, hit_rate_threshold):
+            KvCacheAffinityPolicy._set_routed_dp_ranks(req_info, None)
             return []
 
         # Each candidate: (score, instance, endpoint, matched_tokens); lower score is better.
@@ -697,7 +723,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         broken uniformly at random so equal-load requests spread across nodes instead of always
         landing on the first one.
         """
-        raw, any_instance = KvCacheAffinityPolicy._collect_load_candidates(
+        raw, any_instance, _routed = KvCacheAffinityPolicy._collect_load_candidates(
             instances,
             tenant,
             isl,
@@ -706,6 +732,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             w_cpu=w_cpu,
             w_disk=w_disk,
             block_size=block_size,
+            req_info=req_info,
         )
         if not any_instance:
             logger.warning("kv_cache_affinity(load-gated): no instance data")
@@ -714,6 +741,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             logger.warning("kv_cache_affinity(load-gated): no endpoint selected")
             return None
         if KvCacheAffinityPolicy._hit_rate_below_threshold(raw, isl, hit_rate_threshold):
+            KvCacheAffinityPolicy._set_routed_dp_ranks(req_info, None)
             return []
 
         # Candidate is (load_cost, matched_tokens, prefill_cost, instance, endpoint).
@@ -966,7 +994,20 @@ class TokenizerManager(ThreadSafeSingleton):
         return result if isinstance(result, list) else self.tokenizer.encode(result, add_special_tokens=False)
 
     def _encode_dsv4_messages(self, messages: list) -> list[int]:
-        """DeepSeek V4 chat markers when vLLM tokenizer / chat_template is absent."""
+        """Hand-built markers used only when the tokenizer has no chat_template.
+
+        SGLang's chat encoder differs from the historical vLLM marker string.
+        Keep the vLLM string unless this coordinator is configured for SGLang,
+        so a vLLM deploy that also lacks ``chat_template`` still queries
+        Conductor with the same tokens as before.
+        """
+        engine_type = str(getattr(self, "engine_type", "vllm") or "vllm").strip().lower()
+        if engine_type == "sglang":
+            return self._encode_dsv4_messages_sglang(messages)
+        return self._encode_dsv4_messages_vllm(messages)
+
+    def _encode_dsv4_messages_vllm(self, messages: list) -> list[int]:
+        """DeepSeek V4 chat markers when the vLLM tokenizer / chat_template is absent."""
         parts: list[str] = []
         for message in messages:
             if not isinstance(message, dict):
@@ -983,6 +1024,39 @@ class TokenizerManager(ThreadSafeSingleton):
                 parts.append(f"{_DSV4_USER_MARKER}{content}")
         if not messages or (isinstance(messages[-1], dict) and messages[-1].get("role") != "assistant"):
             parts.append(_DSV4_ASSISTANT_MARKER)
+        return self.tokenizer.encode("".join(parts), add_special_tokens=False)
+
+    def _encode_dsv4_messages_sglang(self, messages: list) -> list[int]:
+        """Match SGLang ``encoding_dsv4`` chat mode when no chat_template is set.
+
+        A user turn that starts generation, or that is followed by an assistant
+        reply, is closed with ``<｜Assistant｜></think>``. The historical
+        assistant text is ``{content}<｜end▁of▁sentence｜>`` and does not repeat
+        that marker. Closing the assistant message with the marker instead
+        shifts the first 128-token block whenever the preceding user text is
+        shorter than one block, so Conductor reports no prefix hit.
+        """
+        normalized = [message for message in messages if isinstance(message, dict)]
+        parts: list[str] = ["<｜begin▁of▁sentence｜>"]
+        generation_close = f"{_DSV4_ASSISTANT_MARKER}</think>"
+        for index, message in enumerate(normalized):
+            role = message.get("role")
+            content = message.get("content") or ""
+            if not isinstance(content, str):
+                content = str(content)
+            next_role = normalized[index + 1].get("role") if index + 1 < len(normalized) else None
+            if role == "system":
+                parts.append(content)
+                continue
+            if role in ("user", "developer", "tool"):
+                parts.append(f"{_DSV4_USER_MARKER}{content}")
+                if next_role is None or next_role in ("assistant", "latest_reminder"):
+                    parts.append(generation_close)
+                continue
+            if role == "assistant":
+                parts.append(f"{content}{_DSV4_EOS_MARKER}")
+        if not normalized:
+            parts.append(generation_close)
         return self.tokenizer.encode("".join(parts), add_special_tokens=False)
 
     def _apply_chat_template_standard(self, messages: list, tools: list | None, req_data: dict | None) -> list[int]:

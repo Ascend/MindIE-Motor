@@ -421,7 +421,7 @@ def test_sglang_prefill_response_copies_usage_without_handoff_ticket():
 
 def test_sglang_declares_internal_response_fields():
     assert SglangProtocolAdapter.internal_response_fields == frozenset(
-        {"bootstrap_host", "bootstrap_port", "bootstrap_room"}
+        {"bootstrap_host", "bootstrap_port", "bootstrap_room", "routed_dp_rank"}
     )
 
 

@@ -369,7 +369,7 @@ class VllmProtocolAdapter:
 class SglangProtocolAdapter:
     engine_type = "sglang"
     coordination_mode = CoordinationMode.BOOTSTRAP
-    internal_response_fields = frozenset({"bootstrap_host", "bootstrap_port", "bootstrap_room"})
+    internal_response_fields = frozenset({"bootstrap_host", "bootstrap_port", "bootstrap_room", "routed_dp_rank"})
 
     def build_prefill_request(
         self,

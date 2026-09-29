@@ -835,6 +835,31 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
         )
         self.assertEqual(ranked, [])
 
+    def test_folded_single_http_endpoint_records_longest_dp_rank(self):
+        ep = _make_endpoint(0)
+        raw, rank = KvCacheAffinityPolicy._matched_raw_for_endpoint(
+            {
+                "0": {"matched_tokens": 128},
+                "12": {"matched_tokens": 1024},
+            },
+            ep,
+            True,
+        )
+        self.assertEqual(rank, 12)
+        self.assertEqual(raw["matched_tokens"], 1024)
+
+    def test_folded_dp_rank_absent_when_nothing_matches(self):
+        _raw, rank = KvCacheAffinityPolicy._matched_raw_for_endpoint({}, _make_endpoint(0), True)
+        self.assertIsNone(rank)
+
+    def test_multi_endpoint_does_not_fold_a_dp_rank(self):
+        _raw, rank = KvCacheAffinityPolicy._matched_raw_for_endpoint(
+            {"3": {"matched_tokens": 256}},
+            _make_endpoint(3),
+            False,
+        )
+        self.assertIsNone(rank)
+
     def test_select_instance(self):
         """Test _select_instance function"""
         result = self.policy._select_instance()
@@ -940,11 +965,12 @@ class TestKvCacheAffinityTokenizationUtils(unittest.TestCase):
 
 
 class TestTokenizerManagerDsv4(unittest.TestCase):
-    def _make_manager(self, tokenizer: Mock, *, is_dsv4: bool) -> TokenizerManager:
+    def _make_manager(self, tokenizer: Mock, *, is_dsv4: bool, engine_type: str = "vllm") -> TokenizerManager:
         # Bypass singleton init (which tries to load real tokenizers / config).
         manager = TokenizerManager.__new__(TokenizerManager)
         manager.tokenizer = tokenizer
         manager._is_dsv4 = is_dsv4
+        manager.engine_type = engine_type
         manager.openai_standard = os.environ.get("OPENAI_STANDARD", "STANDARD")
         return manager
 
@@ -1057,8 +1083,49 @@ class TestTokenizerManagerDsv4(unittest.TestCase):
         self.assertEqual(out, [11, 22, 33])
         tokenizer.apply_chat_template.assert_not_called()
         encoded = tokenizer.encode.call_args[0][0]
-        self.assertIn("<｜User｜>hi", encoded)
-        self.assertTrue(encoded.endswith("<｜Assistant｜>"))
+        self.assertEqual(encoded, "<｜User｜>hi<｜Assistant｜>")
+
+    def test_encode_dsv4_messages_vllm_multiturn_keeps_assistant_marker(self):
+        tokenizer = Mock()
+        tokenizer.chat_template = None
+        tokenizer.encode.return_value = [1]
+        manager = self._make_manager(tokenizer, is_dsv4=True, engine_type="vllm")
+
+        manager._encode_dsv4_messages(
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "q2"},
+            ]
+        )
+        encoded = tokenizer.encode.call_args[0][0]
+        self.assertEqual(
+            encoded,
+            "<｜User｜>sys<｜User｜>q1<｜Assistant｜>a1<｜end▁of▁sentence｜><｜User｜>q2<｜Assistant｜>",
+        )
+        self.assertNotIn("</think>", encoded)
+
+    def test_encode_dsv4_messages_matches_sglang_multiturn(self):
+        tokenizer = Mock()
+        tokenizer.chat_template = None
+        tokenizer.encode.return_value = [1]
+        manager = self._make_manager(tokenizer, is_dsv4=True, engine_type="sglang")
+
+        manager._encode_dsv4_messages(
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "q2"},
+            ]
+        )
+        encoded = tokenizer.encode.call_args[0][0]
+        self.assertEqual(
+            encoded,
+            "<｜begin▁of▁sentence｜>sys<｜User｜>q1<｜Assistant｜></think>a1"
+            "<｜end▁of▁sentence｜><｜User｜>q2<｜Assistant｜></think>",
+        )
 
     def test_is_deepseek_v4_model_detects_from_config(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -78,6 +78,13 @@ class RequestInfo(BaseModel):
         "for the committed endpoint. Keyed by (instance_id, endpoint_id) tuples, so excluded "
         "from serialization.",
     )
+    kv_routed_dp_rank: dict | None = Field(
+        default=None,
+        exclude=True,
+        description="When one HTTP endpoint fronts many engine DPs, the conductor DP rank with "
+        "the longest prefix for that endpoint. Keyed by (instance_id, endpoint_id). SGLang "
+        "prefill copies the committed rank into routed_dp_rank; absent when there is no hit.",
+    )
     api: str = Field(..., description="API need to be forwarded")
     entry_api: str = Field(
         default="",
