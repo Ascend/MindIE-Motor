@@ -27,12 +27,15 @@ use layout::{MAGIC, SCHEMA_VERSION};
 
 /// ABI version, independent of the on-wire SCHEMA_VERSION (the ABI may evolve without the layout).
 /// v2: `cas_add`/`cas_sub_floor0` take a slot hint; `load_entries` batches a snapshot read.
-pub const ABI_VERSION: u32 = 2;
+/// v3: `load_entry` gains a `total_requests` out-param; Python `MIN_ABI_VERSION=3` refuses
+/// older `.so` builds (their `load_entry` signature has one fewer argument — mixing old and
+/// new would be UB via ctypes, so the mismatch must fail loudly).
+pub const ABI_VERSION: u32 = 3;
 
 /// `slot_hint` sent by callers that do not yet know the slot (linear `find_slot` fallback).
 pub const SLOT_HINT_NONE: u32 = u32::MAX;
 
-/// Packed view copied out of SHM by `mindie_wl_load_entries` (24B, matches schema-4 entry).
+/// Packed view copied out of SHM by `mindie_wl_load_entries` (32B, matches schema-5 entry).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct LoadedEntry {
@@ -41,8 +44,9 @@ pub struct LoadedEntry {
     pub role: u8,
     pub flags: u8,
     pub generation: u16,
-    pub reserved: u32,
+    pub request_count: u32,
     pub active_tokens: f64,
+    pub total_requests: u64,
 }
 
 const _: () = assert!(std::mem::size_of::<LoadedEntry>() == layout::ENTRY_SIZE);
@@ -179,6 +183,22 @@ impl Segment {
     }
 
     #[inline]
+    unsafe fn v4_request_count(&self, slot: u32) -> &AtomicU32 {
+        &*(self
+            .base
+            .add(layout::entry_offset(slot) + layout::ENTRY_V4_OFF_REQUEST_COUNT)
+            as *const AtomicU32)
+    }
+
+    #[inline]
+    unsafe fn v4_total_requests(&self, slot: u32) -> &AtomicU64 {
+        &*(self
+            .base
+            .add(layout::entry_offset(slot) + layout::ENTRY_V4_OFF_TOTAL_REQUESTS)
+            as *const AtomicU64)
+    }
+
+    #[inline]
     unsafe fn v4_flags(&self, slot: u32) -> &AtomicU8 {
         &*(self
             .base
@@ -222,6 +242,12 @@ impl Segment {
     /// with a caller-supplied (stale) value: same slot leaves tokens untouched; a moved pair
     /// copies the current bits from the old slot. New pairs seed from `active_tokens`.
     /// A hole is `(iid, eid, flags) == (0, 0, 0)` and only clears VALID.
+    ///
+    /// `request_count` is Worker-owned too: same-slot live pairs keep it; moved pairs copy it;
+    /// new pairs seed 0. The membership snapshot must never clobber the in-flight counter.
+    /// `total_requests` (cumulative allocations) follows the same rule — same-slot live pairs
+    /// keep it, moved pairs copy it; a removed-then-re-added pair restarts at 0 (history is
+    /// scoped to one endpoint lifetime, which matches the metric's per-endpoint semantics).
     #[allow(clippy::too_many_arguments)]
     fn write_entry_v4(
         &self,
@@ -243,7 +269,8 @@ impl Segment {
             return error::OK;
         }
         // Snapshot must not clobber in-flight CAS. Copy-at-write if the pair moved slots.
-        let token_bits = match self.find_slot(instance_id, endpoint_id) {
+        let old_slot = self.find_slot(instance_id, endpoint_id);
+        let token_bits = match old_slot {
             Some(old) if old == slot => None,
             Some(old) => Some(unsafe { self.v4_tokens(old).load(Ordering::Acquire) }),
             None => {
@@ -254,6 +281,16 @@ impl Segment {
                 };
                 Some(seed.to_bits())
             }
+        };
+        let request_count = match old_slot {
+            Some(old) if old == slot => None,
+            Some(old) => Some(unsafe { self.v4_request_count(old).load(Ordering::Acquire) }),
+            None => Some(0u32),
+        };
+        let total_requests = match old_slot {
+            Some(old) if old == slot => None,
+            Some(old) => Some(unsafe { self.v4_total_requests(old).load(Ordering::Acquire) }),
+            None => Some(0u64),
         };
         let base_off = layout::entry_offset(slot);
         unsafe {
@@ -266,7 +303,12 @@ impl Segment {
                 p.add(layout::ENTRY_V4_OFF_GENERATION),
                 2,
             );
-            std::ptr::write_bytes(p.add(layout::ENTRY_V4_OFF_RESERVED), 0, 4);
+            if let Some(rc) = request_count {
+                self.v4_request_count(slot).store(rc, Ordering::Release);
+            }
+            if let Some(tr) = total_requests {
+                self.v4_total_requests(slot).store(tr, Ordering::Release);
+            }
             if let Some(bits) = token_bits {
                 self.v4_tokens(slot).store(bits, Ordering::Release);
             }
@@ -318,8 +360,9 @@ impl Segment {
                     role: self.v4_role(s),
                     flags: self.v4_flags(s).load(Ordering::Acquire),
                     generation: self.v4_generation(s),
-                    reserved: 0,
+                    request_count: self.v4_request_count(s).load(Ordering::Acquire),
                     active_tokens: f64::from_bits(self.v4_tokens(s).load(Ordering::Acquire)),
+                    total_requests: self.v4_total_requests(s).load(Ordering::Acquire),
                 };
             }
         }
@@ -367,7 +410,14 @@ impl Segment {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => (error::OK, new_bits),
+                Ok(_) => {
+                    // Allocate succeeded: bump the in-flight request count and the cumulative
+                    // allocation counter (total_requests never decrements; it is the source of
+                    // the ``stat="total_cnt"`` metric sample).
+                    self.v4_request_count(slot).fetch_add(1, Ordering::AcqRel);
+                    self.v4_total_requests(slot).fetch_add(1, Ordering::AcqRel);
+                    (error::OK, new_bits)
+                }
                 Err(actual) => (error::CHANGED, actual),
             }
         }
@@ -406,7 +456,24 @@ impl Segment {
                     Ordering::AcqRel,
                     Ordering::Acquire,
                 ) {
-                    Ok(_) => return (error::OK, new_val.to_bits()),
+                    Ok(_) => {
+                        // Release succeeded: drop the in-flight request count, never below 0.
+                        let rc = self.v4_request_count(slot);
+                        loop {
+                            let cur_rc = rc.load(Ordering::Acquire);
+                            let new_rc = cur_rc.saturating_sub(1);
+                            match rc.compare_exchange(
+                                cur_rc,
+                                new_rc,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            ) {
+                                Ok(_) => break,
+                                Err(_) => continue,
+                            }
+                        }
+                        return (error::OK, new_val.to_bits());
+                    }
                     Err(_) => continue,
                 }
             }
@@ -645,10 +712,16 @@ pub unsafe extern "C" fn mindie_wl_attach(name: *const c_char, out_handle: *mut 
         libc::munmap(base as *mut libc::c_void, size);
         return error::SCHEMA_MISMATCH;
     }
-    let max_entries =
-        (*(base.add(layout::OFF_MAX_ENTRIES) as *const AtomicU32)).load(Ordering::Acquire);
+    // Schema gate: an old (smaller-entry) writer and a new reader disagree on the entry
+    // stride, so any cross-version attach would corrupt counters. Fail loudly instead.
     let schema = ((*(base.add(layout::OFF_SCHEMA) as *const AtomicU32)).load(Ordering::Acquire)
         & 0xFFFF) as u16;
+    if schema != SCHEMA_VERSION {
+        libc::munmap(base as *mut libc::c_void, size);
+        return error::SCHEMA_MISMATCH;
+    }
+    let max_entries =
+        (*(base.add(layout::OFF_MAX_ENTRIES) as *const AtomicU32)).load(Ordering::Acquire);
     let seg = Segment {
         base,
         size,
@@ -891,7 +964,7 @@ pub unsafe extern "C" fn mindie_wl_set_blocked(
     error::OK
 }
 
-/// Copy `entry_count` schema-4 slots into `out` (one FFI for a scoring refresh).
+/// Copy `entry_count` schema-5 slots into `out` (one FFI for a scoring refresh).
 ///
 /// Each slot uses atomic loads for flags/tokens. `cap` is the number of `LoadedEntry`s the
 /// caller allocated; `out_n` receives how many were written (`min(entry_count, cap)`).
@@ -925,7 +998,7 @@ pub unsafe extern "C" fn mindie_wl_load_entries(
     error::OK
 }
 
-/// Read one schema-4 entry's fields. Any out-pointer may be null.
+/// Read one schema-5 entry's fields. Any out-pointer may be null.
 ///
 /// # Safety
 /// `handle` must be a live handle from create_v4/attach; non-null out-pointers must be writable.
@@ -939,7 +1012,9 @@ pub unsafe extern "C" fn mindie_wl_load_entry(
     out_role: *mut u8,
     out_flags: *mut u8,
     out_generation: *mut u16,
+    out_request_count: *mut u32,
     out_active_tokens: *mut f64,
+    out_total_requests: *mut u64,
 ) -> ShmStatus {
     let seg = match seg(handle) {
         Some(seg) => seg,
@@ -963,8 +1038,14 @@ pub unsafe extern "C" fn mindie_wl_load_entry(
     if !out_generation.is_null() {
         *out_generation = seg.v4_generation(slot);
     }
+    if !out_request_count.is_null() {
+        *out_request_count = seg.v4_request_count(slot).load(Ordering::Acquire);
+    }
     if !out_active_tokens.is_null() {
         *out_active_tokens = f64::from_bits(seg.v4_tokens(slot).load(Ordering::Acquire));
+    }
+    if !out_total_requests.is_null() {
+        *out_total_requests = seg.v4_total_requests(slot).load(Ordering::Acquire);
     }
     error::OK
 }
@@ -1049,7 +1130,9 @@ mod tests {
                     &mut role,
                     &mut flags,
                     &mut gen,
-                    &mut tokens
+                    std::ptr::null_mut(),
+                    &mut tokens,
+                    std::ptr::null_mut()
                 ),
                 error::OK
             );
@@ -1157,6 +1240,89 @@ mod tests {
     }
 
     #[test]
+    fn total_requests_counts_allocations_not_releases() {
+        // stat="total_cnt" source: cumulative allocation counter, monotonic while the
+        // endpoint's slot lives; release must not decrement it.
+        unsafe {
+            let (h, _cn) = v4_single_entry("total");
+            let mut total: u64 = 0;
+            let mut actual = -1.0f64;
+            for _ in 0..3 {
+                assert_eq!(
+                    mindie_wl_cas_add(h, SLOT_HINT_NONE, 1, 10, 0, 0.0, 1.0, &mut actual),
+                    error::OK
+                );
+                // Reset tokens so the next allocation's expected matches again.
+                assert_eq!(
+                    mindie_wl_cas_sub_floor0(h, SLOT_HINT_NONE, 1, 10, 0, 1.0, &mut actual),
+                    error::OK
+                );
+            }
+            assert_eq!(
+                mindie_wl_load_entry(
+                    h,
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut total
+                ),
+                error::OK
+            );
+            assert_eq!(total, 3);
+            // One more release: total must stay 3 (in-flight hits 0, cumulative untouched).
+            assert_eq!(
+                mindie_wl_cas_sub_floor0(h, SLOT_HINT_NONE, 1, 10, 0, 1.0, &mut actual),
+                error::OK
+            );
+            assert_eq!(
+                mindie_wl_load_entry(
+                    h,
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut total
+                ),
+                error::OK
+            );
+            assert_eq!(total, 3);
+            assert_eq!(mindie_wl_close(h, 1), error::OK);
+        }
+    }
+
+    #[test]
+    fn attach_refuses_foreign_schema() {
+        // A segment written by a different schema version must be refused at attach:
+        // mixed old/new processes over one segment would corrupt the wider schema-5 stride.
+        unsafe {
+            let name = unique_name("schemagate");
+            let cn = CString::new(name).unwrap();
+            let mut h: u64 = 0;
+            assert_eq!(mindie_wl_create_v4(cn.as_ptr(), 4, &mut h), error::OK);
+            // Overwrite the on-wire schema_version (offset 4, u16) to a foreign value.
+            let seg = seg(h).unwrap();
+            let schema_word = 4u32; // schema 4 low half, padding 0
+            seg.atomic_u32(layout::OFF_SCHEMA)
+                .store(schema_word, Ordering::Relaxed);
+            let mut h2: u64 = 0;
+            assert_eq!(
+                mindie_wl_attach(cn.as_ptr(), &mut h2),
+                error::SCHEMA_MISMATCH
+            );
+            assert_eq!(mindie_wl_close(h, 1), error::OK);
+        }
+    }
+
+    #[test]
     fn blocked_flag_gates_cas_add() {
         unsafe {
             let (h, _cn) = v4_single_entry("blocked");
@@ -1249,7 +1415,9 @@ mod tests {
                                         std::ptr::null_mut(),
                                         std::ptr::null_mut(),
                                         std::ptr::null_mut(),
+                                        std::ptr::null_mut(),
                                         &mut cur,
+                                        std::ptr::null_mut(),
                                     );
                                     cur
                                 },
@@ -1277,7 +1445,9 @@ mod tests {
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
-                    &mut total
+                    std::ptr::null_mut(),
+                    &mut total,
+                    std::ptr::null_mut(),
                 ),
                 error::OK
             );
@@ -1313,7 +1483,9 @@ mod tests {
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
-                    &mut tokens
+                    std::ptr::null_mut(),
+                    &mut tokens,
+                    std::ptr::null_mut()
                 ),
                 error::OK
             );
@@ -1349,7 +1521,9 @@ mod tests {
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
-                    &mut tokens
+                    std::ptr::null_mut(),
+                    &mut tokens,
+                    std::ptr::null_mut()
                 ),
                 error::OK
             );
@@ -1393,7 +1567,9 @@ mod tests {
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
-                    &mut tokens
+                    std::ptr::null_mut(),
+                    &mut tokens,
+                    std::ptr::null_mut()
                 ),
                 error::OK
             );
@@ -1450,7 +1626,9 @@ mod tests {
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
-                    &mut tokens
+                    std::ptr::null_mut(),
+                    &mut tokens,
+                    std::ptr::null_mut()
                 ),
                 error::OK
             );
@@ -1470,8 +1648,9 @@ mod tests {
                 role: 0,
                 flags: 0,
                 generation: 0,
-                reserved: 0,
+                request_count: 0,
                 active_tokens: 0.0,
+                total_requests: 0,
             }; 4];
             let mut n = 0u32;
             assert_eq!(

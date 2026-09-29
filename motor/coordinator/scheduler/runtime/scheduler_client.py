@@ -73,6 +73,7 @@ from motor.coordinator.domain.workload_calculator import (
 )
 from motor.coordinator.scheduler.allocate_arbitration import (
     ArbitrationContext,
+    log_load_balance_all_candidates,
     select_authoritative_allocate_candidate,
     select_valid_candidate,
 )
@@ -1907,7 +1908,9 @@ class AsyncSchedulerClient:
             return [], self._scheduler_type_for_role(role)
         st = self._scheduler_type_for_role(role)
         if st == "load_balance":
-            candidates = self._select_endpoint_candidates_by_load_balance(instances, role, top_k)
+            candidates = self._select_endpoint_candidates_by_load_balance(
+                instances, role, top_k, req_id=req_info.req_id
+            )
             if candidates:
                 return candidates, CANDIDATE_POLICY_LOAD_BALANCE
             logger.warning("load_balance failed, falling back to round-robin")
@@ -1936,7 +1939,9 @@ class AsyncSchedulerClient:
                     return ranked, CANDIDATE_POLICY_KV_CACHE_AFFINITY
                 if ranked is None:
                     logger.warning("kv_cache_affinity unavailable (no conductor match), falling back to load_balance")
-            candidates = self._select_endpoint_candidates_by_load_balance(instances, role, top_k)
+            candidates = self._select_endpoint_candidates_by_load_balance(
+                instances, role, top_k, req_id=req_info.req_id
+            )
             if candidates:
                 return candidates, CANDIDATE_POLICY_LOAD_BALANCE
             logger.warning("load_balance unavailable, falling back to round-robin")
@@ -2045,9 +2050,20 @@ class AsyncSchedulerClient:
         instances: list[Instance],
         role: PDRole,
         top_k: int = 1,
+        *,
+        req_id: str | None = None,
     ) -> list[tuple[Instance, Endpoint, float]]:
         # Equal-score (tie) requests are broken uniformly at random by the policy itself, so
         # equal-load requests spread across nodes without a per-client rotation offset.
+        log_load_balance_all_candidates(
+            instances,
+            role,
+            req_id,
+            is_blocked=self.is_instance_blocked,
+            instance_score_weight=self._endpoint_instance_score_weight,
+            exclude_highest_kv_usage=(role == PDRole.ROLE_D),
+            kv_usage_provider=get_endpoint_kv_cache_usage if role == PDRole.ROLE_D else None,
+        )
         candidates = LoadBalancePolicy.select_endpoint_candidates_from_list(
             instances,
             role,

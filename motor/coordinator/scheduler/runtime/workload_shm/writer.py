@@ -210,3 +210,41 @@ class WorkloadSharedMemoryOwner:
                 int(entry["flags"]),
             )
         return out
+
+    def read_endpoint_workload(self) -> dict[tuple[int, int], tuple[float, int, int]]:
+        """Read current per-(iid, eid) workload from the workload SHM.
+
+        Infer Workers own the per-slot token counter and request tallies (CAS
+        allocate/release); Mgmt's ``endpoint.workload`` ledger is never updated
+        from SHM, so metrics that need live load must read it here.
+
+        Returns ``(iid, eid) -> (active_tokens, request_count, total_requests)``.
+        ``active_tokens`` is the live token load; ``request_count`` is the number of
+        in-flight requests on that endpoint (workers inc on allocate, dec on release);
+        ``total_requests`` is the cumulative allocation counter (workers inc on
+        allocate, never decremented) feeding the ``stat="total_cnt"`` metric sample.
+        Empty when the native handle is unavailable or the read fails.
+        """
+        out: dict[tuple[int, int], tuple[float, int, int]] = {}
+        if self._native is None:
+            return out
+        try:
+            header = self._native.read_header()
+        except (NativeWorkloadShmError, OSError, ValueError):
+            return out
+        count = int(header.get("entry_count", 0) or 0)
+        if count <= 0:
+            return out
+        try:
+            entries = self._native.load_entries(count)
+        except NativeWorkloadShmError:
+            return out
+        for entry in entries:
+            if not (int(entry.get("flags", 0)) & FLAG_VALID):
+                continue
+            out[(int(entry["instance_id"]), int(entry["endpoint_id"]))] = (
+                float(entry.get("active_tokens", 0.0)),
+                int(entry.get("request_count", 0)),
+                int(entry.get("total_requests", 0)),
+            )
+        return out

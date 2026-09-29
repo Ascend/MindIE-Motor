@@ -1030,12 +1030,29 @@ class AsyncSchedulerServer:
           - role byte (layout encoding)
           - fresh_load: authoritative load-balance score (calculate_endpoint_score)
           - a_tokens: endpoint's current active tokens
-          - cnt: per-role request count (0 in this architecture; see inline note below)
-          - total_cnt: cumulative request count (0 in this architecture; see inline note below)
+          - cnt: per-endpoint in-flight request count (maintained by Infer Workers in SHM)
+          - total_cnt: cumulative allocation count (workers increment on allocate, never
+            decremented; sourced from the workload SHM ``total_requests`` field)
         Runs on the background SchedulerMetricsCollector thread (off the hot path).
+
+        ``active_tokens`` is read from the workload SHM (Infer Workers own the per-slot
+        counter via CAS); Mgmt's ``endpoint.workload`` ledger is never updated from SHM,
+        so reading it directly would always yield 0. ``fresh_load`` is computed from the
+        same live tokens to stay consistent with the worker-side scheduling score.
+        ``cnt`` is the per-endpoint in-flight request count, also maintained by workers
+        in the SHM (increment on allocate, decrement on release).
         """
         snapshot: dict[tuple[int, int], tuple[int, float, float, int, int]] = {}
         score_weight = self._endpoint_instance_score_weight
+
+        # 从 workload SHM 读取各 endpoint 的实时 (active_tokens, request_count, total_requests)。
+        # Infer Worker CAS 更新 token / 请求数，Mgmt 侧 endpoint.workload 不会被更新，
+        # 必须从 SHM 拿真实值，否则 a_tokens/fresh_load/cnt/total_cnt 永远为 0。
+        shm_workload: dict[tuple[int, int], tuple[float, int, int]] = {}
+        if self._workload_writer is not None:
+            shm_workload = self._workload_writer.read_endpoint_workload()
+        shm_tokens = {pair: tokens for pair, (tokens, _count, _total) in shm_workload.items()}
+
         for role in (PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U):
             instances = self.instance_manager.get_available_instances(role).values()
             for instance in instances:
@@ -1043,23 +1060,43 @@ class AsyncSchedulerServer:
                     instance_role = PDRole(instance.role)
                 except ValueError:
                     instance_role = PDRole.ROLE_U
-                for endpoint in instance.get_all_endpoints():
+                endpoints = instance.get_all_endpoints()
+                # instance_score = 该实例所有 endpoint 的 SHM active_tokens 之和，
+                # 与 LoadBalancePolicy.calculate_endpoint_score 中 gathered_workload 语义一致。
+                instance_token_sum = sum(
+                    shm_tokens.get((instance.id, ep.id), ep.workload.active_tokens if ep.workload else 0.0)
+                    for ep in endpoints
+                )
+                for endpoint in endpoints:
+                    pair = (instance.id, endpoint.id)
+                    # 优先用 SHM 实时值，回退到 endpoint.workload（通常为 0，覆盖刚注册尚未写入 SHM 的边界）。
+                    active_tokens = shm_tokens.get(pair, endpoint.workload.active_tokens if endpoint.workload else 0.0)
+                    # cnt = 该 endpoint 上正在处理的请求数（Infer Worker 维护，释放后递减）。
+                    # total_cnt = 该 endpoint 累计分配的请求数（Infer Worker 维护，只增不减）。
+                    default_cnt = (0.0, 0, 0)
+                    _, cnt, total_cnt = shm_workload.get(pair, default_cnt)
                     try:
+                        # 统一走 LoadBalancePolicy.calculate_endpoint_score，显式传入 SHM 实时值
+                        # 覆盖 stale 的 workload 缓存，避免复刻公式在计分口径变化时静默漂移。
                         fresh_load = LoadBalancePolicy.calculate_endpoint_score(
                             instance,
                             endpoint,
                             role=instance_role,
                             instance_score_weight=score_weight,
+                            endpoint_score=active_tokens,
+                            instance_score=instance_token_sum,
                         )
                         if instance_role == PDRole.ROLE_D:
                             # 与真实调度路径 select_endpoint_candidates_from_list 保持一致：
                             # D 实例评分叠加 KV usage 惩罚项，指标里的 fresh_load 才是调度真正使用的分。
+                            # Mgmt 侧 gathered_workload 不会被更新，显式传入 SHM 实时实例 token 和。
                             fresh_load = LoadBalancePolicy._apply_kv_usage_penalty(
                                 fresh_load,
                                 instance,
                                 endpoint,
                                 role=instance_role,
                                 kv_usage_provider=get_endpoint_kv_cache_usage,
+                                instance_score=instance_token_sum,
                             )
                     except Exception as e:
                         logger.warning(
@@ -1069,14 +1106,8 @@ class AsyncSchedulerServer:
                             e,
                         )
                         fresh_load = 0.0
-                    active_tokens = endpoint.workload.active_tokens if endpoint.workload else 0.0
-                    # 本架构中 Infer Worker 直接 CAS 提交 workload SHM，Mgmt 进程没有
-                    # 单请求可见性，无法按角色统计 endpoint 级请求数；cnt/total_cnt 暂以
-                    # 0 占位（total_cnt 为累计请求数，同样无来源），后续可由 workload SHM
-                    # 扩展字段补齐。
-                    cnt = 0
-                    total_cnt = 0
-                    snapshot[(instance.id, endpoint.id)] = (
+                    # total_cnt 来自 workload SHM 的累计分配计数（Worker cas_add 维护）。
+                    snapshot[pair] = (
                         _pack_role(instance_role),
                         fresh_load,
                         active_tokens,

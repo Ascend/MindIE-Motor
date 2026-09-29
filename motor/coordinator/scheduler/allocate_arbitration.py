@@ -24,7 +24,10 @@ from dataclasses import dataclass
 from motor.common.logger import get_logger
 from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.instance import Instance, PDRole
-from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
+from motor.coordinator.scheduler.policy.load_balance import (
+    DEFAULT_ENDPOINT_INSTANCE_SCORE_WEIGHT,
+    LoadBalancePolicy,
+)
 from motor.coordinator.scheduler.runtime.kv_usage import get_endpoint_kv_cache_usage
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
     CANDIDATE_POLICY_DYNAMIC_BUCKET,
@@ -51,6 +54,72 @@ _ENV_LOG_ALL_AFFINITY_CANDIDATES = "KV_AFFINITY_LOG_ALL_CANDIDATES"
 def log_all_affinity_candidates_enabled() -> bool:
     """Return True when the env switch to log all affinity candidates is on."""
     return os.environ.get(_ENV_LOG_ALL_AFFINITY_CANDIDATES, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def log_load_balance_all_candidates(
+    instances: list[Instance],
+    role: PDRole,
+    req_id: str | None,
+    *,
+    is_blocked: Callable[[int], bool] | None = None,
+    instance_score_weight: float = DEFAULT_ENDPOINT_INSTANCE_SCORE_WEIGHT,
+    excluded_pairs: set[tuple[int, int]] | None = None,
+    exclude_highest_kv_usage: bool = False,
+    kv_usage_provider: Callable[[Instance, Endpoint], float | None] | None = None,
+) -> None:
+    """Env-gated: log EVERY load-balance candidate's fresh score on the selection hot path.
+
+    Mirrors the kv_affinity all-candidates log so both scheduler paths can show every node's
+    load information. No-op unless ``KV_AFFINITY_LOG_ALL_CANDIDATES`` is enabled. Used by both
+    the slow authoritative re-scan and the fast-path worker proposal so the two paths report the
+    same per-endpoint score / token / kv-usage detail.
+
+    ``excluded_pairs`` mirrors ``LoadBalancePolicy.select_endpoint_candidates_from_list``: pairs
+    this CAS round already rejected are skipped so the log matches the real selection outcome.
+    """
+    if not log_all_affinity_candidates_enabled():
+        return
+    for instance in instances:
+        if is_blocked is not None and is_blocked(instance.id):
+            continue
+        for endpoint in instance.get_all_endpoints():
+            if excluded_pairs is not None and (instance.id, endpoint.id) in excluded_pairs:
+                continue
+            try:
+                score = LoadBalancePolicy.calculate_endpoint_score(
+                    instance,
+                    endpoint,
+                    role=role,
+                    instance_score_weight=instance_score_weight,
+                )
+                if exclude_highest_kv_usage and kv_usage_provider is not None:
+                    score = LoadBalancePolicy._apply_kv_usage_penalty(
+                        score,
+                        instance,
+                        endpoint,
+                        role=role,
+                        kv_usage_provider=kv_usage_provider,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Failed to score load_balance candidate instance_id=%s endpoint_id=%s: %s",
+                    instance.id,
+                    endpoint.id,
+                    e,
+                )
+                continue
+            logger.info(
+                "load_balance all_candidates req_id=%s role=%s point=%s-%s "
+                "score=%.2f a_tokens=%.2f i_tokens=%.2f kv_usage=%s",
+                req_id,
+                role.value if hasattr(role, "value") else role,
+                instance.id,
+                endpoint.id,
+                score,
+                endpoint.workload.active_tokens,
+                instance.gathered_workload.active_tokens,
+                _format_kv_usage(instance, endpoint),
+            )
 
 
 @dataclass
@@ -177,49 +246,16 @@ def select_global_load_balance_candidate(
     # KV usage 惩罚项，权威重选才不会在 CAS 冲突时选中 KV cache 快满的节点。
     exclude_highest_kv_usage = role == PDRole.ROLE_D and ctx.kv_usage_provider is not None
     kv_usage_provider = ctx.kv_usage_provider if role == PDRole.ROLE_D else None
-    if log_all_affinity_candidates_enabled():
-        # Env switch: the load-balance selection path (e.g. D/decode instance scheduling) logs
-        # EVERY candidate's fresh score, mirroring the kv_affinity all-candidates log, so both
-        # scheduler paths show every node's load information.
-        for instance in instances:
-            if ctx.is_instance_circuit_open(instance.id):
-                continue
-            for endpoint in instance.get_all_endpoints():
-                try:
-                    score = LoadBalancePolicy.calculate_endpoint_score(
-                        instance,
-                        endpoint,
-                        role=role,
-                        instance_score_weight=ctx.endpoint_instance_score_weight,
-                    )
-                    if exclude_highest_kv_usage:
-                        score = LoadBalancePolicy._apply_kv_usage_penalty(
-                            score,
-                            instance,
-                            endpoint,
-                            role=role,
-                            kv_usage_provider=kv_usage_provider,
-                        )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to score load_balance candidate instance_id=%s endpoint_id=%s: %s",
-                        instance.id,
-                        endpoint.id,
-                        e,
-                    )
-                    continue
-                logger.info(
-                    "load_balance all_candidates req_id=%s role=%s point=%s-%s "
-                    "score=%.2f a_tokens=%.2f i_tokens=%.2f kv_usage=%s",
-                    req_id,
-                    role.value if hasattr(role, "value") else role,
-                    instance.id,
-                    endpoint.id,
-                    score,
-                    endpoint.workload.active_tokens,
-                    instance.gathered_workload.active_tokens,
-                    _format_kv_usage(instance, endpoint),
-                )
+    log_load_balance_all_candidates(
+        instances,
+        role,
+        req_id,
+        is_blocked=ctx.is_instance_circuit_open,
+        instance_score_weight=ctx.endpoint_instance_score_weight,
+        excluded_pairs=excluded,
+        exclude_highest_kv_usage=exclude_highest_kv_usage,
+        kv_usage_provider=kv_usage_provider,
+    )
     candidates = LoadBalancePolicy.select_endpoint_candidates_from_list(
         instances,
         role=role,

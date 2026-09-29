@@ -398,6 +398,9 @@ Engine 进程自身的指标，跨 Engine 求和：
 >
 > - KV Store 指标**仅随 `type=full` 视图返回**：`instance` / `role` / `dp` / `node` 视图只输出引擎指标，不含 `kv_store_*` 系列。
 > - 端点粒度的调度状态指标 `motor:endpoint_state`（含 `request_count` / `fresh_load` / `active_tokens` / `total_cnt` / `kv_usage` / `kv_hit_tokens` / `kv_input_tokens` / `kv_hit_rate` / `running` / `waiting` 样本）与 KV Store 指标一致，**仅随 `type=full`（含 `type=motor`）视图返回**，`instance` / `role` / `dp` / `node` 视图不含该族。
+>   - `request_count`（stat=`request_count`）为该 endpoint **正在处理**的请求数（在途瞬时值，Infer Worker 分配时 +1、释放后 -1），请求处理间隙抓取到 0 属正常现象。
+>   - `total_cnt`（stat=`total_cnt`）为该 endpoint **累计分配**的请求数（只增不减，Infer Worker 分配时 +1）；endpoint 从成员表中移除后重新加入时从 0 重新累计。
+>   - 两者均由 Infer Worker 直接写入 workload 共享内存（schema 5），要求 Mgmt 与全部 Infer Worker 为同一版本构建。
 > - 未在 Motor 语义注册表中的未知指标不会被丢弃，按 Prometheus 类型回退聚合：`histogram` 合并桶，`gauge` / `counter` 求和。
 > - 指标名以 `motor:` 为前缀的是 Motor 在聚合过程中计算或注入的指标，其余为 Engine 原始指标。
 

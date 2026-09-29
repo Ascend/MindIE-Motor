@@ -669,6 +669,24 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             (prefill_load_scale * prefill_cost + load_weight * load_cost, instance, ep, matched_tokens)
             for (load_cost, matched_tokens, prefill_cost, instance, ep, _tier_hit) in raw
         ]
+        from motor.coordinator.scheduler.allocate_arbitration import log_all_affinity_candidates_enabled
+
+        if log_all_affinity_candidates_enabled():
+            # Env switch: the worker fast path logs EVERY candidate's unified cost, mirroring the
+            # authoritative re-rank's "kv_affinity global candidate" log so both paths show it.
+            for load_cost, _matched_tokens, prefill_cost, instance, ep, _tier_hit in raw:
+                instance_role = instance.role
+                logger.info(
+                    "kv_affinity global candidate req_id=%s role=%s point=%s-%s "
+                    "prefill_cost=%.2f fresh_load=%.2f combined=%.2f",
+                    getattr(req_info, "req_id", None),
+                    instance_role.value if hasattr(instance_role, "value") else instance_role,
+                    instance.id,
+                    ep.id,
+                    prefill_cost,
+                    load_cost,
+                    prefill_load_scale * prefill_cost + load_weight * load_cost,
+                )
         ranked = sorted(candidates, key=lambda c: (c[0], random.random()))[: max(1, top_k)]  # nosec B311 -- 并列随机打散
         top_score, top_inst, top_ep, top_matched = ranked[0]
         top_tier = next(

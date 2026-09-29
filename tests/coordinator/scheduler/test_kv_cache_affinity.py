@@ -2535,3 +2535,30 @@ def test_context_budget_leaves_exhausted_prompt_to_engine_validation():
     adapt_context_budget(req_info, _context_budget_config())
 
     assert req_info.req_data["max_tokens"] == 8
+
+
+def test_select_with_load_logs_all_candidates_when_enabled(monkeypatch, caplog):
+    """快路径 unified 亲和评分：开启开关后打印每个候选的 prefill_cost/fresh_load/combined。"""
+    ep1 = _make_endpoint(11, active_tokens=3.0)
+    ep2 = _make_endpoint(12, active_tokens=5.0)
+    inst = Mock()
+    inst.id = 1
+    inst.role = PDRole.ROLE_P
+    raw = [
+        (3.0, 4, 1.0, inst, ep1, None),
+        (5.0, 2, 3.0, inst, ep2, None),
+    ]
+    req_info = Mock()
+    req_info.req_id = "req-kva"
+
+    monkeypatch.setenv("KV_AFFINITY_LOG_ALL_CANDIDATES", "1")
+    with (
+        patch.object(KvCacheAffinityPolicy, "_collect_load_candidates", return_value=(raw, True, {})),
+        caplog.at_level("INFO", logger="motor.coordinator.scheduler.policy.kv_cache_affinity"),
+    ):
+        KvCacheAffinityPolicy._select_with_load([inst], {}, 10, 1.0, 1.0, 1.0, req_info=req_info)
+
+    messages = [rec.getMessage() for rec in caplog.records if "kv_affinity global candidate" in rec.getMessage()]
+    assert len(messages) == 2
+    assert any("req_id=req-kva" in m and "point=1-11" in m and "combined=4.00" in m for m in messages)
+    assert any("point=1-12" in m and "prefill_cost=3.00" in m and "combined=8.00" in m for m in messages)

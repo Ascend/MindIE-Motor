@@ -73,14 +73,14 @@ def _read_with_python(name: str, role: PDRole | None = None) -> tuple[tuple[int 
 
 
 def test_native_reports_abi(lib):
-    """ABI version is stable; production segments are schema 4."""
+    """ABI version is stable; production segments are schema 5."""
     assert lib.mindie_wl_abi_version() >= MIN_ABI_VERSION
-    assert MIN_ABI_VERSION == 2
-    assert lib.mindie_wl_schema_version() == 4
+    assert MIN_ABI_VERSION == 3
+    assert lib.mindie_wl_schema_version() == 5
     name = _unique("ab")
     shm = WorkloadShm.create_v4(name, 4, lib=lib)
     try:
-        assert shm.read_header()["schema_version"] == SCHEMA_VERSION == 4
+        assert shm.read_header()["schema_version"] == SCHEMA_VERSION == 5
     finally:
         shm.close(unlink=True)
 
@@ -101,7 +101,7 @@ def test_native_writer_roundtrips_to_python_reader(lib):
         shm.heartbeat()
 
         header = shm.read_header()
-        assert header["schema_version"] == 4
+        assert header["schema_version"] == 5
         assert header["sequence"] % 2 == 0
         assert header["entry_count"] == 3
         assert header["instance_version"] == 1
@@ -220,20 +220,38 @@ def _poke_schema_version(name: str, schema: int) -> None:
 
 
 def test_schema_mismatch_is_refused(lib):
-    """A non-schema-4 header is refused by the Reader."""
+    """A non-schema-5 header is refused by the Reader (runtime guard; attach-time gate is
+    covered by the Rust `attach_refuses_foreign_schema` test).
+    """
     name = _unique("sm")
     shm = WorkloadShm.create_v4(name, 8, lib=lib)
     reader = WorkloadSharedMemoryReader(name)
     try:
         shm.write_snapshot_v4([(1, 10, 0, 0, FLAG_VALID, 7.0)])
-        _poke_schema_version(name, 3)
+        # Attach while the header is still valid; poke the schema afterwards so the
+        # refusal happens on the read path, not at attach.
         reader.attach()
+        _poke_schema_version(name, 4)
         cache = _FakeCache()
         instance_version, _stale = reader.read_and_patch_cache(cache, role=None)
         assert instance_version is None
         assert cache.patched == {}
     finally:
         reader.detach()
+        shm.close(unlink=True)
+
+
+def test_attach_refuses_foreign_schema(lib):
+    """Attaching to a segment carrying a foreign schema version fails loudly (SCHEMA_MISMATCH):
+    an old writer and a new reader disagree on the entry stride and would corrupt counters.
+    """
+    name = _unique("sgate")
+    shm = WorkloadShm.create_v4(name, 8, lib=lib)
+    try:
+        _poke_schema_version(name, 4)
+        with pytest.raises(NativeWorkloadShmError):
+            WorkloadSharedMemoryReader(name).attach()
+    finally:
         shm.close(unlink=True)
 
 
@@ -318,6 +336,56 @@ def test_cas_sub_floor0(lib):
         status, actual = shm.cas_sub_floor0(1, 10, 0, 9.0)
         assert status == STATUS_OK
         assert actual == 0.0
+    finally:
+        shm.close(unlink=True)
+
+
+def test_total_requests_is_monotonic(lib):
+    """total_requests (stat="total_cnt" source) increments per allocation, never on release."""
+    shm = _single_entry_segment(lib, "total")
+    try:
+        for _ in range(3):
+            assert shm.cas_add(1, 10, 0, 0.0, 1.0)[0] == STATUS_OK
+            # Release the tokens so the next allocation's expected matches again.
+            assert shm.cas_sub_floor0(1, 10, 0, 1.0)[0] == STATUS_OK
+            assert shm.load_entry(0)["request_count"] == 0
+        assert shm.load_entry(0)["total_requests"] == 3
+        # Release with no in-flight tokens: floors at 0, cumulative untouched.
+        assert shm.cas_sub_floor0(1, 10, 0, 1.0)[0] == STATUS_OK
+        assert shm.load_entry(0)["total_requests"] == 3
+    finally:
+        shm.close(unlink=True)
+
+
+def test_snapshot_preserves_total_requests_across_refresh_and_moves(lib):
+    """Membership refresh must not reset total_requests; a moved pair carries it; a
+    removed-then-re-added pair restarts at 0 (per-endpoint lifetime semantics).
+    """
+    shm = WorkloadShm.create_v4(_unique("trsnap"), 8, lib=lib)
+    try:
+        shm.write_snapshot_v4(
+            [
+                (1, 10, ROLE_PREFILL, 0, FLAG_VALID, 0.0),
+                (2, 20, ROLE_PREFILL, 0, FLAG_VALID, 0.0),
+            ]
+        )
+        assert shm.cas_add(1, 10, 0, 0.0, 1.0)[0] == STATUS_OK
+        assert shm.cas_add(2, 20, 0, 0.0, 1.0)[0] == STATUS_OK
+        # Same-slot refresh: counters preserved.
+        shm.write_snapshot_v4(
+            [
+                (1, 10, ROLE_PREFILL, 0, FLAG_VALID, 0.0),
+                (2, 20, ROLE_PREFILL, 0, FLAG_VALID, 0.0),
+            ]
+        )
+        assert shm.load_entry(0)["total_requests"] == 1
+        assert shm.load_entry(1)["total_requests"] == 1
+        # Compaction moves (1,10) to slot 1: counters copied with the pair.
+        shm.write_snapshot_v4([(1, 10, ROLE_PREFILL, 0, FLAG_VALID, 0.0)])
+        moved = shm.load_entry(0)
+        assert (moved["instance_id"], moved["endpoint_id"]) == (1, 10)
+        assert moved["request_count"] == 1
+        assert moved["total_requests"] == 1
     finally:
         shm.close(unlink=True)
 
@@ -408,7 +476,7 @@ def test_multiprocess_cas_conserves_total(lib):
 
 def test_load_entries_matches_per_slot_and_cas_uses_slot(lib):
     """One FFI refresh must equal N load_entry calls; cas_add with a stale slot is SLOT_INVALID."""
-    assert ctypes.sizeof(native._LoadedEntry) == 24
+    assert ctypes.sizeof(native._LoadedEntry) == 32
     shm = WorkloadShm.create_v4(_unique("batch"), 16, lib=lib)
     try:
         shm.write_snapshot_v4(
