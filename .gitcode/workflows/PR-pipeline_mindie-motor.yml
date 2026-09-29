@@ -45,6 +45,8 @@ stages:
               set -e
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
               source "$HOME/.cargo/env"
+              rustup component add rustfmt clippy
+              echo "PATH=$HOME/.cargo/bin:$PATH" >> $ATOMGIT_ENV
               echo 'source "$HOME/.cargo/env"' >> "$HOME/.bashrc"
               if [ -w /usr/local/bin ]; then
                 ln -sf "$HOME/.cargo/bin/cargo" /usr/local/bin/cargo
@@ -53,6 +55,8 @@ stages:
               fi
               rustc --version
               cargo --version
+              rustfmt --version
+              cargo clippy --version
           - name: pre-commit
             uses: openlibing-pre-commit-action
 
