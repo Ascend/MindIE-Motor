@@ -47,6 +47,8 @@
 
 | 日期 | 模块 | 案例 | 文件 | 关键词 |
 |------|------|------|------|--------|
+| 2026-09-28 | deployer | 快照 YAML 误删共享内存挂载 | [snapshot-shm-mount.md](deployer/snapshot-shm-mount.md) | snapshot, dshm, emptyDir, InferServiceSet |
+| 2026-09-28 | node_manager | 恢复前旧心跳 503 误触发新实例重注册 | [snapshot-stale-heartbeat-503.md](node_manager/snapshot-stale-heartbeat-503.md) | snapshot, heartbeat, 503, reregister, start race |
 | 2026-09-28 | deployer | 同机 Pod 的 IPv6 地址重复 | [a5-ipv6-same-node-address.md](deployer/a5-ipv6-same-node-address.md) | A5, IPv6, hostNetwork, 同机地址重复 |
 | 2026-09-20 | deployer | Slurm 禁用服务泄漏占位环境变量 | [slurm-disabled-service-env-leak.md](deployer/slurm-disabled-service-env-leak.md) | Slurm, Apptainer, cleanenv, KV_CONDUCTOR_SERVICE, placeholder |
 | 2026-09-16 | kv_conductor | 节点 pool replay 身份和格式分流不一致导致事件丢失 | [node-pool-replay-identity.md](kv_conductor/node-pool-replay-identity.md) | YuanRong, replay, backend_id, IpOnly, EventSource |

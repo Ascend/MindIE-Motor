@@ -94,12 +94,19 @@ def test_snapshot_config_rejects_overlapping_host_snapshot_and_mnt_paths(host_sn
         validate_container_snapshot_config(user_config)
 
 
-def test_common_template_renders_snapshot_deltas_and_a3_device(tmp_path):
+@pytest.mark.parametrize("dshm_size", [None, "128Gi"])
+@pytest.mark.parametrize("hybrid", [False, True])
+def test_common_template_renders_snapshot_deltas_and_a3_device(tmp_path, dshm_size, hybrid):
     output = tmp_path / "infer_service.yaml"
+    user_config = _snapshot_user_config()
+    if hybrid:
+        user_config[C.MOTOR_DEPLOY_CONFIG][C.HYBRID_INSTANCES_NUM] = 1
+    if dshm_size is not None:
+        user_config[C.MOTOR_DEPLOY_CONFIG][C.DSHM_SIZE] = dshm_size
     generate_yaml_infer_service_set(
         str(DEPLOYER_ROOT / "yaml_template" / "infer_service_template.yaml"),
         str(output),
-        _snapshot_user_config(),
+        user_config,
     )
     infer_doc = _find_infer_service_set_doc(load_yaml(str(output), False))
 
@@ -139,7 +146,11 @@ def test_common_template_renders_snapshot_deltas_and_a3_device(tmp_path):
         assert mounts["npu-smi"][C.MOUNT_PATH] == "/usr/local/bin/npu-smi"
         assert volumes["dcmi"][C.HOST_PATH] == {C.PATH: "/usr/local/dcmi"}
         assert volumes["npu-smi"][C.HOST_PATH] == {C.PATH: "/usr/local/bin/npu-smi"}
-        for removed_name in ("data", "dshm", "coredump", "plog-path", "cache-path"):
+        assert mounts["dshm"][C.MOUNT_PATH] == "/dev/shm"
+        active_role = (role_name == C.ROLE_UNION) == hybrid
+        expected_size = dshm_size if active_role and dshm_size is not None else "4Gi"
+        assert volumes["dshm"]["emptyDir"] == {"medium": "Memory", "sizeLimit": expected_size}
+        for removed_name in ("data", "coredump", "plog-path", "cache-path"):
             assert removed_name not in mounts
             assert removed_name not in volumes
 

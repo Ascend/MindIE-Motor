@@ -18,7 +18,7 @@ _SNAPSHOT_ENGINE_ROLES = (C.ROLE_PREFILL, C.ROLE_DECODE, C.ROLE_UNION)
 _REQUIRED_PATH_KEYS = (C.HOST_SNAPSHOT_IMAGE_PATH, C.SNAPSHOT_MNT_PATH, C.DEVICE_SNAPSHOT_WEIGHT_PATH)
 _SNAPSHOT_LABEL = "infer.huawei.com/container-snapshot"
 _SNAPSHOT_FAULT_SCHEDULING = "external-force"
-_SNAPSHOT_EXCLUDED_VOLUME_NAMES = frozenset(("data", "dshm", "coredump", "plog-path", "cache-path"))
+_SNAPSHOT_EXCLUDED_VOLUME_NAMES = frozenset(("data", "coredump", "plog-path", "cache-path"))
 _SNAPSHOT_READINESS_PROBE = {
     "exec": {"command": ["bash", "-c", "$CONFIGMAP_PATH/probe.sh readiness"]},
     "periodSeconds": 5,

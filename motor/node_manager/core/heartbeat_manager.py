@@ -365,7 +365,7 @@ class HeartbeatManager(ThreadSafeSingleton):
                 # If snapshot restored and continued from stale endpoints_snapshot query loop, keep original status
                 logger.info(
                     "[snapshot] Node manager is restored from host side snapshot and not started after restore, "
-                    "keeping stale status: %s, old endpoint ip=%s, new endpoint ip=%s",
+                    "ignore stale status: %s, old endpoint ip=%s, new endpoint ip=%s",
                     original_status,
                     item.ip,
                     self._config.api_config.pod_ip,
@@ -412,7 +412,14 @@ class HeartbeatManager(ThreadSafeSingleton):
     def _report_heartbeat_loop(self) -> None:
         while not self.stop_event.is_set():
             is_normal = True
+            sent_after_restore_start = False
             try:
+                # A stale heartbeat with stale ins_id will block next instance snapshot restore
+                # since controller set re-register flag for this instance
+                # stale heartbeat should be filtered by the boolean: sent_after_restore_start
+                if is_restored_from_host_side_snapshot():
+                    sent_after_restore_start = self.is_started_after_restore()
+
                 with self._endpoint_lock:
                     active_endpoints = [item for item in self._endpoints if item.id not in self._retired_endpoint_ids]
                     is_normal = all(item.status == EndpointStatus.NORMAL for item in active_endpoints)
@@ -455,7 +462,9 @@ class HeartbeatManager(ThreadSafeSingleton):
                     logger.warning("[snapshot] Node manager is restored from host side snapshot, registering...")
                     self._register_after_restore()
                 elif "503" in str(e):
-                    if not is_restored_from_host_side_snapshot() or self.is_started_after_restore():
+                    if is_restored_from_host_side_snapshot() and not sent_after_restore_start:
+                        logger.info("[snapshot] Ignoring heartbeat 503 sent before restore start completed")
+                    else:
                         logger.warning("Received 503, maybe controller has been restarted, reregistering...")
                         self._reregister()
                 else:

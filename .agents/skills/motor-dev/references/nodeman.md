@@ -350,7 +350,10 @@ Controller-dispatched suicide — POST /node-manager/stop:
   cross-machine instance restarts together).
 
 HTTP 503 from Controller:
-  → Controller restarted → HeartbeatManager._reregister()
+  → Controller no longer knows the heartbeat's instance (not proof of a restart)
+  → cold start: HeartbeatManager._reregister(), unchanged
+  → snapshot restore: only heartbeats sampled after restore start completed may
+    trigger _reregister(); delayed pre-start/pre-restore 503 responses are ignored
   → POST /controller/reregister (ReregisterMsg) — single attempt, no backoff;
     a later heartbeat exception triggers the next retry
 ```

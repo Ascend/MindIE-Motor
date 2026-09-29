@@ -729,7 +729,50 @@ class TestHeartBeatManager:
 
         mock_report_heartbeat.assert_called_once()
 
-    # -- endpoint-state facts (consumed by the Daemon's suicide arbitration) ----
+    @pytest.mark.parametrize(
+        "restored,started,transition,expected",
+        [
+            (True, False, "complete", False),
+            (True, True, "none", True),
+            (True, False, "none", False),
+            (False, False, "restore", False),
+            (False, False, "none", True),
+        ],
+        ids=["start-during-request", "post-start", "before-start", "restore-during-request", "cold-start"],
+    )
+    def test_503_only_reregisters_current_post_start_heartbeat(
+        self, heart_beat_manager, restored, started, transition, expected
+    ):
+        """An in-flight old heartbeat must not reregister the newly started instance."""
+        manager = heart_beat_manager
+        manager._job_name = "test-job"
+        manager._instance_id = 1
+        manager._is_registered_after_restore = True
+        manager.set_started_after_restore(started)
+        prefix = "motor.node_manager.core.heartbeat_manager."
+        with (
+            patch(prefix + "is_restored_from_host_side_snapshot", return_value=restored) as is_restored,
+            patch(prefix + "ControllerApiClient.report_heartbeat") as report,
+            patch(prefix + "time.sleep") as sleep,
+            patch.object(manager, "_reregister") as reregister,
+        ):
+
+            def fail_heartbeat(_msg):
+                if transition == "restore":
+                    is_restored.return_value = True
+                if transition != "none":
+                    manager.set_started_after_restore(True)
+                # Stop independently of sleep so an accidental continue fails
+                # the interval assertion below instead of hanging the test.
+                manager.stop_event.set()
+                raise RuntimeError("503 Service Unavailable")
+
+            report.side_effect = fail_heartbeat
+            manager._report_heartbeat_loop()
+
+        assert reregister.call_count == int(expected)
+        report.assert_called_once()
+        sleep.assert_called_once_with(manager.heartbeat_interval_seconds)
 
     def test_has_abnormal_endpoints_true(self, heart_beat_manager):
         with heart_beat_manager._endpoint_lock:
