@@ -75,11 +75,9 @@ def test_daemon_stop_all_processes_no_exclude(mock_create_socket):
     mock_mgmt.stop.assert_called_once()
 
 
-@patch.dict("os.environ", {"KUBERNETES_SERVICE_HOST": "10.0.0.1"}, clear=False)
 @patch("motor.coordinator.daemon.coordinator_daemon.create_shared_socket")
-@patch("motor.coordinator.daemon.coordinator_daemon.os._exit")
-def test_stop_inference_only_stops_inference_only(mock_exit, mock_create_socket):
-    """On Kubernetes, lock loss exits the daemon; workers are not stopped in-place."""
+def test_stop_inference_only_stops_inference_only(mock_create_socket):
+    """_on_become_standby stops only Inference; Mgmt and Obs are not stopped."""
     mock_create_socket.return_value = None
 
     mock_config = MagicMock()
@@ -101,17 +99,16 @@ def test_stop_inference_only_stops_inference_only(mock_exit, mock_create_socket)
 
     daemon._on_become_standby()
 
-    mock_exit.assert_called_once_with(1)
-    mock_infer.stop.assert_not_called()
+    mock_infer.stop.assert_called_once()
     mock_mgmt.stop.assert_not_called()
     mock_obs.stop.assert_not_called()
 
 
-@patch.dict("os.environ", {"KUBERNETES_SERVICE_HOST": "", "POD_NAMESPACE": ""}, clear=False)
+@patch.dict("os.environ", {"KUBERNETES_SERVICE_HOST": "10.0.0.1"}, clear=False)
 @patch("motor.coordinator.daemon.coordinator_daemon.create_shared_socket")
 @patch("motor.coordinator.daemon.coordinator_daemon.os._exit")
-def test_on_become_standby_keeps_process_off_kubernetes(mock_exit, mock_create_socket):
-    """Outside Kubernetes, lock loss stays up as standby."""
+def test_on_become_standby_does_not_exit_on_kubernetes(mock_exit, mock_create_socket):
+    """Lock loss on Kubernetes stays in the pod instead of triggering a kubelet restart."""
     mock_create_socket.return_value = None
 
     mock_config = MagicMock()
@@ -134,7 +131,7 @@ def test_on_become_standby_keeps_process_off_kubernetes(mock_exit, mock_create_s
     daemon._on_become_standby()
 
     mock_exit.assert_not_called()
-    mock_infer.stop.assert_not_called()
+    mock_infer.stop.assert_called_once()
     mock_mgmt.stop.assert_not_called()
     mock_obs.stop.assert_not_called()
 

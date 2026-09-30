@@ -106,8 +106,8 @@ NPU resources. Optional `render_config.launch_args` entries are converted from s
 - `StandbyManager` controls which node is master via external coordination (e.g., etcd lease)
 - `RoleShmHolder` creates `coordinator_standby_role` shared memory (9 bytes: 1B role + 8B heartbeat ns)
 - Daemon writes heartbeat every `ROLE_HEARTBEAT_INTERVAL_SEC` (2s); Mgmt process checks staleness (>5s = unhealthy)
-- **Only InferenceWorkers are started on master** — Mgmt and Obs run on both master and standby. The daemon unconditionally starts MGMT/OBS (`_start_processes([MGMT, OBS])`); only Inference is gated by role (standby keeps it stopped for instance sync readiness).
-- On role change: `on_become_master` starts Inference workers; `on_become_standby` stops them
+- **InferenceWorkers are prestarted on both master and standby** — Mgmt, Obs, and Inference are started before role election so a promoted standby can serve without starting workers during the handover. Standby readiness remains `0/1`; only the master is service-ready.
+- On role change: `on_become_master` retains/starts Inference workers; `on_become_standby` writes the standby role and stops Inference workers while keeping Mgmt and Obs alive.
 
 ## IPC: ZMQ Protocol + Shared Memory
 
