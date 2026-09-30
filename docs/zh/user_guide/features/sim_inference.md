@@ -40,7 +40,8 @@
 
 **异常判定（vLLM）**：
 
-* 当AI Cube利用率峰值低于`npu_usage_threshold`且虚拟推理请求失败时，累计连续失败次数；达到`max_failure_count`后，该endpoint的运行时状态由`READY`降级为`UNHEALTHY`，心跳上报`ABNORMAL`，虚拟推理循环停止。
+* 当AI Cube利用率峰值低于`npu_usage_threshold`且虚拟推理请求失败时，进一步读取同一引擎的`/metrics`。仅当`vllm:num_requests_waiting_by_reason{reason="capacity"}`可用且所有匹配样本之和为0时，才累计连续失败次数；达到`max_failure_count`后，该endpoint的运行时状态由`READY`降级为`UNHEALTHY`，心跳上报`ABNORMAL`，虚拟推理循环停止。
+* `capacity`等待数大于0表示请求因调度容量（包括KV Cache容量）不足而排队，此时虚推超时不代表引擎失活，不累计失败次数。metrics请求失败、指标缺失或值非法时也不累计；这些情况保留已有失败计数，后续探测成功或AI Cube恢复到阈值以上时再重置。
 * 主动探测失败但AI Cube ≥ threshold视为引擎繁忙，不累计失败；AI Cube采样不可用时不累计失败次数。虚拟推理仅改变状态上报，不会触发进程重启或Pod级恢复。
 * 监控循环自身出现未预期异常时，仅记录日志并退避重试，不据此判定引擎异常（不累计失败次数、不降级`UNHEALTHY`）。
 
@@ -149,7 +150,7 @@ kubectl logs <node-manager-pod> | grep -E "Virtual inference|AI Cube usage|marke
 ```text
 INFO: AI Cube usage rate: 2%, virtual request: successful (endpoint 0)
 INFO: AI Cube usage is below 3%, virtual inference sleeps default 5s for endpoint 0
-WARNING: AI Cube usage (2%) < threshold (3%) and virtual request failed for endpoint 0
+WARNING: AI Cube usage (2%) < threshold (3%), virtual request failed, and no request is waiting for capacity on endpoint 0
 WARNING: Current failure count: 1/6 for endpoint 0
 ```
 

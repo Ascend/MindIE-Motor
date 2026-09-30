@@ -317,11 +317,44 @@ async def test_health_check_loop_exits_after_max_failure_count(mock_sleep, mock_
         raise RuntimeError("Request failed")
 
     with mock.patch.object(worker, "send_virtual_request_async", side_effect=set_low_ai_cube_and_fail):
-        with _patched_health_check_loop(worker):
-            await worker.health_check_loop()
+        with mock.patch.object(worker, "_get_capacity_waiting_requests_safe", new=mock.AsyncMock(return_value=0)):
+            with _patched_health_check_loop(worker):
+                await worker.health_check_loop()
 
     assert worker.is_abnormal()
     assert len(request_calls) == 1
+
+
+@mock.patch("motor.node_manager.core.services.native_engine.virtual_inference.worker.threading.Thread")
+@mock.patch("motor.node_manager.core.services.native_engine.virtual_inference.worker.asyncio.sleep")
+@pytest.mark.parametrize("capacity_waiting", [1.0, None], ids=["capacity_blocked", "metrics_unavailable"])
+async def test_health_check_loop_skips_low_usage_failure_when_capacity_not_proven_zero(
+    mock_sleep, mock_thread, capacity_waiting
+):
+    worker = VirtualInferenceWorker(_make_spec(npu_usage_threshold=10, max_failure_count=1))
+    with mock.patch.object(worker, "_send_virtual_request_safe", new=mock.AsyncMock(return_value=True)):
+        assert await worker._run_virtual_warmup() is True
+
+    async def set_low_ai_cube_and_fail(timeout):
+        with worker._shared_data_lock:
+            worker._max_ai_cube_usage = 0
+            worker._ai_cube_usage_available = True
+            worker._ai_cube_completed_generation = worker._ai_cube_requested_generation
+        raise RuntimeError("Request failed")
+
+    with mock.patch.object(worker, "send_virtual_request_async", side_effect=set_low_ai_cube_and_fail):
+        with mock.patch.object(
+            worker,
+            "_get_capacity_waiting_requests_safe",
+            new=mock.AsyncMock(return_value=capacity_waiting),
+        ):
+            mock_sleep.side_effect = asyncio.CancelledError
+            with _patched_health_check_loop(worker):
+                with pytest.raises(asyncio.CancelledError):
+                    await worker.health_check_loop()
+
+    assert worker.failure_count == 0
+    assert not worker.is_abnormal()
 
 
 @mock.patch("motor.node_manager.core.services.native_engine.virtual_inference.worker.threading.Thread")

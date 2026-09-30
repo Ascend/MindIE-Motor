@@ -18,7 +18,9 @@ from motor.common.resources.dispatch import DispatchProfile
 from motor.common.resources.instance import PDRole
 from motor.node_manager.core.services.native_engine.virtual_inference.requesters import (
     VllmCompletionsRequester,
+    VllmMetricsRequester,
     generate_request_id,
+    parse_capacity_waiting_requests,
 )
 from motor.node_manager.core.services.native_engine.virtual_inference.spec import VirtualInferenceSpec
 
@@ -132,6 +134,38 @@ async def test_vllm_requester_propagates_errors(exc_factory, exc_type, inject_vi
 
     with pytest.raises(exc_type):
         await requester.send(client, httpx.Timeout(5.0))
+
+
+@pytest.mark.parametrize(
+    "metrics_text, expected",
+    [
+        ('vllm:num_requests_waiting_by_reason{reason="capacity"} 0.0\n', 0.0),
+        (
+            'vllm:num_requests_waiting_by_reason{engine="0",reason="capacity"} 2\n'
+            'vllm:num_requests_waiting_by_reason{reason="capacity",engine="1"} 3\n'
+            'vllm:num_requests_waiting_by_reason{reason="deferred",engine="0"} 9\n',
+            5.0,
+        ),
+        ('vllm:num_requests_waiting_by_reason{reason="deferred"} 1\n', None),
+        ('vllm:num_requests_waiting_by_reason{reason="capacity"} invalid\n', None),
+    ],
+    ids=["zero", "sum_capacity_only", "capacity_missing", "invalid_value"],
+)
+def test_parse_capacity_waiting_requests(metrics_text, expected):
+    assert parse_capacity_waiting_requests(metrics_text) == expected
+
+
+@pytest.mark.asyncio
+async def test_vllm_metrics_requester_reads_native_metrics():
+    requester = VllmMetricsRequester()
+    client, response = _fake_client()
+    response.text = 'vllm:num_requests_waiting_by_reason{reason="capacity"} 4\n'
+    client.get = mock.AsyncMock(return_value=response)
+
+    value = await requester.get_capacity_waiting_requests(client, httpx.Timeout(5.0))
+
+    assert value == 4.0
+    client.get.assert_awaited_once_with("/metrics", timeout=httpx.Timeout(5.0))
 
 
 def test_generate_request_id_format():

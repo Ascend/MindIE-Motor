@@ -47,6 +47,7 @@
 
 | 日期 | 模块 | 案例 | 文件 | 关键词 |
 |------|------|------|------|--------|
+| 2026-09-29 | node_manager | Prefill KV容量耗尽导致虚推误判异常 | [virtual-inference-capacity-waiting.md](node_manager/virtual-inference-capacity-waiting.md) | NodeManager, virtual inference, KV Cache, capacity waiting, false positive |
 | 2026-09-28 | deployer | 快照 YAML 误删共享内存挂载 | [snapshot-shm-mount.md](deployer/snapshot-shm-mount.md) | snapshot, dshm, emptyDir, InferServiceSet |
 | 2026-09-28 | node_manager | 恢复前旧心跳 503 误触发新实例重注册 | [snapshot-stale-heartbeat-503.md](node_manager/snapshot-stale-heartbeat-503.md) | snapshot, heartbeat, 503, reregister, start race |
 | 2026-09-28 | deployer | 同机 Pod 的 IPv6 地址重复 | [a5-ipv6-same-node-address.md](deployer/a5-ipv6-same-node-address.md) | A5, IPv6, hostNetwork, 同机地址重复 |

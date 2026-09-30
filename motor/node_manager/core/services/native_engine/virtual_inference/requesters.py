@@ -8,6 +8,8 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import math
+import re
 import time
 
 import httpx
@@ -21,6 +23,8 @@ from motor.node_manager.core.services.native_engine.virtual_inference.spec impor
 logger = get_logger(__name__)
 
 VIRTUAL_REQUEST_ID_MARKER = "_virtual"
+_WAITING_BY_REASON_METRIC = "vllm:num_requests_waiting_by_reason"
+_REASON_LABEL_PATTERN = re.compile(r'(?:^|,)\s*reason="capacity"\s*(?:,|$)')
 
 
 def generate_request_id() -> str:
@@ -29,6 +33,31 @@ def generate_request_id() -> str:
     request_id = f"{current_timestamp}_virtual"
     logger.debug("Generated virtual request ID: %s", request_id)
     return request_id
+
+
+def parse_capacity_waiting_requests(metrics_text: str) -> float | None:
+    """Return the sum of vLLM capacity-waiting requests, or None when unavailable."""
+    capacity_waiting = 0.0
+    found = False
+    for raw_line in metrics_text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith(f"{_WAITING_BY_REASON_METRIC}{{"):
+            continue
+        labels_end = line.find("}")
+        if labels_end < 0 or not _REASON_LABEL_PATTERN.search(line[len(_WAITING_BY_REASON_METRIC) + 1 : labels_end]):
+            continue
+        sample_parts = line[labels_end + 1 :].strip().split()
+        if not sample_parts:
+            return None
+        try:
+            value = float(sample_parts[0])
+        except ValueError:
+            return None
+        if not math.isfinite(value) or value < 0:
+            return None
+        capacity_waiting += value
+        found = True
+    return capacity_waiting if found else None
 
 
 class VllmCompletionsRequester:
@@ -60,3 +89,13 @@ class VllmCompletionsRequester:
             timeout=timeout,
         )
         response.raise_for_status()
+
+
+class VllmMetricsRequester:
+    """Read vLLM scheduler capacity pressure from the native ``/metrics`` endpoint."""
+
+    @staticmethod
+    async def get_capacity_waiting_requests(client: httpx.AsyncClient, timeout: httpx.Timeout) -> float | None:
+        response = await client.get("/metrics", timeout=timeout)
+        response.raise_for_status()
+        return parse_capacity_waiting_requests(response.text)
