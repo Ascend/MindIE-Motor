@@ -28,6 +28,9 @@ logger = get_logger(__name__)
 
 DEFAULT_REQ_CONGESTION_TRIGGER_RATIO = 0.85
 DEFAULT_REQ_CONGESTION_CLEAR_RATIO = 0.75
+# report_alarms is a synchronous HTTP call (timeout 5s) on the inference path.
+# Retry a rejected report on a later request, but not on every request.
+DEFAULT_REQ_CONGESTION_REPORT_RETRY_SECONDS = 1.0
 
 
 class TokenBucket:
@@ -134,6 +137,7 @@ class SimpleRateLimiter:
         self.capacity = max_requests  # Bucket capacity equals maximum requests
         self.refill_rate = max_requests / window_size  # Tokens added per second
         self._congestion_alarm_sent = False
+        self._congestion_alarm_retry_at = 0.0
 
         # Use single global token bucket
         self._bucket = TokenBucket(capacity=self.capacity, refill_rate=self.refill_rate)
@@ -153,35 +157,10 @@ class SimpleRateLimiter:
             # Try to consume one token
             allowed = self._bucket.try_consume()
             available = self._bucket.get_available_tokens()
+            # Remaining tokens are high when the bucket is idle. Congestion follows used capacity.
+            used = self.max_requests - available
 
-            req_congestion_trigger_threshold = int(self.max_requests * DEFAULT_REQ_CONGESTION_TRIGGER_RATIO)
-            req_congestion_clear_threshold = int(self.max_requests * DEFAULT_REQ_CONGESTION_CLEAR_RATIO)
-
-            from motor.common.alarm.req_congestion_event import ReqCongestionEvent, RequestCongestionReason
-            from motor.coordinator.api_client.controller_api_client import ControllerApiClient
-
-            if not self._congestion_alarm_sent and available >= req_congestion_trigger_threshold:
-                self._congestion_alarm_sent = True
-                additional_information = (
-                    f"The current number of inference requests in the system is{available},"
-                    f"which is greater than the configured maximum number of requests {self.max_requests}*85%."
-                )
-                event = ReqCongestionEvent(
-                    reason_id=RequestCongestionReason.DEALING_WITH_CONGESTION,
-                    additional_information=additional_information,
-                )
-                ControllerApiClient.report_alarms(event.model_dump())
-            elif self._congestion_alarm_sent and available < req_congestion_clear_threshold:
-                self._congestion_alarm_sent = False
-                additional_information = (
-                    f"The current number of inference requests in the system is {available},"
-                    f"which is less than the configured maximum number of requests {self.max_requests}*75%."
-                )
-                event = ReqCongestionEvent(
-                    reason_id=RequestCongestionReason.DEALING_WITH_CONGESTION,
-                    additional_information=additional_information,
-                )
-                ControllerApiClient.report_alarms(event.model_dump())
+            self._sync_congestion_alarm(used)
 
             # Build rate limiting info
             limit_info = {
@@ -255,3 +234,65 @@ class SimpleRateLimiter:
             self.max_requests,
             self.window_size,
         )
+
+    def _sync_congestion_alarm(self, used: int) -> None:
+        """Report a congestion crossing, and latch state only after Controller accepts it.
+
+        ``report_alarms`` swallows transport errors and returns ``{"ok": False}``. Setting the
+        latch before that return drops the event until the opposite threshold is crossed.
+        A failed report keeps the previous latch and is retried on a later request, with a
+        short gap so a down Controller does not add an HTTP timeout to every inference request.
+        """
+        trigger = int(self.max_requests * DEFAULT_REQ_CONGESTION_TRIGGER_RATIO)
+        clear = int(self.max_requests * DEFAULT_REQ_CONGESTION_CLEAR_RATIO)
+        if not self._congestion_alarm_sent and used >= trigger:
+            active = True
+            additional_information = (
+                f"The current number of inference requests in the system is {used}, "
+                f"which is greater than or equal to the configured maximum number of requests "
+                f"{self.max_requests}*85%."
+            )
+        elif self._congestion_alarm_sent and used < clear:
+            active = False
+            additional_information = (
+                f"The current number of inference requests in the system is {used}, "
+                f"which is less than the configured maximum number of requests "
+                f"{self.max_requests}*75%."
+            )
+        else:
+            return
+
+        now = time.monotonic()
+        if now < self._congestion_alarm_retry_at:
+            return
+
+        from motor.common.alarm.req_congestion_event import ReqCongestionEvent, RequestCongestionReason
+        from motor.coordinator.api_client.controller_api_client import ControllerApiClient
+
+        event = ReqCongestionEvent(
+            reason_id=RequestCongestionReason.DEALING_WITH_CONGESTION,
+            additional_information=additional_information,
+        )
+        try:
+            outcome = ControllerApiClient.report_alarms(event.model_dump())
+            accepted = isinstance(outcome, dict) and bool(outcome.get("ok"))
+        except Exception as exc:
+            accepted = False
+            logger.warning(
+                "Congestion alarm report failed, state unchanged, retry after %.1fs: %s",
+                DEFAULT_REQ_CONGESTION_REPORT_RETRY_SECONDS,
+                exc,
+            )
+        else:
+            if not accepted:
+                logger.warning(
+                    "Congestion alarm report was not accepted, state unchanged, retry after %.1fs",
+                    DEFAULT_REQ_CONGESTION_REPORT_RETRY_SECONDS,
+                )
+
+        if not accepted:
+            self._congestion_alarm_retry_at = time.monotonic() + DEFAULT_REQ_CONGESTION_REPORT_RETRY_SECONDS
+            return
+
+        self._congestion_alarm_sent = active
+        self._congestion_alarm_retry_at = 0.0

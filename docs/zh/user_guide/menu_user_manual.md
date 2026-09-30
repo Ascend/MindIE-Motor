@@ -33,6 +33,7 @@
   - [容器快照](./features/container_snapshot.md)
   - [虚推健康探测](./features/sim_inference.md)
   - [故障场景重调度](./features/fault_tolerance/rescheduler.md)
+  - [服务限流](./features/rate_limiting.md)
   - [数据混淆推理（PMCC）](./features/data_obfuscation.md)
   - [vLLM部署脚本转换工具](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/infer_engines/vllm/models/README.md)
 - [API参考]()

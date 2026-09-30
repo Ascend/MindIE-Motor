@@ -584,7 +584,7 @@ motor_coordinator_config字段配置样例如下所示：
 | **mgmt_api_key_config字段** |-|管理面独立 API Key 配置，仅保护实例查询、实例刷新和精度告警状态清理接口。启动、存活和就绪探针不鉴权。请求头固定为 `X-Motor-Management-Key`。|
 | enable_api_key | bool | 是否开启管理面 API Key 鉴权。可选：`true` / `false`。默认值：`false`。|
 | api_key_file | string | API Key 文件路径。开启鉴权时必填；文件必须仅含一行非空密钥。Controller 与 Coordinator 分开部署时需挂载内容相同的密钥文件。|
-| **rate_limit_config字段** |-|-|
+| **rate_limit_config字段** |-|行为与示例见 [服务限流](../features/rate_limiting.md)。|
 | enable_rate_limit | bool | 是否开启请求限流。可选：`true` / `false`。默认值：`false` |
 | provider |string|限流提供者。simple使用内置令牌桶；OLC使用过载控制库（需额外安装及配置）。|
 | max_requests | int | 限流时间窗口内允许的最大请求数。默认值：`1000` |
