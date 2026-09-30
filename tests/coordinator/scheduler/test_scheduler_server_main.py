@@ -801,11 +801,14 @@ class TestSnapshotSchedMetricsKvUsagePenalty:
     @pytest.mark.asyncio
     async def test_d_role_fresh_load_includes_kv_usage_penalty(self):
         d_inst = _make_instance(2, (1,), role=PDRole.ROLE_D)
+        d_ep = d_inst.get_all_endpoints()[0]
+        # gathered_workload 应等于 endpoint workload 之和；Mgmt 侧两者均为 0，
+        # 这里同时设置以模拟真实（worker 侧已从 SHM 同步）状态。
+        d_ep.workload.active_tokens = 20.0
         d_inst.gathered_workload.active_tokens = 20.0
         p_inst = _make_instance(1, (1,), role=PDRole.ROLE_P)
         server = self._make_server_with_instances(p_inst, d_inst)
 
-        d_ep = d_inst.get_all_endpoints()[0]
         p_ep = p_inst.get_all_endpoints()[0]
         usage = 0.5
         kv_usage.update_kv_usage_cache({(2, 1): usage})
@@ -830,17 +833,113 @@ class TestSnapshotSchedMetricsKvUsagePenalty:
     async def test_d_role_fresh_load_falls_back_to_plain_score_without_usage(self):
         """无 KV usage 数据时回退为裸分，不影响指标发布。"""
         d_inst = _make_instance(2, (1,), role=PDRole.ROLE_D)
+        d_ep = d_inst.get_all_endpoints()[0]
+        d_ep.workload.active_tokens = 20.0
         d_inst.gathered_workload.active_tokens = 20.0
         p_inst = _make_instance(1, (1,), role=PDRole.ROLE_P)
         server = self._make_server_with_instances(p_inst, d_inst)
 
-        d_ep = d_inst.get_all_endpoints()[0]
         snapshot = server._snapshot_sched_metrics()
 
         plain_d = LoadBalancePolicy.calculate_endpoint_score(
             d_inst, d_ep, role=PDRole.ROLE_D, instance_score_weight=0.0
         )
         assert snapshot[(2, 1)][1] == pytest.approx(plain_d)
+
+
+class TestSnapshotSchedMetricsUsesShmTokens:
+    """_snapshot_sched_metrics 必须从 workload SHM 读取实时 active_tokens，而非 stale 的 endpoint.workload。
+
+    Mgmt 侧 endpoint.workload 不会被 Infer Worker 的 CAS 更新，若直接读取则 a_tokens/fresh_load
+    永远为 0。回归拦截：SHM 有 token 时，指标必须反映 SHM 值。
+    """
+
+    @staticmethod
+    def _make_server(p_inst, d_inst, *, score_weight: float = 0.0) -> AsyncSchedulerServer:
+        config = CoordinatorConfig()
+        config.scheduler_config.endpoint_instance_score_weight = score_weight
+        instance_manager = MagicMock()
+        instance_manager.get_available_instances.side_effect = lambda role: {
+            PDRole.ROLE_P: {p_inst.id: p_inst},
+            PDRole.ROLE_D: {d_inst.id: d_inst},
+            PDRole.ROLE_U: {},
+        }[role]
+        return AsyncSchedulerServer(config, instance_manager=instance_manager)
+
+    @pytest.mark.asyncio
+    async def test_a_tokens_and_fresh_load_reflect_shm_active_tokens(self):
+        """SHM 中的 active_tokens 必须出现在 a_tokens 指标里，fresh_load 也基于它计算。"""
+        d_inst = _make_instance(2, (1,), role=PDRole.ROLE_D)
+        p_inst = _make_instance(1, (1,), role=PDRole.ROLE_P)
+        # endpoint.workload 保持 0（模拟 Mgmt 侧从未被更新）。
+        server = self._make_server(p_inst, d_inst, score_weight=0.0)
+
+        # 模拟 workload SHM 中 Infer Worker CAS 更新后的实时 token。
+        shm_workload = {(1, 1): (100.0, 2, 7), (2, 1): (250.0, 0, 12)}
+        server._workload_writer = MagicMock()
+        server._workload_writer.read_endpoint_workload.return_value = shm_workload
+
+        snapshot = server._snapshot_sched_metrics()
+
+        # a_tokens 必须来自 SHM，而非 endpoint.workload（0）。
+        assert snapshot[(1, 1)][2] == pytest.approx(100.0)
+        assert snapshot[(2, 1)][2] == pytest.approx(250.0)
+        # score_weight=0 时 fresh_load == endpoint_score == a_tokens。
+        assert snapshot[(1, 1)][1] == pytest.approx(100.0)
+        assert snapshot[(2, 1)][1] == pytest.approx(250.0)
+        # cnt / total_cnt 必须来自 SHM（在途 / 累计）。
+        assert snapshot[(1, 1)][3] == 2
+        assert snapshot[(1, 1)][4] == 7
+        assert snapshot[(2, 1)][3] == 0
+        assert snapshot[(2, 1)][4] == 12
+
+    @pytest.mark.asyncio
+    async def test_fresh_load_includes_instance_score_weight_from_shm(self):
+        """instance_score_weight > 0 时，fresh_load 必须叠加实例级 SHM token 均值。"""
+        # D 实例有 2 个 endpoint，模拟 DP=2。
+        d_inst = _make_instance(2, (1, 2), role=PDRole.ROLE_D)
+        p_inst = _make_instance(1, (1,), role=PDRole.ROLE_P)
+        server = self._make_server(p_inst, d_inst, score_weight=1.0)
+
+        # SHM: D 实例两个 endpoint 分别 100/300，P 实例 50。
+        shm_workload = {(1, 1): (50.0, 0, 0), (2, 1): (100.0, 1, 3), (2, 2): (300.0, 0, 0)}
+        server._workload_writer = MagicMock()
+        server._workload_writer.read_endpoint_workload.return_value = shm_workload
+
+        snapshot = server._snapshot_sched_metrics()
+
+        # D 实例: instance_token_sum = 400, endpoint_count = 2
+        # fresh_load(2,1) = 100 + 1.0 * (400 / 2) = 300
+        # fresh_load(2,2) = 300 + 1.0 * (400 / 2) = 500
+        assert snapshot[(2, 1)][2] == pytest.approx(100.0)
+        assert snapshot[(2, 2)][2] == pytest.approx(300.0)
+        assert snapshot[(2, 1)][1] == pytest.approx(300.0)
+        assert snapshot[(2, 2)][1] == pytest.approx(500.0)
+        # P 实例: instance_token_sum = 50, endpoint_count = 1
+        # fresh_load(1,1) = 50 + 1.0 * (50 / 1) = 100
+        assert snapshot[(1, 1)][1] == pytest.approx(100.0)
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_endpoint_workload_when_shm_missing(self):
+        """endpoint 不在 SHM 中时，回退到 endpoint.workload（覆盖刚注册尚未写 SHM 的边界）。"""
+        d_inst = _make_instance(2, (1,), role=PDRole.ROLE_D)
+        p_inst = _make_instance(1, (1,), role=PDRole.ROLE_P)
+        # 手动设置 endpoint workload，模拟 SHM 尚未写入但 IM 已有值的场景。
+        d_ep = d_inst.get_all_endpoints()[0]
+        d_ep.workload.active_tokens = 42.0
+        server = self._make_server(p_inst, d_inst, score_weight=0.0)
+
+        # SHM 只有 P 实例，没有 D 实例。
+        shm_workload = {(1, 1): (10.0, 0, 0)}
+        server._workload_writer = MagicMock()
+        server._workload_writer.read_endpoint_workload.return_value = shm_workload
+
+        snapshot = server._snapshot_sched_metrics()
+
+        # P 实例来自 SHM。
+        assert snapshot[(1, 1)][2] == pytest.approx(10.0)
+        # D 实例不在 SHM，回退到 endpoint.workload。
+        assert snapshot[(2, 1)][2] == pytest.approx(42.0)
 
 
 class TestSnapshotSchedMetricsToShmSeam:

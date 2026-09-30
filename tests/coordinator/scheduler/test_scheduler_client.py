@@ -861,6 +861,27 @@ class TestAsyncSchedulerClient:
         assert selected_instance.id == 2
         assert selected_endpoint.id == 2
 
+    def test_select_endpoint_candidates_by_load_balance_logs_all_candidates(self, monkeypatch, caplog):
+        """快路径 load_balance：开启开关后打印每个候选端点，并带上 req_id 关联。"""
+        client = self.client
+        client._client_index = 0
+        client._client_count = 1
+
+        ep1 = _make_endpoint(endpoint_id=1, active_tokens=10.0)
+        ep2 = _make_endpoint(endpoint_id=2, active_tokens=5.0)
+        inst1 = _make_instance(instance_id=1, role="prefill", endpoints={"pod1": {1: ep1}})
+        inst2 = _make_instance(instance_id=2, role="prefill", endpoints={"pod2": {2: ep2}})
+
+        monkeypatch.setenv("KV_AFFINITY_LOG_ALL_CANDIDATES", "1")
+        with caplog.at_level("INFO", logger="motor.coordinator.scheduler.allocate_arbitration"):
+            client._select_endpoint_candidates_by_load_balance(
+                [inst1, inst2], PDRole.ROLE_P, top_k=1, req_id="req-fast"
+            )
+        messages = [rec.getMessage() for rec in caplog.records if "load_balance all_candidates" in rec.getMessage()]
+        assert len(messages) == 2
+        assert any("req_id=req-fast" in m and "point=1-1" in m for m in messages)
+        assert any("point=2-2" in m for m in messages)
+
     @pytest.mark.asyncio
     async def test_get_available_instances_registers_kv_usage_reader(self):
         """After a refresh carrying kv_usage_shm_name, the module-level reader is registered.

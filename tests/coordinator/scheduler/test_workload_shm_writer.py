@@ -215,7 +215,7 @@ async def test_writer_snapshot_and_heartbeat(native_lib):
         writer.write_snapshot()
         writer.write_heartbeat()
         header = writer.native.read_header()
-        assert header["schema_version"] == SCHEMA_VERSION == 4
+        assert header["schema_version"] == SCHEMA_VERSION == 5
         assert header["sequence"] % 2 == 0
         assert header["heartbeat"] == 1
         reader.attach()
@@ -279,5 +279,62 @@ async def test_writer_snapshot_preserves_cas_tokens(native_lib):
         second = writer.native.load_entry(1)
         assert second["instance_id"] == 2
         assert second["active_tokens"] == 0.0
+    finally:
+        writer.release()
+
+
+@pytest.mark.asyncio
+async def test_read_endpoint_workload_returns_cas_updated_tokens_and_request_count(native_lib):
+    """read_endpoint_workload 必须返回 Infer Worker CAS 更新后的实时 token、在途与累计请求数。"""
+    del native_lib
+    config = CoordinatorConfig()
+    im = InstanceManager(config)
+    await im.refresh_instances(EventType.ADD, [_make_real_instance(1, 10, 0.0)])
+    name = _unique("rt")
+    writer = WorkloadSharedMemoryOwner(im, max_entries=8, shm_name=name)
+    try:
+        writer.write_snapshot()
+        # IM 种子为 0，CAS 前应返回 (0.0, 0, 0)。
+        assert writer.read_endpoint_workload() == {(1, 10): (0.0, 0, 0)}
+
+        # 模拟 Infer Worker 分配请求：cas_add 应同时 +token、+request_count、+total_requests。
+        meta = writer.native.load_entry(0)
+        status, actual = writer.native.cas_add(1, 10, int(meta["generation"]), 0.0, 25.0)
+        assert status == STATUS_OK
+        assert actual == 25.0
+        assert writer.read_endpoint_workload() == {(1, 10): (25.0, 1, 1)}
+
+        # 再分配一次：请求数 +1，累计 +1。
+        meta = writer.native.load_entry(0)
+        status, _ = writer.native.cas_add(1, 10, int(meta["generation"]), 25.0, 5.0)
+        assert status == STATUS_OK
+        assert writer.read_endpoint_workload() == {(1, 10): (30.0, 2, 2)}
+
+        # 释放一次：token 减、在途请求数减（不下溢），累计请求数保持只增不减。
+        writer.native.cas_sub_floor0(1, 10, int(meta["generation"]), 10.0)
+        assert writer.read_endpoint_workload() == {(1, 10): (20.0, 1, 2)}
+    finally:
+        writer.release()
+
+
+@pytest.mark.asyncio
+async def test_read_endpoint_workload_total_requests_survives_snapshot_refresh(native_lib):
+    """成员快照刷新不得清零 total_requests；endpoint 移除后重新加入从 0 重新累计。"""
+    del native_lib
+    config = CoordinatorConfig()
+    im = InstanceManager(config)
+    await im.refresh_instances(EventType.ADD, [_make_real_instance(1, 10, 0.0)])
+    name = _unique("tr")
+    writer = WorkloadSharedMemoryOwner(im, max_entries=8, shm_name=name)
+    try:
+        writer.write_snapshot()
+        meta = writer.native.load_entry(0)
+        status, _ = writer.native.cas_add(1, 10, int(meta["generation"]), 0.0, 5.0)
+        assert status == STATUS_OK
+        assert writer.read_endpoint_workload() == {(1, 10): (5.0, 1, 1)}
+
+        # 快照刷新（成员不变）：同槽位 live pair，计数必须保留。
+        writer.write_snapshot()
+        assert writer.read_endpoint_workload() == {(1, 10): (5.0, 1, 1)}
     finally:
         writer.release()

@@ -8,9 +8,10 @@
 
 """
 Shared memory layout for workload data.
-Header 64B + Entry 24B × N. Little-endian. SCHEMA_VERSION=4.
-Control-plane membership uses header seqlock; per-slot active_tokens is AtomicU64 CAS
-at offset 16 (8-aligned). Sequence odd means writer in progress (membership snapshot).
+Header 64B + Entry 32B × N. Little-endian. SCHEMA_VERSION=5.
+Control-plane membership uses header seqlock; per-slot active_tokens / total_requests are
+AtomicU64 CAS at offsets 16/24 (8-aligned). Sequence odd means writer in progress
+(membership snapshot).
 """
 
 import struct
@@ -21,8 +22,12 @@ from dataclasses import dataclass
 # Readers check this to ensure the buffer is our workload shm layout, not other data or corruption.
 MAGIC = 0x574B4C44
 
-# Schema version for layout compatibility (schema 4: per-slot CAS, tokens 8-aligned at offset 16)
-SCHEMA_VERSION = 4
+# Schema version for layout compatibility.
+# Schema 4: per-slot CAS, tokens 8-aligned at offset 16.
+# Schema 5: entry widened 24B -> 32B, total_requests (cumulative allocations) at offset 24.
+# Incompatible: Mgmt and every Infer Worker must run the same schema; the Rust attach and the
+# Python reader hard-reject foreign schemas instead of misreading a different entry stride.
+SCHEMA_VERSION = 5
 
 # Role mapping: prefill=0, decode=1, hybrid=2, encode=3
 ROLE_PREFILL = 0
@@ -40,11 +45,12 @@ HEADER_FMT = "<I H H q I I Q Q Q Q Q"  # little-endian
 HEARTBEAT_OFFSET = 32  # bytes 32-40: heartbeat_sequence (Q)
 HEARTBEAT_STALE_SEC = 5.0  # If heartbeat unchanged for this long, Infer treats shm as stale
 
-# Entry: 24 bytes (schema 4)
-# instance_id 4B, endpoint_id 4B, role 1B, flags 1B, generation 2B, reserved 4B,
-# active_tokens 8B at offset 16 (8-byte aligned for AtomicU64 CAS on aarch64).
-ENTRY_SIZE = 24
-ENTRY_FMT = "<i i B B H I d"
+# Entry: 32 bytes (schema 5)
+# instance_id 4B, endpoint_id 4B, role 1B, flags 1B, generation 2B, request_count 4B,
+# active_tokens 8B at offset 16, total_requests 8B at offset 24 (both 8-byte aligned
+# for AtomicU64 CAS on aarch64). The first 24 bytes are byte-compatible with schema 4.
+ENTRY_SIZE = 32
+ENTRY_FMT = "<i i B B H I d Q"
 
 # Entry flag bits (must match workload_shm_rs/src/layout.rs).
 FLAG_BLOCKED = 0b0000_0001
@@ -56,7 +62,7 @@ DEFAULT_WORKLOAD_SHM_MAX_ENTRIES = 10240
 
 @dataclass(frozen=True)
 class WorkloadShmEntry:
-    """Single workload entry (24 bytes). Used by pack_entry/unpack_entry and writer."""
+    """Single workload entry (32 bytes). Used by pack_entry/unpack_entry and writer."""
 
     instance_id: int
     endpoint_id: int
@@ -64,6 +70,8 @@ class WorkloadShmEntry:
     active_tokens: float
     flags: int = 0
     generation: int = 0
+    request_count: int = 0
+    total_requests: int = 0
 
 
 @dataclass(frozen=True)
@@ -135,7 +143,7 @@ def unpack_header(buf: memoryview) -> WorkloadShmHeader:
 
 
 def pack_entry(entry: WorkloadShmEntry) -> bytes:
-    """Pack single entry into 24 bytes."""
+    """Pack single entry into 32 bytes."""
     return struct.pack(
         ENTRY_FMT,
         entry.instance_id,
@@ -143,8 +151,9 @@ def pack_entry(entry: WorkloadShmEntry) -> bytes:
         entry.role,
         entry.flags,
         entry.generation,
-        0,  # reserved
+        entry.request_count,
         entry.active_tokens,
+        entry.total_requests,
     )
 
 
@@ -160,7 +169,9 @@ def unpack_entry(buf: memoryview, slot: int) -> WorkloadShmEntry:
         role=t[2],
         flags=t[3],
         generation=t[4],
+        request_count=t[5],
         active_tokens=t[6],
+        total_requests=t[7],
     )
 
 

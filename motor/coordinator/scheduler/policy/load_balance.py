@@ -55,18 +55,32 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
         endpoint: Endpoint,
         role: PDRole | str | None = None,
         instance_score_weight: float = DEFAULT_ENDPOINT_INSTANCE_SCORE_WEIGHT,
+        *,
+        endpoint_score: float | None = None,
+        instance_score: float | None = None,
     ) -> float:
         """
         Score an endpoint globally while preserving some instance-level pressure awareness.
 
         Endpoint workload is the primary signal. Instance workload is averaged by endpoint count so
         larger DP instances are not penalized just because they have more endpoints.
+
+        ``endpoint_score``/``instance_score`` override the scores normally derived from
+        ``endpoint.workload`` / ``instance.gathered_workload``. Callers whose workload caches
+        are stale (e.g. the SchedulerServer metrics path, which reads live SHM counters) pass
+        the live values explicitly. Note: these overrides bypass ``calculate_workload_score``
+        and feed the raw token counts straight into the composite formula; today that is an
+        exact match because ``calculate_workload_score`` is the identity mapping
+        (``active_tokens``), but if its scoring formula ever changes, such callers must be
+        revisited to keep the published score in sync with the real scheduling formula.
         """
-        endpoint_score = endpoint.workload.calculate_workload_score()
+        if endpoint_score is None:
+            endpoint_score = endpoint.workload.calculate_workload_score()
         if instance_score_weight <= 0:
             return endpoint_score
         endpoint_count = max(1, len(instance.get_all_endpoints()))
-        instance_score = instance.gathered_workload.calculate_workload_score()
+        if instance_score is None:
+            instance_score = instance.gathered_workload.calculate_workload_score()
         return endpoint_score + instance_score_weight * (instance_score / endpoint_count)
 
     @staticmethod
@@ -148,6 +162,7 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
         *,
         role: PDRole | str | None = None,
         kv_usage_provider: Callable[[Instance, Endpoint], float | None],
+        instance_score: float | None = None,
     ) -> float:
         """Add a KV cache pressure penalty to an endpoint's score.
 
@@ -155,6 +170,10 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
         cache is heavily used is penalized proportionally to the instance's own workload
         pressure, averaged per endpoint so larger DP instances are not over-penalized. When
         no usage data is available the plain score is returned unchanged.
+
+        ``instance_score`` defaults to ``instance.gathered_workload`` (worker-side, where the
+        cache is patched from SHM). Callers whose ``gathered_workload`` is stale (e.g. the
+        SchedulerServer metrics path) may pass the live instance token sum explicitly.
         """
         try:
             usage = kv_usage_provider(instance, endpoint)
@@ -168,7 +187,8 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
             return score
         if usage is None:
             return score
-        instance_score = instance.gathered_workload.calculate_workload_score()
+        if instance_score is None:
+            instance_score = instance.gathered_workload.calculate_workload_score()
         endpoint_count = max(1, len(instance.get_all_endpoints()))
         return score + usage * (instance_score / endpoint_count)
 

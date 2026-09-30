@@ -246,7 +246,7 @@ def test_kv_cache_affinity_falls_back_to_load_balance_for_role_u() -> None:
     assert candidates == lb_candidates
     assert candidate_policy == "load_balance"
     mock_kva.assert_called_once()
-    mock_load_balance.assert_called_once_with([instance], PDRole.ROLE_U, 1)
+    mock_load_balance.assert_called_once_with([instance], PDRole.ROLE_U, 1, req_id=req_info.req_id)
 
 
 async def test_select_and_allocate_role_u_unified_forwards_top1() -> None:
@@ -326,4 +326,4 @@ def test_kv_cache_affinity_skips_kva_for_non_kva_roles() -> None:
     assert candidates == lb_candidates
     assert candidate_policy == "load_balance"
     mock_kva.assert_not_called()
-    mock_load_balance.assert_called_once_with([instance], PDRole.ROLE_D, 1)
+    mock_load_balance.assert_called_once_with([instance], PDRole.ROLE_D, 1, req_id=req_info.req_id)

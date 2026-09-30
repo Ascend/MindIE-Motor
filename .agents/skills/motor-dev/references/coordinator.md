@@ -161,10 +161,10 @@ Offset  Size   Field
 40      8B     prefill_sequence   — P membership change counter
 48      8B     decode_sequence    — D membership change counter
 56      8B     hybrid_sequence    — U membership change counter
-64      N×24B  entries            — per-endpoint slots (max 10240)
+64      N×32B  entries            — per-endpoint slots (max 10240)
 ```
 
-Header is 64B, each entry 24B:
+Header is 64B, each entry 32B:
 
 ``` text
 0   4B  instance_id
@@ -172,17 +172,19 @@ Header is 64B, each entry 24B:
 8   1B  role
 9   1B  flags (bit0=BLOCKED, bit1=VALID)
 10  2B  generation (ABA on slot reuse)
-12  4B  reserved
+12  4B  request_count (in-flight; Worker CAS inc on allocate, dec on release)
 16  8B  active_tokens (f64 bits as AtomicU64; 8-aligned for aarch64)
+24  8B  total_requests (cumulative allocations, AtomicU64, never decremented; source of stat="total_cnt")
 ```
 
-`active_tokens` is at **offset 16**, not 12: a 24B stride from a 64B header would leave offset 12 only 4-byte aligned, which faults an 8-byte atomic on aarch64. Scoring must atomic-load tokens every pass (seqlock no longer covers token updates). Schema 3 readers are hard-rejected.
+`active_tokens` is at **offset 16**, not 12: a 24B stride from a 64B header would leave offset 12 only 4-byte aligned, which faults an 8-byte atomic on aarch64. Scoring must atomic-load tokens every pass (seqlock no longer covers token updates). Foreign schema versions are hard-rejected (see below).
+**SCHEMA_VERSION=5** widened the entry 24B→32B to add `total_requests` (the first 24 bytes are byte-compatible with schema 4). The Rust `attach` and the Python reader hard-reject foreign schema versions, and Python refuses `.so` ABI < 3 (`mindie_wl_load_entry` gained the `total_requests` out-param) — **Mgmt and all Infer Workers must run the same build**; mixed old/new processes over one segment would corrupt the wider stride. `total_requests` follows the same snapshot rules as `request_count`/tokens: same-slot live pairs keep it, moved pairs copy it, a removed-then-re-added pair restarts at 0.
 
 **SHM name:** `mindie_workload_<mgmt_pid>` — includes PID for uniqueness and orphan detection. Created via Rust `create_v4`. `shm_open(O_CREAT|O_EXCL)` failure unlinks and retries **only on `EEXIST`** (orphan); other errno values return SYSCALL without touching a live segment.
 
 **Membership snapshot:** Mgmt keeps **stable slots** for still-live `(iid, eid)` pairs (new pairs take the lowest free slot; removed pairs become INVALID holes). `write_entry_v4` never `store`s caller tokens over a live pair: same slot leaves Worker CAS bits in place; a moved pair atomic-loads the old slot. `_generation` is not pruned when a pair leaves (ABA). `_add_instances` resets `endpoint.workload` to empty, so a new pair's IM seed is 0; non-zero tokens come only from Worker `cas_add`.
 
-**Recovery:** Workers detect stale SHM (heartbeat >5s old) → trigger full `GET_AVAILABLE_INSTANCES` refresh. Attach failure is loud (`NativeWorkloadShmUnavailable`); there is no Python writer fallback. Native **ABI_VERSION=2** (`mindie_wl_abi_version`; Python `MIN_ABI_VERSION=2` refuses older `.so`). Scoring refresh uses one FFI `load_entries` (atomic-load flags/tokens in Rust); `cas_add` / `cas_sub_floor0` take a slot hint from that snapshot (`SLOT_HINT_NONE` scans; a stale hint is `SLOT_INVALID`, no rescan). Both reject non-finite or negative `delta` with `BAD_ARG`. `update_workload` is release-only (`RELEASE_TOKENS`).
+**Recovery:** Workers detect stale SHM (heartbeat >5s old) → trigger full `GET_AVAILABLE_INSTANCES` refresh. Attach failure is loud (`NativeWorkloadShmUnavailable`); there is no Python writer fallback. Native **ABI_VERSION=3** (`mindie_wl_abi_version`; Python `MIN_ABI_VERSION=3` refuses older `.so`). Scoring refresh uses one FFI `load_entries` (atomic-load flags/tokens in Rust); `cas_add` / `cas_sub_floor0` take a slot hint from that snapshot (`SLOT_HINT_NONE` scans; a stale hint is `SLOT_INVALID`, no rescan). Both reject non-finite or negative `delta` with `BAD_ARG`. `update_workload` is release-only (`RELEASE_TOKENS`).
 
 ### Role Shared Memory (HA)
 

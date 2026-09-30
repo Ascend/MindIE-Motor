@@ -345,3 +345,71 @@ async def test_affinity_global_skips_excluded_pair():
     assert selected is not None
     instance, endpoint, _ = selected
     assert (instance.id, endpoint.id) != (2, 20)
+
+
+@pytest.mark.asyncio
+async def test_log_load_balance_all_candidates_env_gated(monkeypatch, caplog):
+    """共享日志开关：默认关闭不打印；开启后每个候选端点打印一条 all_candidates。"""
+    im = await _two_prefill_pool(_STD_LOADS)
+    ctx = _context(im, is_load_balance=True)
+    instances = list(ctx.get_available_instances(PDRole.ROLE_P).values())
+
+    monkeypatch.delenv("KV_AFFINITY_LOG_ALL_CANDIDATES", raising=False)
+    with caplog.at_level("INFO", logger="motor.coordinator.scheduler.allocate_arbitration"):
+        allocate_arbitration.log_load_balance_all_candidates(instances, PDRole.ROLE_P, "req-1")
+    assert not any("load_balance all_candidates" in rec.getMessage() for rec in caplog.records)
+    caplog.clear()
+
+    monkeypatch.setenv("KV_AFFINITY_LOG_ALL_CANDIDATES", "1")
+    with caplog.at_level("INFO", logger="motor.coordinator.scheduler.allocate_arbitration"):
+        allocate_arbitration.log_load_balance_all_candidates(instances, PDRole.ROLE_P, "req-1")
+    messages = [rec.getMessage() for rec in caplog.records if "load_balance all_candidates" in rec.getMessage()]
+    assert len(messages) == 4
+    assert any("req_id=req-1" in m and "point=1-10" in m for m in messages)
+    assert any("point=2-20" in m for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_log_load_balance_all_candidates_skips_blocked(monkeypatch, caplog):
+    """开启开关后，被熔断（blocked）的实例不会打印候选。"""
+    im = await _two_prefill_pool(_STD_LOADS)
+    ctx = _context(im, is_load_balance=True, blocked=(2,))
+    instances = list(ctx.get_available_instances(PDRole.ROLE_P).values())
+
+    monkeypatch.setenv("KV_AFFINITY_LOG_ALL_CANDIDATES", "1")
+    with caplog.at_level("INFO", logger="motor.coordinator.scheduler.allocate_arbitration"):
+        allocate_arbitration.log_load_balance_all_candidates(
+            instances,
+            PDRole.ROLE_P,
+            "req-1",
+            is_blocked=ctx.is_instance_circuit_open,
+            instance_score_weight=ctx.endpoint_instance_score_weight,
+        )
+    messages = [rec.getMessage() for rec in caplog.records if "load_balance all_candidates" in rec.getMessage()]
+    assert len(messages) == 2
+    assert all("point=2-" not in m for m in messages)
+    assert all("point=1-" in m for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_log_load_balance_all_candidates_skips_excluded_pairs(monkeypatch, caplog):
+    """开启开关后，本轮 CAS 已拒绝的 (instance, endpoint) pair 不会打印候选，与真实选择路径口径一致。"""
+    im = await _two_prefill_pool(_STD_LOADS)
+    ctx = _context(im, is_load_balance=True)
+    instances = list(ctx.get_available_instances(PDRole.ROLE_P).values())
+
+    monkeypatch.setenv("KV_AFFINITY_LOG_ALL_CANDIDATES", "1")
+    with caplog.at_level("INFO", logger="motor.coordinator.scheduler.allocate_arbitration"):
+        allocate_arbitration.log_load_balance_all_candidates(
+            instances,
+            PDRole.ROLE_P,
+            "req-1",
+            is_blocked=ctx.is_instance_circuit_open,
+            instance_score_weight=ctx.endpoint_instance_score_weight,
+            excluded_pairs={(2, 20)},
+        )
+    messages = [rec.getMessage() for rec in caplog.records if "load_balance all_candidates" in rec.getMessage()]
+    assert len(messages) == 3
+    assert all("point=2-20" not in m for m in messages)
+    assert any("point=1-10" in m for m in messages)
+    assert any("point=2-21" in m for m in messages)

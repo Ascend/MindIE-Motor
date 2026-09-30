@@ -60,11 +60,13 @@ STATUS_BAD_ARG = 8
 # Must match Rust SLOT_HINT_NONE: cas_add/cas_sub_floor0 linear-scan when the caller has no slot.
 SLOT_HINT_NONE = 0xFFFFFFFF
 # ctypes arg layout for cas_add/cas_sub/load_entries; older .so must not be bound.
-MIN_ABI_VERSION = 2
+# ABI 3: mindie_wl_load_entry gained the out_total_requests out-param (one more argument);
+# binding an older .so would pass 9 arguments to a 10-argument symbol (UB), so refuse it.
+MIN_ABI_VERSION = 3
 
 
 class _LoadedEntry(ctypes.Structure):
-    """24-byte schema-4 entry view returned by mindie_wl_load_entries."""
+    """32-byte schema-5 entry view returned by mindie_wl_load_entries."""
 
     _pack_ = 1
     _fields_ = [
@@ -73,8 +75,9 @@ class _LoadedEntry(ctypes.Structure):
         ("role", ctypes.c_uint8),
         ("flags", ctypes.c_uint8),
         ("generation", ctypes.c_uint16),
-        ("reserved", ctypes.c_uint32),
+        ("request_count", ctypes.c_uint32),
         ("active_tokens", ctypes.c_double),
+        ("total_requests", ctypes.c_uint64),
     ]
 
 
@@ -191,7 +194,9 @@ def _bind(lib: ctypes.CDLL) -> ctypes.CDLL:
         ctypes.POINTER(ctypes.c_uint8),
         ctypes.POINTER(ctypes.c_uint8),
         ctypes.POINTER(ctypes.c_uint16),
+        ctypes.POINTER(ctypes.c_uint32),
         ctypes.POINTER(ctypes.c_double),
+        ctypes.POINTER(ctypes.c_uint64),
     ]
     lib.mindie_wl_load_entries.restype = ctypes.c_int32
     lib.mindie_wl_load_entries.argtypes = [
@@ -386,13 +391,21 @@ class WorkloadShm:
         return touched.value
 
     def load_entry(self, slot: int) -> dict:
-        """Read one schema-4 entry: instance_id, endpoint_id, role, flags, generation, active_tokens."""
+        """Read one schema-5 entry.
+
+        Fields: instance_id, endpoint_id, role, flags, generation, request_count, active_tokens,
+        total_requests. ``request_count`` is the per-slot in-flight request tally (workers inc
+        on allocate, dec on release). ``total_requests`` is the cumulative allocation counter
+        (workers inc on allocate, never decremented) — the ``stat="total_cnt"`` metric source.
+        """
         iid = ctypes.c_int32(0)
         eid = ctypes.c_int32(0)
         role = ctypes.c_uint8(0)
         flags = ctypes.c_uint8(0)
         generation = ctypes.c_uint16(0)
+        request_count = ctypes.c_uint32(0)
         tokens = ctypes.c_double(0.0)
+        total_requests = ctypes.c_uint64(0)
         _check(
             self._lib.mindie_wl_load_entry(
                 self._handle,
@@ -402,7 +415,9 @@ class WorkloadShm:
                 ctypes.byref(role),
                 ctypes.byref(flags),
                 ctypes.byref(generation),
+                ctypes.byref(request_count),
                 ctypes.byref(tokens),
+                ctypes.byref(total_requests),
             ),
             "load_entry",
         )
@@ -412,7 +427,9 @@ class WorkloadShm:
             "role": role.value,
             "flags": flags.value,
             "generation": generation.value,
+            "request_count": request_count.value,
             "active_tokens": tokens.value,
+            "total_requests": total_requests.value,
         }
 
     def load_entries(self, entry_count: int) -> list[dict[str, Any]]:
@@ -437,7 +454,9 @@ class WorkloadShm:
                     "role": row.role,
                     "flags": row.flags,
                     "generation": row.generation,
+                    "request_count": row.request_count,
                     "active_tokens": row.active_tokens,
+                    "total_requests": row.total_requests,
                 }
             )
         return entries
