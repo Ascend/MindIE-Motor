@@ -4,59 +4,78 @@
 
 服务限流在 Coordinator 推理面入口限制单位时间内进入的 HTTP 请求，避免瞬时流量把调度和推理实例打满。配置位于 `user_config.json` 的 `motor_coordinator_config.rate_limit_config`，默认关闭。
 
-开启后，推理进程通过中间件处理进入推理面的请求。内置 `simple` 提供者使用全局令牌桶；`olc` 提供者使用过载控制库，按 URL、Method、IP 等标签匹配规则。请求体还可以单独设上限，超限返回 HTTP `413`，且不消耗限流令牌。
+开启后该特性后，推理进程通过中间件处理进入推理面的请求。内置两种提供者：
 
-该能力只挂在 Coordinator 推理面应用上，覆盖例如：
+| 提供者 | 实现方式 |
+|----------|------|
+| simple | 全局令牌桶 |
+| olc | 过载控制库，按 URL、Method、IP 等标签匹配规则 |
 
-- `POST /v1/completions`
-- `POST /v1/chat/completions`
-- `POST /v1/responses`
-- `POST /v1/messages`
-- `POST /v1/messages/count_tokens`
-- `GET /v1/models`
+请求体还可以单独设上限，超限返回 HTTP `413`，且不消耗限流令牌。
+
+该能力只挂在Coordinator推理面应用上，覆盖以下接口：
+
+| 提供者 | 实现方式 |
+|----------|------|
+| POST | /v1/completions |
+| POST | /v1/chat/completions |
+| POST | /v1/responses |
+| POST | /v1/messages |
+| POST | /v1/messages/count_tokens |
+| GET  | /v1/models |
 
 管理面、Controller、Node Manager 和推理引擎进程不走这套限流。
 
 ### 工作原理
 
-`simple` 使用一个全局令牌桶：
+**限流机制（simple）**
 
-```text
-桶容量     = max_requests
-填充速率   = max_requests / window_size   （令牌/秒）
-每个请求   = 消耗 1 个令牌
-初始状态   = 满桶
-```
+simple采用全局令牌桶实现限流，参数如下：
 
-令牌足够则放行，否则立即拒绝，不排队。`skip_paths` 中的路径按前缀匹配（`startswith`），命中后直接放行，不消耗令牌，也不做请求体大小检查。
+| 项目 | 说明 |
+|----------|------|
+| 桶容量 | max_requests |
+| 填充速率 | max_requests / window_size（令牌/秒） |
+| 每个请求 | 消耗1个令牌 |
+| 初始状态 | 满桶 |
 
-推理面可以按 `inference_workers_config.num_workers` 启动多个 Worker 进程，默认 `4`。每个进程各自持有一只令牌桶，桶之间不共享，拥堵告警也按进程各自上报，Coordinator 不做去重。因此单个 Coordinator 上 `simple` 限流的总通过量大约是 `max_requests × num_workers`，不是配置里的单个 `max_requests`。多个 Worker 同时接近额度时，Controller 会收到多条拥堵事件。
+判定规则：令牌足够则放行，否则立即拒绝，不排队。`skip_paths` 中的路径按前缀匹配（`startswith`），命中后直接放行，不消耗令牌，也不做请求体大小检查。
 
-`scope` 默认是 `global`。当前 `simple` 实现固定使用这一只全局桶，把 `scope` 改成其他值不会变成按 IP 或按用户限流。
+- 推理面可以按 `inference_workers_config.num_workers` 启动多个 Worker 进程，默认 `4`。每个进程各自持有一只令牌桶，桶之间不共享，拥堵告警也按进程各自上报，Coordinator 不做去重。因此单个 Coordinator 上 `simple` 限流的总通过量大约是 `max_requests × num_workers`，不是配置里的单个 `max_requests`。多个 Worker 同时接近额度时，Controller 会收到多条拥堵事件。
 
-限流检查失败时请求默认放行：`is_allowed` 抛错，或中间件调用限流器失败，都不会因为限流模块自身异常把推理面整段拒绝。
+- `scope` 默认是 `global`。当前 `simple` 实现固定使用这一只全局桶，把 `scope` 改成其他值不会变成按 IP 或按用户限流。
+
+- 限流检查失败时请求默认放行：`is_allowed` 抛错，或中间件调用限流器失败，都不会因为限流模块自身异常把推理面整段拒绝。
 
 **请求拥堵事件**
 
-`simple` 限流器在每次判定后，用已用额度 `used = max_requests - available`（容量减去当前剩余令牌）与 `max_requests` 的比例比较，并向 Controller 上报 `ReqCongestionEvent`：
+simple 限流器在每次判定后，计算已用额度 used = max_requests - available（容量减去当前剩余令牌），并与 max_requests 的比例进行比较，并向 Controller 上报 ReqCongestionEvent。
 
 | 条件 | 行为 |
 |------|------|
-| 尚未上报，且 `used >= int(max_requests × 0.85)` | 上报。Controller 接受后才置位；未接受则保持未上报 |
-| 已经上报，且 `used < int(max_requests × 0.75)` | 再上报。Controller 接受后才清除；未接受则保持已上报 |
+| 尚未上报，且 used >= int(max_requests × 0.85) | 上报一次。Controller 接受后才置位；未接受则保持未上报。 |
+| 已经上报，且 used < int(max_requests × 0.75) | 再上报一次。Controller 接受后才清除；未接受则保持已上报。 |
 
-`ControllerApiClient.report_alarms` 失败时不抛异常，返回 `ok=false`（HTTP 非 200 或传输异常）。限流器忽略过这个返回值时，状态会提前置位，Controller 恢复后也不再补报。现在只有返回 `ok` 才翻转状态。未接受时不挡住本次请求，并由之后的请求重试，间隔约 1 秒，避免 Controller 不可达时每个请求都同步打一次上报。
+- 附加信息里的数字是已用额度。空载满桶时 `used` 很小，不会告警。状态在置位后不会重复上报，直到已用额度落到 75% 阈值之下。告警按推理 Worker 进程各报各的，与上一节的独立令牌桶一致。
+事件固定参数如下：
 
-事件固定为 `alarm_id=0xFC001005`、名称 `Coordinator Request Congestion Alarm`、级别 MAJOR、`reason_id=DEALING_WITH_CONGESTION`。触发和恢复使用同一个 `reason_id`。附加信息里的数字是已用额度。空载满桶时 `used` 很小，不会告警。状态在置位后不会重复上报，直到已用额度落到 75% 阈值之下。告警按推理 Worker 进程各报各的，与上一节的独立令牌桶一致。
+  - alarm_id=0xFC001005
+  - 名称：Coordinator Request Congestion Alarm
+  - 级别：MAJOR
+  - reason_id=DEALING_WITH_CONGESTION
 
-`max_requests` 为 1、2、3、4、7、8 时，`int(max_requests × 0.85)` 与 `int(max_requests × 0.75)` 相等，触发和恢复之间没有滞回区间，已用额度在该整数附近来回时会反复上报。其中 `max_requests` 为 1 时，恢复条件是 `used < 0`，置位之后不会清除。`max_requests >= 10` 时两个整数阈值至少相差 1。
+- `ControllerApiClient.report_alarms` 失败时不抛异常，返回 `ok=false`（HTTP 非 200 或传输异常）。限流器忽略过这个返回值时，状态会提前置位，Controller 恢复后也不再补报。现在只有返回 `ok` 才翻转状态。未接受时不挡住本次请求，并由之后的请求重试，间隔约 1 秒，避免 Controller 不可达时每个请求都同步打一次上报。
+
+- `max_requests` 为 1、2、3、4、7、8 时，`int(max_requests × 0.85)` 与 `int(max_requests × 0.75)` 相等，触发和恢复之间没有滞回区间，已用额度在该整数附近来回时会反复上报。其中 `max_requests` 为 1 时，恢复条件是 `used < 0`，置位之后不会清除。`max_requests >= 10` 时两个整数阈值至少相差 1。
 
 **请求体大小**
 
-`max_request_body_size` 单位是 MB（1 MB = 1024×1024 字节），允许小数，例如 `0.5`。启动校验拒绝负数。运行时小于等于 0 表示不限制；大于 0 时，体大小检查发生在消耗令牌之前：
+`max_request_body_size` 单位是 MB（1 MB = 1024×1024 字节），允许小数，例如 `0.5`。启动校验拒绝负数。运行时小于等于 0 表示不限制；大于 0 时，体大小检查发生在消耗令牌之前。
 
-- 带有合法 `Content-Length`：按该头比较，超限直接 `413`，不预读正文。
-- 没有合法 `Content-Length`（例如 chunked）：先读实际字节，超限返回 `413`；未超限则把已读正文重放给下游。
+| 场景 | 处理方式 |
+|------|------|
+| 带有合法 `Content-Length` | 按该头比较，超限直接 `413`，不预读正文。 |
+| 无合法 `Content-Length`（例如 chunked） | 先读实际字节，超限返回 `413`；未超限则把已读正文重放给下游。 |
 
 带 `Content-Length` 且超限时，响应体为：
 
@@ -67,11 +86,15 @@
 }
 ```
 
-无 `Content-Length` 且实际字节超限时，`message` 为 `Request body size exceeds maximum (<上限字节数> bytes)`。
+无 `Content-Length` 且实际字节超限时，`message` 为：
+
+```text
+`Request body size exceeds maximum (<上限字节数> bytes)`。
+```
 
 **拒绝响应与响应头**
 
-被限流拒绝的请求不会进入调度。默认 HTTP 状态码为 `error_status_code`（`429`），响应体为：
+被限流拒绝的请求不会进入调度。默认 HTTP 状态码为 error_status_code（429），响应体为：
 
 ```json
 {
@@ -85,35 +108,45 @@
 }
 ```
 
-`simple` 在放行和拒绝的响应里都会带上：
+simple在放行和拒绝的响应里都会带上：
 
-```text
-X-RateLimit-Remaining: <剩余令牌数>
-X-RateLimit-Limit: <max_requests>
-X-RateLimit-Window: <window_size>
-```
+| 响应头 | 含义 |
+|------|------|
+| X-RateLimit-Remaining | 剩余令牌数 |
+| X-RateLimit-Limit | max_requests |
+| X-RateLimit-Window | window_size |
 
 **过载控制（provider: olc）**
 
-`provider` 为 `olc` 且 `enable_rate_limit` 为 `true` 时，启动校验要求 `olc_config_path` 指向一个已存在的目录。目录内需有 OLC 规则文件（如 `overload-config.properties`、`olc.json`），启动校验只检查目录存在，不检查这些文件是否在目录中。文件缺失时，创建 OLC 中间件会失败并回退到令牌桶。Coordinator 将该路径写入环境变量 `OLC_CONFIG_PATH`，并挂载 `OlcFastAPIAdapter`。标签提取器提供：
+当 `provider` 为 `olc` 且 `enable_rate_limit` 为 `true` 时，启动校验要求 `olc_config_path` 指向一个已存在的目录。目录内需有 OLC 规则文件（如 `overload-config.properties`、`olc.json`），启动校验只检查目录存在，不检查这些文件是否在目录中。文件缺失时，创建 OLC 中间件会失败并回退到令牌桶。
+
+Coordinator 将该路径写入环境变量 `OLC_CONFIG_PATH`，并挂载 `OlcFastAPIAdapter`。标签提取器提供以下标签：
 
 | 标签 | 来源 |
 |------|------|
 | URL | 请求路径 |
 | Method | HTTP 方法 |
-| IP | 客户端地址；取不到时为 `unknown` |
+| IP | 客户端地址，取不到时为 `unknown` |
 
 配额、并发等规则由 OLC 配置决定，见仓库示例 `examples/features/http/overload_control` 与 [OLC 文档](https://gitcode.com/openFuyao/olc-python)。
 
-OLC 中间件创建失败时，Coordinator 记录错误日志 `Using simple rate limit, Failed to create olc limit middleware`，并回退到内置令牌桶，服务仍能启动。
+OLC 中间件创建失败时，Coordinator 记录错误日志
+
+```text
+Using simple rate limit, Failed to create olc limit middleware
+```
+
+随后回退到内置令牌桶，服务仍可正常启动。
 
 **热更新**
 
-启动时已经创建 `simple` 限流器之后（`enable_rate_limit=true` 且 `provider` 为 `simple`，或 `olc` 创建失败后已回退），热更新会立即改这些字段：
+启动时已创建 simple 限流器之后（enable_rate_limit=true 且 provider 为 simple，或 olc 创建失败后已回退），热更新会立即修改以下字段：
 
-- `skip_paths`、`error_message`、`error_status_code`、`max_request_body_size`
-- `enable_rate_limit`：写入运行时开关。改为 `false` 后，后续请求直接放行，请求体大小检查也不再执行；改回 `true` 后继续走已有令牌桶
-- `max_requests`、`window_size`：先按旧速率结算桶内令牌，再更新容量和填充速率。新容量更小则截断多余令牌；容量变大则把差额立即补进桶
+| 标签 | 来源 |
+|------|------|
+| skip_paths、error_message、error_status_code、max_request_body_size | 立即生效。 |
+| enable_rate_limit | 写入运行时开关。改为 `false` 后，后续请求直接放行，请求体大小检查也不再执行；改回 `true` 后继续走已有令牌桶。 |
+| max_requests、window_size | 先按旧速率结算桶内令牌，再更新容量和填充速率。新容量更小则截断多余令牌；容量变大则把差额立即补进桶。 |
 
 配置重载要求 `max_requests` 和 `window_size` 都大于 0。等于 0 或负数不会进入令牌桶。令牌桶函数自身拒绝 `max_requests < 0` 和 `window_size <= 0`，并保持旧参数。
 
@@ -123,7 +156,7 @@ OLC 中间件创建失败时，Coordinator 记录错误日志 `Using simple rate
 - 切换 `provider`，或修改 `olc_config_path`
 - 修改 `scope`（当前实现也不读取该字段做分桶）
 
-字段清单见 [热更新配置项说明](../configuration/update_config_whitelist.md)。
+字段清单详见 [热更新配置项说明](../configuration/update_config_whitelist.md)。
 
 ### 核心功能
 
@@ -142,7 +175,7 @@ OLC 中间件创建失败时，Coordinator 记录错误日志 `Using simple rate
 | 引擎 | 与推理引擎类型无关 |
 | 特性互斥 | 无 |
 | 软件依赖 | `provider=olc` 时需要安装 [OLC](https://gitcode.com/openFuyao/olc-python)（`olc-python` v0.1.0） |
-| 其他限制 | <ul><li>`simple` 按每个推理 Worker 进程独立计数，总通过量约为 `max_requests × num_workers`</li><li>拥堵告警同样按 Worker 进程分别上报，不会在 Coordinator 内合并成一条</li><li>`max_requests` 为 1、2、3、4、7、8 时，85% 与 75% 取整后阈值相同，边界附近可能反复上报；为 1 时告警置位后不会清除</li><li>`scope` 不改变分桶方式，当前固定为进程内全局桶</li><li>启动时未开启限流时，热更新不能补装中间件</li><li>成功加载的 `olc` 不能通过热更新切换提供者或规则目录</li></ul> |
+| 其他限制 | <ul><li>`simple` 按每个推理 Worker 进程独立计数，总通过量约为 `max_requests × num_workers`。</li><li>拥堵告警同样按 Worker 进程分别上报，不会在 Coordinator 内合并成一条。</li><li>`max_requests` 为 1、2、3、4、7、8 时，85% 与 75% 取整后阈值相同，边界附近可能反复上报；为 1 时告警置位后不会清除。</li><li>`scope` 不改变分桶方式，当前固定为进程内全局桶</li><li>启动时未开启限流时，热更新不能补装中间件。</li><li>成功加载的 `olc` 不能通过热更新切换提供者或规则目录。</li></ul> |
 
 ## 特性使用
 
@@ -153,6 +186,8 @@ OLC 中间件创建失败时，Coordinator 记录错误日志 `Using simple rate
 - 需要按 URL、方法或客户端地址使用外部过载规则，而不是单一全局额度。
 
 ### 使用样例
+
+**开启服务限流**
 
 在 `motor_coordinator_config` 中增加 `rate_limit_config`。下面是内置令牌桶的最小配置，表示约每 60 秒 1000 个请求（平均约 16.7 QPS），每个推理 Worker 进程各算一份：
 
@@ -233,7 +268,9 @@ pip install git+https://gitcode.com/openFuyao/olc-python.git@v0.1.0
 
 字段定义同时见 [配置参数说明](../configuration/config_reference.md#motor_coordinator_config) 的 **rate_limit_config字段**。Kubernetes PD 分离部署里的最小开关见 [服务限流](../deployment/k8s/pd_disaggregation_deployment.md#服务限流)。
 
-关闭限流：删除 `rate_limit_config`，或设 `enable_rate_limit` 为 `false` 后重启。若启动时已经装上 `simple` 中间件，也可以热更新把 `enable_rate_limit` 改为 `false`。
+**关闭服务限流**
+
+删除 `rate_limit_config`，或设 `enable_rate_limit` 为 `false` 后重启。若启动时已经装上 `simple` 中间件，也可以热更新把 `enable_rate_limit` 改为 `false`。
 
 ### 验证特性
 

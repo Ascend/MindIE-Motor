@@ -251,7 +251,7 @@ bash delete.sh <namespace>
 
 - 默认关闭。开启后，`completions` 流式/非流式与 `chat` 非流式场景已经支持。
 - **已知限制**：流式路径依赖引擎回传 token ids 做续流。SGLang 当前对 chat 流式不支持 `return_token_ids` 与 `stream` 同时开启，导致 chat 流式重调度不可用。
-- 详见 [故障场景重调度](../../features/fault_tolerance/rescheduler.md)。
+- 详见 [请求重调度](../../features/fault_tolerance/rescheduler.md)。
 
 ### KV Cache 亲和调度（可选）
 

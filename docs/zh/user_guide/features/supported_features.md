@@ -2,13 +2,13 @@
 
 <table style="table-layout: fixed; width: 1000px">
   <colgroup>
-    <col style="width: 300px">
-    <col style="width: 300px">
-    <col style="width: 100px">
-    <col style="width: 500px">
+    <col style="width: 700px">
+    <col style="width: 600px">
+    <col style="width: 150px">
+    <col style="width: 700px">
     <col style="width: 200px">
     <col style="width: 300px">
-    <col style="width: 500px">
+    <col style="width: 700px">
     <col style="width: 800px">
   </colgroup>
   <thead>
@@ -173,7 +173,7 @@
       <td>✅</td>
       <td>✅</td>
       <td>✅</td>
-      <td><a href="./sim_inference.md">链接</a></td>
+      <td><a href="./rate_limiting.md">链接</a></td>
     </tr>
     <tr>
       <td rowspan="3">维测与安全</td>
