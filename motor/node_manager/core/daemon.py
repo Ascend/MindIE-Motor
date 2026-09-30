@@ -281,6 +281,14 @@ class Daemon(ThreadSafeSingleton):
         try:
             if engine.wait_ready(endpoints):
                 self._engine_ft_manager.resume()
+                with self._suicide_lock:
+                    # A successful relaunch ends the previous fault episode.
+                    # Clear its freeze and endpoint-report dedup atomically so
+                    # a subsequent ABNORMAL observation starts a new episode.
+                    self._suicide_freeze_until = 0.0
+                    self._suicide_abnormal_count = 0
+                    self._should_suicide = False
+                    self._reported_abnormal_ep_ids.clear()
             else:
                 logger.error("Relaunched engines did not become ready; Engine FT polling remains paused")
         except Exception:
