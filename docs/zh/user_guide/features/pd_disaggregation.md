@@ -1,18 +1,47 @@
-# PD分离说明
+# PD 分离
 
-## 什么是PD分离？
+## 特性介绍
 
-**PD 分离**（Prefill & Decode 分离）将大语言模型推理的预填充（Prefill）与解码（Decode）两个阶段拆分到不同实例上运行，适用于对时延和吞吐要求较高的场景。通过 PD 分离可提高 NPU 利用率，减轻 Prefill 与 Decode 分时复用带来的相互干扰，在相同时延下提升整体吞吐。
+PD分离（Prefill & Decode 分离）将大语言模型推理的两个阶段部署到不同实例上，使各阶段按自身资源特征独立运行。
 
-两个推理阶段的含义如下：
+- **Prefill（P）**：对输入prompt执行一次完整前向计算，生成该序列的KV Cache。该阶段计算密集，每个新请求均需执行一次。
+- **Decode（D）**：接收P传来的KV Cache，逐步生成后续token。单步计算量小，但需反复执行直至生成结束，主要消耗访存带宽。
 
-- **Prefill 阶段**：对输入 prompt 执行一次完整前向传播，生成初始隐藏状态（Hidden States），**计算密集型**；每个新输入序列都需执行一次 Prefill。
-- **Decode 阶段**：基于 Prefill 结果逐步生成后续 token，每步仅计算最新 token 的激活与 attention，单步计算量较小，但需反复执行直至生成结束，**访存密集型**（以 KV Cache 等内存访问为主）。
+PD混部时，P与D共用一张卡，新请求的Prefill会中断正在进行的Decode。分离之后，P可持续处理新请求，D可持续输出token，算力与带宽按阶段分别配置，在同等时延目标下通常获得更高吞吐。
 
-本仓库采用**多机 PD 分离**部署方案：通过 K8s Service 为 Coordinator 暴露推理入口，使用多个 Deployment 分别部署 Controller（单 Pod）、Coordinator（单 Pod）以及 Server（P 实例与 D 实例各若干 Pod）。Controller 负责集群与实例管理，Coordinator 接收用户请求并调度至 P/D 实例，由 P 实例与 D 实例协同完成一次完整推理。
+### 工作原理
 
-## PD 分离的主要优势有哪些？
+MindIE Motor中的PD分离调度与实例角色能力，由Coordinator统一编排，并非某一引擎的特有开关。集群中同时存在健康的Prefill、Decode实例时，Coordinator按PD分离路径选择一对P/D，再按引擎协议完成一次请求。
 
-- **资源利用更优**：Prefill 为计算密集型、Decode 为访存密集型，特性不同，分离部署可更充分利用 NPU 的计算与带宽资源。
-- **吞吐能力提升**：Prefill 处理新请求的同时，Decode 可持续处理已有请求的解码，整体处理能力更高。
-- **时延更可控**：两阶段分离可减少排队与等待，尤其在高并发场景下有助于降低时延。
+一次请求的角色分工具体如下所示：
+
+![PD 分离请求路径](../../imgs/pd_disaggregation_infer_flow.png)
+
+1. **入口**：客户端请求仅发送至Coordinator。Controller负责实例注册、健康检测与生命周期管理，不参与单请求转发。
+2. **选路**：Coordinator依据当前可用实例的角色，选择一对Prefill与Decode实例。
+3. **Prefill**：Prefill实例对prompt执行完整前向计算，生成该序列的KV Cache。
+4. **KV 传输**：Prefill至Decode的KV Cache由引擎侧Connector完成传输。Coordinator仅负责选定实例并注入握手元数据，不承担KV数据搬运。
+5. **Decode**：Decode实例按token逐步解码，生成结果经Coordinator返回客户端。
+
+### 特性收益
+
+- **资源按阶段配置**：Prefill偏重算力，Decode偏重带宽，可依据角色选择卡型与并行度，例如Prefill部署于PR、Decode部署于DT。
+- **吞吐提升**：Prefill持续接收新请求的同时，Decode持续解码已有请求，两者不再争用同一条流水线。
+- **时延更可控**：高并发场景下，避免Prefill中断Decode所造成的排队等待。
+
+### 约束与限制
+
+| 约束维度 | 要求 |
+|----------|------|
+| 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li><li>Ascend 950PR&950DT系列产品</li></ul> |
+| 部署场景 | 支持K8s、Docker两种部署形态。 |
+| 引擎 | 支持vLLM与SGLang。 |
+| 特性互斥 | <ul><li>K8s部署支持当前代码仓所有特性。</li><li>Docker only仅支持整服务级RAS监控、虚推健康探测、引擎重拉、PD分离降级混部、D2D权重直传、故障请求重调度、故障实例熔断、精度异常检测等RAS特性。</li></ul> |
+| 软件依赖 | <ul><li>K8s部署依赖Ascend HDK、Docker、Kubernetes与MindCluster。</li><li>Docker部署依赖Ascend HDK与Docker。</li></ul> |
+
+## 特性使用
+
+PD分离服务的部署以及更多详细内容请参见：
+
+- **K8s**：依赖较重，可使用Motor全部能力。RAS（高可靠、高可用）能力在出现软硬件故障时极大降低业务损失；优秀的请求调度能力（KV亲和性调度+KV Cache池化管理），明显提升推理性能。参见[PD分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md)。
+- **Docker**：依赖较轻，可使用Motor的负载均衡能力（KV亲和性调度与池化），明显提升推理性能。参见[基于Docker的服务部署](../deployment/docker/single_container.md)。

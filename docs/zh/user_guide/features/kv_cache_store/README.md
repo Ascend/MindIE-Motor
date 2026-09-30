@@ -416,7 +416,7 @@ UCM 样例中仍存在 `backend: "mooncake"` 配置。
 
 **原因分析**
 
-这是当前 PyMotor deployer 用来生成 Mooncake kv_store/master 资源的配置，不是 UCM 的存储后端。UCM 的实际 Store 由 `UCMConnector` 中的 `store_pipeline` 决定。
+这是当前 Motor deployer 用来生成 Mooncake kv_store/master 资源的配置，不是 UCM 的存储后端。UCM 的实际 Store 由 `UCMConnector` 中的 `store_pipeline` 决定。
 
 **解决步骤**
 

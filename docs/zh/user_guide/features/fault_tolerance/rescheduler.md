@@ -1,4 +1,4 @@
-# 故障场景重调度
+# 故障实例自动重启
 
 ## 特性介绍
 
@@ -26,8 +26,8 @@
 | --- | --- |
 | 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li><li>Ascend 950PR系列产品</li></ul> |
 | 部署场景 | 支持P/D分离路由和P/D混部路由。故障发生后必须仍有满足调度条件的健康实例，否则请求无法完成重调度。 |
-| 推理引擎 | 支持vLLM和SGLang。输出响应体之前的请求重试适用于两种引擎；流式请求已输出内容后的Token续推，还要求引擎支持`return_token_ids`，并在响应中返回`prompt_token_ids`和`choices[].token_ids`。Chat Completions续推还要求引擎的`/v1/completions`接口支持以Token ID列表作为`prompt`。 |
-| 请求类型 | 输出后的续推仅适用于流式请求。支持普通文本的Completions请求，以及可转换为Completions格式的Chat Completions请求。并行采样参数`n`必须为`1`。当前续推实现依赖`choices[].token_ids`，不适用于不返回该结构的原生SSE事件，例如`/v1/responses`的流式事件。 |
+| 推理引擎 | 支持vLLM和SGLang。<br>输出响应体之前的请求重试适用于两种引擎；流式请求已输出内容后的Token续推，还要求引擎支持`return_token_ids`，并在响应中返回`prompt_token_ids`和`choices[].token_ids`。Chat Completions续推还要求引擎的`/v1/completions`接口支持以Token ID列表作为`prompt`。 |
+| 请求类型 | 输出后的续推仅适用于流式请求。<ul><li>支持普通文本的Completions请求，以及可转换为Completions格式的Chat Completions请求。</li><li>并行采样参数`n`必须为`1`。</li><li>当前续推实现依赖`choices[].token_ids`。</li><li>不适用于不返回该结构的原生SSE事件，例如`/v1/responses`的流式事件。</li></ul> |
 | Chat Completions请求 | 不支持在输出后续推包含`tools`、`logprobs`、`top_logprobs`、非文本多模态内容或非文本`response_format`的请求。续推会移除Chat专用字段，因此工具调用、函数调用、结构化输出等依赖Chat语义的请求不应开启输出后续推。 |
 | 故障范围 | 仅对节点故障、可重试的传输异常等场景执行重调度。客户端主动取消、不可重试的引擎错误以及已经正常结束的流不会触发续推。并非所有超时或业务错误都可以通过重调度恢复。 |
 | 资源占用 | 开启后，Coordinator会在流式请求生命周期内缓存请求体、输入Token ID和输出Token ID。需要根据最大并发数、上下文长度和请求体大小预留内存。 |
@@ -44,12 +44,12 @@
 
 故障场景重调度功能使用[user_config.json](../../configuration/config_reference.md#motor_coordinator_config)配置文件中的以下参数：
 
-- `reschedule_config.enable`：是否开启流式请求输出后的Token续推，默认为`false`。
-  - `false`：关闭输出后的Token续推。
-  - `true`：开启输出后的Token续推。
-- `transport_max_retry`：传输请求的最大尝试次数，包含首次请求。当配置为`null`时使用`max_retry`。
-- `max_retry`：`transport_max_retry`为`null`时使用的最大尝试次数，默认值为`5`。
-- `retry_delay`：第一次重试前的等待时间，单位为秒。后续重试采用指数退避，第`i`次重试前等待`retry_delay × 2^(i-1)`秒。
+- reschedule_config.enable：是否开启流式请求输出后的Token续推，默认为`false`。
+  - false：关闭输出后的Token续推。
+  - true：开启输出后的Token续推。
+- transport_max_retry：传输请求的最大尝试次数，包含首次请求。当配置为`null`时使用`max_retry`。
+- max_retry：`transport_max_retry`为`null`时使用的最大尝试次数，默认值为`5`。
+- retry_delay：第一次重试前的等待时间，单位为秒。后续重试采用指数退避，第`i`次重试前等待`retry_delay × 2^(i-1)`秒。
 
 例如，`transport_max_retry`为`5`时，一个请求最多尝试5次，即首次请求失败后最多再重调度4次。
 
