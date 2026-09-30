@@ -21,7 +21,10 @@ from motor.node_manager.core.services.native_engine.virtual_inference.ai_cube im
     is_ai_cube_usage_watch_supported,
 )
 from motor.common.utils.net import format_address
-from motor.node_manager.core.services.native_engine.virtual_inference.requesters import VllmCompletionsRequester
+from motor.node_manager.core.services.native_engine.virtual_inference.requesters import (
+    VllmCompletionsRequester,
+    VllmMetricsRequester,
+)
 from motor.node_manager.core.services.native_engine.virtual_inference.spec import VirtualInferenceSpec
 
 logger = get_logger(__name__)
@@ -45,6 +48,7 @@ class VirtualInferenceWorker:
             raise ValueError(f"Unsupported engine type for virtual inference: {spec.engine_type}")
         self._spec = spec
         self._requester: VllmCompletionsRequester = VllmCompletionsRequester(spec)
+        self._metrics_requester = VllmMetricsRequester()
         self._lock = threading.Lock()
         self._abnormal_lock = threading.Lock()
         self._is_abnormal = False
@@ -276,25 +280,41 @@ class VirtualInferenceWorker:
                         self._sim_sleep = _VIRTUAL_LOOP_INTERVAL_SEC
 
                 if ai_cube_available and max_usage < self._spec.npu_usage_threshold and not sim_inference_success:
-                    logger.warning(
-                        "AI Cube usage (%s%%) < threshold (%s%%) and virtual request failed for endpoint %s",
-                        max_usage,
-                        self._spec.npu_usage_threshold,
-                        self._spec.endpoint_id,
-                    )
-                    new_count = self._increment_failure_count()
-                    logger.warning(
-                        "Current failure count: %s/%s for endpoint %s",
-                        new_count,
-                        self._spec.max_failure_count,
-                        self._spec.endpoint_id,
-                    )
-                    if new_count >= self._spec.max_failure_count:
+                    capacity_waiting = await self._get_capacity_waiting_requests_safe(timeout)
+                    if capacity_waiting is None:
                         logger.warning(
-                            "Reach maximum failure count for endpoint %s, set abnormal status",
+                            "Virtual request failed with low AI Cube usage, but capacity-waiting metric is "
+                            "unavailable; skip failure count for endpoint %s",
                             self._spec.endpoint_id,
                         )
-                        self.set_abnormal_status()
+                    elif capacity_waiting > 0:
+                        logger.info(
+                            "Virtual request failed with low AI Cube usage, but %s request(s) are waiting for "
+                            "capacity; skip failure count for endpoint %s",
+                            capacity_waiting,
+                            self._spec.endpoint_id,
+                        )
+                    else:
+                        logger.warning(
+                            "AI Cube usage (%s%%) < threshold (%s%%), virtual request failed, and no request is "
+                            "waiting for capacity on endpoint %s",
+                            max_usage,
+                            self._spec.npu_usage_threshold,
+                            self._spec.endpoint_id,
+                        )
+                        new_count = self._increment_failure_count()
+                        logger.warning(
+                            "Current failure count: %s/%s for endpoint %s",
+                            new_count,
+                            self._spec.max_failure_count,
+                            self._spec.endpoint_id,
+                        )
+                        if new_count >= self._spec.max_failure_count:
+                            logger.warning(
+                                "Reach maximum failure count for endpoint %s, set abnormal status",
+                                self._spec.endpoint_id,
+                            )
+                            self.set_abnormal_status()
                 elif not sim_inference_success and not ai_cube_available:
                     logger.warning(
                         "Virtual request failed but AI Cube usage unavailable, skip failure count for endpoint %s",
@@ -373,6 +393,20 @@ class VirtualInferenceWorker:
         except Exception as e:  # pylint: disable=broad-except
             logger.error("Unexpected error in virtual request for endpoint %s: %s", self._spec.endpoint_id, e)
             raise
+
+    async def _get_capacity_waiting_requests_safe(self, timeout: httpx.Timeout) -> float | None:
+        """Fetch capacity pressure; unavailable metrics must never make an endpoint abnormal."""
+        try:
+            if self._client is None or self._client.is_closed:
+                return None
+            return await self._metrics_requester.get_capacity_waiting_requests(self._client, timeout)
+        except Exception as e:  # pylint: disable=broad-except
+            logger.warning(
+                "Failed to read capacity-waiting metric for endpoint %s: %s",
+                self._spec.endpoint_id,
+                e,
+            )
+            return None
 
     def _close_http_client_on_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         if self._client is None or self._client.is_closed:
