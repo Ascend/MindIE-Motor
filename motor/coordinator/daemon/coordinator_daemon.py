@@ -48,10 +48,6 @@ from motor.common.logger import get_logger
 logger = get_logger(__name__)
 
 
-def _in_kubernetes() -> bool:
-    return bool(os.getenv("KUBERNETES_SERVICE_HOST") or os.getenv("POD_NAMESPACE"))
-
-
 class CoordinatorDaemon:
     """Coordinator daemon: starts and monitors Mgmt / Obs / Infer processes.
 
@@ -163,21 +159,10 @@ class CoordinatorDaemon:
             self._report_coordinator_to_slave_event()
 
     def _on_become_standby(self) -> None:
-        """A running master lost the etcd lock (NIC isolation or etcd unreachable).
-
-        On Kubernetes, exit so kubelet drops this pod from the inference Service.
-        Outside Kubernetes there is no kubelet restart, so stay up as standby.
-        """
-        if _in_kubernetes():
-            if self._role_shm_holder is not None:
-                self._write_role_shm_byte(ROLE_SHM_ISOLATED)
-            logger.warning(
-                "Master lock lost; exiting so kubelet removes this pod from the inference Service immediately"
-            )
-            os._exit(1)
+        """Called when this node becomes standby: write role shm (if any), then stop Inference only."""
         if self._role_shm_holder is not None:
             self._write_role_shm_byte(ROLE_SHM_STANDBY)
-        logger.warning("Master lock lost; remaining as standby outside Kubernetes")
+        self._stop_all_processes(exclude_processes={PROCESS_KEY_MGMT, PROCESS_KEY_OBS})
 
     def _on_master_lock_unhealthy(self) -> None:
         """First renew miss: fail readiness now as an early Service-removal signal.
