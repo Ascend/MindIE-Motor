@@ -41,12 +41,13 @@ vLLM 引擎按 `kv_connector` 名称（大小写不敏感）推导 capability，
 | `kv_connector` | 推导出的 capability |
 |----------------|---------------------|
 | `MooncakeConnectorV1` | `prefill_handoff_decode` |
+| `MooncakeConnectorV2` | `prefill_handoff_decode` |
 | `MooncakeHybridConnector` | `prefill_handoff_decode` |
 | `NixlConnector` | `prefill_handoff_decode` |
 | `MooncakeLayerwiseConnector` | `concurrent_engine_sync` |
 | `MultiConnector` | 取 `kv_connector_extra_config.connectors[0]`（传输连接器，要求至少 2 个）递归判定 |
 
-> `MooncakeConnectorV1` 适用于标准 attention 模型；混合 attention 模型（V4 系列）须用 `MooncakeHybridConnector`。详见 [KV 池化 Connector 选型](../user_guide/features/kv_cache_store/README.md#pd-传输-connector-选型)。
+> `MooncakeConnectorV1`、`MooncakeConnectorV2` 均仅适用于标准 attention 模型；混合 attention 模型（V4 系列）须用 `MooncakeHybridConnector`。详见 [KV 池化 Connector 选型](../user_guide/features/kv_cache_store/README.md#table_Connector)。
 
 - **`MultiConnector` 只看 `connectors[0]`（传输层）**。KV 池/存储类连接器（如 `AscendStoreConnector`、`MooncakeConnectorStoreV1`、`UCMConnector`、`LMCacheAscendConnector`）一般作为 `connectors[1]` 的后端使用，不参与 capability 判定，因此**无需**出现在白名单中。
 - 不在上表内、且 `connectors[0]` 也无法识别的连接器会被判为 `unknown`，**不产生任何 capability**。

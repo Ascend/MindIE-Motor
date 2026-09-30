@@ -141,7 +141,7 @@ def test_backend_prepares_command_and_probe_from_one_endpoint_config():
 
 @pytest.mark.parametrize(
     "connector",
-    ["MooncakeConnectorV1", "MooncakeHybridConnector", "NixlConnector"],
+    ["MooncakeConnectorV1", "MooncakeConnectorV2", "MooncakeHybridConnector", "NixlConnector"],
 )
 def test_vllm_backend_accepts_frozen_handoff_connector_whitelist(connector):
     context = _context()
