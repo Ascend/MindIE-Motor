@@ -180,7 +180,7 @@ P/D 实例出现异常时，重启推理实例，避免实例长时间处于异�
   上述配置表示 60 秒内最多处理 10000 条请求。
 
 - **关闭**：删除 `rate_limit_config` 配置块，或将 `enable_rate_limit` 设为 `false`。
-- **注意**：字段详细说明请参见[motor_coordinator_config](../../configuration/config_reference.md#motor_coordinator_config)中的**rate_limit_config字段**。
+- **注意**：行为与配置见 [服务限流](../../features/rate_limiting.md)。字段说明同时见 [motor_coordinator_config](../../configuration/config_reference.md#motor_coordinator_config) 中的 **rate_limit_config字段**。
 
 ### 原生引擎健康探测
 

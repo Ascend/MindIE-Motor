@@ -8,10 +8,11 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-"""Tests for TokenBucket and SimpleRateLimiter parameter hot reload."""
+"""Tests for TokenBucket and SimpleRateLimiter hot reload and congestion alarm."""
 
 import threading
 import time
+from unittest.mock import patch
 
 from motor.coordinator.middleware.rate_limiter import TokenBucket, SimpleRateLimiter
 from motor.coordinator.middleware.fastapi_middleware import RateLimitConfigHolder
@@ -182,3 +183,156 @@ def test_rate_limit_config_holder_update_rate_limiter_config():
     assert holder.rate_limiter.window_size == 30
     assert holder.rate_limiter._bucket.capacity == 20
     assert holder.rate_limiter._bucket.refill_rate == 20 / 30
+
+
+def _frozen_clock(start: float = 1_000_000.0):
+    """Return a mutable clock and a ``time.time`` replacement that does not refill on its own."""
+    now = {"t": start}
+
+    def _time() -> float:
+        return now["t"]
+
+    return now, _time
+
+
+@patch("motor.coordinator.api_client.controller_api_client.ControllerApiClient.report_alarms")
+def test_idle_full_bucket_does_not_report_congestion(mock_report):
+    """A full bucket means low load; remaining tokens must not trigger congestion."""
+    mock_report.return_value = {"ok": True}
+    limiter = SimpleRateLimiter(max_requests=100, window_size=60)
+
+    allowed, _ = limiter.is_allowed()
+
+    assert allowed is True
+    mock_report.assert_not_called()
+
+
+@patch("motor.coordinator.api_client.controller_api_client.ControllerApiClient.report_alarms")
+def test_congestion_alarm_fires_when_used_capacity_reaches_85_percent(mock_report):
+    """Alarm uses used=max_requests-available, so it fires only after most tokens are consumed."""
+    mock_report.return_value = {"ok": True}
+    _now, clock = _frozen_clock()
+    with patch("motor.coordinator.middleware.rate_limiter.time.time", clock):
+        limiter = SimpleRateLimiter(max_requests=100, window_size=3600)
+
+        for _ in range(84):
+            allowed, _ = limiter.is_allowed()
+            assert allowed is True
+        assert mock_report.call_count == 0
+
+        allowed, info = limiter.is_allowed()
+
+        assert allowed is True
+        used = limiter.max_requests - info["available"]
+        assert used >= 85
+        assert mock_report.call_count == 1
+        payload = mock_report.call_args[0][0]
+        assert f"is {used}," in payload["additional_information"]
+
+        limiter.is_allowed()
+        assert mock_report.call_count == 1
+
+
+@patch("motor.coordinator.api_client.controller_api_client.ControllerApiClient.report_alarms")
+def test_congestion_clears_when_used_capacity_falls_below_75_percent(mock_report):
+    """Recovery follows used capacity dropping below 75%, not remaining-token fullness."""
+    mock_report.return_value = {"ok": True}
+    now, clock = _frozen_clock()
+    with patch("motor.coordinator.middleware.rate_limiter.time.time", clock):
+        limiter = SimpleRateLimiter(max_requests=100, window_size=3600)
+        for _ in range(85):
+            limiter.is_allowed()
+        assert mock_report.call_count == 1
+
+        # 85 consumes leave 15 tokens. Refill 12, then the next request consumes 1,
+        # so available is 26 and used is 74, below the 75% clear line.
+        refill_rate = limiter.max_requests / limiter.window_size
+        now["t"] += 12 / refill_rate + 1
+        allowed, info = limiter.is_allowed()
+
+    assert allowed is True
+    assert mock_report.call_count == 2
+    used = limiter.max_requests - info["available"]
+    assert used < 75
+    payload = mock_report.call_args[0][0]
+    assert f"is {used}," in payload["additional_information"]
+
+
+@patch("motor.coordinator.middleware.rate_limiter.DEFAULT_REQ_CONGESTION_REPORT_RETRY_SECONDS", 0)
+@patch("motor.coordinator.api_client.controller_api_client.ControllerApiClient.report_alarms")
+def test_congestion_report_error_does_not_block_request(mock_report):
+    """A raised report must not reject a request that still has tokens, and must not latch."""
+    mock_report.side_effect = [RuntimeError("controller unavailable"), {"ok": True}]
+    _now, clock = _frozen_clock()
+    with patch("motor.coordinator.middleware.rate_limiter.time.time", clock):
+        limiter = SimpleRateLimiter(max_requests=100, window_size=3600)
+        for _ in range(84):
+            limiter.is_allowed()
+        assert mock_report.call_count == 0
+
+        allowed, info = limiter.is_allowed()
+
+        assert allowed is True
+        assert info["allowed"] is True
+        assert mock_report.call_count == 1
+
+        limiter.is_allowed()
+        assert mock_report.call_count == 2
+        limiter.is_allowed()
+        assert mock_report.call_count == 2
+
+
+@patch("motor.coordinator.middleware.rate_limiter.DEFAULT_REQ_CONGESTION_REPORT_RETRY_SECONDS", 0)
+@patch("motor.coordinator.api_client.controller_api_client.ControllerApiClient.report_alarms")
+def test_congestion_report_not_accepted_does_not_latch(mock_report):
+    """``report_alarms`` returns ok=False instead of raising; that must not stick the sent flag."""
+    mock_report.side_effect = [{"ok": False}, {"ok": True}]
+    _now, clock = _frozen_clock()
+    with patch("motor.coordinator.middleware.rate_limiter.time.time", clock):
+        limiter = SimpleRateLimiter(max_requests=100, window_size=3600)
+        for _ in range(85):
+            limiter.is_allowed()
+        assert mock_report.call_count == 1
+
+        limiter.is_allowed()
+        assert mock_report.call_count == 2
+        limiter.is_allowed()
+        assert mock_report.call_count == 2
+
+
+@patch("motor.coordinator.api_client.controller_api_client.ControllerApiClient.report_alarms")
+def test_rejected_congestion_report_is_not_retried_on_the_next_request(mock_report):
+    """A down Controller must not add another synchronous report to every following request."""
+    mock_report.return_value = {"ok": False}
+    mono = {"t": 10.0}
+    _now, clock = _frozen_clock()
+    with (
+        patch("motor.coordinator.middleware.rate_limiter.time.time", clock),
+        patch("motor.coordinator.middleware.rate_limiter.time.monotonic", lambda: mono["t"]),
+    ):
+        limiter = SimpleRateLimiter(max_requests=100, window_size=3600)
+        for _ in range(85):
+            limiter.is_allowed()
+        assert mock_report.call_count == 1
+
+        limiter.is_allowed()
+        assert mock_report.call_count == 1
+
+        mono["t"] += 1.0
+        limiter.is_allowed()
+        assert mock_report.call_count == 2
+
+
+@patch("motor.coordinator.api_client.controller_api_client.ControllerApiClient.report_alarms")
+def test_congestion_report_error_does_not_allow_a_rejected_request(mock_report):
+    """Report failure must not turn a token rejection into an allow."""
+    mock_report.side_effect = RuntimeError("controller unavailable")
+    _now, clock = _frozen_clock()
+    with patch("motor.coordinator.middleware.rate_limiter.time.time", clock):
+        limiter = SimpleRateLimiter(max_requests=1, window_size=3600)
+        assert limiter.is_allowed()[0] is True
+
+        allowed, info = limiter.is_allowed()
+
+    assert allowed is False
+    assert info["allowed"] is False

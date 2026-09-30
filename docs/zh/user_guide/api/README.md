@@ -139,4 +139,4 @@ Controller 观测接口提供模型服务清单与告警等运维观测数据（
     - 对 `/v1/completions`、`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/messages/count_tokens` 生效
     - Header 名称：`api_key_config.header_name`（默认 `Authorization`）
     - 前缀：`api_key_config.key_prefix`（默认 `Bearer`）
-- 限流（可选）：`rate_limit_config.enable_rate_limit=true` 时启用，超限返回 `429`
+- 限流（可选）：`rate_limit_config.enable_rate_limit=true` 时启用，超限返回 `429`。机制与配置见 [服务限流](../features/rate_limiting.md)
