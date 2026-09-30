@@ -492,6 +492,40 @@ def test_restart_engine_relaunches_engines_in_place(mock_popen, daemon, endpoint
     assert "[ENGINE RELAUNCH #1] instance_id=1" in capsys.readouterr().out
 
 
+def test_successful_relaunch_allows_same_endpoint_fault_to_be_reported_again(daemon):
+    """A relaunch ends the old fault episode even when recovery happened during the freeze window."""
+    engine = MagicMock()
+    engine.wait_ready.return_value = True
+    daemon._engine_ft_manager = MagicMock()
+    daemon._instance_id = 7
+    daemon._seen_normal_ep_ids.add(0)
+    daemon._reported_abnormal_ep_ids.add(0)
+
+    with patch("motor.node_manager.core.daemon.time.monotonic", return_value=1000.0):
+        daemon.freeze_suicide(720)
+
+    daemon._finish_engine_restart(engine, [Endpoint(id=0, ip="10.0.0.1", business_port="9000")])
+    assert not daemon.is_suicide_frozen()
+
+    with (
+        patch("motor.node_manager.core.daemon.HeartbeatManager") as heartbeat_cls,
+        patch("motor.node_manager.core.daemon.ControllerApiClient") as controller_cls,
+    ):
+        heartbeat = heartbeat_cls.return_value
+        heartbeat.endpoints_generation.return_value = 0
+        heartbeat.is_within_grace_period.return_value = False
+        heartbeat.normal_endpoint_ids.return_value = []
+        heartbeat.has_abnormal_endpoints.return_value = True
+        heartbeat.abnormal_endpoint_ids.return_value = [0]
+        controller_cls.report_software_fault.return_value = True
+        daemon._last_endpoints_generation = 0
+
+        daemon._check_suicide_condition()
+
+    controller_cls.report_software_fault.assert_called_once()
+    assert daemon.is_suicide_frozen()
+
+
 @pytest.mark.parametrize(
     "prepare,error",
     [

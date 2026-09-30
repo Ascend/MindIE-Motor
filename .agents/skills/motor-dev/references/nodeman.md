@@ -47,7 +47,9 @@ NodeManager (Application)
 │       (in-progress flag, EngineRestartInProgressError on overlap), resolves
 │       launch params from RegisterManager (EngineRestartParamError on
 │       missing/mismatch), freezes suicide (unfreezes on failure), pauses the
-│       EngineFtManager for the relaunch window and resumes after
+│       EngineFtManager for the relaunch window and resumes after readiness;
+│       successful readiness ends the old fault episode by unfreezing suicide
+│       and clearing endpoint-report dedup so a later failure is reported again
 │     EngineFtManager (owned here, third monitoring source): started in
 │       pull_engine only when explicitly enabled or the current role engine
 │       advertises FT capability; stopped in stop(), (re)configured in update_config
