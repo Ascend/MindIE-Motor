@@ -27,6 +27,13 @@ def test_classify_vllm_dispatch_profile_handoff():
     assert classify_vllm_dispatch_profile(config) == DispatchProfile.HANDOFF
 
 
+def test_classify_vllm_dispatch_profile_mooncake_v2_handoff_with_decode_colocation():
+    # MooncakeConnectorV2 is the pull-based successor of V1 and keeps the handoff contract.
+    config = {"kv_transfer_config": {"kv_connector": "MooncakeConnectorV2", "kv_role": "kv_producer"}}
+    assert classify_vllm_dispatch_profile(config) == DispatchProfile.HANDOFF
+    assert supports_vllm_decode_colocation(config) is True
+
+
 def test_classify_vllm_dispatch_profile_ascend_multi_connector_follows_transport():
     # vLLM-Ascend wraps PD transport in AscendMultiConnector; classify by connectors[0].
     config = {

@@ -77,11 +77,11 @@ P/D传输Connector选型如下表所示：
 
 | 模型 attention 架构 | `connectors[0]` | 典型模型 |
 |---------------------|-----------------|----------|
-| 标准 attention | `MooncakeConnectorV1` | Qwen3、GLM-5、DeepSeek V3.1 |
+| 标准 attention | `MooncakeConnectorV1` / `MooncakeConnectorV2` | Qwen3、GLM-5、DeepSeek V3.1 |
 | 混合 attention | `MooncakeHybridConnector` | DeepSeek V4 / V4 Flash / V4 Pro |
 
 >[!WARNING] 注意
-> 混合attention模型误配置为 `MooncakeConnectorV1` 时，Decode节点可能在推理时崩溃重启。
+> `MooncakeConnectorV1` 与 `MooncakeConnectorV2` 仅支持标准 attention 模型；混合attention模型误配后，Decode节点可能在推理时崩溃重启。
 
 1. 在 `user_config.json` 配置文件中，分别在 P 实例的 `motor_engine_prefill_config` 字段和 D 实例的 `motor_engine_decode_config` 字段下，为 `engine_config` 配置 **kv_transfer_config** 字段。
 

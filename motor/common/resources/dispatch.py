@@ -39,6 +39,7 @@ class DispatchProfile(str, Enum):
 _VLLM_HANDOFF_CONNECTORS = frozenset(
     {
         "mooncakeconnectorv1",
+        "mooncakeconnectorv2",
         "mooncakehybridconnector",
         "nixlconnector",
     }
