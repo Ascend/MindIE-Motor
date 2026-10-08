@@ -1,0 +1,101 @@
+{
+  "version": "v2.0",
+  "motor_deploy_config": {
+    "hardware_type": "800I-A3",
+    "deploy_mode": "single_container",
+    "hybrid_instances_num": 1,
+    "single_hybrid_instance_pod_num": 1,
+    "hybrid_pod_npu_num": 1
+  },
+  "motor_controller_config": {
+    "api_config": {
+      "controller_api_host": "127.0.0.1",
+      "controller_api_dns": "127.0.0.1",
+      "controller_api_port": 2026,
+      "observability_api_port": 2027
+    },
+    "fault_tolerance_config": {
+      "enable_fault_tolerance": false
+    },
+    "standby_config": {
+      "enable_master_standby": false
+    },
+    "etcd_config": {
+      "enable_etcd_persistence": false
+    }
+  },
+  "motor_coordinator_config": {
+    "api_config": {
+      "coordinator_api_host": "127.0.0.1",
+      "coordinator_api_dns": "127.0.0.1",
+      "coordinator_api_infer_dns": "127.0.0.1",
+      "coordinator_api_obs_dns": "127.0.0.1",
+      "coordinator_api_infer_port": 1025,
+      "coordinator_api_mgmt_port": 1026,
+      "coordinator_obs_port": 1027
+    },
+    "inference_workers_config": {
+      "num_workers": 1,
+      "worker_metaserver_base_port": 0
+    },
+    "scheduler_config": {
+      "prefill_scheduler_type": "load_balance",
+      "decode_scheduler_type": "load_balance"
+    },
+    "render_config": {
+      "enable": false
+    },
+    "standby_config": {
+      "enable_master_standby": false
+    },
+    "etcd_config": {
+      "enable_etcd_persistence": false
+    }
+  },
+  "motor_engine_union_config": {
+    "engine_type": "xllm",
+    "enable_multi_endpoints": true,
+    "motor_nodemanger_config": {
+      "api_config": {
+        "pod_ip": "127.0.0.1",
+        "node_manager_port": 3026
+      },
+      "endpoint_config": {
+        "base_port": 8000
+      },
+      "basic_config": {
+        "heartbeat_interval_seconds": 1
+      }
+    },
+    "health_check_config": {
+      "startup_timeout": 1800
+    },
+    "engine_config": {
+      "model": "/mnt/models/Qwen3-8B",
+      "model_id": "Qwen3-8B",
+      "backend": "llm",
+      "max_model_len": 4096,
+      "dp_size": 1,
+      "block_size": 128,
+      "max_cache_size": 268435456,
+      "host_blocks_factor": 4,
+      "enable_prefix_cache": true,
+      "num_speculative_tokens": 0,
+      "enable_graph": false,
+      "max_seqs_per_batch": 1,
+      "max_tokens_per_batch": 512,
+      "enable_schedule_overlap": false,
+      "enable_shm": true
+    }
+  },
+  "kv_conductor_config": {
+    "conductor_service": "127.0.0.1",
+    "http_server_port": 13333,
+    "store_backend": "xllm",
+    "block_size": 128,
+    "re_register_interval_sec": 5,
+    "xllm_event_port_offset": 10000,
+    "xllm_pool_port_offset": 20000,
+    "xllm_replay_port_offset": 30000
+  }
+}

@@ -899,6 +899,24 @@ http_request_duration_seconds_created{handler="/v1/chat/completions",method="POS
         query_metrics.assert_called_once_with("[2001:db8::7]:8007", self.config.infer_tls_config)
         assert result["endpoints"][7]["metrics_str"] == "# TYPE ready gauge\nready 1"
 
+    @_test_without_background_thread
+    @patch.object(NativeEngineApiClient, "query_metrics", return_value="# TYPE ready gauge\nready 1")
+    def test_xllm_does_not_scrape_vllm_metrics_in_a_mixed_cluster(self, query_metrics: MagicMock) -> None:
+        endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
+        native = Instance(
+            job_name="vllm",
+            model_name="test-model",
+            engine_type="vllm",
+            id=1,
+            role=PDRole.ROLE_U,
+            endpoints={"127.0.0.1": {0: endpoint}},
+        )
+        xllm = native.model_copy(update={"engine_type": "xllm", "id": 2, "job_name": "xllm"})
+        collector = MetricsCollector(self.config)
+        result = collector._fetch_instance_metrics({1: native, 2: xllm})
+        assert set(result) == {1}
+        query_metrics.assert_called_once_with("127.0.0.1:8000", self.config.infer_tls_config)
+
     def test_prometheus_metrics_handler(self, mock_metrics_collector):  # pylint: disable=redefined-outer-name
         mock_metrics_collector._last_metrics = None
         mock_metrics_collector.get_metrics.return_value = ""

@@ -1262,6 +1262,9 @@ class MetricsCollector(ThreadSafeSingleton):
         """
         collects = {}
         for ins_info in available_instances.values():
+            # xLLM has no native Prometheus endpoint; Motor workload accounting is independent.
+            if str(ins_info.engine_type).strip().lower() == "xllm":
+                continue
             collect = self._fetch_endpoint_metrics(ins_info)
             if collect:
                 collect["role"] = ins_info.role

@@ -77,3 +77,5 @@
 
 | 2026-10-12 | deployer | vLLM 可选服务名被 Render 强制要求 | [vllm-service-name-fallback.md](deployer/vllm-service-name-fallback.md) | vLLM, served_model_name, Render, resolver, model fallback |
 | 2026-10-12 | deployer | 启动脚本强制预加载 jemalloc 导致自定义算子不兼容 | [forced-jemalloc-preload.md](deployer/forced-jemalloc-preload.md) | deployer, jemalloc, LD_PRELOAD, CANN, tiling |
+| 2026-10-08 | node_manager | Union 单容器强制读取 vLLM DP RPC 字段 | [union-optional-dp-rpc.md](node_manager/union-optional-dp-rpc.md) | xLLM, union, single_container, dp_rpc_port, KeyError |
+| 2026-10-08 | coordinator | xLLM 被按 vLLM 指标格式抓取 | [xllm-native-metrics.md](coordinator/xllm-native-metrics.md) | xLLM, MetricsCollector, Prometheus, native engine |

@@ -25,7 +25,7 @@ from motor.common.utils.validators import FileValidator
 
 logger = get_logger(__name__)
 
-supported_engine = ["vllm", "sglang"]
+supported_engine = ["vllm", "sglang", "xllm"]
 supported_role = ["encode", "prefill", "decode", "union"]
 
 MOTOR_ENGINE_ENCODE_CONFIG_KEY = "motor_engine_encode_config"

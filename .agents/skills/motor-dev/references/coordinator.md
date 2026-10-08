@@ -9,7 +9,7 @@ CoordinatorDaemon (parent process, async main loop)
 │
 ├── MgmtServer (1 process)               — Management HTTP + control plane
 │     owns: InstanceManager master (TYPE_MGMT, KV register), CircuitBreakerManager,
-│           precision tables, schema-4 WorkloadSharedMemoryOwner, ZMQ ROUTER + PUB
+│           precision tables, schema-5 WorkloadSharedMemoryOwner, ZMQ ROUTER + PUB
 │     start order: 1st | stop order: last
 │
 ├── ObsServer (1 process)                — Observability API
@@ -117,7 +117,7 @@ NPU resources. Optional `render_config.launch_args` entries are converted from s
 
 **Serialization:** `msgspec.msgpack` (not pickle) with zero-copy optimization — payloads >1024 bytes go in separate ZMQ frames to avoid msgpack decoding overhead on the receiver side.
 
-**Request types** (defined in `zmq_protocol.py: SchedulerRequestType`). Data-plane allocate/release is **not** an RPC — Workers CAS on schema-4 SHM.
+**Request types** (defined in `zmq_protocol.py: SchedulerRequestType`). Data-plane allocate/release is **not** an RPC — Workers CAS on schema-5 SHM.
 
 | Request | Direction | Purpose |
 |---------|-----------|---------|
@@ -146,12 +146,12 @@ There is no `ALLOCATE_ONLY`, `UPDATE_WORKLOAD`, or `REFRESH_INSTANCES` RPC.
 
 **Design:** Mgmt is the only membership writer (seqlock snapshot + heartbeat + `BLOCKED` flags). Infer Workers attach via Rust `shm_open` (not CPython `SharedMemory`) and CAS tokens.
 
-**Layout** (`workload_shm/layout.py`, **SCHEMA_VERSION=4**):
+**Layout** (`motor/coordinator/scheduler/runtime/workload_shm/layout.py`, **SCHEMA_VERSION=5**):
 
 ``` text
 Offset  Size   Field
 0       4B     magic              = 0x574B4C44 ("WKLD")
-4       2B     schema_version     — SCHEMA_VERSION=4
+4       2B     schema_version     — SCHEMA_VERSION=5
 6       2B     (padding)
 8       8B     sequence           — membership seqlock only (token CAS does not bump)
 16      4B     entry_count        — number of valid entries
@@ -275,7 +275,7 @@ Mooncake/Memcache central pool registration is not reconciled by that periodic p
 
 Worker-local successful SHM CAS allocations feed `DpStatsLogger` for every scheduling policy.
 `scheduler_config.dp_stats_window` is the emit interval (default 60 seconds; 0 disables).
-Inference **worker 0** is the only printer: every tick it snapshots schema-4 SHM and logs one line per DP
+Inference **worker 0** is the only printer: every tick it snapshots schema-5 SHM and logs one line per DP
 with this worker's request count and the current `active_tokens`
 (`dp_stats instance=%s dp_rank=%s requests=%d active_tokens=%s`).
 A DP whose `(requests, active_tokens)` pair is unchanged since the last printed line
@@ -329,7 +329,7 @@ SGLang stays on native bootstrap (`CoordinationMode.BOOTSTRAP`); that path is un
 
 **Request lifecycle:**
 
-1. `prepare_resource(plan)` — scheduling policy scores locally → Worker `cas_add` on schema-4 SHM (stale expected → reload + same Python scorer, not blind retry)
+1. `prepare_resource(plan)` — scheduling policy scores locally → Worker `cas_add` on schema-5 SHM (stale expected → reload + same Python scorer, not blind retry)
 2. `forward_request(plan)` — HTTP POST to engine's infer endpoint (streaming or non-streaming)
 3. `release_all(plan)` — Worker `cas_sub_floor0` on the same SHM slot (no UPDATE ZMQ)
 4. Teardown — drain pending releases, reclaim residual SHM tokens, then `del_req_info`
@@ -376,7 +376,7 @@ Hot-reload is driven by a process-local `ConfigWatcher` in the **Inference Worke
 | `motor/coordinator/scheduler/runtime/dp_stats.py` | | Worker-0 timer: per-DP request counts + SHM `active_tokens` in one `dp_stats` line; skip unchanged snapshots (baseline `(0, 0)`) |
 | `motor/coordinator/scheduler/runtime/zmq_protocol.py` | | Request/response types, msgpack framing, topic constants |
 | `motor/coordinator/scheduler/allocate_arbitration.py` | | Shared LB/KVA/RR reselect (R4; no ZMQ) |
-| `motor/coordinator/scheduler/runtime/workload_shm/` | | schema-4 layout + Reader/Owner + `native.py` ctypes |
+| `motor/coordinator/scheduler/runtime/workload_shm/` | | schema-5 layout + Reader/Owner + `native.py` ctypes |
 | `motor/coordinator/workload_shm_rs/` | | Rust cdylib: POSIX SHM create/attach, seqlock snapshot, per-slot CAS |
 | `motor/coordinator/domain/instance_manager.py` | | Central instance pool (available/unavailable/paused); `snapshot_instances()` for mgmt list |
 | `motor/coordinator/domain/request_manager.py` | | Request ID generation, per-request workload records + residual reclaim owners |
@@ -405,7 +405,7 @@ Hot-reload is driven by a process-local `ConfigWatcher` in the **Inference Worke
 Controller detects instance change
   → POST /instances/refresh (InsEventMsg: ADD/DEL/SET + instance list)
     → Mgmt refresh lock: duplicate IDs / identity conflicts fail closed (400 / 409)
-      → apply_refresh: InstanceManager + schema-4 SHM membership snapshot
+      → apply_refresh: InstanceManager + schema-5 SHM membership snapshot
         (stable slots; do not store over in-flight tokens)
       → PUB socket: INSTANCE_CHANGE_TOPIC (+ delta frame for ADD/DEL)
         → Workers: patch/invalidate caches; CAS uses the new generation/slots
@@ -492,3 +492,13 @@ bash tests/run_tests.sh tests/coordinator/
 ```
 
 For metrics-specific development, read `references/metrics.md`.
+
+### xLLM union KV registration
+
+With `store_backend=xllm`, Coordinator registers Device events and the local Host
+confirmation stream under the same `xllm-union-<instance id>` and DP rank. The
+wire parser remains `type=vllm`. `motor/common/utils/xllm.py` derives event, pool
+and replay ports from each engine business port, using the shared
+`xllm_{event,pool,replay}_port_offset` fields. There is no shared node/pool
+registration for xLLM local Host caches. Restart recovery rebuilds the same
+payload; Render must be disabled for the native OpenAI union path.

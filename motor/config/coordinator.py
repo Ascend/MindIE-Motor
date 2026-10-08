@@ -360,6 +360,11 @@ class KvConductorConfig:
     """Interval in seconds for periodic KV instance re-registration.
     0 or negative disables the re-registration timer."""
 
+    xllm_event_port_offset: int = 10000
+    xllm_pool_port_offset: int = 20000
+    xllm_replay_port_offset: int = 30000
+    """xLLM local-cache ports = engine business port + offset; no node-level pool."""
+
 
 @dataclass
 class KvAffinityConfig:

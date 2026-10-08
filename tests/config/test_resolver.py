@@ -408,3 +408,16 @@ def test_vllm_model_name_preserves_legacy_name_when_native_name_is_absent():
         }
     )
     assert resolver.get_model_name() == "legacy"
+
+
+def test_xllm_model_identity_and_parallel_keys_are_native() -> None:
+    resolver = ConfigResolver(
+        {
+            "engine_type": "xllm",
+            "engine_config": {"model": "/models/qwen", "model-id": "qwen", "dp-size": 1},
+        }
+    )
+    assert resolver.get_model_name() == "qwen"
+    assert resolver.get_model_path() == "/models/qwen"
+    assert resolver.get_parallel_config()["dp_size"] == 1
+    assert resolver.get_parallel_config()["world_size"] == 1

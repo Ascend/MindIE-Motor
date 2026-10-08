@@ -1258,3 +1258,37 @@ def test_re_register_missing_expanded_sglang_dp_rank(mock_http):
         ConductorApiClient.re_register_kv_instances([instance])
 
     assert {call.args[2] for call in mock_register.call_args_list} == {1, 2, 3}
+
+
+def test_xllm_registers_device_and_local_host_under_one_instance_and_rebuilds_after_restart() -> None:
+    cfg = _mock_config(store_backend="xllm")
+    first = _make_instance(inst_id=7, role=PDRole.ROLE_U)
+    first.engine_type = "xllm"
+    second = _make_instance(
+        inst_id=8, role=PDRole.ROLE_U, endpoints={"127.0.0.1": {0: _make_endpoint(business_port="8002")}}
+    )
+    second.engine_type = "xllm"
+    with (
+        patch.object(ConductorApiClient, "coordinator_config", cfg),
+        patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient") as client,
+    ):
+        ConductorApiClient.register_kv_instance([first, second])
+        payloads = [call.args[1] for call in client.return_value.__enter__.return_value.post.call_args_list]
+        assert len(payloads) == 2
+        assert payloads[0]["instance_id"] == "xllm-union-7"
+        assert payloads[0]["type"] == "vllm" and payloads[0]["store_backend"] == "xllm"
+        assert payloads[0]["medium_endpoints"] == {
+            "npu": "tcp://127.0.0.1:18000",
+            "cpu": "tcp://127.0.0.1:28000",
+        }
+        assert payloads[1]["medium_endpoints"]["cpu"] == "tcp://127.0.0.1:28002"
+        assert payloads[0] == ConductorApiClient._build_register_payload(first, first.get_all_endpoints()[0])
+        client.return_value.__enter__.return_value.post.reset_mock()
+        with patch.object(ConductorApiClient, "get_registered_services", return_value=[]):
+            ConductorApiClient.re_register_kv_instances([first, second])
+        assert client.return_value.__enter__.return_value.post.call_count == 2
+        client.return_value.__enter__.return_value.post.reset_mock()
+        ConductorApiClient.unregister_kv_instance([first])
+        args = client.return_value.__enter__.return_value.post.call_args.args
+        assert args[0] == "/unregister" and args[1]["instance_id"] == "xllm-union-7"
+        assert args[1]["type"] == "vllm"

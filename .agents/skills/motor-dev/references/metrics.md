@@ -170,3 +170,12 @@ The parser is manual (regex-based, not using the `prometheus_client` library) to
 
 - vLLM metrics design doc: `https://github.com/vllm-project/vllm/blob/main/docs/design/metrics.md`
 - vLLM production metrics: `https://docs.vllm.ai/en/latest/usage/metrics/`
+
+### xLLM observability boundary
+
+xLLM union instances do not expose vLLM Prometheus exposition.
+`_fetch_instance_metrics` skips their native scrape, while vLLM/SGLang instances
+continue to use the existing path. Motor request/workload accounting and the
+KV Conductor catalog remain independent of engine metrics. Native xLLM NPU
+utilization, engine latency and Host/Device hit-rate metrics need a future metrics
+adapter; this integration does not fabricate those values.

@@ -11,11 +11,13 @@
 from motor.node_manager.core.services.native_engine.backends.base import NativeEngineBackend
 from motor.node_manager.core.services.native_engine.backends.sglang.backend import SGLangBackend
 from motor.node_manager.core.services.native_engine.backends.vllm.backend import VllmBackend
+from motor.node_manager.core.services.native_engine.backends.xllm.backend import XllmBackend
 
 
 _BACKENDS: dict[str, NativeEngineBackend] = {
     VllmBackend.engine_type: VllmBackend(),
     SGLangBackend.engine_type: SGLangBackend(),
+    XllmBackend.engine_type: XllmBackend(),
 }
 
 

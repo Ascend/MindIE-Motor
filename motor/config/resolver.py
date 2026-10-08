@@ -301,6 +301,21 @@ class SGLangConfigResolver(BaseConfigResolver):
 # ------------------------------------------------------------------
 
 
+class XLLMConfigResolver(BaseConfigResolver):
+    """Map xLLM model identity while exposing single-device union instances."""
+
+    _GENERIC_KEY_VARIANTS = {
+        "model_name": ("model_id",),
+        "model_path": ("model",),
+    }
+    _PARALLEL_KEY_VARIANTS = {
+        "dp_size": ("dp_size",),
+        "tp_size": ("tp_size",),
+        "pp_size": ("pp_size",),
+        "pcp_size": ("cp_size",),
+    }
+
+
 def ConfigResolver(
     engine_section: dict[str, Any],
     engine_type: str | None = None,
@@ -317,6 +332,8 @@ def ConfigResolver(
         engine_type = "vllm"
     if engine_type == "sglang":
         return SGLangConfigResolver(engine_section)
+    if engine_type == "xllm":
+        return XLLMConfigResolver(engine_section)
     if engine_type != "vllm":
         logger.warning("unknown engine_type '%s', falling back to vllm", engine_type)
     return VLLMConfigResolver(engine_section)

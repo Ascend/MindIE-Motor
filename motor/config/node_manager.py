@@ -268,7 +268,8 @@ class SingleContainerNodemanagerConfig:
             config.base_port_offset = index * u_dp_size * 2
             config.device_offset = index * u_world_size
             config.device_num = u_world_size
-            config.dp_rpc_port = int(union_parallel_config["dp_rpc_port"]) + index
+            dp_rpc_port = union_parallel_config.get("dp_rpc_port")
+            config.dp_rpc_port = int(dp_rpc_port) + index if dp_rpc_port is not None else None
             return config
 
         p_instances_num = user_config_data["motor_deploy_config"]["p_instances_num"]

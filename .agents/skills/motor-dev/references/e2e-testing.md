@@ -2,7 +2,7 @@
 
 ## Current E2E Coverage
 
-`tests/e2e/` holds pytest-based end-to-end tests that exercise **cross-component flows** with mocked process boundaries:
+`tests/e2e/` holds pytest-based end-to-end tests that exercise **cross-component flows** with both mocked and opt-in real process boundaries:
 
 | Test file | What it covers |
 |-----------|----------------|
@@ -14,7 +14,7 @@ Run them like any other module:
 bash tests/run_tests.sh tests/e2e/
 ```
 
-These are in-process pytest tests (no real daemon processes or K8s). True cluster-level deployment testing lives in the `motor-e2e` skill (`examples/deployer/`), not in `tests/e2e/`.
+`test_prestop_e2e.py` is in-process. `test_standalone_coordinator_smoke.py` starts real Coordinator processes against external engines, and `test_native_pd_smoke.py` sends real P/D requests when their documented opt-in environment variables are set. Cluster deployment and NPU allocation remain outside the default unit suite.
 
 ## Port Allocation for E2E Tests
 
@@ -33,7 +33,7 @@ Follow these conventions when adding a new E2E test:
 
 1. **Test file**: place in `tests/e2e/test_<flow>_e2e.py` with a descriptive name (e.g. `test_prestop_e2e.py`)
 2. **Cross-component scope**: an E2E test must span at least two components (e.g. Controller state machine → Coordinator pool) — single-component tests belong in `tests/<module>/`
-3. **Mock process boundaries**: components communicate via mocked clients/HTTP; do not spawn real daemon processes in unit-level e2e tests
+3. **Default suite**: mock process boundaries in unit-level E2E tests. Real daemon/native engine smoke tests must opt in, document required endpoints, and clean up only owned processes.
 4. **Pre-mock generated protobufs**: if the test imports `motor.common.etcd`, pre-mock the `*_pb2`/`*_pb2_grpc` modules with `MagicMock` before import (see `test_prestop_e2e.py`) — they are not compiled in dev environments
 5. **Assertions**: assert on state transitions and event payloads, not just return codes
 

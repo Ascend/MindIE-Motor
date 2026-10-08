@@ -18,7 +18,8 @@ from motor.common.resources.instance import Instance, Endpoint, PDRole
 from motor.common.http.http_client import SafeHTTPSClient
 from motor.common.utils.env import Env
 from motor.common.utils.net import format_address, format_host
-from motor.config.coordinator import CoordinatorConfig
+from motor.common.utils.xllm import xllm_kv_endpoints
+from motor.config.coordinator import CoordinatorConfig, KvConductorConfig
 
 
 TENANT_ID = "default"
@@ -54,12 +55,12 @@ def decode_query_response_msgpack(payload: bytes) -> dict[str, Any]:
 def _conductor_engine_label(instance: Instance) -> str:
     """Return the conductor instance-id engine prefix.
 
-    Only SGLang uses a distinct label. vLLM, missing, and unknown types keep
+    SGLang and xLLM use distinct labels. vLLM, missing, and unknown types keep
     the historical ``vllm`` prefix so existing registrations stay unchanged.
     """
     raw = getattr(instance, "engine_type", None)
-    if isinstance(raw, str) and raw.strip().lower() == "sglang":
-        return "sglang"
+    if isinstance(raw, str) and raw.strip().lower() in ("sglang", "xllm"):
+        return raw.strip().lower()
     return "vllm"
 
 
@@ -106,6 +107,8 @@ class ConductorApiClient:
         sb = cls._resolve_store_backend()
         if sb in ("Mooncake", "Memcache"):
             return "pool"
+        if sb.lower() == "xllm":
+            return "per_instance"
         if sb in ("YuanRong", ""):
             return "per_node"
         logger.warning("Unknown store_backend=%s, falling back to per_node", sb)
@@ -219,6 +222,10 @@ class ConductorApiClient:
         """Register a single DP's NPU/HBM endpoint (all backends)."""
         rank = endpoint.id if dp_rank is None else dp_rank
         instance_id = conductor_instance_id(instance)
+        if str(instance.engine_type).strip().lower() == "xllm":
+            register_data = cls._xllm_register_payload(reg, instance, endpoint, rank)
+            cls._post_xllm_registration(reg, register_data)
+            return
         npu_url = cls._resolve_endpoint_url(
             reg.npu_endpoint or reg.xpu_endpoint or reg.endpoint,
             endpoint.ip,
@@ -479,6 +486,9 @@ class ConductorApiClient:
         """Legacy single-DP registration (used by re-registration path)."""
         rank = endpoint.id if dp_rank is None else dp_rank
         reg = cls._kv_reg()
+        if str(instance.engine_type).strip().lower() == "xllm":
+            cls._post_xllm_registration(reg, cls._xllm_register_payload(reg, instance, endpoint, rank))
+            return
         instance_id = conductor_instance_id(instance)
         sb = cls._resolve_store_backend()
 
@@ -518,6 +528,33 @@ class ConductorApiClient:
             )
         logger.info("register_data : %s", register_data)
 
+    @staticmethod
+    def _xllm_register_payload(
+        reg: KvConductorConfig, instance: Instance, endpoint: Endpoint, rank: int
+    ) -> dict[str, Any]:
+        urls = xllm_kv_endpoints(endpoint.ip, int(endpoint.business_port), rank, reg)
+        return {
+            "instance_id": conductor_instance_id(instance),
+            "type": "vllm",
+            "store_backend": "xllm",
+            "modelname": instance.model_name,
+            "block_size": reg.block_size,
+            "dp_rank": rank,
+            "tenant_id": TENANT_ID,
+            "medium_endpoints": {"npu": urls["endpoint"], "cpu": urls["motor_pool_endpoint"]},
+            "replay_endpoint": urls["replay_endpoint"],
+        }
+
+    @staticmethod
+    def _post_xllm_registration(reg: KvConductorConfig, payload: dict[str, Any]) -> None:
+        address = format_address(reg.conductor_service, reg.http_server_port)
+        try:
+            with SafeHTTPSClient(address=address, timeout=15) as client:
+                client.post("/register", payload)
+        except (OSError, RuntimeError) as error:
+            logger.error("xLLM KV registration failed for %s: %s", payload["instance_id"], error)
+            raise
+
     @classmethod
     def unregister_post(cls, instance: Instance, endpoint: Endpoint, dp_rank: int | None = None) -> None:
         """
@@ -529,7 +566,7 @@ class ConductorApiClient:
         reg = cls._kv_reg()
         instance_id = conductor_instance_id(instance)
         register_data: dict = {
-            "type": reg.engine_type,
+            "type": "vllm" if str(instance.engine_type).strip().lower() == "xllm" else reg.engine_type,
             "modelname": instance.model_name,
             "block_size": reg.block_size,
             "instance_id": instance_id,
@@ -682,6 +719,8 @@ class ConductorApiClient:
         """
         rank = endpoint.id if dp_rank is None else dp_rank
         reg = cls._kv_reg()
+        if str(instance.engine_type).strip().lower() == "xllm":
+            return cls._xllm_register_payload(reg, instance, endpoint, rank)
         instance_id = conductor_instance_id(instance)
         sb = cls._resolve_store_backend()
 

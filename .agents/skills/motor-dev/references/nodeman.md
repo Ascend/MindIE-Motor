@@ -3,7 +3,7 @@
 ## Architecture: Native Runtime Sidecar
 
 One NodeManager process runs in each inference pod. It receives lifecycle commands from
-Controller, starts one native vLLM or SGLang process per endpoint, supervises the complete
+Controller, starts one native vLLM, SGLang or xLLM process per endpoint, supervises the complete
 process group, probes the native `/health` endpoint, and reports endpoint status through
 Controller heartbeats.
 
@@ -525,3 +525,18 @@ Important test areas:
 - `tests/node_manager/core/services/native_engine/virtual_inference/test_worker.py`: warmup, loop intervals, capacity-aware failure threshold, abnormal flag, idempotent start and thread/client cleanup.
 - `tests/node_manager/core/services/native_engine/virtual_inference/test_capabilities.py`: `should_enable_vllm_virtual_inference` gates (config / DP0 / headless / threshold).
 - `tests/common/utils/test_ai_cube.py`: npu-smi watch support detection and usage parsing.
+
+### xLLM union backend
+
+`backends/xllm/backend.py` converts union LaunchContext into native `xllm` flags
+and a `/health` probe. Initial support is text LLM, one node/device/DP per
+instance; multiple NodeManagers form multiple replicas. The backend rejects PD,
+TLS inference, snapshots and unsupported parallel layouts. Native model identity
+is `model`/`model_id`; `max_model_len` is Motor budget metadata and is omitted
+from the engine command. xLLM owns its RPC address (default business port + 5000)
+and needs no vLLM DP RPC configuration in single-container mode.
+
+KV events are enabled automatically when `kv_conductor_config.conductor_service`
+is set. Event/pool/replay ports use the shared helper and offsets also used by
+Coordinator registration. xLLM uses the existing ProcessSupervisor lifecycle and
+health probe; Motor does not create the vLLM virtual-inference worker for xLLM.
