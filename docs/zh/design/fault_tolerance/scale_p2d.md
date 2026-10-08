@@ -12,8 +12,6 @@
 - [限制与后续规划](#限制与后续规划)
 - [相关代码与测试](#相关代码与测试)
 
----
-
 ## 概述
 
 **ScaleP2D**（Scale Prefill to Decode）是 MindIE Motor 在 **PD 分离**（Prefill / Decode 解耦）场景下的一种故障自愈策略。当 **Decode（D）实例** 因 **L4–L6 级硬件故障** 导致部分节点不可用时，通过 **主动停止若干 Prefill（P）实例** 释放算力与节点资源，为故障 D 实例的恢复或替换腾出容量。
@@ -25,8 +23,6 @@
 | 策略注册 | `strategy.py` 中 `level4_strategy` / L5 / L6 |
 
 使用与配置说明见 [ScaleP2D 用户指南](../../user_guide/features/fault_tolerance/scale_p2d.md)。
-
----
 
 ## 代码设计
 
@@ -99,8 +95,6 @@ sequenceDiagram
 - 单次 `execute()` 在 **独立线程** 中运行；`RecoveryContext` 仅在该线程内读写。
 - `StrategyBase._lock` 保护 `_is_finished`；`stop()` 通过 `threading.Event` 通知 `_check_d_instance_status()` 退出轮询。
 - `FaultManager` 在 `InstanceMetadata.lock` 内更新 `strategy` 引用，与策略线程解耦。
-
----
 
 ## 类图
 
@@ -209,8 +203,6 @@ classDiagram
     FaultManager --> NodeMetadata
 ```
 
----
-
 ## 接口描述
 
 ### 1. 策略工厂（`strategy.py`）
@@ -231,8 +223,6 @@ ScaleP2D 不由业务方直接 `new`，由故障级别映射函数返回 **策�
 | `None` | 开关关闭、实例不存在或 role 非 decode |
 
 `level5_strategy` / `level6_strategy` 当前 **委托** `level4_strategy`，行为一致。
-
----
 
 ### 2. `ScaleP2DStrategy` 公共接口
 
@@ -264,8 +254,6 @@ ScaleP2D 不由业务方直接 `new`，由故障级别映射函数返回 **策�
 | **作用** | 供 `FaultManager` 判断可否清空 `strategy` 并重置实例故障级别 |
 | **线程安全** | 使用 `_lock` 读取 |
 
----
-
 ### 3. `RecoveryContext` 数据契约
 
 单次 `execute()` 内有效，字段由流水线各步骤填充。
@@ -283,8 +271,6 @@ ScaleP2D 不由业务方直接 `new`，由故障级别映射函数返回 **策�
 | `last_error` | `str \| None` | 失败路径 | 人类可读错误摘要 |
 | `start_time` | `float` | 构造 | 用于统计 `elapsed_s` |
 
----
-
 ### 4. 内部方法（包内 / 子类协作）
 
 | 方法 | 入参 | 返回值 | 说明 |
@@ -298,8 +284,6 @@ ScaleP2D 不由业务方直接 `new`，由故障级别映射函数返回 **策�
 | `_select_instances_algorithm(available)` | `list[Instance]` | `list[Instance]` | **可替换** 的 P 选择实现 |
 | `_kill_and_release_p_instances()` | — | `bool` | 逐节点 `NodeManagerApiClient.stop` |
 | `_node_has_high_level_fault(node_metadata)` | `NodeMetadata` | `bool` | 静态方法，是否存在 L3+ 故障 |
-
----
 
 ### 5. 外部依赖接口
 
@@ -348,8 +332,6 @@ class PDRole(str, Enum):
     ROLE_U = "both"
 ```
 
----
-
 ## 在 RAS 体系中的位置
 
 ```mermaid
@@ -364,8 +346,6 @@ graph LR
 
 更完整的 FaultManager 流程见 [FaultManager 设计文档](fault_manager.md)。
 
----
-
 ## 触发与调度
 
 1. `enable_scale_p2d == true`
@@ -373,8 +353,6 @@ graph LR
 3. 实例故障级别为 **L4 / L5 / L6**
 
 `FaultManager._process_instance_strategy()` 通过 `ThreadPoolExecutor.submit(new_strategy.execute, ins_id)` 异步执行；策略未结束时保留 `ins_metadata.strategy` 与故障级别。
-
----
 
 ## 恢复流程
 
@@ -424,16 +402,12 @@ flowchart TD
 | `CHECK_D_INSTANCE_STATUS_TIMEOUT` | 30s | D 实例状态等待上限 |
 | `CHECK_D_INSTANCE_STATUS_INTERVAL` | 3s | 轮询间隔 |
 
----
-
 ## 限制与后续规划
 
 1. **P 选择算法**：占位实现（按 ID 排序），待接入负载/优先级模型。
 2. **D 健康校验**：`_verify_d_instance_health()` 未启用（代码 TODO）。
 3. **策略范围**：仅 Decode + L4–L6；L3 走其他策略或隔离逻辑。
 4. **资源假设**：默认各 P 实例节点数相同。
-
----
 
 ## 相关代码与测试
 

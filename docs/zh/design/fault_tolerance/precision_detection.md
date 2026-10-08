@@ -13,8 +13,6 @@
 | 全局采样/连续异常状态 | Mgmt 进程内 `AsyncSchedulerServer`（[调度热路径 Rust 重构](../coordinator_scheduler_rust.md)；IPC 名仍为 `scheduler_*`） |
 | Controller 自动恢复 | `motor/controller/api_server/controller_api.py`、`motor/controller/core/recovery_service.py` |
 
----
-
 ## 架构总览
 
 精度检测链路跨 Coordinator Inference Worker、Coordinator Mgmt 控制面和 Controller。Worker 负责重逻辑，包括采集、检测、拨测和告警；Mgmt 内的 `AsyncSchedulerServer` 维护跨 Worker 一致的轻状态（`CONFIRM_SAMPLE` 等 ZMQ RPC）；Controller 负责收到告警后的实例终止。无独立 Scheduler 子进程。
@@ -71,8 +69,6 @@ motor/coordinator/
 | 检测编排 | `PrecisionReporter` + `MsprobeChecker` | 执行 msprobe 检测，并记录跨 Worker 连续异常次数 |
 | 拨测告警 | `InternalRouterProbe` + `PrecisionAlarm` | pin 目标实例组进行固定问答拨测，构造并上报告警 |
 | 自动恢复 | Controller `_maybe_precision_auto_recover` | 根据精度告警终止 D 实例及可选 P 实例 |
-
----
 
 ## 代码设计
 
@@ -172,7 +168,7 @@ Controller 在 `_maybe_precision_auto_recover()` 中处理精度告警：
 | 有 P 实例 | `service name=Coordinator, service ip=..., pId={p_id}, instanceId={d_id}` |
 | 无 P 实例 | `service name=Coordinator, service ip=..., instanceId={d_id}` |
 
-Scheduler 在产生告警成功后保存原始 `moi`；后续清除直接复用，禁止重新拼接。各 PD Group 的告警/正常计数彼此隔离。Controller 通知 Coordinator 删除 Scheduler 活动告警状态后，会在恢复结果中返回 `scheduler_state_cleared`；该字段用于暴露状态清理是否成功，不改变实例终止成功的判定。
+Scheduler 在产生告警成功后保存原始 `moi`；后续清除直接复用，禁止重新拼接。各 PD Group 的告警/正常计数彼此隔离。Controller 通知 Coordinator 删除 Scheduler 活动告警状态后，会在恢复结果中返回 `scheduler_state_cleared`；该字段用于反映状态清理是否成功，不改变实例终止成功的判定。
 
 ### CCAE 北向 Completed 上报
 
@@ -188,8 +184,6 @@ Controller 侧 CCAE Reporter（`examples/features/observability/ccae_reporter/re
 | 停止条件 | `Completed`/`Failed` 累计成功上报 10 次后删除 task；或距首次收到 `controlCode` 已满 10 分钟 |
 | 提前 ack | CCAE 返回 `controlStatusRespond=true` 不提前删除 task |
 | 失败重试 | HTTP 失败不计入次数，下一周期继续上报 |
-
----
 
 ## 核心流程
 
@@ -246,8 +240,6 @@ sequenceDiagram
 | `_precision_action_tokens` | 同上 | 本轮 action 的 UUID，用于 FINISH 校验 |
 
 入口准入使用 `(None, d_instance_id)` 对应的精度状态锁，检测结果与告警状态仍使用 `(p_instance_id, d_instance_id)`，保证“按 D 控制采样开销、按 PD 组归因告警”。获准请求即刻写入时间戳；后续请求失败也不归还窗口。
-
----
 
 ## 类图
 
@@ -307,8 +299,6 @@ classDiagram
     SampleController --> Scheduler
 ```
 
----
-
 ## 接口描述
 
 ### Scheduler ZMQ
@@ -345,8 +335,6 @@ classDiagram
 | `moi` | 见上文告警清除节 | 产生与清除必须逐字符一致，作为实例组告警关联键 |
 | `additional_information` | `precision_issue_count=..., probe_failure_count=..., p_instance_id=..., d_instance_id=...` | 检测与拨测统计 |
 
----
-
 ## 可靠性与并发设计
 
 1. **Fail-open**：采样提交、msprobe 检测、Scheduler ZMQ 记录失败均不影响用户请求。
@@ -361,8 +349,6 @@ classDiagram
 10. **CLEAR 不触发 auto-recovery**：仅 `category=ALARM` 且 `cleared=NO` 的精度告警会触发实例终止。
 11. **CCAE Completed 生命周期**：实例终止成功后继续向 CCAE 成功上报 `Completed` 10 次；提前 ack 不停止，HTTP 失败不计数。
 
----
-
 ## 限制与后续规划
 
 1. 只有获准采样的 Decode 请求才注入 logprobs；获准后请求失败仍消耗当前窗口。
@@ -371,8 +357,6 @@ classDiagram
 4. CCAE 北向精度控制的 `switchControl`、`immediateDelivery` 当前在 reporter 中保存状态，运行时动态开关仍需后续接入；`Completed` 状态需连续成功上报 10 次后才会停止。
 5. 本次只隔离 Motor 额外增加的 logprobs **数量**：内部先采集 `max(用户数量, Motor 配置)`，再按用户数量投影。`return_tokens_as_token_ids=true` 仍会在采样请求上强制设置，用户主动请求 logprobs 时的 token 表示兼容性留待后续决策。
 6. `SampleController` 与检测器按 Worker 生命周期构造，修改嵌套 `precision_detection_config` 后需重启 Worker 才能可靠生效。
-
----
 
 ## 相关代码与测试
 

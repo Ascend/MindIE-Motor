@@ -26,7 +26,7 @@
 
 ## 部署步骤
 
-2.1 登陆master节点，将 **准备软件或数据** 下载的 "ras_monitor.py" 脚本上传到 “examples/deployer” 路径下。
+2.1 登录master节点，将 **准备软件或数据** 下载的 "ras_monitor.py" 脚本上传到 “examples/deployer” 路径下。
 
 2.2 执行以下命令拉起ras_monitor脚本进行后台监控：
 

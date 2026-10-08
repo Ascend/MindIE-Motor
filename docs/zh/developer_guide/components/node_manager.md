@@ -128,7 +128,7 @@ Node Manager API 默认监听 `api_config.pod_ip:api_config.node_manager_port`�
 
 ### 原生引擎运行态
 
-`HeartbeatManager` 每秒读取 `ProcessSupervisor` 的运行态。非 headless endpoint 使用原生 `business_port/health`，并沿用 `infer_tls_config`；headless 成员不强造 HTTP frontend，仅检查进程存活并上报 `WAIT2START`。Controller 仅在所有可路由 endpoint 为 `NORMAL`、所有 headless 成员至少已上报 `WAIT2START` 时将实例置为可用。
+`HeartbeatManager` 每秒读取 `ProcessSupervisor` 的运行态。非 headless endpoint 使用原生 `business_port/health`，并沿用 `infer_tls_config`；headless 成员不强行构造 HTTP frontend，仅检查进程存活并上报 `WAIT2START`。Controller 仅在所有可路由 endpoint 为 `NORMAL`、所有 headless 成员至少已上报 `WAIT2START` 时将实例置为可用。
 
 状态轮询具有以下保护逻辑：
 

@@ -6,7 +6,7 @@
 [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
 扩展后，在仓库目录中选择 **Dev Containers: Reopen in Container**，即可创建 Python 3.11
 开发环境。容器创建完成后会自动安装 `requirements.txt` 中的依赖，并以 editable 模式安装
-MindIE-Motor。
+MindIE Motor。
 
 该开发容器适用于代码开发、静态检查和不依赖昇腾硬件的单元测试。需要 NPU、CANN 或其他
 昇腾运行时的集成测试仍需在相应硬件环境中执行。

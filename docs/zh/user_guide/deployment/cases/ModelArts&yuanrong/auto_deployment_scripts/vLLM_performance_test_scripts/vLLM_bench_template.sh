@@ -39,7 +39,7 @@ PREFIX_RATIO="${PREFIX_RATIO:-90}"
 # 动态计算后缀比例
 SUFFIX_RATIO=$(( 100 - PREFIX_RATIO ))
 # 每轮测试数据集大小设置
-NUM_PROMOTS="${NUM_PROMOTS:-200}"
+NUM_PROMPTS="${NUM_PROMPTS:-200}"
 # 数据集重复前缀种类数量设置
 PREFIX_REPETITION_NUM="${PREFIX_REPETITION_NUM:-10}"
 
@@ -89,7 +89,7 @@ for CONC in "${CONCURRENCY_LIST[@]}"; do
               --prefix-repetition-prefix-len "${PREFIX_LEN}" \
               --prefix-repetition-suffix-len "${SUFFIX_LEN}" \
               --prefix-repetition-output-len "${OUT_LEN}" \
-              --num-prompts "${NUM_PROMOTS}" \
+              --num-prompts "${NUM_PROMPTS}" \
               --prefix-repetition-num-prefixes "${PREFIX_REPETITION_NUM}" \
               --ignore-eos \
               --model "${MODEL_NAME}" \

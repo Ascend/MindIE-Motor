@@ -147,7 +147,7 @@ examples/infer_engines/
 - `motor_engine_decode_config`: Decode 引擎配置
 - `kv_cache_store_config`: KV 缓存池配置
 
-`motor_deploy_config` 支持按组件配置调度标签和 Coordinator 对外端口：
+`motor_deploy_config` 支持按组件配置调度标签和 Coordinator 对外端口。
 
 | 字段 | 说明 |
 |------|------|
@@ -162,8 +162,6 @@ examples/infer_engines/
 | `kv_conductor_node_selector` | KV Conductor Pod 的自定义 `nodeSelector`。 |
 
 Node selector 字段均为 JSON 对象。自定义标签会与 deployer 根据 `hardware_type` 生成的硬件标签合并，例如：
-
-这些组件级字段适用于 `multi_deployment` 和 `infer_service_set` 等组件分别运行在不同 Pod 的部署模式。`single_container` 模式下所有组件共享一个 Pod，因此不应用独立的组件级 node selector。
 
 ```json
 {
@@ -180,6 +178,8 @@ Node selector 字段均为 JSON 对象。自定义标签会与 deployer 根据 `
   }
 }
 ```
+
+这些组件级字段适用于 `multi_deployment` 和 `infer_service_set` 等组件分别运行在不同 Pod 的部署模式。`single_container` 模式下所有组件共享一个 Pod，因此不应用独立的组件级 node selector。
 
 #### NodePort 冲突检测
 

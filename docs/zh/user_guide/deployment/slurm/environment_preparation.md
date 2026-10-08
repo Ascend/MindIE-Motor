@@ -36,8 +36,6 @@ dnf install -y \
     mariadb-devel perl-devel
 ```
 
----
-
 ### 2.2 构建并安装 Slurm
 
 在一台机器准备 `slurm-25.05.2.tar.bz2`：
@@ -86,8 +84,6 @@ dnf install -y \
     slurm-slurmd-25.05.2-1.$(uname -m).rpm
 ```
 
----
-
 ## 3. 配置集群基础服务
 
 ### 3.1 创建用户和目录
@@ -105,8 +101,6 @@ mkdir -p /etc/slurm /var/spool/slurmctld /var/spool/slurmd /var/log/slurm
 chown -R slurm:slurm /var/spool/slurmctld /var/log/slurm
 chown -R root:root /var/spool/slurmd
 ```
-
----
 
 ### 3.2 配置 Munge
 
@@ -138,8 +132,6 @@ systemctl enable --now munge
 
 所有节点 `md5sum /etc/munge/munge.key` 须一致。
 
----
-
 ## 4. 配置 Slurm 资源
 
 ### 4.1 采集节点参数
@@ -154,8 +146,6 @@ ls /dev/davinci[0-9]*
 ```
 
 `/etc/hosts`（或 DNS）须能将节点地址解析为 `slurm.conf` 中的 `NodeName`。IPv6 集群请确认节点名和地址解析均支持 IPv6。
-
----
 
 ### 4.2 配置 slurm.conf
 
@@ -210,8 +200,6 @@ PartitionName=<partition-name> Nodes=<compute-node-1>,<compute-node-2> Default=Y
 scp /etc/slurm/slurm.conf root@<compute-node>:/etc/slurm/slurm.conf
 ```
 
----
-
 ### 4.3 配置 gres.conf
 
 所有节点 `/etc/slurm/gres.conf`（8 卡）：
@@ -222,8 +210,6 @@ Name=npu File=/dev/davinci[0-7]
 ```
 
 卡数不是 8 时，同步修改区间与节点行 `Gres=npu:`。
-
----
 
 ### 4.4 配置 cgroup.conf
 
@@ -238,8 +224,6 @@ ConstrainSwapSpace=no
 ```
 
 cgroup v2 环境将 `CgroupPlugin` 改为 `cgroup/v2`。
-
----
 
 ### 4.5 配置 NPU 设备权限
 
@@ -261,8 +245,6 @@ udevadm control --reload
 udevadm trigger
 ```
 
----
-
 ## 5. 启动与验证
 
 ### 5.1 启动 Slurm 服务
@@ -280,8 +262,6 @@ systemctl enable --now slurmd
 ```
 
 修改配置后：先 `systemctl restart slurmctld`，再各节点 `systemctl restart slurmd`。
-
----
 
 ### 5.2 验证集群状态
 
@@ -301,8 +281,6 @@ scontrol show job <job-id>
 journalctl -u slurmctld -n 100 --no-pager
 journalctl -u slurmd -n 100 --no-pager
 ```
-
----
 
 ## 6. 安装 Apptainer
 

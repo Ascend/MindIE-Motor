@@ -44,8 +44,6 @@ KV 数据保留在引擎或存储后端，Conductor 保存索引。
 Coordinator 调度器（`kv_cache_affinity`）按 `*_blocks` 与配置项
 `scheduler_config.kv_affinity.w_npu/w_cpu/w_disk`（默认 `1.0/1.0/0.0`）加权后完成。
 
----
-
 ## 多级存储介质设计
 
 ### 三层模型
@@ -170,8 +168,6 @@ CPU/DISK 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**�
   matched_tokens = (npu + cpu + disk) × block_size   // unweighted coverage
   // Coordinator affinity: round((npu×w_npu + cpu×w_cpu + disk×w_disk) × block_size)
 ```
-
----
 
 ## 后端适配抽象
 
@@ -314,8 +310,6 @@ Coordinator 的 `re_register_interval_sec` 默认 0，周期对账关闭。开�
     - >2048 blocks: rayon parallel, batches of 1024
 ```
 
----
-
 ## 匹配逻辑与查询流程
 
 ### find_matches_by_hash 完整流程
@@ -401,8 +395,6 @@ Coordinator 的 `re_register_interval_sec` 默认 0，周期对账关闭。开�
 如果不做连续匹配而只用平铺 HashMap（更早实现），会出现"block 0, 1, 3, 4 命中，
 block 2 缺失"的虚高计数。`LowerTierIndexer` 的边图和 HBM 树遍历共同保证了连续匹配。
 
----
-
 ## 事件接入
 
 ### 双协议支持
@@ -482,8 +474,7 @@ root 挂接——否则 continuation-edge 图会丢失链式关系，CPU/Disk �
 `parent_hash`）应用，绝不批量合并成单个 `parent_hash: None` 的事件——批量会静默丢失
 块间续接。
 
-**缓存清理语义**：ingest 路径不再触发惰性全量扫描。后台 maintenance 默认每 30 秒
-调用 `sweep_stale_caches()`，分别清理 `pending_pool`（默认 60s）、`content`（默认 300s）
+**缓存清理语义**：ingest 路径不再触发惰性全量扫描。后台 maintenance 默认每 30s 调用 `sweep_stale_caches()`，分别清理 `pending_pool`（默认 60s）、`content`（默认 300s）。
 和 `offload`（默认 600s）。三类缓存均记录插入时间；实际最长驻留时间约为对应 TTL 加一个
 maintenance 周期。`offload` 没有容量上限，但不会永久驻留，同时仍会在匹配成功或引擎侧
 `evict_pending_blocks` 时提前删除。Worker 注销只按 Worker 清理 `pending_pool`；共享的
@@ -544,8 +535,6 @@ Coordinator / 引擎也可经 `POST /events` 推送 JSON（`KvEventBatch` / `KvE
 支持引擎 map 形态、RFC #1527 pool 形态，以及 `type` / `event_type` / legacy `BlockStored`
 等字段别名（见 `protocols.rs`）。该路径与 ZMQ msgpack 解析相互独立，勿与上节混淆。
 
----
-
 ## 查询接口编码协商（JSON / MessagePack）
 
 `/query` 与 `/query_by_hash` 通过请求 `Content-Type` 协商传输编码：
@@ -566,8 +555,6 @@ Coordinator 侧通过 `kv_conductor_config.query_encoding`（默认 `"msgpack"`�
 须先升级 kv-conductor 再升级 Coordinator；混部（新版 Coordinator + 旧版 conductor）时
 须显式配置 `query_encoding: "json"`。
 
----
-
 ## 错误处理
 
 | 错误 | HTTP 状态码 | 场景 |
@@ -577,8 +564,6 @@ Coordinator 侧通过 `kv_conductor_config.query_encoding`（默认 `"msgpack"`�
 | `NoWorkers` | 200 `{tenant_id: {}}` | 无缓存命中——正常，不视为错误 |
 | `ParentBlockNotFound` | 500 | Store 事件引用了未知 parent hash |
 | `InvalidBlockSequence` | 500 | 检测到自引用 block |
-
----
 
 ## Coordinator 调度集成
 

@@ -2,7 +2,7 @@
 
 ## 同一套集群部署多个Motor服务
 
-如果同一套k8s集群部署了多套PD实例，对应的会有多套Coordinator和Controller实例，那么需要为不同的Coordinator实例配置不同的端口，以避免端口冲突。
+如果同一套k8s集群部署了多套PD实例，对应地会有多套Coordinator和Controller实例，那么需要为不同的Coordinator实例配置不同的端口，以避免端口冲突。
 
 Coordinator实例的默认端口为31015，如现场部署了两套PD实例，那对应两套Coordinator实例的端口分别以31015和31016为例，修改端口的步骤如下：
 

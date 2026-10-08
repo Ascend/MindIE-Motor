@@ -263,7 +263,7 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
 MOTOR_NAMESPACE=<namespace> ./launch.sh --minimal
 ```
 
-也可在已 `source` 代理的 shell 中直接 `./launch.sh`（`start.sh` 在 `--pull missing` 时会用当前 shell 代理拉缺失镜像）；若发现阶段报错，请按上表在 `launch` 前 `unset` 代理变量。
+也可在已 `source` 代理的 shell 中直接 `./launch.sh`（`start.sh` 在 `--pull missing` 时会用当前 shell 代理拉缺失镜像）；若发现阶段报错，请按[下表](#faq1)在 `launch` 前 `unset` 代理变量。
 
 #### 2.4.4 使用公司统一 shell 代理脚本
 
@@ -272,7 +272,7 @@ MOTOR_NAMESPACE=<namespace> ./launch.sh --minimal
 - 启动前在同一 shell 执行 `source proxy.sh`，并**不要**设置 `PROXY_SH`（依赖当前环境变量）；或
 - 将相同变量写入 dotenv 文件，仅在 `.env` 中配置 `PROXY_SH=/path/to/pymotor-proxy.env`（推荐，与 `launch.sh` 解耦）。
 
-#### 2.4.5 常见问题
+#### 2.4.5 常见问题<a id="faq1" />
 
 | 现象 | 处理 |
 |------|------|

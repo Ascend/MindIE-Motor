@@ -14,8 +14,6 @@
 4. 注册 P/D 实例
 5. 端到端验证
 
----
-
 ## 前置条件
 
 | 项 | 要求 |
@@ -26,8 +24,6 @@
 | 自打包（方式 B） | `curl`、C 编译器（`build-essential` / `gcc`）；无 cargo 时 `build.sh` 会 rustup 安装 |
 | 网络 | 可达各 P/D 引擎 HTTP 端口（常见 `8000` / `10000`） |
 | 端口 | 本机 `1025`（推理）/ `1026`（管理）/ `1027`（观测）空闲 |
-
----
 
 ## 一、安装
 
@@ -78,15 +74,11 @@ pip install --no-deps --force-reinstall /path/to/motor-*.whl
 
 方式 B：已有 `lib/*.so` / `bin/kv-conductor` 时 `bash build.sh` 默认跳过 cargo；改 `.rs` 后用 `SKIP_WORKLOAD_SHM_BUILD=0` / `SKIP_KV_CONDUCTOR_BUILD=0`。不能装 rustup 时用 `WORKLOAD_SHM_PREBUILT=/path/to/libmindie_workload_shm.so`。打出的 wheel **必须**含 `libmindie_workload_shm.so`，缺库时 `build.sh` 拒绝出包并打印 `refusing to emit`；缺 conductor 二进制且有 cargo + libzmq 时同时含 `kv-conductor`（`unzip -l dist/motor-*.whl | grep -E 'kv-conductor|libmindie_workload_shm.so'`）。
 
----
-
 ## 二、配置文件（可选）
 
 主流程默认在 Coordinator 所在机器完成启动、注册和验证，无需配置文件。Coordinator 默认监听 `127.0.0.1`，后续命令可直接复制执行。
 
 需要跨主机访问，或使用 Docker / Kubernetes 部署时，按 [附录 D](#附录-d监听地址) 配置监听地址。管理端口 `1026` 对本机以外开放时，生产环境还应按 [附录 E](#附录-e管理面-api-key) 开启独立 API Key。
-
----
 
 ## 三、拉起 Coordinator
 
@@ -103,8 +95,6 @@ curl http://127.0.0.1:1026/readiness   # 此时 instance_count=0 属正常
 ```
 
 若第二节编写了 `coordinator.json`，启动前 `export USER_CONFIG_PATH=...`。
-
----
 
 ## 四、注册 P/D 实例
 
@@ -223,8 +213,6 @@ curl -X POST http://127.0.0.1:1026/instances/refresh \
 Coordinator 的内存实例池，不会启动、停止或销毁 P/D 进程。Coordinator 重启后，
 External Deployer 必须重放完整 `set`。
 
----
-
 ## 五、端到端验证
 
 ```bash
@@ -235,8 +223,6 @@ curl http://127.0.0.1:1025/v1/completions \
 
 期望 HTTP 200。`model` 填引擎实际对外的模型名。
 
----
-
 ## 六、常见问题
 
 | 现象 | 处理 |
@@ -246,8 +232,6 @@ curl http://127.0.0.1:1025/v1/completions \
 | 注册脚本报 not live | 先拉起 Coordinator 再注册 |
 | 注册后推理 503（Service is not available） | 核对引擎 `IP:PORT`；`--dry-run` 看 payload |
 | 日志目录不对 | 设 `MOTOR_LOG_PATH` |
-
----
 
 ## 附录 A：离线安装
 
@@ -261,8 +245,6 @@ curl http://127.0.0.1:1025/v1/completions \
 ```
 
 含二进制扩展的包须匹配目标机架构与 Python 版本。
-
----
 
 ## 附录 B：KV Cache 亲和（可选）
 
@@ -298,8 +280,6 @@ nohup python3 -m motor.kv_conductor --host 0.0.0.0 --port 13333 &
 ```
 
 改 `conductor_service` 后重启 Coordinator。同一长前缀发两次请求，热请求日志 `matched` 应大于 0。
-
----
 
 ## 附录 C：实例增删查
 
@@ -350,8 +330,6 @@ python3 -m motor.coordinator.register add --prefill "10.10.0.17:8000,10.10.0.17:
 python3 -m motor.coordinator.register list --coordinator http://10.10.0.1
 python3 -m motor.coordinator.register --help
 ```
-
----
 
 ## 附录 D：监听地址
 
@@ -410,8 +388,6 @@ env:
 ```
 
 仓库的 Coordinator 部署模板已包含该配置。注入后 Coordinator 默认绑定 Pod IP，客户端通常通过 Service DNS 访问。自定义 YAML 如果未注入 `POD_IP`，也未配置 `coordinator_api_host`，将回退到 `127.0.0.1`，Service 无法访问。
-
----
 
 ## 附录 E：管理面 API Key
 

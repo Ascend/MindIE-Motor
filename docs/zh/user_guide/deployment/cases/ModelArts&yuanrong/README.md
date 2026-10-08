@@ -5,7 +5,7 @@
 ## 主要特性
 
 - **部署形态**：Atlas 800I A2推理服务器8机大EP集群
-- **实例网关**：MindIE-Motor
+- **实例网关**：MindIE Motor
   - 支持节点KV cache亲和性调度
   - 负载均衡调度
 - **KV Cache多级缓存**：yuanrong

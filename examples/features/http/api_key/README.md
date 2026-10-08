@@ -96,7 +96,6 @@ Authorization: Bearer sk-test123456789
 ```python
 from motor.common.http.key_encryption import KeyEncryptionBase
 
-
 class MyCustomKeyEncryption(KeyEncryptionBase):
     @classmethod
     def encrypt_key(cls, plain_key: str) -> str:

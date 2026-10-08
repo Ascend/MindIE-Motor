@@ -49,7 +49,7 @@
      docker rm "$cid"
      ```
 
-   - 使用**手动安装 MindIE-Motor 的镜像**：`git clone` 代码仓后，启动脚本位于 `MindIE-Motor/examples`。
+   - 使用**手动安装 MindIE Motor 的镜像**：`git clone` 代码仓后，启动脚本位于 `MindIE-Motor/examples`。
 
    更多 `examples` 目录内容，详见章末附录。
 
