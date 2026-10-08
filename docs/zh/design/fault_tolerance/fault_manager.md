@@ -57,7 +57,7 @@ NodeManager 侧:
   ├── HTTP 轮询 → GET {endpoint.business_port}/fault_tolerance/status (vLLM FT API)
   ├── 状态去重 → 仅上报 dead/unhealthy 变更
   ├── 连续 max_poll_failures 次轮询失败 → 按 dead 上报
-  ├── 引擎重拉期间由 Daemon 暂停/恢复（重拉后清空轮询状态重起启动宽限）
+  ├── 引擎重拉期间由 Daemon 暂停/恢复（重拉后清空轮询状态启启动宽限）
   └── HTTP POST → Controller /controller/report_software_fault
 ```
 
@@ -71,7 +71,7 @@ NodeManager 侧:
 ## 原生引擎故障上报链路（端到端）
 
 ```text
-vllm EngineCore 异常 → 引擎状态变为 unhealthy/dead
+vLLM EngineCore 异常 → 引擎状态变为 unhealthy/dead
   → (HTTP) EngineFtManager 轮询 GET /fault_tolerance/status (每 poll_interval_sec)
     → 解析 engines[] 状态 → 去重后 (仅上报状态变更)
       → _send_fault_to_controller() 注入 pod_ip
@@ -235,7 +235,7 @@ D1(id=6, job="decode-1"): d1_1, d1_2, d1_3(L6故障), d1_4(L6故障)
 D2(id=7, job="decode-2"): d2_1, d2_2, d2_3(L6故障), d2_4
 ```
 
-**Step 1 — 故障触发**: D1 故障 2 个节点, D2 故障 1 个节点。均触发 L6 → `scale_p2d`。
+**Step 1 — 故障触发**: D1 故障 2 个节点，D2 故障 1 个节点，均触发 L6 → `scale_p2d`。
 
 - D1 需要释放 2 个 Prefill 实例 → 选中 P1、P2
 - D2 需要释放 1 个 Prefill 实例 → 选中 P3
@@ -323,7 +323,7 @@ p_4, p_5: prefill → 跳过
 d1_3: 当前 job_name = "prefill-1" (已被 D1' 的 swap 更新) → 同 job ✓
 ```
 
-没有外来源，直接更新 `instance_id = 10`。P2', P3' 同理。
+没有外来源，直接更新 `instance_id = 10`。P2'、P3' 同理。
 
 **最终状态**:
 
@@ -338,7 +338,7 @@ self.nodes:
   p_5: inst=14                    (P5')
 ```
 
-- D1 的 L6 故障跟随 `d1_3`, `d1_4` → P1', P2'，不再触发 D1 的策略
+- D1 的 L6 故障跟随 `d1_3`、`d1_4` → P1'、P2'，不再触发 D1 的策略
 - D2 的 L6 故障跟随 `d2_3` → P3'，不再触发 D2 的策略
 - 整个过程**与 INSTANCE_INITIAL 到达顺序无关**：唯一 `job_name` 天然保证每个实例的孤儿搜索只命中自己的节点
 

@@ -51,7 +51,7 @@ vLLM 引擎按 `kv_connector` 名称（大小写不敏感）推导 capability，
 
 - **`MultiConnector` 只看 `connectors[0]`（传输层）**。KV 池/存储类连接器（如 `AscendStoreConnector`、`MooncakeConnectorStoreV1`、`UCMConnector`、`LMCacheAscendConnector`）一般作为 `connectors[1]` 的后端使用，不参与 capability 判定，因此**无需**出现在白名单中。
 - 不在上表内、且 `connectors[0]` 也无法识别的连接器会被判为 `unknown`，**不产生任何 capability**。
-- 上表中已识别的 vLLM connector 还会生成 `decode_colocation`。仅显式填写 `dispatch_profile` 只能声明 P/D 协调方式，不会授予 Decode 共部署能力。
+- 上表中已识别的 vLLM connector 还会生成 `decode_colocation`。显式填写 `dispatch_profile` 只能声明 P/D 协调方式，不会授予 Decode 共部署能力。
 
 > ⚠️ **fail-closed**：原生 vLLM P/D 启动只接受 `handoff` 或 `trigger` 语义；未知或不兼容 Connector 会在 NodeManager 构造启动命令时失败，避免把错误推迟到 KV 传输阶段。
 
@@ -64,7 +64,7 @@ vLLM 引擎按 `kv_connector` 名称（大小写不敏感）推导 capability，
 
 原生 vLLM P/D 同时支持 `handoff` 与 `trigger`（`MooncakeLayerwiseConnector` 推导为 `trigger`）。同一集群内 **handoff 与 trigger 实例不可混部**，Coordinator 会返回 503。SGLang 仍使用自身 bootstrap 协议。
 
-**Layerwise / trigger：** `motor_coordinator_config.inference_workers_config.worker_metaserver_base_port` 默认 `12000`。每个 Inference Worker 在独立端口 `base+worker_index` 上监听 `POST /v1/metaserver`（不与推理口 `SO_REUSEPORT` 共用）。设为 `0` 可关闭。Decode 引擎回调该地址时不携带 API Key，也不走推理面 TLS。metaserver 监听地址与 callback 广告地址一致：优先 `POD_IP`，否则用 `coordinator_api_host`（不绑 loopback，以便跨节点 Decode 回调）。`0.0.0.0`/`::` 可作为推理口监听地址启动，走 Trigger 时若没有可达广告地址则该请求 503。metaserver 端口冲突或启动失败只禁用该 Worker 的 Trigger（请求 503），不拖垮推理口。集群检测读 Worker 本地实例缓存（含 `dispatch_capabilities`），不在每个请求上走 `GET_AVAILABLE_INSTANCES`。若判定为 Trigger 但当前 attempt 没有 Decode 实例，返回 503。
+**Layerwise / trigger：** `motor_coordinator_config.inference_workers_config.worker_metaserver_base_port` 默认 `12000`。每个 Inference Worker 在独立端口 `base+worker_index` 上监听 `POST /v1/metaserver`（不与推理口 `SO_REUSEPORT` 共用）。设为 `0` 可关闭。Decode 引擎回调该地址时不携带 API Key，也不走推理面 TLS。metaserver 监听地址与 callback 广告地址一致：优先 `POD_IP`，否则用 `coordinator_api_host`（不绑 loopback，以便跨节点 Decode 回调）。`0.0.0.0`/`::` 可作为推理口监听地址启动，走 Trigger 时若没有可达广告地址则该请求返回 503。metaserver 端口冲突或启动失败只禁用该 Worker 的 Trigger（请求 503），不拖垮推理口。集群检测读 Worker 本地实例缓存（含 `dispatch_capabilities`），不在每个请求上走 `GET_AVAILABLE_INSTANCES`。若判定为 Trigger 但当前 attempt 没有 Decode 实例，返回 503。
 
 **配置示例**（自定义 connector 不在白名单内时）：
 

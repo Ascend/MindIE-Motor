@@ -66,7 +66,7 @@ MindIE Motor基于云原生插件化架构灵活适配多种推理引擎，结�
 
 - 请求超时时间：540s
 
-- 存储挂载：填写用于挂载元戎、MindIE-Motor、模型启动配置文件的OBS文件路径
+- 存储挂载：填写用于挂载元戎、MindIE Motor、模型启动配置文件的OBS文件路径
 
 MA典型配置如下图所示（MA控制台-开发生产-模型部署-在线服务-部署）：
 
@@ -508,7 +508,7 @@ elapsed_s=$((elapsed_s + sleep_s))
 done
 
 # 启动元戎worker
-pip install $SCRIPT_PATH/yuanrong/install_packages/openyuanrong_datasystem-0.8.1-cp311-cp311-manylinux_2_35_aarch64.whl
+pip install $SCRIPT_PATH/yuanrong/install_packages/openyuanrong_datasystem-0.8.0-cp310-cp310-manylinux_2_34_aarch64.whl
 cd $SCRIPT_PATH/yuanrong
 bash start_yr_worker.sh ${ETCD_K8S_SERVICE}
 ```
@@ -660,7 +660,7 @@ while ((elapsed_s <= MAX_WAIT_S)); do
 done
 
 # 启动元戎worker
-pip install $SCRIPT_PATH/yuanrong/install_packages/openyuanrong_datasystem-0.8.1-cp311-cp311-manylinux_2_35_aarch64.whl
+pip install $SCRIPT_PATH/yuanrong/install_packages/openyuanrong_datasystem-0.8.0-cp310-cp310-manylinux_2_34_aarch64.whl
 cd $SCRIPT_PATH/yuanrong
 bash start_yr_worker.sh ${ETCD_K8S_SERVICE}
 ```
@@ -715,15 +715,15 @@ dsc1 start -t 600 -w \
 echo "yr worker start finished"
 ```
 
-### MindIE-Motor自动化部署脚本
+### MindIE Motor自动化部署脚本
 
 #### 目录架构总览
 
-本教程基于ModelArts对大EP实例级调度进行部署，MindIE-Motor基于大EP实例内DP域进行亲和调度。集群部署及可靠性概览如下图：
+本教程基于ModelArts对大EP实例级调度进行部署，MindIE Motor基于大EP实例内DP域进行亲和调度。集群部署及可靠性概览如下图：
 
 ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image31.png)
 
-在上述ModelArts集群部署形态下，单EP实例内部的MindIE-Motor部署如下图：
+在上述ModelArts集群部署形态下，单EP实例内部的MindIE Motor部署如下图：
 ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image32.png)
 
 #### 基于vllm镜像安装包准备
@@ -1321,7 +1321,6 @@ spec:
   updateStrategy:
     type: RollingUpdate
 
-
 ---
 apiVersion: v1
 kind: Service
@@ -1342,7 +1341,6 @@ spec:
       nodePort: 0
       port: 2380
       protocol: TCP
-
 
 ---
 apiVersion: v1
@@ -1751,7 +1749,7 @@ PREFIX_RATIO="${PREFIX_RATIO:-90}"
 # 动态计算后缀比例
 SUFFIX_RATIO=$(( 100 - PREFIX_RATIO ))
 # 每轮测试数据集大小设置
-NUM_PROMOTS="${NUM_PROMOTS:-200}"
+NUM_PROMPTS="${NUM_PROMPTS:-200}"
 # 数据集重复前缀种类数量设置
 PREFIX_REPETITION_NUM="${PREFIX_REPETITION_NUM:-10}"
 
@@ -1801,7 +1799,7 @@ for CONC in "${CONCURRENCY_LIST[@]}"; do
               --prefix-repetition-prefix-len "${PREFIX_LEN}" \
               --prefix-repetition-suffix-len "${SUFFIX_LEN}" \
               --prefix-repetition-output-len "${OUT_LEN}" \
-              --num-prompts "${NUM_PROMOTS}" \
+              --num-prompts "${NUM_PROMPTS}" \
               --prefix-repetition-num-prefixes "${PREFIX_REPETITION_NUM}" \
               --ignore-eos \
               --model "${MODEL_NAME}" \
@@ -1927,7 +1925,7 @@ echo "=========================================================="
 
    待服务恢复后导出健康检查日志，确认探针检查是否已最大失败次数，并调整最大失败次数、超时时间。就绪探针、存活探针任一失败均会触发MA重调度恢复机制。
 
-2. 使用MindIE-Motor调度替换vllm proxy后，TTFT存在较大劣化：
+2. 使用MindIE Motor调度替换vllm proxy后，TTFT存在较大劣化：
 
    请检查P实例配置参数max_completions_tokens是否为1，PD分离场景下该值超过1会导致性能非预期劣化。
 
@@ -1942,7 +1940,7 @@ echo "=========================================================="
 
 5. 相同健康检查实现，在GLM模型服务可正常使用，切换至deepseek或其他模型服务MA报错健康检查失败：
 
-   通过Post访问vllm的/v1/chat/completion接口获取正常返回值来判断服务健康状况时，要注意请求体、返回格式与特定模型的匹配，如：DeepSeek的思考模式为content中"\<think\>xxxx\<\\think\>"格式，而GLM5等模型的思考过程在reasonning_content字段中。建议再部署GLM系列模型的健康探针请求体中，增加\"chat_template_kwargs\":{\"enable_thinking\": False}字段，关闭思考模式，确保返回内容在"content"字段中。
+   通过Post访问vllm的/v1/chat/completion接口获取正常返回值来判断服务健康状况时，要注意请求体、返回格式与特定模型的匹配，如：DeepSeek的思考模式为content中"\<think\>xxxx\<\\think\>"格式，而GLM5等模型的思考过程在reasoning_content字段中。建议在部署GLM系列模型的健康探针请求体中，增加\"chat_template_kwargs\":{\"enable_thinking\": False}字段，关闭思考模式，确保返回内容在"content"字段中。
 
 6. 创建MA模型服务新版本，拷贝其他页面健康检查指令后，服务启动报错：
 

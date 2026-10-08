@@ -1,6 +1,6 @@
 # 功能介绍
 
-CCAE(Cluster Computing Autonomous Engine)是华为开发的一套集群自智引擎系统。Motor 推理服务可纳管至 CCAE。
+CCAE(Cluster Computing Autonomous Engine)是华为开发的一套集群自治引擎系统。Motor 推理服务可纳管至 CCAE。
 
 CCAE Reporter 负责与 CCAE 对接，采集 Motor 的运行信息（告警、日志、实例信息和metrics 等），上报到 CCAE。
 

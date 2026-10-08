@@ -233,7 +233,7 @@
 
 #### 部署ETCD服务端
 
-部署参考样例如下:
+部署参考样例如下：
 
 1. 执行以下命令加载ETCD镜像。
 
@@ -494,7 +494,7 @@
 
         关键参数如下所示：
 
-        - `spec.template.spec.containers.args.--client-cert-auth`： 启用客户端证书认证
+        - `spec.template.spec.containers.args.--client-cert-auth`：启用客户端证书认证
         - `spec.template.spec.containers.args.--cert-file`：指定服务端证书
         - `spec.template.spec.containers.args.--key-file`：指定服务端私钥
         - `spec.template.spec.containers.args.--trusted-ca-file`：指定信任的CA根证书
@@ -567,7 +567,7 @@
         >   kubectl -n <namespace> cp <etcd-pod>:/tmp/etcd-backup.db ./etcd-backup.db
         >   ```
         >
-        >- 再删除etcd-0，etcd-1，etcd-2数据库中内容（删除前请确认已完成备份，且该目录仅用于本ETCD集群）:
+        >- 再删除etcd-0，etcd-1，etcd-2数据库中内容（删除前请确认已完成备份，且该目录仅用于本ETCD集群）：
         >
         >    ```bash
         >    rm -rf /mnt/data/etcd-0/*

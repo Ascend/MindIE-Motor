@@ -145,8 +145,6 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
   | choices[].message.content | string | 生成内容。 |
   | choices[].finish_reason | string/null | 结束原因，如`stop`、`length`等。 |
 
----
-
 ## OpenAI Responses 接口
 
 **接口功能**
@@ -247,8 +245,6 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
   | output[].content[].type | string | 内容类型，如`output_text`。 |
   | output[].content[].text | string | 生成文本。 |
 
----
-
 ## OpenAI Completion 接口
 
 **接口功能**
@@ -317,7 +313,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
   data: [DONE]
   ```
 
-- 非流式响应样例（非流式）：
+- 非流式响应样例：
 
   ```json
   {

@@ -28,7 +28,7 @@ Successfully installed olc-0.1.0
 
 目前在examples/features/http/overload_control/config已有默认配置文件：
 默认配置文件效果为：
-规则 completions_flow_group： 对 /v1/completions,/v1/chat/completions 接口，限流没60秒通过 1000个
+规则 completions_flow_group： 对 /v1/completions,/v1/chat/completions 接口，限流每60秒通过 1000个
 规则 completions_concurrent_group： 对 /v1/completions,/v1/chat/completions 接口，进行并发控制， 并发数为100
 
 规则配置详情参考 [OLC 官方文档](https://gitcode.com/openFuyao/olc-python)

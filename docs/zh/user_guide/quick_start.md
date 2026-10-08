@@ -23,7 +23,7 @@ chmod -R 755 /mnt/weight
 
 ## 镜像准备
 
-- 方式一：进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框查询 `motor`，进入搜索结果后根据设备型号下载对应的MindIE-Motor镜像。
+- 方式一：进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框查询 `motor`，进入搜索结果后根据设备型号下载对应的MindIE Motor镜像。
 - 方式二：参考[准备MindIE Motor镜像](./maintenance/build_motor_image_from_vllm_ascend.md)章节自制MindIE Motor镜像。
 
 ## 服务部署

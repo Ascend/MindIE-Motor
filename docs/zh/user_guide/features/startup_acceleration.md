@@ -85,9 +85,9 @@ D2D权重加载特性通过user_config.json配置文件中的`engine_config`字�
 
    | 配置项 | 类型 | 取值范围 | 必填 | 默认值 | 说明 |
    |--------|------|----------|------|--------|------|
-   | source | string | auto | 是 | 无 | 固定为"auto"，表示peer地址由Controller自动填充。 |
+   | source | string | auto | 是 | "auto" | 固定为"auto"，表示peer地址由Controller自动填充。 |
    | listen_port | int | 端口号 | 是 | 无 | 本实例对外提供权重服务的起始端口；各device实际端口为`listen_port+device_rank`（含dp偏移）。 |
-   | int8_cache | string | ["hbm", "dram", "no"] | 选填 | 不开启 | 是否启用INT8缓存，全量参数直传。 |
+   | int8_cache | string | ["hbm", "dram", "no"] | 选填 | "no" | 是否启用INT8缓存，未启用时全量参数直传。 |
    | int8_cache_name | list | INT8缓存名称 | 选填 | None | vLLM Ascend内部int8参数名称，若配置，d2d将只传输对应int8参数。默认不过滤，全量参数传输。|
    | output_prefix | string | 文件名前缀 | 选填 | None | 若设置，每个rank将产出{OUTPUT_PREFIX}{RANK}.txt，内容为每个rank的IP:Port配对信息。|
 

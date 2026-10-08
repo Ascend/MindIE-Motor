@@ -202,8 +202,7 @@ FaultManager._handle_fault_info_update()
 刷新故障信息，评估实例故障等级为 L2
         │
         ▼
-故障等级 ≤ L2 → 调用 InstanceManager.separate_instance()
-将受影响实例隔离为 INACTIVE
+故障等级 ≤ L2 → 不触发隔离，实例保持 ACTIVE 继续服务
         │
         ▼
 策略中心根据 fault_code 匹配策略：
@@ -217,12 +216,11 @@ FaultManager._handle_fault_info_update()
 Token 重推完成，故障消除
         │
         ▼
-FaultManager 感知故障清除 → 实例恢复 HEALTHY
-调用 recover_instance() 解除隔离
+FaultManager._refresh_instance_fault_level()
+重新评估：实例已无可评估故障 → fault_level 重置为 HEALTHY、fault_code 置 0
         │
         ▼
-推理实例通过心跳自动重注册为 ACTIVE
-恢复正常推理服务
+实例全程保持 ACTIVE，持续提供推理服务
 ```
 
 ### 关键设计点

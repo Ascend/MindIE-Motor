@@ -43,7 +43,7 @@
      docker rm "$cid"
      ```
 
-   - 方式二：（使用**手动安装 MindIE-Motor 的镜像**）：`git clone` 代码仓后，启动脚本位于 `MindIE-Motor/examples` 目录。
+   - 方式二：（使用**手动安装 MindIE Motor 的镜像**）：`git clone` 代码仓后，启动脚本位于 `MindIE-Motor/examples` 目录。
 
 ## 配置服务化参数
 

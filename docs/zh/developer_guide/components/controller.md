@@ -25,8 +25,6 @@ flowchart LR
 - **ETCD**：Controller 的持久化存储，支撑主备切换时状态恢复。
 - **K8s API Server**：Controller 通过 Watch 机制感知硬件故障（ConfigMap）和节点状态变化。
 
----
-
 ## 架构视图
 
 ### 2.1 逻辑视图：模块职责与协作
@@ -346,8 +344,6 @@ sequenceDiagram
     Note over Main: 接管完成，备机升级为主机
 ```
 
----
-
 ## 关键特性详解
 
 ### 3.1 实例管理：注册、组装、生命周期
@@ -626,8 +622,6 @@ flowchart LR
 > [!WARNING] 已弃用
 > `GET /observability/metrics` 已弃用，将在后续版本移除。请改为直接访问 Coordinator 的 `GET /metrics?type={type}&role={role}` 接口。Coordinator 的地址和端口见 [指标接口](../../user_guide/api/metrics_interfaces.md#接口格式)。
 
----
-
 ## 开发扩展指南
 
 ### 4.1 新增 Observer
@@ -785,8 +779,6 @@ async def _my_metrics(self, request: Request):
 - `GET /startup`：启动探针，返回 `{"message": "Controller startup"}`
 - `GET /readiness`：就绪探针，检查所有模块 `is_alive()` + 主备角色
 - `GET /liveness`：存活探针，检查整体健康状态
-
----
 
 ## 代码导航
 

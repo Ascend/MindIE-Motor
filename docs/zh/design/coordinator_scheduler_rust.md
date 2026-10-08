@@ -6,8 +6,6 @@
 
 本文描述将 Coordinator **调度热路径**从「Scheduler 进程单点账本 + 每请求 ZMQ」重构为「Rust 共享内存多进程原子记账 + Mgmt 控制面」的完整设计。负载均衡 / KV 亲和 / 轮询的**打分公式不变**；变的是账本介质、提交原语和进程边界。
 
----
-
 ## 1. 需求与目标
 
 ### 1.1 需求
@@ -19,7 +17,7 @@
 | R3 | Scheduler 中的熔断等控制面能力迁到 **Mgmt** | 状态机语义与现网一致（见 [熔断设计](circuit_breaker_design.md)） |
 | R4 | 优化前后 **不改变负载均衡算法逻辑** | 打分公式、提交量、fast-path / 慢路径仲裁语义保持等价 |
 
-功能目标之外，本需求关闭还须满足性能目标（详见 [§13.2](#132-性能验收)）：**GLM5.1、并发 32、RR=0** 场景下，Coordinator **调度时延**（请求进入 Coordinator → 向 Prefill 实例发出 HTTP）的 **P99 降至优化前的 50% 及以下**（加速比 ≥ 2，即「减少一倍以上」）。
+功能目标之外，本需求关闭还须满足性能目标（详见 [§13.2](#132-性能验收)）：**GLM5.1、并发 32、RR=0** 场景下，Coordinator **调度时延**（请求进入 Coordinator → 向 Prefill 实例发出 HTTP）的 **P99 降至优化前的 50% 及以下**（加速比 ≥ 2，即「减少一半以上」）。
 
 ### 1.2 要解决的问题
 
@@ -62,8 +60,6 @@ PD 分离是 **2× ALLOCATE + 2× UPDATE**。瓶颈不在选点公式，而在�
 ### 1.5 做完的判定
 
 最终是否交付，以 [§13 最终验收标准](#13-最终验收标准) 为准：**四条需求目标（R1–R4）全部达成，且规定场景下调度 P99 减半（§13.2）**。不以「进程删了」或「有一个 `.so`」单独作为完成标志。开发顺序与测试门禁见 [§11](#11-现有测试评估与-tdd-适配)、[§12](#12-整体开发流程)。**未写齐契约测试、金标测试变红，不得进入下一阶段；不得为了保绿而把已删除的 ZMQ ALLOCATE 加回去。性能达标但不能证明 R4，或 R1–R4 达标但 P99 未减半，需求均未关闭。**
-
----
 
 ## 2. 现状（As-Is）
 
@@ -215,8 +211,6 @@ else:
 
 精度：按 PD group 的 sample 间隔门闩、streak、action_token、alarm 全在 Scheduler 对象上。Worker 侧采集 / checker / 告警上报可本地；跨 Worker 一致必须单点。详见 [精度检测设计](fault_tolerance/precision_detection.md)。
 
----
-
 ## 3. 目标架构（To-Be）
 
 ### 3.1 进程模型
@@ -294,8 +288,6 @@ release:
 
 Hybrid：1 次 allocate + 1 次 release。Unified PD：P、D 各一次，与现在次数相同，只是不再进 Scheduler。
 
----
-
 ## 4. 关键设计决策
 
 | 决策 | 选择 | 不选 | 原因 |
@@ -308,8 +300,6 @@ Hybrid：1 次 allocate + 1 次 release。Unified PD：P、D 各一次，与现�
 | D6 熔断最终闸 | SHM slot `flags.blocked` + CAS 检查 | 只靠 Worker 本地 set | 替代 ALLOCATE 里的 `_is_instance_circuit_open` |
 | D7 浮点 | f64 bit-CAS | 改成整数 milli-token | 不改 `Workload.active_tokens` 类型与公式 |
 | D8 ZMQ 路径 | Mgmt bind 原 `scheduler_frontend` / `scheduler_instance_pub` | 立刻改名 | 减小 Worker/Obs 连接代码 diff；后续可改名 |
-
----
 
 ## 5. 共享内存设计（Schema 4）
 
@@ -434,8 +424,6 @@ CPython `multiprocessing.shared_memory` 在 attach 方进程退出时，resource
 - Worker：Rust `shm_open` + `mmap`，**不要**经 Python `SharedMemory` attach；或 attach 后立刻 `resource_tracker.unregister`
 - 只有 Mgmt（创建者）在正常退出时 `shm_unlink`
 
----
-
 ## 6. 算法不变：CAS-expected 如何等价 ALLOCATE
 
 ### 6.1 映射表
@@ -476,8 +464,6 @@ CPython `multiprocessing.shared_memory` 在 attach 方进程退出时，resource
 ### 6.4 同一 Worker 连续请求
 
 CAS 成功后必须立刻 patch 本进程 cache 的 `endpoint.workload` 与 `gathered_workload`，否则同一 Worker 的下一请求若碰巧跳过 load（不应发生：每次 select 都 load）也会用旧分。实现上：`slot_cas_add` 返回新值，Python 写入 cache。
-
----
 
 ## 7. 控制面迁到 Mgmt
 
@@ -555,8 +541,6 @@ IPC 地址第一期仍用 `scheduler_frontend` / `scheduler_instance_pub`，避�
 ### 7.5 Observability
 
 `ObservabilityServer` 经 `SchedulerConnectionManager` 拉全量实例。对端改为 Mgmt 的 ROUTER/PUB 即可，不必给 Obs 再做一份 `InstanceManager`。`MetricsCollector.set_scheduler_provider` 名字可保留，provider 实现换成 Mgmt 视图。
-
----
 
 ## 8. Rust 如何插入本仓库
 
@@ -669,8 +653,6 @@ Docker：`docker/mindie-motor-vllm/master/Dockerfile` 安装 gcc/curl/libzmq（c
 
 源码开发：改 `.rs` 后需重新 `cargo build`（不像纯 Python 改完即生效）。`AGENTS.md` 写明。
 
----
-
 ## 9. Python 侧改动要点
 
 ### 9.1 `select_and_allocate`
@@ -722,8 +704,6 @@ scheduler_config.workload_shm_multi_writer: bool = False
 
 落地完成后删除 flag，避免双栈长期共存。
 
----
-
 ## 10. 时序
 
 ### 10.1 一次 Hybrid 请求（数据面）
@@ -768,8 +748,6 @@ Worker SUB → _cb_blocked_instances.add
 超时 /health 全 200 → CLOSED
   set_blocked=0，PUB closed
 ```
-
----
 
 ## 11. 现有测试评估与 TDD 适配
 
@@ -893,8 +871,6 @@ crate 内至少覆盖：seqlock 奇数重试、多线程 CAS 守恒、CAS-expect
 ### 11.6 正确性 vs 性能
 
 算法是否变了，只看 L1 金标（固定向量 → 同一 winner），**不能**用 P99 证明 R4。性能是否达标，只看 [§13.2](#132-性能验收) 的对照实验，**不能**用单测绿代替。Skill reference（`references/coordinator.md`）只记机制，不写入某次跑出来的毫秒数（仓库规范）。
-
----
 
 ## 12. 整体开发流程
 
@@ -1025,8 +1001,6 @@ P3  Mgmt 控制面 + Daemon 去 Scheduler  （进程模型）
 
 P1 与 P2 不要对调：没有稳定 `.so` 插入带，就不要让 N 个 Worker 写 SHM。
 
----
-
 ## 13. 最终验收标准
 
 验收 **按需求目标是否达成** 判定，不是按「改了哪些文件」。分两层：
@@ -1038,8 +1012,6 @@ P1 与 P2 不要对调：没有稳定 `.so` 插入带，就不要让 N 个 Worke
 
 功能层的工程 checklist（§13.3）只是 **如何证明** 目标达成，不能写成另一套平行目标，更不能拿 checklist 绿替代性能实验。
 
----
-
 ### 13.1 功能验收（对应四条需求）
 
 | ID | 需求目标（用户原话） | 通过条件（目标语言） |
@@ -1050,8 +1022,6 @@ P1 与 P2 不要对调：没有稳定 `.so` 插入带，就不要让 N 个 Worke
 | R4 | 优化前后不改变负载均衡算法逻辑 | 同一套 Python 打分与提交量公式；winner 在固定负载向量下与优化前一致；争用时用新账本 **重跑同一函数**，而不是换一套启发式 |
 
 **功能验收通过规则：** 上表四行全部满足。证明手段见 [§13.3](#133-功能验收的工程证明)。
-
----
 
 ### 13.2 性能验收
 
@@ -1097,8 +1067,6 @@ P99(T_sched→P)_优化后  ≤  0.5 × P99(T_sched→P)_优化前
 即加速比 ≥ 2，对应需求表述「减少一倍以上」。须同时报告 P50/P99 与样本量；P50 仅作参考，**通过只看 P99**。
 
 对比报告写入 PR/ISSUE（含集群、commit、命令、原始分位数），**不写入** skill reference。
-
----
 
 ### 13.3 功能验收的工程证明
 
@@ -1173,8 +1141,6 @@ P99(T_sched→P)_优化后  ≤  0.5 × P99(T_sched→P)_优化前
 | E4 | KV Conductor 仍仅 Mgmt 注册；`/query` 仍在 Worker |
 | E5 | 文档站本页改为已合入；熔断/精度文更新进程归属 |
 
----
-
 ### 13.4 明确不算验收通过
 
 - 只删 Scheduler，但 ALLOCATE 改打到 Mgmt（热路径仍是 RPC）—— **R1/R2 未达成**
@@ -1185,8 +1151,6 @@ P99(T_sched→P)_优化后  ≤  0.5 × P99(T_sched→P)_优化前
 - 用 TTFT/E2E 冒充 \(T_{\mathrm{sched} \rightarrow P}\) —— **性能验收无效**
 - Python writer 与 Rust writer 在 P3 后仍双栈 —— **R1 未达成**
 
----
-
 ### 13.5 关闭顺序
 
 ```text
@@ -1195,8 +1159,6 @@ P3 功能工程证明勾完（§13.1 + §13.3）
     → §13.2 对照实验通过
       → 需求关闭，可合主干 / 发版
 ```
-
----
 
 ## 14. 文件变更清单（落地时）
 
@@ -1235,8 +1197,6 @@ P3 功能工程证明勾完（§13.1 + §13.3）
 - `router/strategies/*` 的转发与 PD 降级（只换 facade 实现）
 - `kv_conductor` crate、`ConductorApiClient`
 
----
-
 ## 15. 风险、边界与开放问题
 
 | ID | 风险 | 缓解 |
@@ -1256,8 +1216,6 @@ P3 功能工程证明勾完（§13.1 + §13.3）
 2. `UPDATE_WORKLOAD` 的 `operation_id` 去重 FIFO（上限 100_000，且源码注释称尚无 producer）—— CAS 后是否还要？建议 **P3 删除**，释放幂等靠「同一 req 只 sub 一次」（RequestManager 已有 committed）。
 3. Encode role 无独立 membership seq（现网亦然）—— schema 4 是否补第四个 seq？建议保持与现网一致，避免无谓行为差。
 4. IPC 路径是否在 P3 顺便改名为 `mgmt_*`？建议 **P3 不改路径**，减少协同成本。
-
----
 
 ## 16. 需求追踪
 

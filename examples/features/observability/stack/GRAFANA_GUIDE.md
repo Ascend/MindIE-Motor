@@ -6,8 +6,6 @@
 
 前提：已按 [SERVICE_GUIDE.md](SERVICE_GUIDE.md) 拉起栈，且 `http://localhost:3000` 可访问。
 
----
-
 ## 1. 登录与访问
 
 | 项 | 默认值 | 说明 |
@@ -17,8 +15,6 @@
 | 密码 | `motor` | `.env` 的 `GF_SECURITY_ADMIN_PASSWORD` |
 
 登录后进入 **Dashboards** 即可看到下文的三个内置看板。
-
----
 
 ## 2. 页面设计总览
 
@@ -78,8 +74,6 @@
 
 新增面板时**应复用这些变量**做标签过滤，并将变量的 `allValue` 设为 `.*`，避免标签缺失导致 No Data。「引擎性能剖析」看板另有 `$source`、`$job`、`$phase`、`$dp` 等变量，含义类似。
 
----
-
 ## 3. 验证指标是否已被采集
 
 新增看板指标前，先确认 Prometheus 已抓到目标指标，避免在 Grafana 侧反复调试。
@@ -96,8 +90,6 @@ curl -s http://localhost:9090/api/v1/targets
 ```
 
 也可在 Grafana 左侧 **Explore** 选择 Prometheus 数据源，直接输入 PromQL 验证表达式。
-
----
 
 ## 4. 在看板中新增其他 metrics 指标
 
@@ -176,8 +168,6 @@ python3 grafana/scripts/build-profiling-dashboard.py \
 
 适用于 Engine 暴露了新的 `vllm_profiling_*` 指标后，批量刷新剖析看板。
 
----
-
 ## 5. Trace 与 Profiling 数据接入（MindIE Motor 侧）
 
 要让 Tempo / profiling 面板有数据，需在 MindIE Motor 侧开启上报；**需要在拉起栈之前完成的 MindIE Motor 配置清单见 [SERVICE_GUIDE.md §1.4](SERVICE_GUIDE.md)**。本节为操作要点速查。
@@ -215,8 +205,6 @@ ms-service-metric status  # 查看状态
 ```
 
 随后 `vllm_profiling_*` 指标会被 Prometheus 抓取，「引擎性能剖析」看板即可显示数据。
-
----
 
 ## 6. 常见问题
 

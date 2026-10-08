@@ -136,8 +136,6 @@ curl -X GET "http://{IP}:{Port}/health"
 >[!NOTE]说明
 >`/health` 与 `/metrics` 同挂 Coordinator Observability 端口（`coordinator_obs_port`，默认 `1027`，K8s nodePort `31017`），**不在**管理接口端口（`coordinator_api_mgmt_port`，默认 `1026`）上提供服务。
 
----
-
 ## 实例查询接口
 
 **接口功能**
@@ -252,8 +250,6 @@ python3 -m motor.coordinator.register list
 | `instances[].circuit_breaker.current_timeout` | float | 当前熔断超时秒数。 |
 | `instances[].endpoints` | array | 该实例下的业务 endpoint。 |
 | `instances[].endpoints[].business_port` | string | 引擎 HTTP 端口。 |
-
----
 
 ## 实例刷新接口
 
@@ -404,8 +400,6 @@ Coordinator 纳管状态，不管理 P/D 生命周期；重启后必须由 Exter
 重放完整 `set`。为避免同一实例 ID 误删已更新的实例，`del` 必须携带与注册时一致的
 `role` 和 Endpoint 物理身份（外部协议中为 `address`）；不一致时接口返回
 HTTP 409。
-
----
 
 ## 精度告警状态清理接口
 
