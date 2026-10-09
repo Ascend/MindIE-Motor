@@ -32,6 +32,8 @@ MOTOR_ENGINE_ENCODE_CONFIG_KEY = "motor_engine_encode_config"
 MOTOR_ENGINE_PREFILL_CONFIG_KEY = "motor_engine_prefill_config"
 MOTOR_ENGINE_DECODE_CONFIG_KEY = "motor_engine_decode_config"
 MOTOR_ENGINE_UNION_CONFIG_KEY = "motor_engine_union_config"
+MOTOR_COORDINATOR_CONFIG_KEY = "motor_coordinator_config"
+RENDER_CONFIG_KEY = "render_config"
 ENCODE_PARALLEL_CONFIG_KEY = "encode_parallel_config"
 PREFILL_PARALLEL_CONFIG_KEY = "prefill_parallel_config"
 DECODE_PARALLEL_CONFIG_KEY = "decode_parallel_config"
@@ -166,6 +168,7 @@ class DeployConfig:
     dispatch_profile: str | None = None
     health_check_config: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     enable_multi_endpoints: bool = True
+    render_enabled: bool = False
 
     @classmethod
     def load(cls, file_path: str | Path, role: str | None = None) -> "DeployConfig":
@@ -177,6 +180,9 @@ class DeployConfig:
         """
         with open(file_path, "r", encoding="utf-8") as f:
             raw_data = json.load(f)
+        coordinator_config = raw_data.get(MOTOR_COORDINATOR_CONFIG_KEY, {}) if isinstance(raw_data, dict) else {}
+        render_config = coordinator_config.get(RENDER_CONFIG_KEY, {}) if isinstance(coordinator_config, dict) else {}
+        render_enabled = render_config.get("enable") is True if isinstance(render_config, dict) else False
         data = raw_data
         if isinstance(raw_data, dict) and (
             MOTOR_ENGINE_ENCODE_CONFIG_KEY in raw_data
@@ -250,6 +256,7 @@ class DeployConfig:
             dispatch_profile=data.get(DISPATCH_PROFILE_KEY),
             health_check_config=HealthCheckConfig.from_dict(data.get("health_check_config", {})),
             enable_multi_endpoints=bool(enable_multi_endpoints),
+            render_enabled=render_enabled,
         )
 
     def get_parallel_config(self, role: str = "union") -> ParallelConfig:

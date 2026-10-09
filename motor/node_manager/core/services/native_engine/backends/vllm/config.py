@@ -8,9 +8,11 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import importlib
 import json
-from typing import Any
 from dataclasses import dataclass, field
+from functools import lru_cache
+from typing import Any
 
 from motor.config.endpoint import EndpointConfig
 from motor.common.logger import get_logger
@@ -24,6 +26,17 @@ logger = get_logger(__name__)
 # otherwise flood the api-server log. Per-instance override via engine_config
 # key disable_access_log_for_endpoints.
 DEFAULT_ACCESS_LOG_EXCLUDED_ENDPOINTS = "/health,/metrics,/snapshot/health,/v1/fault_tolerance/status"
+
+
+@lru_cache(maxsize=1)
+def _supports_enable_scale_out() -> bool:
+    """Return whether the installed vLLM exposes the scale-out CLI gate."""
+    try:
+        module = importlib.import_module("vllm.entrypoints.launchers.cli_args")
+        frontend_args = getattr(module, "BaseFrontendArgs")
+    except (ImportError, AttributeError):
+        return False
+    return "enable_scale_out" in getattr(frontend_args, "__annotations__", {})
 
 
 def _add_argument_to_list(arg_list: list, key: str, value: Any):
@@ -247,6 +260,17 @@ class VLLMConfig:
 
         flattened.update(deploy_config.engine_config.configs)
 
+        role = self.endpoint_config.role
+        if (
+            deploy_config.render_enabled
+            and role in (constants.PREFILL_ROLE, constants.DECODE_ROLE, constants.UNION_ROLE)
+            and _supports_enable_scale_out()
+        ):
+            # vLLM 0.30 gates /inference/v1/generate behind this opt-in.
+            # Older versions do not declare the option and keep the route enabled
+            # by default, so do not pass them an unknown CLI argument.
+            flattened.setdefault("enable_scale_out", True)
+
         # Default: keep health probes and metrics scraping out of the api-server access
         # log. A user-set value in engine_config wins; accept vLLM's native dash style too.
         if "disable-access-log-for-endpoints" not in flattened and "disable_access_log_for_endpoints" not in flattened:
@@ -265,7 +289,6 @@ class VLLMConfig:
                 if value is not None:
                     flattened.setdefault(vllm_key, value)
 
-        role = self.endpoint_config.role
         parallel_config = deploy_config.get_parallel_config(role)
         for server_key, vllm_key in self.mapping.items():
             if hasattr(parallel_config, server_key):

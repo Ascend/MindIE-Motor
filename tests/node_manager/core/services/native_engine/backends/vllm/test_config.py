@@ -10,11 +10,14 @@
 
 
 import json
+from unittest.mock import patch
 
 import pytest
 
 from motor.config.endpoint import DeployConfig, EndpointConfig, EngineConfig, ModelConfig, ParallelConfig
 from motor.node_manager.core.services.native_engine.backends.vllm.config import VLLMConfig
+
+MODULE = "motor.node_manager.core.services.native_engine.backends.vllm.config"
 
 
 def _make_endpoint_config(
@@ -25,6 +28,7 @@ def _make_endpoint_config(
     dp_size=1,
     tp_size=4,
     pcp_size=1,
+    render_enabled=False,
 ):
     """Build an EndpointConfig with minimal fields for testing _flatten_config."""
     engine_cfg = {
@@ -49,6 +53,7 @@ def _make_endpoint_config(
         engine_config=EngineConfig.from_dict(engine_cfg),
         mgmt_tls_config=None,
         infer_tls_config=None,
+        render_enabled=render_enabled,
     )
     return EndpointConfig(
         deploy_config=deploy_config,
@@ -444,3 +449,47 @@ def test_access_log_endpoints_dash_style_user_override_wins():
 
     assert "disable_access_log_for_endpoints" not in flattened
     assert flattened["disable-access-log-for-endpoints"] == "/v1/models"
+
+
+@pytest.mark.parametrize(
+    "role, render_enabled, supported, explicit, expected",
+    [
+        ("prefill", True, True, None, True),
+        ("decode", True, True, None, True),
+        ("union", True, True, None, True),
+        ("prefill", False, True, None, False),
+        ("prefill", True, False, None, False),
+        ("prefill", True, True, False, False),
+    ],
+)
+def test_scale_out_gate(role, render_enabled, supported, explicit, expected):
+    """The final CLI follows Render intent, role, capability, and user override."""
+    endpoint_config = _make_endpoint_config(render_enabled=render_enabled)
+    endpoint_config.role = role
+    if explicit is not None:
+        endpoint_config.deploy_config.engine_config.set("enable_scale_out", explicit)
+    if role != "union":
+        _set_min_kv_transfer_config(endpoint_config)
+
+    with patch(f"{MODULE}._supports_enable_scale_out", return_value=supported):
+        config = VLLMConfig(endpoint_config=endpoint_config)
+        config.initialize()
+        cli_args = config.get_cli_args()
+
+    assert ("--enable-scale-out" in cli_args) is expected
+
+
+def test_deploy_config_derives_render_enable_from_root(tmp_path):
+    """NodeManager must derive Render intent from the shared root configuration."""
+    user_config = {
+        "motor_deploy_config": {},
+        "motor_coordinator_config": {"render_config": {"enable": True}},
+        "motor_engine_union_config": {
+            "engine_type": "vllm",
+            "engine_config": {"model": "/weights/model", "served_model_name": "model"},
+        },
+    }
+    config_path = tmp_path / "user_config.json"
+    config_path.write_text(json.dumps(user_config), encoding="utf-8")
+
+    assert DeployConfig.load(config_path, role="union").render_enabled is True

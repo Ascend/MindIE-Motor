@@ -480,7 +480,7 @@ motor_coordinator_config字段配置样例如下所示：
 |--------|------|------------------|
 | context_budget_mode | string | 请求路由前使用模型 tokenizer 计算 prompt token 数，并将实际生效的 `max_tokens` / `max_completion_tokens` 裁剪到模型剩余上下文。适用于 `load_balance`、`round_robin`、`kv_cache_affinity`。可选值：`off`（默认）或 `on`；开启 `on` 时，P/D 引擎配置必须提供 `model` 与 `max_model_len`。 |
 | **render_config字段** |-|-|
-| enable | bool | 是否启用 vLLM Render Sidecar。默认值：`false`。启用后，Coordinator 优先调用 Render；Render 不可用、超时或接口不支持时回退本地 tokenizer，请求校验错误（400/422，以及带结构化错误响应的 404）直接返回客户端。启用 KV Cache 亲和性调度时建议同时开启。 |
+| enable | bool | 是否启用 vLLM Render Sidecar。默认值：`false`。启用后，Coordinator 优先调用 Render；Render 不可用、超时或接口不支持时回退本地 tokenizer，请求校验错误（400/422，以及带结构化错误响应的 404）直接返回客户端。vLLM 0.30+ 对 token-only Generate 新增了 `--enable-scale-out` 门禁，Motor 会在支持时为 P/D/Union 引擎自动开启，无需手动配置。启用 KV Cache 亲和性调度时建议同时开启。 |
 | enable_streaming | bool | 是否让流式请求使用 Render Token In/Token Out。实验性开关，默认值：`false`；关闭时流式请求沿用原生链路，不调用 Render。基础流式 Derender 要求 vLLM >= 0.27.0；流式 reasoning/tool call 解析要求包含 vLLM PR #50550（该功能未包含在 v0.29.0 及更早正式版本中）。高并发性能及高级场景需按具体版本验证后按需开启。 |
 | endpoint | object | Render Sidecar 地址。`host` 默认值为 `127.0.0.1`，Sidecar 部署仅支持本机地址；`port` 默认值为 `8100`。 |
 | timeout_ms | int | Render、Derender 与健康检查的 HTTP 超时时间，单位：毫秒。默认值：`5000`。 |
