@@ -7,5 +7,5 @@
 *.ps1 text eol=crlf
 
 # Preserve existing model JSON line endings during directory moves.
-infer_engines/**/env.json -text
-infer_engines/**/user_config.json -text
+model_configs/**/env.json -text
+model_configs/**/user_config.json -text

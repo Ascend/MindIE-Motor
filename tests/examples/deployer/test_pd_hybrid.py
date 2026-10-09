@@ -756,7 +756,7 @@ def test_handle_update_instance_num_regenerates_kv_conductor_when_infer_yaml_mis
 
 
 def test_vllm_pd_hybrid_sample_is_valid():
-    sample_path = DEPLOYER_ROOT.parent.parent / "infer_engines" / "vllm" / "pd_hybrid" / "user_config.json"
+    sample_path = DEPLOYER_ROOT.parent.parent / "model_configs" / "vllm" / "pd_hybrid" / "user_config.json"
     with open(sample_path, "r", encoding="utf-8") as f:
         user_config = json.load(f)
 

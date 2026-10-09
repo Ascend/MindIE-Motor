@@ -33,13 +33,13 @@
 Kubernetes部署场景：
 
 ```bash
-nohup python3 ras_monitor.py --config_dir ../../infer_engines/vllm > ras_monitor_result.txt 2>&1 &
+nohup python3 ras_monitor.py --config_dir ../../model_configs/vllm > ras_monitor_result.txt 2>&1 &
 ```
 
 Docker only部署场景：
 
 ```bash
-nohup python3 ras_monitor.py --config_dir ../../infer_engines/vllm --coordinator-ip <Coordinator IP> > ras_monitor_result.txt 2>&1 &
+nohup python3 ras_monitor.py --config_dir ../../model_configs/vllm --coordinator-ip <Coordinator IP> > ras_monitor_result.txt 2>&1 &
 ```
 
 `--coordinator-ip` 请填写部署 coordinator 容器的宿主机合法 IP（IPv4 或 IPv6）。非法地址会立即报错退出，不会进入探活等待。Docker 场景确认服务异常后，ras_monitor 会把观察结果写入日志并退出，不会调用 K8s 的 delete/deploy 重拉。
@@ -53,7 +53,7 @@ nohup python3 ras_monitor.py --config_dir ../../infer_engines/vllm --coordinator
 
 ### 其他
 
-1、由于 ras_monitor 的定位为大 EP 的健康伴侣，与大 EP 的启动执行脚本 deploy.py 解耦。若 ras_monitor 先启动，用户需在 `examples/deployer` 目录下手动执行 `python3 deploy.py --config_dir ../../infer_engines/vllm`（或使用 `--user_config_path` 与 `--env_config_path` 指定配置文件）拉起服务后，ras_monitor 才进入监控流程，否则将一直等待服务拉起并 ready。
+1、由于 ras_monitor 的定位为大 EP 的健康伴侣，与大 EP 的启动执行脚本 deploy.py 解耦。若 ras_monitor 先启动，用户需在 `examples/deployer` 目录下手动执行 `python3 deploy.py --config_dir ../../model_configs/vllm`（或使用 `--user_config_path` 与 `--env_config_path` 指定配置文件）拉起服务后，ras_monitor 才进入监控流程，否则将一直等待服务拉起并 ready。
 
 2、若在 ras_monitor 监控过程中客户有修改配置的诉求，若在执行 `bash delete` 删除服务后，客户未终止ras_monitor 进程，ras_monitor 作为自动化脚本可能会误判认为服务异常，执行重拉。因此，建议在 `bash delete` 执行后，手动停止ras_monitor 进程以防止误重启。
 

@@ -53,7 +53,7 @@ python examples/features/http/api_key/generate_api_key.py --iterations 200000
 
 ### 在配置中使用生成的 API Key
 
-脚本会给出一个类似下面的配置示例（以 `infer_engines/vllm/user_config.json` 为例），你可以按需合并到自己的配置中：
+脚本会给出一个类似下面的配置示例（以 `model_configs/vllm/user_config.json` 为例），你可以按需合并到自己的配置中：
 
 ```json
 {

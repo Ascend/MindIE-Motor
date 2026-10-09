@@ -82,7 +82,7 @@ examples/
 │   ├── startup/               # 启动脚本
 │   ├── log_collect/           # 日志采集
 │   └── output_yamls/          # 生成的 YAML 输出目录
-└── infer_engines/
+└── model_configs/
     └── vllm/
         └── pd_hybrid/
             ├── user_config.json   # PD 混部用户配置示例
@@ -90,12 +90,12 @@ examples/
             └── README.md          # 示例说明
 ```
 
-- PD 混部示例配置位于 `infer_engines/vllm/pd_hybrid/`。
+- PD 混部示例配置位于 `model_configs/vllm/pd_hybrid/`。
 - 部署工具使用方法详见 `examples/deployer/README.md`。
 
 ## 配置 `user_config.json`
 
-PD 混部可直接参考 `infer_engines/vllm/pd_hybrid/user_config.json`。该文件根节点包含 `version`、`motor_deploy_config`、`motor_controller_config`、`motor_coordinator_config` 和 `motor_engine_union_config`。
+PD 混部可直接参考 `model_configs/vllm/pd_hybrid/user_config.json`。该文件根节点包含 `version`、`motor_deploy_config`、`motor_controller_config`、`motor_coordinator_config` 和 `motor_engine_union_config`。
 
 ### motor_deploy_config（部署与资源）
 
@@ -153,7 +153,7 @@ PD 混部场景不再需要配置 Coordinator 调度模式。Coordinator 会根�
 }
 ```
 
-启用 KV Cache 亲和时，在 `infer_engines/vllm/pd_hybrid/user_config.json` 中按上述示例修改 `motor_coordinator_config`、`motor_engine_union_config` 并增加 `kv_conductor_config` 即可，无需单独配置文件。KV Conductor 安装与部署说明见 [KV Cache 亲和部署](../../features/kvcache_affinity.md)。
+启用 KV Cache 亲和时，在 `model_configs/vllm/pd_hybrid/user_config.json` 中按上述示例修改 `motor_coordinator_config`、`motor_engine_union_config` 并增加 `kv_conductor_config` 即可，无需单独配置文件。KV Conductor 安装与部署说明见 [KV Cache 亲和部署](../../features/kvcache_affinity.md)。
 
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
@@ -213,7 +213,7 @@ PD 混部场景不再需要配置 Coordinator 调度模式。Coordinator 会根�
 
 ## 配置 `env.json`
 
-PD 混部可直接参考 `infer_engines/vllm/pd_hybrid/env.json`。混部原生引擎的环境变量配置在 `motor_engine_union_env` 中。
+PD 混部可直接参考 `model_configs/vllm/pd_hybrid/env.json`。混部原生引擎的环境变量配置在 `motor_engine_union_env` 中。
 
 **配置示例**：
 
@@ -270,7 +270,7 @@ PD 混部可直接参考 `infer_engines/vllm/pd_hybrid/env.json`。混部原生�
 
 ```bash
 cd examples/deployer
-python3 deploy.py --config_dir ../../infer_engines/vllm/pd_hybrid
+python3 deploy.py --config_dir ../../model_configs/vllm/pd_hybrid
 ```
 
 **方式二：单独指定配置文件路径**：
@@ -278,14 +278,14 @@ python3 deploy.py --config_dir ../../infer_engines/vllm/pd_hybrid
 ```bash
 cd examples/deployer
 python3 deploy.py \
-  --user_config_path ../../infer_engines/vllm/pd_hybrid/user_config.json \
-  --env_config_path ../../infer_engines/vllm/pd_hybrid/env.json
+  --user_config_path ../../model_configs/vllm/pd_hybrid/user_config.json \
+  --env_config_path ../../model_configs/vllm/pd_hybrid/env.json
 ```
 
 如需仅检查 YAML 生成，可增加 `--dry-run`：
 
 ```bash
-python3 deploy.py --config_dir ../../infer_engines/vllm/pd_hybrid --dry-run
+python3 deploy.py --config_dir ../../model_configs/vllm/pd_hybrid --dry-run
 ```
 
 `deploy.py` 会依次执行以下步骤：
@@ -371,7 +371,7 @@ PD 混部扩缩容时仅修改 `motor_deploy_config.hybrid_instances_num`，然�
 
 ```bash
 cd examples/deployer
-python3 deploy.py --config_dir ../../infer_engines/vllm/pd_hybrid --update_instance_num
+python3 deploy.py --config_dir ../../model_configs/vllm/pd_hybrid --update_instance_num
 ```
 
 说明：

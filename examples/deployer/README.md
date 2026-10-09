@@ -78,7 +78,7 @@ python deploy.py
 #### 方式一：指定配置目录（推荐）
 
 ```bash
-python deploy.py --config_dir ../../infer_engines/vllm
+python deploy.py --config_dir ../../model_configs/vllm
 ```
 
 程序会自动从指定目录下读取 `user_config.json` 和 `env.json`。
@@ -86,27 +86,27 @@ python deploy.py --config_dir ../../infer_engines/vllm
 #### 方式二：单独指定配置文件
 
 ```bash
-python deploy.py --config ../../infer_engines/vllm/user_config.json --env ../../infer_engines/vllm/env.json
+python deploy.py --config ../../model_configs/vllm/user_config.json --env ../../model_configs/vllm/env.json
 ```
 
 #### 方式三：混合使用
 
 ```bash
-python deploy.py --config_dir ../../infer_engines/vllm --config /path/to/custom_user_config.json --env /path/to/custom_env.json
+python deploy.py --config_dir ../../model_configs/vllm --config /path/to/custom_user_config.json --env /path/to/custom_env.json
 ```
 
 当同时指定 `--config_dir` 和 `--config`/`--env` 时，以 `--config` 和 `--env` 为准。
 
 #### 方式四：基于vllm部署脚本生成Motor全量配置文件
 
-使用方式请参阅[Motor配置自动生成指导](../../infer_engines/vllm/models/README.md)。
+使用方式请参阅[Motor配置自动生成指导](../../model_configs/vllm/models/README.md)。
 
 ### 其他操作
 
 #### 更新配置
 
 ```bash
-python deploy.py --config_dir ../../infer_engines/vllm --update_config
+python deploy.py --config_dir ../../model_configs/vllm --update_config
 ```
 
 仅更新集群中的 ConfigMap，不重新部署服务。
@@ -114,19 +114,19 @@ python deploy.py --config_dir ../../infer_engines/vllm --update_config
 #### 扩缩容实例
 
 ```bash
-python deploy.py --config_dir ../../infer_engines/vllm --update_instance_num
+python deploy.py --config_dir ../../model_configs/vllm --update_instance_num
 ```
 
 根据 `user_config.json` 中的 `p_instances_num` 和 `d_instances_num` 进行实例扩缩容。
 
 ## 配置文件说明
 
-配置文件位于仓库根目录的 `infer_engines/` 下，根据引擎类型和模型选择对应的配置。
+配置文件位于仓库根目录的 `model_configs/` 下，根据引擎类型和模型选择对应的配置。
 该目录不随 `examples/` 放入发布镜像；使用镜像中的 deployer 时，请从源码仓库获取典配，
 将所选配置目录挂载到容器，并通过 `--config_dir` 指定其实际路径。
 
 ```bash
-infer_engines/
+model_configs/
 ├── vllm/                    # vLLM 引擎配置
 │   ├── user_config.json     # 快速启动用户配置
 │   ├── env.json             # 快速启动环境变量配置
@@ -308,9 +308,9 @@ Seed 可用于还原词表置换，必须与混淆权重同权限保管，禁止
 
 ## 参考示例
 
-如需具体模型的拉起与配置示例，可参考仓库中的 **infer_engines/** 目录：
+如需具体模型的拉起与配置示例，可参考仓库中的 **model_configs/** 目录：
 
-👉 **[infer_engines 目录](../../infer_engines)**
+👉 **[model_configs 目录](../../model_configs)**
 
 该目录下提供多种场景的参考配置与脚本，便于按实际模型进行部署与调优。
 

@@ -527,7 +527,7 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
         )
 
         config_dir = self._read_line(
-            f"{C.Style.BOLD}Config dir:{C.Style.RESET} {C.Style.DIM}(e.g. ../../infer_engines/vllm){C.Style.RESET}",
+            f"{C.Style.BOLD}Config dir:{C.Style.RESET} {C.Style.DIM}(e.g. ../../model_configs/vllm){C.Style.RESET}",
             default=self._last_config_dir,
         )
         self._status_msg = None
@@ -647,7 +647,7 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
         )
 
         config_dir = self._read_line(
-            f"{C.Style.BOLD}Config dir:{C.Style.RESET} {C.Style.DIM}(e.g. ../../infer_engines/vllm){C.Style.RESET}",
+            f"{C.Style.BOLD}Config dir:{C.Style.RESET} {C.Style.DIM}(e.g. ../../model_configs/vllm){C.Style.RESET}",
             default=self._last_config_dir,
         )
         self._status_msg = None

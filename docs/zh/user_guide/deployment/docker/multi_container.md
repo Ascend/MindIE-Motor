@@ -48,13 +48,13 @@
 
    - PD分离场景
 
-     MindIE Motor已提供常用模型（deepseek_v4_flash、deepseek_v4_pro、GLM 5.1等）的[**PD分离配置示例**](../../../../../infer_engines/vllm/models/README.md)，**用户修改少量配置后可直接使用**。
+     MindIE Motor已提供常用模型（deepseek_v4_flash、deepseek_v4_pro、GLM 5.1等）的[**PD分离配置示例**](../../../../../model_configs/vllm/models/README.md)，**用户修改少量配置后可直接使用**。
 
-     对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../../infer_engines/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+     对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
    - PD混部场景
 
-     可参考 [**MindIE Motor 配置自动生成指导**](../../../../../infer_engines/vllm/models/README.md)，**自动生成**PD混部场景下的配置文件 `user_config.json` 与 `env.json`。
+     可参考 [**MindIE Motor 配置自动生成指导**](../../../../../model_configs/vllm/models/README.md)，**自动生成**PD混部场景下的配置文件 `user_config.json` 与 `env.json`。
 
 2. **配置端口**
 
@@ -87,7 +87,7 @@
 
 3. **同步启动脚本配置**
 
-    将准备好的配置文件（user_config.json、env.json）存放于启动脚本的infer_engines/vllm目录下，之后将整个配置脚本目录拷贝至集群中的每一台服务器，一台服务器对应一份相同的脚本。
+    将准备好的配置文件（user_config.json、env.json）存放于启动脚本的model_configs/vllm目录下，之后将整个配置脚本目录拷贝至集群中的每一台服务器，一台服务器对应一份相同的脚本。
 
 ## 开启 KV 池化（可选）
 
@@ -125,7 +125,7 @@ Ascend950 机器分为 PR、DT 两类：PR 使用白鹭内存，DT 使用 HBM。
    在 **PR 机器**上执行 Prefill 的启动命令：
 
    ```bash
-   python3 docker_deploy.py --config_dir ../../infer_engines/vllm \
+   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
      --container-name motor-p0 --devices 0 \
      --role prefill --instance-name p0 \
      --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
@@ -136,7 +136,7 @@ Ascend950 机器分为 PR、DT 两类：PR 使用白鹭内存，DT 使用 HBM。
    在 **DT 机器**上执行 Decode 的启动命令：
 
    ```bash
-   python3 docker_deploy.py --config_dir ../../infer_engines/vllm \
+   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
      --container-name motor-d0-0 --devices 0 \
      --role decode --instance-name d0 \
      --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
@@ -168,13 +168,13 @@ Ascend950 机器分为 PR、DT 两类：PR 使用白鹭内存，DT 使用 HBM。
 若该容器已经存在（例如先前 `--create` 过），部署脚本不会覆盖它。进入容器后按其它角色同样的方式启动：
 
 ```bash
-python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/infer_engines/vllm --start --role render
+python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --start --role render
 ```
 
 也可单独创建 Render 容器（无 NPU，host 网络，与 Controller 相同模板）：
 
 ```bash
-python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/infer_engines/vllm --create --container-name <NAME>-vllm-render --role render
+python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --create --container-name <NAME>-vllm-render --role render
 ```
 
 ```json
@@ -249,7 +249,7 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/infer_
    每个容器在对应服务器上执行一次下文「部署推理服务」中的命令。以 Prefill 实例 `p0` 为例：
 
    ```bash
-   python3 docker_deploy.py --config_dir ../../infer_engines/vllm \
+   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
      --container-name motor-p0 --devices 0 \
      --role prefill --instance-name p0 \
      --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
@@ -266,7 +266,7 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/infer_
    在 `examples/deployer` 目录下，执行如下命令将管理面服务（coordinator、controller）部署在同一容器：
 
    ```bash
-   python3 docker_deploy.py --config_dir ../../infer_engines/vllm \
+   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
      --container-name motor-ctrl --role coordinator,controller \
      --pod-ip <本机 IP地址> --nic-name <本机主网卡名称>
    ```
@@ -274,14 +274,14 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/infer_
    若需将 Coordinator 与 Controller 分容器部署，可执行以下命令。
 
    ```bash
-   python3 docker_deploy.py --config_dir ../../infer_engines/vllm \
+   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
      --container-name motor-ctrl --role controller \
      --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
      --coordinator-ip <coordinator管理服务所在服务器的 IP地址>
    ```
 
    ```bash
-   python3 docker_deploy.py --config_dir ../../infer_engines/vllm \
+   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
      --container-name motor-coord --role coordinator \
      --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
      --controller-ip <controller管理服务所在服务器的 IP地址>
@@ -300,7 +300,7 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/infer_
    未开启池化请跳过本步。选择任意一台服务器，在 `examples/deployer` 目录下执行：
 
    ```bash
-   python3 docker_deploy.py --config_dir ../../infer_engines/vllm \
+   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
      --container-name motor-kvs --role kv_store \
      --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
      --coordinator-ip <coordinator管理服务所在服务器的 IP地址> \
@@ -314,7 +314,7 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/infer_
    执行以下命令可完成 1 个 Prefill 容器的部署：
 
    ```bash
-   python3 docker_deploy.py --config_dir ../../infer_engines/vllm \
+   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
      --container-name motor-p0 --devices 0 \
      --role prefill --instance-name p0 \
      --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
@@ -325,7 +325,7 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/infer_
    执行以下命令可完成 1 个 Decode 容器的部署：
 
    ```bash
-   python3 docker_deploy.py --config_dir ../../infer_engines/vllm \
+   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
      --container-name motor-d0-0 --devices 0 \
      --role decode --instance-name d0 \
      --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
@@ -398,7 +398,7 @@ examples/motor_workspace/motor-kvs/kvs/log/docker-kv_store-<时间戳>.log
 
 ```text
 容器内服务已终止，可执行以下命令重新部署服务。
-python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/infer_engines/vllm --start --container-name motor-ctrl --role coordinator,controller --pod-ip <本机 IP地址> --nic-name <本机主网卡名称>
+python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --start --container-name motor-ctrl --role coordinator,controller --pod-ip <本机 IP地址> --nic-name <本机主网卡名称>
 运行日志：examples/motor_workspace/motor-ctrl/ctrl/log/docker-coordinator-controller-<时间戳>.log
 ```
 
@@ -435,7 +435,7 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/infer_
 执行以下命令部署容器 `motor-d0-0`：
 
 ```bash
-python3 docker_deploy.py --config_dir ../../infer_engines/vllm \
+python3 docker_deploy.py --config_dir ../../model_configs/vllm \
   ... \
   --devices 0 \
   ... \
@@ -447,7 +447,7 @@ python3 docker_deploy.py --config_dir ../../infer_engines/vllm \
 执行以下命令部署容器 `motor-d0-1`：
 
 ```bash
-python3 docker_deploy.py --config_dir ../../infer_engines/vllm \
+python3 docker_deploy.py --config_dir ../../model_configs/vllm \
   ... \
   --devices 1 \
   ... \

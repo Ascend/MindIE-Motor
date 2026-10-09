@@ -741,10 +741,10 @@
     ```bash
     cd examples/deployer
     # 方式一：指定配置目录（推荐）
-    python deploy.py --config_dir ../../infer_engines/vllm
+    python deploy.py --config_dir ../../model_configs/vllm
 
     # 方式二：单独指定配置文件
-    python deploy.py --user_config_path ../../infer_engines/vllm/user_config.json --env_config_path ../../infer_engines/vllm/env.json
+    python deploy.py --user_config_path ../../model_configs/vllm/user_config.json --env_config_path ../../model_configs/vllm/env.json
     ```
 
     部署完成后Controller的Pod副本数为2。
@@ -904,10 +904,10 @@
     ```bash
     cd examples/deployer
     # 方式一：指定配置目录（推荐）
-    python deploy.py --config_dir ../../infer_engines/vllm
+    python deploy.py --config_dir ../../model_configs/vllm
 
     # 方式二：单独指定配置文件
-    python deploy.py --user_config_path ../../infer_engines/vllm/user_config.json --env_config_path ../../infer_engines/vllm/env.json
+    python deploy.py --user_config_path ../../model_configs/vllm/user_config.json --env_config_path ../../model_configs/vllm/env.json
     ```
 
     部署完成后Coordinator的Pod副本数为2。

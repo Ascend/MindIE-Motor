@@ -352,7 +352,7 @@ def parse_arguments():
         "--dir",
         type=str,
         help="Directory containing user_config.json and env.json, "
-        "select from infer_engines/ based on your engine and model requirements",
+        "select from model_configs/ based on your engine and model requirements",
     )
     parser.add_argument(
         "--user_config_path",

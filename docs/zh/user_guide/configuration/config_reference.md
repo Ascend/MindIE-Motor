@@ -1,7 +1,7 @@
 # user_config.json配置文件全量参数说明
 
 本文档详细说明user_config.json配置文件中Controller、Coordinator等组件的全量可配置项，其结构与"examples/features/config_sample.json"结构一一对应。
-部署时，系统会将"user_config.json"中对应模块合并至组件运行时配置，遵循“代码默认值优先，用户配置覆盖”原则。此外，支持通过修改组件所监控的配置文件实现动态生效。配置文件位于“infer_engines/”目录下（如“infer_engines/vllm/user_config.json”），请根据实际使用的引擎类型和模型选择对应配置。
+部署时，系统会将"user_config.json"中对应模块合并至组件运行时配置，遵循“代码默认值优先，用户配置覆盖”原则。此外，支持通过修改组件所监控的配置文件实现动态生效。配置文件位于“model_configs/”目录下（如“model_configs/vllm/user_config.json”），请根据实际使用的引擎类型和模型选择对应配置。
 
 ## motor_deploy_config
 
@@ -1069,7 +1069,7 @@ PD模式下P与D**各自独立配置**"health_check_config"，未配置时使用
 
 ### motor_engine_union_env字段
 
-PD混部场景下，union 原生引擎的环境变量配置在 `env.json` 的 `motor_engine_union_env` 中。示例可参考 `infer_engines/vllm/pd_hybrid/env.json`。
+PD混部场景下，union 原生引擎的环境变量配置在 `env.json` 的 `motor_engine_union_env` 中。示例可参考 `model_configs/vllm/pd_hybrid/env.json`。
 
 **配置示例**：
 

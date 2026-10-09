@@ -27,12 +27,12 @@ D2D权重加载特性的工作原理大致分为以下三步：
 
 | 模型 | 配置目录(参考) |
 |------|----------|
-| Qwen3-30B | infer_engines/vllm/models/qwen_235b/ |
-| DeepSeek-V3.1-w8a8-mtp | infer_engines/vllm/models/deepseek_v3.1/ |
-| DeepSeek-V4-Flash-w8a8-mtp | infer_engines/vllm/models/deepseek_v4_flash/ |
-| DeepSeek-V4-Pro-w4a8 | infer_engines/vllm/models/deepseek_v4_pro/ |
-| GLM-5.1-w4a8 | infer_engines/vllm/models/glm_5.1/ |
-| GLM-5.1-w8a8 | infer_engines/vllm/models/glm_5.1/ |
+| Qwen3-30B | model_configs/vllm/models/qwen_235b/ |
+| DeepSeek-V3.1-w8a8-mtp | model_configs/vllm/models/deepseek_v3.1/ |
+| DeepSeek-V4-Flash-w8a8-mtp | model_configs/vllm/models/deepseek_v4_flash/ |
+| DeepSeek-V4-Pro-w4a8 | model_configs/vllm/models/deepseek_v4_pro/ |
+| GLM-5.1-w4a8 | model_configs/vllm/models/glm_5.1/ |
+| GLM-5.1-w8a8 | model_configs/vllm/models/glm_5.1/ |
 
 ## 特性使用
 
@@ -103,12 +103,12 @@ D2D权重加载特性通过user_config.json配置文件中的`engine_config`字�
    执行以下命令部署首个实例，等待实例进入ACTIVE状态：
 
    ```bash
-   python3 deploy.py --config_dir .../../infer_engines/vllm/models/...
+   python3 deploy.py --config_dir .../../model_configs/vllm/models/...
    ```
 
    >[!NOTE] 说明
    >
-   >`--config_dir`为`user_config.json`与`env.json`所在目录。上述`.../../infer_engines/vllm/models/...`为路径样例，需替换为实际使用的引擎与模型对应的配置目录（可参考本文档“已测试模型”表中的配置目录）。
+   >`--config_dir`为`user_config.json`与`env.json`所在目录。上述`.../../model_configs/vllm/models/...`为路径样例，需替换为实际使用的引擎与模型对应的配置目录（可参考本文档“已测试模型”表中的配置目录）。
 
 3. 扩容或部署同角色新实例。
 
@@ -117,7 +117,7 @@ D2D权重加载特性通过user_config.json配置文件中的`engine_config`字�
    可通过如下命令执行扩容：
 
    ```bash
-   python3 deploy.py --config_dir .../../infer_engines/vllm/models/... --update_instance_num
+   python3 deploy.py --config_dir .../../model_configs/vllm/models/... --update_instance_num
    ```
 
 4. <a id="step004"></a>确认部署结果。

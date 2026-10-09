@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from docs.mkdocs.hooks.infer_engine_links import on_page_markdown
+from docs.mkdocs.hooks.model_config_links import on_page_markdown
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -38,8 +38,8 @@ def test_model_links_in_documentation_resolve_and_use_build_version(monkeypatch,
         output = on_page_markdown(markdown, page=page, config=config)
         if output != markdown:
             converted += 1
-            assert f"/blob/{ref}/infer_engines/" in output or f"/tree/{ref}/infer_engines/" in output
-        assert "/blob/master/infer_engines/" not in markdown
+            assert f"/blob/{ref}/model_configs/" in output or f"/tree/{ref}/model_configs/" in output
+        assert "/blob/master/model_configs/" not in markdown
     assert converted >= 5
 
 
@@ -52,16 +52,16 @@ def test_bad_model_links_fail_build_but_code_and_other_links_are_unchanged(monke
             abs_src_path=ROOT / "docs/zh/user_guide/features/kvcache_affinity.md", src_uri="kvcache_affinity.md"
         )
     )
-    invalid = "[config](../../../../../infer_engines/vllm/user_config.json)"
+    invalid = "[config](../../../../../model_configs/vllm/user_config.json)"
     with pytest.raises(ValueError, match="Invalid model configuration link"):
         on_page_markdown(invalid, page=page, config=config)
     unchanged = f"```markdown\n{invalid}\n```\n`{invalid}`\n[docs](../quick_start.md)\n"
     assert on_page_markdown(unchanged, page=page, config=config) == unchanged
-    valid = "[`config`](../../../../infer_engines/vllm/user_config.json#example)"
-    assert "/blob/v3.2.0/infer_engines/vllm/user_config.json#example" in on_page_markdown(
+    valid = "[`config`](../../../../model_configs/vllm/user_config.json#example)"
+    assert "/blob/v3.2.0/model_configs/vllm/user_config.json#example" in on_page_markdown(
         valid, page=page, config=config
     )
     monkeypatch.setenv("READTHEDOCS_VERSION_TYPE", "external")
     monkeypatch.setenv("READTHEDOCS_GIT_IDENTIFIER", "1093")
     monkeypatch.setenv("READTHEDOCS_GIT_COMMIT_HASH", "abc123")
-    assert "/blob/abc123/infer_engines/" in on_page_markdown(valid, page=page, config=config)
+    assert "/blob/abc123/model_configs/" in on_page_markdown(valid, page=page, config=config)

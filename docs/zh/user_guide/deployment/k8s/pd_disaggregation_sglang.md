@@ -20,7 +20,7 @@
 | 必配端口 | 业务口为主 | 业务口 + `disaggregation-bootstrap-port` |
 | 传输 / 存储 | 按 Connector 配置 | 需配置 `disaggregation-transfer-backend: ascend`，Deployer 会额外拉起 **MF Store** |
 | 健康探测 | 可选 Motor 虚推（`enable_virtual_inference`） | **原生生成式** `GET /health`，不创建 Motor 虚推 monitor |
-| 配置生成 | 可用 vLLM→Motor 转换工具 | **暂无对等转换工具**；请基于 `infer_engines/sglang/` 典配修改 |
+| 配置生成 | 可用 vLLM→Motor 转换工具 | **暂无对等转换工具**；请基于 `model_configs/sglang/` 典配修改 |
 
 ## 950 系列服务器预检查
 
@@ -63,10 +63,10 @@ SGLang 目前 **没有** vLLM 侧的脚本自动转换工具，请直接选用�
 
 | 典型场景 | 目录 | 说明 |
 | --- | --- | --- |
-| GLM 5.1 / Atlas 800I A3超节点服务器 1P1D | `infer_engines/sglang/models/glm5.1/A3/` | GLM 5.1 PD 分离参考；更多典配见 [SGLang GLM 5.1 Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/glm_5_1) |
-| GLM 5.2 / Atlas 800I A3超节点服务器 1P1D | `infer_engines/sglang/models/glm5.2/A3/` | GLM 5.2 PD 分离参考；更多典配见 [SGLang GLM 5.2 Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/glm_5_2) |
-| Qwen3-8B / Atlas 800I A2推理服务器 | `infer_engines/sglang/models/qwen_8b/A2/` | 资源占用较小，适合打通流程；更多典配见 [SGLang Qwen3-8B Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/qwen3_8b) |
-| 更多模型 | `infer_engines/sglang/` | 根目录及子目录下的 `user_config.json` / `env.json` |
+| GLM 5.1 / Atlas 800I A3超节点服务器 1P1D | `model_configs/sglang/models/glm5.1/A3/` | GLM 5.1 PD 分离参考；更多典配见 [SGLang GLM 5.1 Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/glm_5_1) |
+| GLM 5.2 / Atlas 800I A3超节点服务器 1P1D | `model_configs/sglang/models/glm5.2/A3/` | GLM 5.2 PD 分离参考；更多典配见 [SGLang GLM 5.2 Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/glm_5_2) |
+| Qwen3-8B / Atlas 800I A2推理服务器 | `model_configs/sglang/models/qwen_8b/A2/` | 资源占用较小，适合打通流程；更多典配见 [SGLang Qwen3-8B Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/qwen3_8b) |
+| 更多模型 | `model_configs/sglang/` | 根目录及子目录下的 `user_config.json` / `env.json` |
 
 每个典配目录需包含：
 
@@ -92,7 +92,7 @@ SGLang 目前 **没有** vLLM 侧的脚本自动转换工具，请直接选用�
 
 ### 最小引擎配置示例
 
-以下仅为 `Qwen3-8B` 示例，更多详细配置见 `infer_engines/sglang/models/{model_name}/{hardware_type}/`。
+以下仅为 `Qwen3-8B` 示例，更多详细配置见 `model_configs/sglang/models/{model_name}/{hardware_type}/`。
 
 ```json
 "motor_engine_prefill_config": {
@@ -145,7 +145,7 @@ SGLang 目前 **没有** vLLM 侧的脚本自动转换工具，请直接选用�
 kubectl create namespace <namespace>
 
 cd examples/deployer
-python3 deploy.py --config_dir ../../infer_engines/sglang/models/glm5.1/A3
+python3 deploy.py --config_dir ../../model_configs/sglang/models/glm5.1/A3
 ```
 
 大模型权重加载可能需要数分钟，请等待 P/D Ready 后再测试。
@@ -317,7 +317,7 @@ bash delete.sh <namespace>
 ```text
 examples/
 ├── deployer/                         # deploy.py / delete.sh / show_log.sh
-└── infer_engines/
+└── model_configs/
     └── sglang/
         ├── user_config.json          # 通用模板
         ├── env.json

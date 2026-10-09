@@ -46,13 +46,13 @@ chmod -R 755 /mnt/weight
 
    配置文件（`user_config.json`、`env.json`）可通过以下方式获取：
 
-   - **使用已有典配（推荐常用模型）**：`infer_engines/vllm/models/` 下已按模型与硬件提供典型配置，路径规则为：
+   - **使用已有典配（推荐常用模型）**：`model_configs/vllm/models/` 下已按模型与硬件提供典型配置，路径规则为：
 
      ```text
-     infer_engines/vllm/models/<模型名>/<硬件型号>/
+     model_configs/vllm/models/<模型名>/<硬件型号>/
      ```
 
-     例如 DeepSeek-V4-Flash 在 Atlas 800I A2推理服务器 上的典配目录为 `infer_engines/vllm/models/deepseek_v4_flash/A2/`（内含 `user_config.json` 与 `env.json`）。选用典配后，按实际场景修改镜像名（`image_name`）、权重路径（`weight_mount_path` / `model`）等少量字段即可部署。当前已提供的模型目录包括 `deepseek_v3.1`、`deepseek_v4_flash`、`deepseek_v4_pro`、`glm_5`、`glm_5.1`、`qwen_235b` 等，硬件子目录为 `A2` / `A3` / `A5`（以实际目录为准）。
+     例如 DeepSeek-V4-Flash 在 Atlas 800I A2推理服务器 上的典配目录为 `model_configs/vllm/models/deepseek_v4_flash/A2/`（内含 `user_config.json` 与 `env.json`）。选用典配后，按实际场景修改镜像名（`image_name`）、权重路径（`weight_mount_path` / `model`）等少量字段即可部署。当前已提供的模型目录包括 `deepseek_v3.1`、`deepseek_v4_flash`、`deepseek_v4_pro`、`glm_5`、`glm_5.1`、`qwen_235b` 等，硬件子目录为 `A2` / `A3` / `A5`（以实际目录为准）。
 
    - **自动生成**：可将 vllm-ascend 社区部署脚本一键转换为 Motor 配置。将社区脚本粘贴到 `examples/deployer/config_tool/` 下对应模板后，在 `examples/deployer/` 执行（以 PD 分离、Atlas 800I A2推理服务器 为例）：
 
@@ -60,9 +60,9 @@ chmod -R 755 /mnt/weight
      python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A2
      ```
 
-     生成结果位于 `examples/deployer/config_tool/output_config/`。完整步骤与注意事项见 [MindIE Motor 配置自动生成指导](../../../infer_engines/vllm/models/README.md)。
+     生成结果位于 `examples/deployer/config_tool/output_config/`。完整步骤与注意事项见 [MindIE Motor 配置自动生成指导](../../../model_configs/vllm/models/README.md)。
 
-   - **手工编辑（本快速入门）**：下文以 Qwen3-8B、P/D 各 1 实例为例，直接编辑 `infer_engines/vllm/` 下配置。
+   - **手工编辑（本快速入门）**：下文以 Qwen3-8B、P/D 各 1 实例为例，直接编辑 `model_configs/vllm/` 下配置。
 
      在管理节点执行以下命令，进入服务启动脚本所在目录并修改配置文件。
 
@@ -73,7 +73,7 @@ chmod -R 755 /mnt/weight
      - **修改 `user_config.json`**
 
        ```bash
-       vim ../../infer_engines/vllm/user_config.json
+       vim ../../model_configs/vllm/user_config.json
        ```
 
        `user_config.json` 文件**完整示例**如下（可直接复制使用，5 项 xxxxxx 内容需用户自行修改，如需了解各字段含义可参考 [user_config 全量参数说明](./configuration/config_reference.md)）：
@@ -152,7 +152,7 @@ chmod -R 755 /mnt/weight
      - **修改 `env.json`**
 
        ```bash
-       vim ../../infer_engines/vllm/env.json
+       vim ../../model_configs/vllm/env.json
        ```
 
        `env.json` 文件**完整示例**如下（可直接复制使用）：
@@ -199,7 +199,7 @@ chmod -R 755 /mnt/weight
 
    ```bash
    cd examples/deployer
-   python3 deploy.py --config_dir ../../infer_engines/vllm
+   python3 deploy.py --config_dir ../../model_configs/vllm
    ```
 
    需要终止服务时，在同一目录执行以下命令即可：

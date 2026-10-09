@@ -19,14 +19,14 @@ from urllib.parse import quote, unquote, urlsplit
 # have inline-code labels; only their parenthesized destinations are replaced.
 LINK_OR_CODE = re.compile(
     r"(?P<code>```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)"
-    r"|(?<=\]\()(?P<target>(?:\.\./)+infer_engines/[^\s)]+)(?=\))"
+    r"|(?<=\]\()(?P<target>(?:\.\./)+model_configs/[^\s)]+)(?=\))"
 )
 
 
 def on_page_markdown(markdown: str, *, page, config, **_kwargs) -> str:
     """Resolve model links against the checked-out tree before emitting URLs."""
     repo_root = Path(config.config_file_path).resolve().parent
-    models_root = repo_root / "infer_engines"
+    models_root = repo_root / "model_configs"
     source_dir = Path(page.file.abs_src_path).parent
     ref = os.environ.get("READTHEDOCS_GIT_IDENTIFIER", "master")
     if os.environ.get("READTHEDOCS_VERSION_TYPE") == "external":

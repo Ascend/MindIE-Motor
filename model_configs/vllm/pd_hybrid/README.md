@@ -17,10 +17,10 @@
 cd examples/deployer
 
 # 方式一：指定配置目录（推荐）
-python deploy.py --config_dir ../../infer_engines/vllm/pd_hybrid
+python deploy.py --config_dir ../../model_configs/vllm/pd_hybrid
 
 # 方式二：单独指定配置文件
-python deploy.py --user_config_path ../../infer_engines/vllm/pd_hybrid/user_config.json --env_config_path ../../infer_engines/vllm/pd_hybrid/env.json
+python deploy.py --user_config_path ../../model_configs/vllm/pd_hybrid/user_config.json --env_config_path ../../model_configs/vllm/pd_hybrid/env.json
 ```
 
 如需仅检查 YAML 生成，可加 `--dry-run`。

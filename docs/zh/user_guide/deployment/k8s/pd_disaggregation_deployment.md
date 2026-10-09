@@ -55,7 +55,7 @@
 
 ## 生成配置文件
 
-参考 [MindIE Motor 配置自动生成指导](../../../../../infer_engines/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+参考 [MindIE Motor 配置自动生成指导](../../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
 ## 服务部署与验证
 
@@ -70,7 +70,7 @@
    # 进入部署工具目录
    cd examples/deployer
    # 拉起 PD 分离服务：--config_dir 指定含 user_config.json 与 env.json 的目录
-   python3 deploy.py --config_dir ../../infer_engines/vllm
+   python3 deploy.py --config_dir ../../model_configs/vllm
    ```
 
 2. **查看状态**
@@ -310,12 +310,12 @@ examples/
 │   ├── probe/                 # 探针脚本
 │   ├── log_collect/           # 日志采集
 │   └── output_yamls/          # 生成的 YAML 输出目录
-└── infer_engines/             # 各引擎配置示例
+└── model_configs/             # 各引擎配置示例
     └── vllm/                  # vLLM 引擎配置
         ├── user_config.json   # 用户配置
         ├── env.json           # 环境变量配置
         └── models/            # 特定模型配置
 ```
 
-- 配置文件位于 `infer_engines/`，按引擎类型和模型选择对应配置。
+- 配置文件位于 `model_configs/`，按引擎类型和模型选择对应配置。
 - 部署工具用法详见 `examples/deployer/README.md`。
