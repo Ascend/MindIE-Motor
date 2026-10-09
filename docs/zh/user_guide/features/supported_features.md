@@ -121,7 +121,7 @@
       <td><a href="./startup_acceleration.md">链接</a></td>
     </tr>
     <tr>
-      <td rowspan="6">故障与恢复</td>
+      <td rowspan="7">故障与恢复</td>
       <td>请求重调度</td>
       <td>🟢</td>
       <td>✅</td>
@@ -129,6 +129,15 @@
       <td>✅</td>
       <td>❌</td>
       <td><a href="./fault_tolerance/rescheduler.md">链接</a></td>
+    </tr>
+    <tr>
+      <td>实例重调度</td>
+      <td>🟢</td>
+      <td>✅</td>
+      <td>✅</td>
+      <td>✅</td>
+      <td>❌</td>
+      <td><a href="./fault_tolerance/instance_rescheduling.md">链接</a></td>
     </tr>
     <tr>
       <td>故障实例重启</td>

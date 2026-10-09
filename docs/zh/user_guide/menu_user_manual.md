@@ -35,6 +35,7 @@
   - [容器快照](./features/container_snapshot.md)
   - [D2D 权重加载](./features/startup_acceleration.md)
   - [虚推健康探测](./features/sim_inference.md)
+  - [实例重调度](./features/fault_tolerance/instance_rescheduling.md)
   - [请求重调度](./features/fault_tolerance/rescheduler.md)
   - [服务限流](./features/rate_limiting.md)
   - [精度检测特性](./features/precision_detection.md)

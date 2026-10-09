@@ -48,6 +48,7 @@ nav:
           - 容器快照: user_guide/features/container_snapshot.md
           - D2D 权重加载加速: user_guide/features/startup_acceleration.md
           - 虚推健康探测: user_guide/features/sim_inference.md
+          - 实例重调度: user_guide/features/fault_tolerance/instance_rescheduling.md
           - 请求重调度: user_guide/features/fault_tolerance/rescheduler.md
           - 精度检测: user_guide/features/precision_detection.md
           - 服务限流: user_guide/features/rate_limiting.md
