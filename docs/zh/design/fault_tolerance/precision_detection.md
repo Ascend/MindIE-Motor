@@ -153,12 +153,12 @@ Controller 在 `_maybe_precision_auto_recover()` 中处理精度告警：
 
 ### 告警清除
 
-精度告警有三条清除路径，均通过 `category=CLEAR` 的 Record 上报 OM：
+精度告警有三条清除路径。清除时生成 `category=CLEAR` 的 Record；开启 Controller Observability 后，清除记录写入其告警队列，并可由 CCAE Reporter 查询后上报 CCAE：
 
 | 路径 | 触发时机 | 说明 |
 |------|----------|------|
 | auto-recovery 清除 | Controller 终止原 P/D 全部成功 | 原实例已不存在，立即清除对应告警；新实例按新 PD Group 重新检测 |
-| CCAE 手动清除 | CCAE 下发 precision control 且 Controller 终止 P/D 全部成功 | 与 auto-recovery 共用 `complete_precision_pd_group_recovery`：清除 OM 告警并通知 Coordinator 删除 Scheduler 活动状态 |
+| CCAE 精度控制触发清除 | CCAE 下发 precision control 且 Controller 终止 P/D 全部成功 | 与 auto-recovery 共用 `complete_precision_pd_group_recovery`：生成精度告警清除记录并通知 Coordinator 删除 Scheduler 活动状态 |
 | 连续正常清除 | 未开启 auto-recovery，或告警仍活动 | 同一 PD Group 累计 `precision_clear_threshold` 次**有效正常**检测后，Coordinator 上报 CLEAR |
 
 清除告警必须与产生告警使用完全相同的 `moi`：
@@ -172,7 +172,7 @@ Scheduler 在产生告警成功后保存原始 `moi`；后续清除直接复用�
 
 ### CCAE 北向 Completed 上报
 
-Controller 侧 CCAE Reporter（`examples/features/observability/ccae_reporter/reporters/ccae_reporter.py`）在收到 CCAE 下发的 `controlCode` 后，调用 Controller `POST /controller/terminate_instance`，请求体携带 `instance_id={d_id}`、`p_instance_id={p_id}` 和 `precision_alarm_clear=true`。Controller 在同一进程内完成 P/D 实例终止，并复用 `complete_precision_pd_group_recovery` 清除 OM 精度告警、通知 Coordinator 删除 Scheduler 活动状态；随后 Reporter 将 precision task 状态置为 `Completed`，并在后续周期心跳中继续上报 `controlStatus=Completed`。
+Controller 侧 CCAE Reporter（`examples/features/observability/ccae_reporter/reporters/ccae_reporter.py`）在收到 CCAE 下发的 `controlCode` 后，调用 Controller `POST /controller/terminate_instance`，请求体携带 `instance_id={d_id}`、`p_instance_id={p_id}` 和 `precision_alarm_clear=true`。Controller 在同一进程内完成 P/D 实例终止，并复用 `complete_precision_pd_group_recovery` 生成精度告警清除记录、通知 Coordinator 删除 Scheduler 活动状态；开启 Controller Observability 后，CCAE Reporter 从 `/observability/alarms` 查询该记录并上报 CCAE。随后 Reporter 将 precision task 状态置为 `Completed`，并在后续周期心跳中继续上报 `controlStatus=Completed`。
 
 | 规则 | 说明 |
 |------|------|
