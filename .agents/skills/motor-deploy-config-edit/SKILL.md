@@ -8,7 +8,7 @@ description: Explicit atomic workflow under motor-deploy that translates deploym
 将用户意图映射为 Motor 原生 `user_config.json` + `env.json`。本 Skill 当前只提供保守
 框架：不部署、不 dry-run、不创建 workspace profile，不自动扩充 tracked 映射表。
 
-1. 读取用户指定配置或 `examples/infer_engines/<engine>/` 中与 deploy mode 匹配的模板。
+1. 读取用户指定配置或 `model_configs/<engine>/` 中与 deploy mode 匹配的模板。
 2. 字段以当前 `docs/zh/user_guide/configuration/config_reference.md`、
    `examples/features/config_sample.json` 和 `motor/config/` 为权威；搜不到就停止，不猜。
 3. 首次缺失 image、model path、served model、hardware、job ID 等关键值时询问用户。

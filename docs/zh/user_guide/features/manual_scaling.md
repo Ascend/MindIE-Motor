@@ -42,10 +42,10 @@
    kubectl create namespace {namespace}
    cd examples/deployer
    # 方式一，指定配置目录（推荐）
-   python3 deploy.py --config_dir ../infer_engines/vllm --nostep
+   python3 deploy.py --config_dir ../../model_configs/vllm --nostep
 
    # 方式二，单独指定配置文件
-   python3 deploy.py --user_config_path ../infer_engines/vllm/user_config.json --env_config_path ../infer_engines/vllm/env.json --nostep
+   python3 deploy.py --user_config_path ../../model_configs/vllm/user_config.json --env_config_path ../../model_configs/vllm/env.json --nostep
    ```
 
    参数说明：
@@ -80,7 +80,7 @@
 3. 在`examples/deployer`目录下执行扩缩容命令。
 
    ```bash
-   python3 deploy.py --config_dir ../infer_engines/vllm --update_instance_num --nostep
+   python3 deploy.py --config_dir ../../model_configs/vllm --update_instance_num --nostep
    ```
 
    >[!NOTE] 说明
@@ -109,10 +109,10 @@
    cd examples/deployer
 
    # 方式一，指定配置目录（推荐）
-   python3 deploy.py --config_dir ../infer_engines/vllm/pd_hybrid --nostep
+   python3 deploy.py --config_dir ../../model_configs/vllm/pd_hybrid --nostep
 
    # 方式二，单独指定配置文件
-   python3 deploy.py --user_config_path ../infer_engines/vllm/pd_hybrid/user_config.json --env_config_path ../infer_engines/vllm/pd_hybrid/env.json --nostep
+   python3 deploy.py --user_config_path ../../model_configs/vllm/pd_hybrid/user_config.json --env_config_path ../../model_configs/vllm/pd_hybrid/env.json --nostep
    ```
 
    参数说明：
@@ -144,7 +144,7 @@
 
    ```bash
    cd examples/deployer
-   python3 deploy.py --config_dir ../infer_engines/vllm/pd_hybrid --update_instance_num --nostep
+   python3 deploy.py --config_dir ../../model_configs/vllm/pd_hybrid --update_instance_num --nostep
    ```
 
    >[!NOTE] 说明
@@ -263,7 +263,7 @@
 
    ```bash
    cd examples/deployer
-   python3 deploy.py --config_dir ../infer_engines/vllm --nostep
+   python3 deploy.py --config_dir ../../model_configs/vllm --nostep
    ```
 
 ### user_config changes detected beyond instance numbers

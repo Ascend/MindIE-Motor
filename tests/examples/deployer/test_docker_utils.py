@@ -7,6 +7,7 @@
 # pylint: disable=consider-using-with
 
 import os
+import json
 import signal
 import subprocess
 import sys
@@ -22,6 +23,7 @@ import docker_deploy  # noqa: E402
 import lib.constant as C  # noqa: E402
 import lib.docker_utils as D  # noqa: E402
 import lib.in_place_run as in_place_run  # noqa: E402
+from lib.container_ipc import host_ipc_enabled  # noqa: E402
 
 
 def _pd_config():
@@ -55,6 +57,65 @@ def _parse(*argv):
 
 
 class DockerDeployTests(unittest.TestCase):
+    def test_host_ipc_config_and_shared_memory_options(self):
+        self.assertFalse(host_ipc_enabled({}))
+        for value in (0, "0", False, "false", 1, "1", True, "true"):
+            enabled = str(value).lower() in {"1", "true"}
+            self.assertEqual(host_ipc_enabled({"motor_common_env": {"MOTOR_ENABLE_IPC_HOST": value}}), enabled)
+            for template in (C.ENTER_DOCKER_RUN_A2, C.ENTER_DOCKER_RUN_A3, C.ENTER_DOCKER_RUN_A5):
+                command = docker_deploy.apply_enter_shm(template, "32Gi", ipc_host=enabled)
+                self.assertEqual("--ipc=host" in command, enabled)
+                self.assertEqual("--shm-size=32g" in command, not enabled)
+                if enabled:
+                    self.assertNotIn("--shm-size", command)
+        self.assertEqual(docker_deploy.apply_enter_shm(C.ENTER_DOCKER_RUN_A3, None), C.ENTER_DOCKER_RUN_A3)
+        for value in (None, "host", "yes", 2):
+            with self.assertRaisesRegex(ValueError, "MOTOR_ENABLE_IPC_HOST"):
+                host_ipc_enabled({"motor_common_env": {"MOTOR_ENABLE_IPC_HOST": value}})
+
+    def test_create_reads_host_ipc_from_selected_env_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_dir = Path(directory)
+            (config_dir / "user_config.json").write_text(json.dumps(_pd_config()), encoding="utf-8")
+            args = type(
+                "Args",
+                (),
+                {
+                    "config_dir": directory,
+                    "user_config_path": None,
+                    "env_config_path": None,
+                    "role": "prefill",
+                    "devices": None,
+                },
+            )()
+            for enabled in (0, 1):
+                (config_dir / "env.json").write_text(
+                    json.dumps({"motor_common_env": {"MOTOR_ENABLE_IPC_HOST": enabled}}), encoding="utf-8"
+                )
+                with (
+                    patch.object(
+                        docker_deploy,
+                        "resolve_enter_env",
+                        return_value={
+                            "NAME": "test",
+                            "IMAGE": "img",
+                            "EXAMPLES": directory,
+                            "WEIGHT": "/w",
+                        },
+                    ),
+                    patch.object(docker_deploy, "_validate_host_create"),
+                    patch.object(docker_deploy, "_hardware_type_from_args", return_value="800I_A3"),
+                    patch.object(docker_deploy, "_dshm_size_from_args", return_value="32Gi"),
+                    patch.object(D, "validate_attached_npu_count"),
+                    patch.object(docker_deploy, "_require_host_binds"),
+                    patch.object(docker_deploy, "_ensure_render_sidecar_on_host", return_value=(0, None)),
+                    patch.object(os, "execvpe") as execute,
+                ):
+                    docker_deploy._run_enter(args, str(DEPLOYER_ROOT))
+                command = execute.call_args.args[1][2]
+                self.assertEqual("--ipc=host" in command, bool(enabled))
+                self.assertEqual("--shm-size=32g" in command, not enabled)
+
     def test_import_without_yaml(self):
         script = (
             "import sys\n"

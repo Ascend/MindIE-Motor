@@ -24,8 +24,8 @@ nav:
           - Coordinator 独立部署: user_guide/deployment/standalone.md
           - 部署案例:
               - ModelArts 与元戎:
-                  - 简介: user_guide/deployment/cases/ModelArts&yuanrong/README.md
-                  - GLM5 8机大EP部署: user_guide/deployment/cases/ModelArts&yuanrong/ModelArts_GLM5_yuanrong_PyMotor_8Node_BigEP_Deployment_Guide.md
+                  - 简介: user_guide/deployment/cases/ModelArts_yuanrong/README.md
+                  - GLM5 8机大EP部署: user_guide/deployment/cases/ModelArts_yuanrong/ModelArts_GLM5_yuanrong_Motor_8Node_BigEP_Deployment_Guide.md
       - 配置说明:
           - 全量配置参数说明: user_guide/configuration/config_reference.md
           - 热更新配置项说明: user_guide/configuration/update_config_whitelist.md

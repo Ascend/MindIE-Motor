@@ -10,7 +10,7 @@
 >
 > 不要配置 `"backend": "ucm"`。用于 P/D 传输的 Mooncake Connector 位于 `connectors[0]`，`UCMConnector` 位于 `connectors[1]`。Mooncake Connector 的具体类型由 PD 方案决定，并不限定为 `MooncakeConnectorV1`。
 
-完整样例位于 `examples/infer_engines/vllm/ucm_pd/`。
+完整样例位于 `model_configs/vllm/ucm_pd/`。
 
 ## 准备 UCM
 
@@ -28,7 +28,7 @@ fi
 
 ## 修改 `user_config.json`
 
-复制 `examples/infer_engines/vllm/ucm_pd/user_config.json`，再按实际环境修改下面几部分。
+复制 `model_configs/vllm/ucm_pd/user_config.json`，再按实际环境修改下面几部分。
 
 ### 配置 UCM 存储
 
@@ -191,7 +191,7 @@ Decode 使用与 Prefill 匹配的 Mooncake Connector，不配置 UCM。以下�
 在 `examples/deployer` 目录执行一句命令完成部署：
 
 ```bash
-python3 deploy.py --config_dir ../infer_engines/vllm/ucm_pd
+python3 deploy.py --config_dir ../../model_configs/vllm/ucm_pd
 ```
 
 使用 `user_config.json` 中的 `job_id` 作为命名空间，一句命令删除部署：

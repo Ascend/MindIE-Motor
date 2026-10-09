@@ -250,6 +250,62 @@ def test_deploy_services_dry_run_uses_multi_deployment_when_explicit(tmp_path, m
     assert any(path.endswith("_u0.yaml") for path in k8s_utils.g_generate_yaml_list)
 
 
+@pytest.mark.parametrize("hybrid", [False, True])
+@pytest.mark.parametrize(
+    "mode", [C.DEPLOY_MODE_MULTI_DEPLOYMENT_YAML, C.DEPLOY_MODE_INFER_SERVICE_SET, C.DEPLOY_MODE_SINGLE_CONTAINER]
+)
+def test_deploy_services_host_ipc_matches_selected_env_across_k8s_modes(tmp_path, monkeypatch, mode, hybrid):
+    config = make_pd_hybrid_user_config() if hybrid else make_pd_separation_user_config()
+    config[C.MOTOR_DEPLOY_CONFIG].update({C.DEPLOY_MODE_CONFIG_KEY: mode, C.DSHM_SIZE: "32Gi"})
+    if mode == C.DEPLOY_MODE_SINGLE_CONTAINER and hybrid:
+        config[C.MOTOR_DEPLOY_CONFIG].update({C.P_POD_NPU_NUM: 4, C.D_POD_NPU_NUM: 0})
+    monkeypatch.setattr(deploy_module, "get_deploy_paths", lambda: make_deploy_paths(tmp_path))
+    monkeypatch.setattr(deploy_module, "resolve_nodeports_for_yaml_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(k8s_utils, "g_host_ipc_enabled", False)
+    env_path = tmp_path / "env.json"
+
+    def pod_specs(value):
+        if isinstance(value, dict):
+            if C.CONTAINERS in value:
+                yield value
+            else:
+                for child in value.values():
+                    yield from pod_specs(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from pod_specs(child)
+
+    # Repeated generation must reset the option, rather than retain the last deployment's setting.
+    for common_env in ({"MOTOR_ENABLE_IPC_HOST": 1}, {"MOTOR_ENABLE_IPC_HOST": 0}, {}):
+        env_path.write_text(json.dumps({"motor_common_env": common_env}), encoding="utf-8")
+        deploy_module.deploy_services(config, str(env_path), dry_run=True)
+        enabled = common_env.get("MOTOR_ENABLE_IPC_HOST", 0) == 1
+        engine_pods = []
+        for output in tmp_path.glob("*.yaml"):
+            for pod in pod_specs(load_yaml(str(output), False)):
+                shm = next((v for v in pod.get(C.VOLUMES, []) if v[C.NAME] == C.DSHM_VOLUME), None)
+                if shm is None and not pod.get("hostIPC", False):
+                    # Control-plane Pods have neither host IPC nor the engine shared-memory volume.
+                    continue
+                # InferServiceSet retains disabled roles in its template; only active roles are rendered.
+                if (
+                    mode == C.DEPLOY_MODE_INFER_SERVICE_SET
+                    and (shm or {}).get(C.EMPTY_DIR, {}).get(C.SIZE_LIMIT) == "4Gi"
+                ):
+                    continue
+                engine_pods.append(pod)
+                assert pod.get("hostIPC", False) is enabled
+                mounts = pod[C.CONTAINERS][0][C.VOLUME_MOUNTS]
+                if enabled:
+                    assert shm is None
+                    assert not any(m[C.MOUNT_PATH] == "/dev/shm" or m[C.NAME] == C.DSHM_VOLUME for m in mounts)
+                else:
+                    assert any(m[C.MOUNT_PATH] == "/dev/shm" for m in mounts)
+                    assert shm[C.EMPTY_DIR][C.SIZE_LIMIT] == "32Gi"
+                    assert C.HOST_PATH not in shm
+        assert len(engine_pods) == (1 if hybrid or mode == C.DEPLOY_MODE_SINGLE_CONTAINER else 2)
+
+
 def test_boot_script_routes_union_role_to_engine(tmp_path):
     bash = shutil.which("bash")
     if bash is None:
@@ -431,10 +487,19 @@ def test_handle_update_instance_num_scales_hybrid_instances(tmp_path, monkeypatc
     monkeypatch.setattr(C, "OUTPUT_ROOT_PATH", str(tmp_path))
     monkeypatch.setattr(k8s_utils, "create_motor_config_configmap", lambda *_a, **_k: None)
     monkeypatch.setattr(k8s_utils, "safe_exec_cmd", commands.append)
+    monkeypatch.setattr(k8s_utils, "g_host_ipc_enabled", False)
+    env_path = tmp_path / "env.json"
+    env_path.write_text(json.dumps({"motor_common_env": {"MOTOR_ENABLE_IPC_HOST": 1}}), encoding="utf-8")
+    monkeypatch.setattr(deploy_module, "set_env_to_shell", lambda *_a: None)
 
-    deploy_module.handle_update_instance_num(current_config)
+    deploy_module.handle_update_instance_num(current_config, str(env_path))
 
     assert any(path.endswith("_u2.yaml") for path in k8s_utils.g_generate_yaml_list)
+    for output in k8s_utils.g_generate_yaml_list:
+        pod = load_yaml(output, True)[C.SPEC][C.TEMPLATE][C.SPEC]
+        assert pod["hostIPC"] is True
+        assert not any(v[C.NAME] == C.DSHM_VOLUME for v in pod[C.VOLUMES])
+        assert not any(m[C.MOUNT_PATH] == "/dev/shm" for m in pod[C.CONTAINERS][0][C.VOLUME_MOUNTS])
     assert commands == [
         ["kubectl", "apply", "-f", str(tmp_path / "vllm_u1.yaml"), "-n", "pd-hybrid"],
         ["kubectl", "apply", "-f", str(tmp_path / "vllm_u2.yaml"), "-n", "pd-hybrid"],
@@ -691,7 +756,7 @@ def test_handle_update_instance_num_regenerates_kv_conductor_when_infer_yaml_mis
 
 
 def test_vllm_pd_hybrid_sample_is_valid():
-    sample_path = DEPLOYER_ROOT.parent / "infer_engines" / "vllm" / "pd_hybrid" / "user_config.json"
+    sample_path = DEPLOYER_ROOT.parent.parent / "model_configs" / "vllm" / "pd_hybrid" / "user_config.json"
     with open(sample_path, "r", encoding="utf-8") as f:
         user_config = json.load(f)
 

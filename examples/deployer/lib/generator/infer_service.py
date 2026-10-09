@@ -56,6 +56,7 @@ from lib.generator.kv_cache_store import (
     gen_kv_store_env,
 )
 from lib.generator.storage import apply_storage_volumes, apply_dshm_size
+from lib.container_ipc import apply_k8s_host_ipc
 from lib.generator.kv_conductor import normalize_kv_conductor_config
 from lib.generator.render import configure_render_sidecar
 from lib.container_snapshot import configure_container_snapshot
@@ -357,6 +358,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     set_weight_mount(pod_spec, container, weight_path)
     apply_storage_volumes(pod_spec, container, user_config)
     apply_dshm_size(pod_spec, user_config)
+    apply_k8s_host_ipc(pod_spec, k8s_utils.g_host_ipc_enabled)
     apply_a5_engine_pod_config(pod_spec, container, deploy_config)
     _apply_infer_node_selector_and_sp_block(user_config, pod_spec, template, pods_key, npu_key, role_name)
     apply_engine_node_selector_overrides(pod_spec, deploy_config, prefix)

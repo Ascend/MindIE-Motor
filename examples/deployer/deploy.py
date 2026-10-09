@@ -42,6 +42,7 @@ from lib.generator.engine import (
     update_engine_base_name,
     validate_instance_nums,
     update_a5_host_nic_overlay_from_env,
+    update_host_ipc_from_env,
 )
 from lib.generator.kv_cache_store import generate_yaml_kv_store, normalize_kv_cache_store_config
 from lib.generator.storage import generate_yaml_storage_pvc, get_storage_entries
@@ -124,6 +125,7 @@ def handle_update_instance_num(user_config, env_config_path=None):
     update_engine_type_flag(user_config)
     update_engine_base_name(user_config)
     update_a5_host_nic_overlay_from_env(env_config_path)
+    update_host_ipc_from_env(env_config_path)
     set_env_to_shell(user_config, env_config_path, deploy_mode_arg)
 
     k8s_utils.g_generate_yaml_list = []
@@ -231,6 +233,7 @@ def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collec
 
     update_engine_base_name(user_config)
     update_a5_host_nic_overlay_from_env(env_config_path)
+    update_host_ipc_from_env(env_config_path)
 
     deploy_mode_arg = resolve_deploy_mode_for_services(deploy_config)
     if not dry_run:
@@ -349,7 +352,7 @@ def parse_arguments():
         "--dir",
         type=str,
         help="Directory containing user_config.json and env.json, "
-        "select from examples/infer_engines/ based on your engine and model requirements",
+        "select from model_configs/ based on your engine and model requirements",
     )
     parser.add_argument(
         "--user_config_path",

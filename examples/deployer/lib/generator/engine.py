@@ -22,7 +22,9 @@ from lib.utils import (
     apply_volcano_queue_annotations,
     get_config_key,
     resolve_workload_image,
+    read_json,
 )
+from lib.container_ipc import apply_k8s_host_ipc, host_ipc_enabled
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import set_engine_base_name, modify_sp_block_num, apply_additional_labels_annotations
 from lib.generator.storage import apply_storage_volumes, apply_dshm_size
@@ -68,6 +70,13 @@ def _append_a5_host_path_volumes(pod_spec, container):
                 {C.NAME: volume_name, C.MOUNT_PATH: volume_def.get("mountPath", volume_def[C.PATH])}
             )
             existing_mount_names.add(volume_name)
+
+
+def update_host_ipc_from_env(env_config_path: str | None) -> None:
+    """Reset the IPC mode for each deployment, including dry-run and scaling."""
+    k8s_utils.g_host_ipc_enabled = False
+    env_config = read_json(env_config_path) if env_config_path else {}
+    k8s_utils.g_host_ipc_enabled = host_ipc_enabled(env_config)
 
 
 def update_a5_host_nic_overlay_from_env(env_config_path):
@@ -390,6 +399,7 @@ def modify_engine_yaml(deployment_data, user_config, index, node_type):
     engine_pod_spec = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC]
     apply_storage_volumes(engine_pod_spec, container, user_config)
     apply_dshm_size(engine_pod_spec, user_config)
+    apply_k8s_host_ipc(engine_pod_spec, k8s_utils.g_host_ipc_enabled)
     apply_a5_engine_pod_config(engine_pod_spec, container, deploy_config)
     apply_a5_workload(deployment_data, deploy_config)
     modify_log_mount(deployment_data, user_config, deployment_data[C.METADATA][C.NAME])

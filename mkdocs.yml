@@ -54,6 +54,7 @@ theme:
 hooks:
   - docs/mkdocs/hooks/github_admonition.py
   - docs/mkdocs/hooks/img_width.py
+  - docs/mkdocs/hooks/model_config_links.py
 
 plugins:
   - search

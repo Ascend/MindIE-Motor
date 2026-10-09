@@ -128,7 +128,7 @@ While developing, the source code you read is the **ground truth** — the refer
 
 When modifying files in `motor/config/`:
 
-1. Check **all** `user_config.json` files under `examples/` — keep them consistent with the new config schema.
+1. Check **all** `user_config.json` files under `model_configs/` and `examples/` — keep them consistent with the new config schema.
 2. Run config tests:
 
    ```bash

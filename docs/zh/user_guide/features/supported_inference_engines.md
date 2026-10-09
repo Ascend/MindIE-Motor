@@ -54,7 +54,7 @@ MindIE Motor采用控制面（Controller/Coordinator）与数据面（推理引�
 
 >[!NOTE] 说明
 >
->- 基于SGLang引擎框架的PD分离部署详情请参考[SGLang PD 分离服务部署指导](../deployment/k8s/pd_disaggregation_sglang.md)。典型示例配置请参见 `examples/infer_engines/sglang/` 目录（如 `models/glm5.1/A3/`、`models/qwen_8b/A2/`）。
+>- 基于SGLang引擎框架的PD分离部署详情请参考[SGLang PD 分离服务部署指导](../deployment/k8s/pd_disaggregation_sglang.md)。典型示例配置请参见 `model_configs/sglang/` 目录（如 `models/glm5.1/A3/`、`models/qwen_8b/A2/`）。
 >- PD分离服务部署中使用SGLang引擎时，bootstrap端口按Pod/NodeManager维度配置在`engine_config.disaggregation_bootstrap_port`（也兼容原生CLI风格的`disaggregation-bootstrap-port`）。NodeManager将该端口作为`bootstrap_port`注册元数据，并由Coordinator的SGLang Adapter用于Prefill/Decode对接；它与推理业务端口`endpoint_config.service_ports`是不同端口。未配置该字段时不生成bootstrap元数据。
 
 配置完成后，启动MindIE Motor服务，日志中应出现类似`engine_type: sglang`、`SGLang engine initialized successfully`等关键字，表示SGLang引擎对接成功。

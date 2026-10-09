@@ -50,6 +50,8 @@
 | 2026-09-29 | node_manager | Relaunch 后同一 endpoint 再次异常未触发恢复 | [relaunch-fault-episode-dedup.md](node_manager/relaunch-fault-episode-dedup.md) | NodeManager, engine relaunch, suicide freeze, abnormal dedup, repeated recovery |
 | 2026-09-29 | node_manager | Prefill KV容量耗尽导致虚推误判异常 | [virtual-inference-capacity-waiting.md](node_manager/virtual-inference-capacity-waiting.md) | NodeManager, virtual inference, KV Cache, capacity waiting, false positive |
 | 2026-09-28 | deployer | 快照 YAML 误删共享内存挂载 | [snapshot-shm-mount.md](deployer/snapshot-shm-mount.md) | snapshot, dshm, emptyDir, InferServiceSet |
+| 2026-10-08 | deployer | 模型所需宿主 IPC 未传入 Docker/K8s | [container-host-ipc.md](deployer/container-host-ipc.md) | Docker, Kubernetes, IPC, env.json |
+| 2026-10-08 | deployer | 模型目录上移后文档链接门禁失败 | [model-directory-doc-links.md](deployer/model-directory-doc-links.md) | model_configs, link-validity-check, MkDocs, CRLF |
 | 2026-09-28 | node_manager | 恢复前旧心跳 503 误触发新实例重注册 | [snapshot-stale-heartbeat-503.md](node_manager/snapshot-stale-heartbeat-503.md) | snapshot, heartbeat, 503, reregister, start race |
 | 2026-09-28 | deployer | 同机 Pod 的 IPv6 地址重复 | [a5-ipv6-same-node-address.md](deployer/a5-ipv6-same-node-address.md) | A5, IPv6, hostNetwork, 同机地址重复 |
 | 2026-09-20 | deployer | Slurm 禁用服务泄漏占位环境变量 | [slurm-disabled-service-env-leak.md](deployer/slurm-disabled-service-env-leak.md) | Slurm, Apptainer, cleanenv, KV_CONDUCTOR_SERVICE, placeholder |

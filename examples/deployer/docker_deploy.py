@@ -32,6 +32,7 @@ from lib.docker_utils import (
     validate_pd_hybrid_config,
 )
 from lib.in_place_run import run_in_place
+from lib.container_ipc import host_ipc_enabled
 
 
 def _write_file(path: str, content: str, executable: bool = False) -> None:
@@ -549,10 +550,10 @@ def apply_enter_weight(template: str, weight: str | None) -> str:
     return "".join(line for line in template.splitlines(keepends=True) if not _enter_line_is_weight(line))
 
 
-def apply_enter_shm(template: str, dshm_size: str | None) -> str:
-    if not (dshm_size or "").strip():
+def apply_enter_shm(template: str, dshm_size: str | None, *, ipc_host: bool = False) -> str:
+    if not ipc_host and not (dshm_size or "").strip():
         return template
-    docker_shm = D.k8s_quantity_to_docker_shm(dshm_size)
+    shm_option = "--ipc=host" if ipc_host else f"--shm-size={D.k8s_quantity_to_docker_shm(dshm_size)}"
     kept: list[str] = []
     replaced = False
     for line in template.splitlines(keepends=True):
@@ -560,7 +561,7 @@ def apply_enter_shm(template: str, dshm_size: str | None) -> str:
         if stripped.startswith("--shm-size="):
             indent = line[: len(line) - len(line.lstrip())]
             cont = " \\\n" if line.rstrip().endswith("\\") else "\n"
-            kept.append(f"{indent}--shm-size={docker_shm}{cont}")
+            kept.append(f"{indent}{shm_option}{cont}")
             replaced = True
             continue
         kept.append(line)
@@ -898,12 +899,14 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
     attach_npu = _enter_template_attaches_npu(template)
     devices_arg = getattr(args, "devices", None)
     env_config_path = None
+    ipc_host = False
     try:
         command = apply_enter_devices(template, devices_arg, attach_npu=attach_npu)
         if attach_npu:
             user_config_path, env_config_path = resolve_config_paths(
                 args.config_dir, args.user_config_path, args.env_config_path
             )
+            ipc_host = host_ipc_enabled(read_json(env_config_path))
             D.validate_attached_npu_count(
                 read_json(user_config_path),
                 getattr(args, "role", None),
@@ -929,7 +932,7 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
     command = insert_create_binds(command, extra_create_bind_paths(args, env["EXAMPLES"]))
     command = apply_enter_weight(command, env.get("WEIGHT"))
     try:
-        command = apply_enter_shm(command, dshm_size)
+        command = apply_enter_shm(command, dshm_size, ipc_host=ipc_host)
     except ValueError as exc:
         logger.error("%s", exc)
         return 1

@@ -61,7 +61,7 @@ kv-conductor 维护缓存索引，Coordinator 使用索引结果估计剩余 pre
 
     **PD 分离配置**
 
-    基线文件：[`examples/infer_engines/vllm/user_config.json`](../../../../examples/infer_engines/vllm/user_config.json)。
+    基线文件：[`model_configs/vllm/user_config.json`](../../../../model_configs/vllm/user_config.json)。
 
     ```json
     {
@@ -91,7 +91,7 @@ kv-conductor 维护缓存索引，Coordinator 使用索引结果估计剩余 pre
 
     **PD混部配置**
 
-    基线文件：[`examples/infer_engines/vllm/pd_hybrid/user_config.json`](../../../../examples/infer_engines/vllm/pd_hybrid/user_config.json)。
+    基线文件：[`model_configs/vllm/pd_hybrid/user_config.json`](../../../../model_configs/vllm/pd_hybrid/user_config.json)。
     将事件配置放在 `motor_engine_union_config`。
 
     ```json
@@ -160,10 +160,10 @@ kv-conductor 维护缓存索引，Coordinator 使用索引结果估计剩余 pre
     ```bash
     cd examples/deployer
     # PD 分离
-    python deploy.py --config_dir ../infer_engines/vllm
+    python deploy.py --config_dir ../../model_configs/vllm
 
     # PD 混部使用其独立配置目录
-    python deploy.py --config_dir ../infer_engines/vllm/pd_hybrid
+    python deploy.py --config_dir ../../model_configs/vllm/pd_hybrid
     ```
 
     部署后按[验证结果](#验证特性)检查注册、缓存命中和实际选点。
