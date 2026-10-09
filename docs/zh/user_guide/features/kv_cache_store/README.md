@@ -245,10 +245,10 @@ P/D传输Connector选型如下表所示：
     cd examples/deployer
 
     # 方式一：指定配置目录（推荐）
-    python deploy.py --config_dir ../infer_engines/vllm
+    python deploy.py --config_dir ../../infer_engines/vllm
 
     # 方式二：单独指定配置文件
-    python deploy.py --user_config_path ../infer_engines/vllm/user_config.json --env_config_path ../infer_engines/vllm/env.json
+    python deploy.py --user_config_path ../../infer_engines/vllm/user_config.json --env_config_path ../../infer_engines/vllm/env.json
     ```
 
     **部署完成后**
@@ -281,10 +281,10 @@ P/D传输Connector选型如下表所示：
     cd examples/deployer
 
     # 方式一：指定配置目录（推荐）
-    python deploy.py --config_dir ../infer_engines/vllm
+    python deploy.py --config_dir ../../infer_engines/vllm
 
     # 方式二：单独指定配置文件
-    python deploy.py --user_config_path ../infer_engines/vllm/user_config.json --env_config_path ../infer_engines/vllm/env.json
+    python deploy.py --user_config_path ../../infer_engines/vllm/user_config.json --env_config_path ../../infer_engines/vllm/env.json
     ```
 
     **部署完成后**
@@ -350,7 +350,7 @@ P/D传输Connector选型如下表所示：
   kubectl get configmap motor-config -n <namespace> -o yaml | grep -A 15 kv_transfer_config
   ```
 
-  如不符合，修改 `user_config.json` 后重新执行 `python deploy.py --config_dir ../infer_engines/vllm` 部署。
+  如不符合，修改 `user_config.json` 后重新执行 `python deploy.py --config_dir ../../infer_engines/vllm` 部署。
 
 ### P 实例推理性能下降
 
@@ -406,7 +406,7 @@ MemCache MetaService 启动失败。
 
 **解决步骤**
 
-确保两处 `backend` 值相同；修改后重新执行 `python deploy.py --config_dir ../infer_engines/vllm` 部署。
+确保两处 `backend` 值相同；修改后重新执行 `python deploy.py --config_dir ../../infer_engines/vllm` 部署。
 
 ### 为什么 UCM 样例中仍然有 backend: "mooncake"`
 

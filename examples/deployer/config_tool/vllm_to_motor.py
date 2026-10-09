@@ -1582,7 +1582,9 @@ def _print_optional_arg_reminders(
         return
 
     print(
-        f"\n{_blue_text('[提示]')} 配置文件生成成功，请基于 user_config.json 内的提示补充两项参数（env.json文件无需修改），完成后可以正常使用。",
+        f"\n{_blue_text('[提示]')} 配置文件生成成功，请基于 user_config.json 内的提示补充两项参数。"
+        "使用 Docker 或 Kubernetes 部署且模型要求宿主 IPC 时，"
+        "请在 env.json 的 motor_common_env 中设置 MOTOR_ENABLE_IPC_HOST=1。",
         file=sys.stderr,
     )
     print(file=sys.stderr)

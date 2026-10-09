@@ -40,7 +40,7 @@
   - [服务限流](./features/rate_limiting.md)
   - [精度检测特性](./features/precision_detection.md)
   - [数据混淆推理（PMCC）](./features/data_obfuscation.md)
-  - [vLLM部署脚本转换工具](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/infer_engines/vllm/models/README.md)
+  - [vLLM部署脚本转换工具](../../../infer_engines/vllm/models/README.md)
 - [API参考]()
   - [接口说明](./api/README.md)
   - [用户侧接口](./api/service_interfaces.md)

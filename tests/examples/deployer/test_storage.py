@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 import logging
+from copy import deepcopy
 import sys
 from pathlib import Path
 
@@ -17,6 +18,7 @@ import pytest
 DEPLOYER_ROOT = Path(__file__).resolve().parents[3] / "examples" / "deployer"
 sys.path.insert(0, str(DEPLOYER_ROOT))
 
+from lib.container_ipc import apply_k8s_host_ipc  # noqa: E402
 from lib.generator.storage import (  # noqa: E402
     is_storage_enabled,
     get_storage_entries,
@@ -79,7 +81,8 @@ def test_read_only_must_be_a_json_boolean():
 
 def test_string_keys_must_be_non_empty_strings():
     """Non-string values (true/123/null/"") would be emitted verbatim into the manifest and
-    only rejected at kubectl apply — reject them at validation time instead."""
+    only rejected at kubectl apply — reject them at validation time instead.
+    """
     cases = [
         {"type": "pvc", "claim_name": True},
         {"type": "pvc", "claim_name": ""},
@@ -109,7 +112,8 @@ def test_pvc_size_must_be_a_string_quantity_with_unit():
 
 def test_existing_claim_rejects_falsy_provisioning_keys():
     """Conflict detection is by key presence: even null/""/0 provisioning values are stated
-    intent that claim_name would silently override."""
+    intent that claim_name would silently override.
+    """
     for key, value in (("size", None), ("storage_class_name", ""), ("access_mode", None)):
         with pytest.raises(ValueError, match="no effect"):
             is_storage_enabled(_uc(storage=[{"type": "pvc", "claim_name": "shared", key: value}]))
@@ -405,6 +409,26 @@ def test_apply_dshm_size_sets_and_noop():
     unchanged = {"volumes": [{"name": "dshm", "emptyDir": {"sizeLimit": "4Gi"}}]}
     apply_dshm_size(unchanged, _uc())
     assert unchanged["volumes"][0]["emptyDir"]["sizeLimit"] == "4Gi"
+
+
+def test_host_ipc_removes_shm_overrides_from_containers_and_init_containers():
+    data_volume = {"name": "data", "emptyDir": {}}
+    data_mount = {"name": "data", "mountPath": "/data"}
+    container = {"volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}, data_mount]}
+    pod = {
+        "volumes": [{"name": "dshm", "emptyDir": {"medium": "Memory"}}, data_volume],
+        "containers": [deepcopy(container)],
+        "initContainers": [deepcopy(container)],
+    }
+    original = deepcopy(pod)
+    apply_k8s_host_ipc(pod, False)
+    assert pod == original
+
+    apply_k8s_host_ipc(pod, True)
+    assert pod["hostIPC"] is True
+    assert pod["volumes"] == [data_volume]
+    for key in ("containers", "initContainers"):
+        assert pod[key][0]["volumeMounts"] == [data_mount]
 
 
 def test_apply_dshm_size_rejects_unitless():

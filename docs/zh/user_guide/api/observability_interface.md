@@ -810,13 +810,13 @@ CCAE（Cluster Computing Autonomous Engine）是集群自智引擎系统。Motor
 
 ```bash
 cd examples/deployer
-python deploy.py --config_dir ../infer_engines/vllm --update_config
+python deploy.py --config_dir ../../infer_engines/vllm --update_config
 ```
 
 也可以单独指定配置文件：
 
 ```bash
-python deploy.py --user_config_path ../infer_engines/vllm/user_config.json --env_config_path ../infer_engines/vllm/env.json --update_config
+python deploy.py --user_config_path ../../infer_engines/vllm/user_config.json --env_config_path ../../infer_engines/vllm/env.json --update_config
 ```
 
 >[!NOTE]说明

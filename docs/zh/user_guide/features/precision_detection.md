@@ -141,7 +141,7 @@ python -m pip install "mindstudio-probe==26.1.0.post1"
 
    ```bash
    cd examples/deployer
-   python deploy.py --config_dir ../infer_engines/vllm
+   python deploy.py --config_dir ../../infer_engines/vllm
    ```
 
    Coordinator 日志中出现 Precision check 关键字表示精度检测链路已启用。

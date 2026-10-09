@@ -28,6 +28,9 @@ python3 slurm_deploy.py start \
 
 ## 参数配置
 
+当前 Apptainer 启动方式默认共享宿主 IPC 和 `/dev/shm`，无需额外设置 IPC 参数。
+`env.json` 中的 `MOTOR_ENABLE_IPC_HOST` 用于 Docker 和 Kubernetes 部署，不影响 Slurm 容器启动参数。
+
 命令行参数优先于环境变量，环境变量优先于 `slurm_deploy.py` 中的默认值。
 
 | 命令行参数 | 环境变量 | 默认值 | 说明 |

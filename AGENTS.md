@@ -14,6 +14,7 @@ motor/                   Python 源码（coordinator / controller / node_manager
 motor/kv_conductor/      Rust KV Conductor（axum + tokio + ZMQ）
 tests/                   测试（目录镜像 motor/ 结构）
 examples/                部署配置示例（user_config.json、deployer）
+infer_engines/           引擎与模型典配（不随 examples 复制进发布镜像）
 pre-commit/              pre-commit 钩子脚本（check_header、check_modern_typing 等）
 scripts/                 构建辅助脚本（generate_proto.sh 等）
 deploy/                  MotorJob CRD

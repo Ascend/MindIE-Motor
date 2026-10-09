@@ -10,7 +10,7 @@ MindIE Motor修改user_config.json配置文件后，通过deploy.py脚本即可�
 
 1. 配置user_config.json文件。
 
-    以[MindIE Motor快速开始](../../../../docs/zh/user_guide/quick_start.md)中示例 `user_config.json` 为参考基线，相关适配点如下：
+    以[MindIE Motor快速开始](../../../docs/zh/user_guide/quick_start.md)中示例 `user_config.json` 为参考基线，相关适配点如下：
 
     ```json
       "motor_deploy_config": {
@@ -77,8 +77,8 @@ MindIE Motor修改user_config.json配置文件后，通过deploy.py脚本即可�
     ```bash
     cd examples/deployer
     # 方式一：指定配置目录（推荐）
-    python deploy.py --config_dir ../infer_engines/vllm/single_container
+    python deploy.py --config_dir ../../infer_engines/vllm/single_container
 
     # 方式二：单独指定配置文件
-    python deploy.py --user_config_path ../infer_engines/vllm/single_container/user_config.json --env_config_path ../infer_engines/vllm/single_container/env.json
+    python deploy.py --user_config_path ../../infer_engines/vllm/single_container/user_config.json --env_config_path ../../infer_engines/vllm/single_container/env.json
     ```

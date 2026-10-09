@@ -65,9 +65,9 @@ def resolve_config_paths(config_dir, user_config_path, env_config_path):
         logger.error("  --config <file>        : Path to user_config.json (requires --env)")
         logger.error("  --env <file>           : Path to env.json (requires --config)")
         logger.error("Example:")
-        logger.error("  python deploy.py --config_dir ../infer_engines/vllm")
+        logger.error("  python deploy.py --config_dir ../../infer_engines/vllm")
         logger.error(
-            "  python deploy.py --config ../infer_engines/vllm/user_config.json --env ../infer_engines/vllm/env.json"
+            "  python deploy.py --config ../../infer_engines/vllm/user_config.json --env ../../infer_engines/vllm/env.json"
         )
         raise ValueError("Missing required configuration. Use --config_dir or both --config and --env.")
 

@@ -146,7 +146,7 @@ L3及以下不触发ScaleP2D：L3需人工介入，L2走Token重推等其他策�
    ```bash
    kubectl create namespace {namespace}
    cd examples/deployer
-   python3 deploy.py --config_dir ../infer_engines/vllm --nostep
+   python3 deploy.py --config_dir ../../infer_engines/vllm --nostep
    ```
 
    部署成功时日志出现`all deploy end.`和`Deploy complete.`。

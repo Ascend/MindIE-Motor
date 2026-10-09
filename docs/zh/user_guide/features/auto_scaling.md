@@ -286,13 +286,13 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
 
    ```bash
    cd examples/deployer
-   python deploy.py --config_dir ../infer_engines/vllm --dry-run
+   python deploy.py --config_dir ../../infer_engines/vllm --dry-run
    ```
 
    生成文件位于 `output_yamls/infer_service.yaml`。检查无误后，在计划的变更窗口通过部署入口应用配置：
 
    ```bash
-   python deploy.py --config_dir ../infer_engines/vllm
+   python deploy.py --config_dir ../../infer_engines/vllm
    ```
 
    上述第二条命令会变更集群资源。`--update_instance_num` 仅用于手动调整实例数，不重新读取模板，不能用它代替本次新增策略的生成步骤。启用 HPA 后由 HPA 管理角色副本数，避免另一自动化程序同时持续写入同一角色的 replicas。

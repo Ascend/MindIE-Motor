@@ -78,7 +78,7 @@ python deploy.py
 #### 方式一：指定配置目录（推荐）
 
 ```bash
-python deploy.py --config_dir ../infer_engines/vllm
+python deploy.py --config_dir ../../infer_engines/vllm
 ```
 
 程序会自动从指定目录下读取 `user_config.json` 和 `env.json`。
@@ -86,27 +86,27 @@ python deploy.py --config_dir ../infer_engines/vllm
 #### 方式二：单独指定配置文件
 
 ```bash
-python deploy.py --config ../infer_engines/vllm/user_config.json --env ../infer_engines/vllm/env.json
+python deploy.py --config ../../infer_engines/vllm/user_config.json --env ../../infer_engines/vllm/env.json
 ```
 
 #### 方式三：混合使用
 
 ```bash
-python deploy.py --config_dir ../infer_engines/vllm --config /path/to/custom_user_config.json --env /path/to/custom_env.json
+python deploy.py --config_dir ../../infer_engines/vllm --config /path/to/custom_user_config.json --env /path/to/custom_env.json
 ```
 
 当同时指定 `--config_dir` 和 `--config`/`--env` 时，以 `--config` 和 `--env` 为准。
 
 #### 方式四：基于vllm部署脚本生成Motor全量配置文件
 
-使用方式请参阅[Motor配置自动生成指导](../infer_engines/vllm/models/README.md)。
+使用方式请参阅[Motor配置自动生成指导](../../infer_engines/vllm/models/README.md)。
 
 ### 其他操作
 
 #### 更新配置
 
 ```bash
-python deploy.py --config_dir ../infer_engines/vllm --update_config
+python deploy.py --config_dir ../../infer_engines/vllm --update_config
 ```
 
 仅更新集群中的 ConfigMap，不重新部署服务。
@@ -114,17 +114,19 @@ python deploy.py --config_dir ../infer_engines/vllm --update_config
 #### 扩缩容实例
 
 ```bash
-python deploy.py --config_dir ../infer_engines/vllm --update_instance_num
+python deploy.py --config_dir ../../infer_engines/vllm --update_instance_num
 ```
 
 根据 `user_config.json` 中的 `p_instances_num` 和 `d_instances_num` 进行实例扩缩容。
 
 ## 配置文件说明
 
-配置文件位于 `examples/infer_engines/` 目录下，根据引擎类型和模型选择对应的配置：
+配置文件位于仓库根目录的 `infer_engines/` 下，根据引擎类型和模型选择对应的配置。
+该目录不随 `examples/` 放入发布镜像；使用镜像中的 deployer 时，请从源码仓库获取典配，
+将所选配置目录挂载到容器，并通过 `--config_dir` 指定其实际路径。
 
 ```bash
-examples/infer_engines/
+infer_engines/
 ├── vllm/                    # vLLM 引擎配置
 │   ├── user_config.json     # 快速启动用户配置
 │   ├── env.json             # 快速启动环境变量配置
@@ -268,6 +270,34 @@ Seed 可用于还原词表置换，必须与混淆权重同权限保管，禁止
 
 ### env.json
 
+`motor_common_env.MOTOR_ENABLE_IPC_HOST` 控制 Docker 和 Kubernetes 引擎容器是否使用宿主 IPC，默认 `0`。
+支持 `0`/`1`、`false`/`true` 及其字符串形式。部署脚本直接读取所选 `env.json`，
+无需在宿主机 shell 中 export。例如，使用 Docker 或 Kubernetes 部署 DeepSeek-V4.1-Flash A3 时需要设置：
+
+```json
+{
+  "motor_common_env": {
+    "MOTOR_ENABLE_IPC_HOST": 1
+  }
+}
+```
+
+将上述字段合并到现有 `motor_common_env` 中，保留其他环境变量。
+
+- Docker：创建引擎容器或单容器时添加 `--ipc=host`，替代 `--shm-size`，此时 `dshm_size` 不生效。
+  设置为 `0` 或省略时保留原有共享内存配置。已有容器需重新创建；`--start` 不改变容器 IPC 模式。
+- Slurm：当前 Apptainer 启动方式默认共享宿主 IPC 和 `/dev/shm`，无需配置此开关。
+  Slurm 部署脚本不读取此开关来调整容器启动参数。
+- Kubernetes：为引擎 Pod 设置 `hostIPC: true`，移除原有 `dshm` 卷及 `/dev/shm` 的
+  `volumeMount`，不添加显式 `hostPath`，由容器运行时提供宿主 `/dev/shm`，此时 `dshm_size` 不生效。
+  支持普通多 Deployment、InferServiceSet 和单容器部署。独立的控制面 Pod 不受影响；
+  单容器部署中整个 Pod 使用宿主 IPC。设置为 `0` 或省略时保留模板默认配置。
+  修改开关后需重新部署以更新 Pod 模板，不能仅用 `--update_config` 热更新进程配置。
+
+参考：[DeepSeek-V4.1-Flash 官方典配](https://docs.vllm.ai/projects/vllm-ascend-cn/zh-cn/latest/tutorials/models/DeepSeek-V4.1-Flash.html)、
+[Apptainer instance start 参数](https://apptainer.org/docs/user/latest/cli/apptainer_instance_start.html)、
+[Kubernetes PodSpec hostIPC](https://kubernetes.io/docs/reference/kubernetes-api/core/pod-v1/#PodSpec)。
+
 包含环境变量配置，主要字段：
 
 - `motor_common_env`: 公共环境变量
@@ -278,9 +308,9 @@ Seed 可用于还原词表置换，必须与混淆权重同权限保管，禁止
 
 ## 参考示例
 
-如需具体模型的拉起与配置示例，可参考仓库中的 **examples/infer_engines/** 目录：
+如需具体模型的拉起与配置示例，可参考仓库中的 **infer_engines/** 目录：
 
-👉 **[examples/infer_engines 目录](../infer_engines)**
+👉 **[infer_engines 目录](../../infer_engines)**
 
 该目录下提供多种场景的参考配置与脚本，便于按实际模型进行部署与调优。
 

@@ -36,6 +36,7 @@ from lib.generator.storage import (
     build_storage_pvc_docs,
 )
 from lib.generator.render import configure_render_sidecar
+from lib.container_ipc import apply_k8s_host_ipc
 
 
 def generate_yaml_single_container(input_yaml, output_file, user_config):
@@ -103,6 +104,7 @@ def generate_yaml_single_container(input_yaml, output_file, user_config):
     storage_entries = get_storage_entries(user_config)
     apply_storage_volumes(sc_pod_spec, container, user_config, storage_entries)
     apply_dshm_size(sc_pod_spec, user_config)
+    apply_k8s_host_ipc(sc_pod_spec, k8s_utils.g_host_ipc_enabled)
     configure_render_sidecar(sc_pod_spec, user_config)
     k8s_utils.apply_additional_labels_annotations(deployment_data, user_config.get(C.MOTOR_COORDINATOR_CONFIG, {}))
     if storage_entries:

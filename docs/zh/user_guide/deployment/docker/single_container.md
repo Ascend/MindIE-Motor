@@ -49,9 +49,9 @@
 
 1. **准备配置文件**
 
-   MindIE Motor已提供常用模型（deepseek_v4_flash、deepseek_v4_pro、GLM 5.1等）的[**PD分离配置示例**](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/infer_engines/vllm/models/README.md)，**用户修改少量配置后可直接使用**。
+   MindIE Motor已提供常用模型（deepseek_v4_flash、deepseek_v4_pro、GLM 5.1等）的[**PD分离配置示例**](../../../../../infer_engines/vllm/models/README.md)，**用户修改少量配置后可直接使用**。
 
-   对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/infer_engines/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+   对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../../infer_engines/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
 2. **配置端口与部署模式**
 
@@ -90,7 +90,7 @@
 
 3. **同步启动脚本配置**
 
-    将准备好的配置文件（user_config.json、env.json）存放于启动脚本的examples/infer_engines/vllm目录下。
+    将准备好的配置文件（user_config.json、env.json）存放于启动脚本的infer_engines/vllm目录下。
 
 ## 启用 Render 特性（可选）
 
@@ -99,7 +99,7 @@
 若该容器已经存在，部署脚本不会覆盖它。进入容器后执行：
 
 ```bash
-python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/examples/infer_engines/vllm --start --role render
+python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/infer_engines/vllm --start --role render
 ```
 
 ```json
@@ -117,7 +117,7 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/exampl
 在本机 `examples/deployer` 目录下执行以下命令：
 
 ```bash
-python3 docker_deploy.py --config_dir ../infer_engines/vllm \
+python3 docker_deploy.py --config_dir ../../infer_engines/vllm \
   --container-name motor-single --devices 0,1 \
   --pod-ip <本机 IP地址> --nic-name <本机主网卡名称>
 ```
@@ -167,7 +167,7 @@ curl -X POST http://127.0.0.1:1025/v1/chat/completions \
 
 ```text
 容器内服务已终止，可执行以下命令重新部署服务。
-python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/examples/infer_engines/vllm --start --container-name motor-single --pod-ip <本机 IP地址> --nic-name <本机主网卡名称>
+python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/infer_engines/vllm --start --container-name motor-single --pod-ip <本机 IP地址> --nic-name <本机主网卡名称>
 运行日志：examples/motor_workspace/motor-single/single/log/docker-single-<时间戳>.log
 ```
 

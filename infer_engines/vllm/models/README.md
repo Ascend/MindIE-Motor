@@ -6,7 +6,7 @@ MindIE Motor的一键部署工具可以实现“将vllm-ascend社区的部署脚
 
 ## 目录简介
 
-配置生成脚本存放于[examples/deployer/config_tool/](../../../deployer/config_tool/)目录下，各文件功能如下。
+配置生成脚本存放于[examples/deployer/config_tool/](../../../examples/deployer/config_tool/)目录下，各文件功能如下。
 
 ```bash
 examples/deployer/config_tool/
@@ -39,6 +39,10 @@ examples/deployer/config_tool/
 
 3. 生成的Motor配置仅支撑基础推理服务成功部署，**Motor特性调整（例如：主备倒换、KV 亲和性调度、服务限流）需要用户手动修改配置**。
 4. 当前不支持单容器PD分离和单容器PD混部的场景。
+5. 使用 Docker 或 Kubernetes 部署时，若模型典配要求 `--ipc=host`（如 DeepSeek-V4.1-Flash A3），
+   在生成的 `env.json` 的 `motor_common_env` 中添加 `"MOTOR_ENABLE_IPC_HOST": 1`；
+   未配置时默认关闭，配置生成器不自动添加此字段。Slurm 部署无需配置此开关。具体说明见
+   [deployer 环境变量配置](../../../examples/deployer/README.md#envjson)。
 
 ## 使用方法
 
