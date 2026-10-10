@@ -338,7 +338,6 @@ set_a5_engine_env() {
             *uboe:device*|*ub_ctp:device*|*ub_rtp:device*|*roce:device*)
                 ;;
             *)
-                export ASCEND_LOCAL_COMM_RES_PATH="/etc/hixlep"
                 ;;
         esac
     fi
