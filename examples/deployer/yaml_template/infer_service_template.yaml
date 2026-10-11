@@ -387,6 +387,18 @@ spec:
                 mountPath: /root/ascend/log
               - name: cache-path
                 mountPath: /root/.cache
+              - name: dcmi
+                mountPath: /usr/local/dcmi
+                readOnly: true
+              - name: npu-smi
+                mountPath: /usr/local/bin/npu-smi
+                readOnly: true
+              - name: ascend-install-info
+                mountPath: /etc/ascend_install.info
+                readOnly: true
+              - name: hccn-tool
+                mountPath: /usr/bin/hccn_tool
+                readOnly: true
             volumes:
             - name: data
               hostPath:
@@ -426,6 +438,21 @@ spec:
               hostPath:
                 path: /root/.cache
                 type: DirectoryOrCreate
+            - name: dcmi
+              hostPath:
+                path: /usr/local/dcmi
+            - name: npu-smi
+              hostPath:
+                path: /usr/local/bin/npu-smi
+                type: File
+            - name: ascend-install-info
+              hostPath:
+                path: /etc/ascend_install.info
+                type: File
+            - name: hccn-tool
+              hostPath:
+                path: /usr/bin/hccn_tool
+                type: File
 
     - name: prefill
       replicas: 4
@@ -513,6 +540,18 @@ spec:
                 mountPath: /root/ascend/log
               - name: cache-path
                 mountPath: /root/.cache
+              - name: dcmi
+                mountPath: /usr/local/dcmi
+                readOnly: true
+              - name: npu-smi
+                mountPath: /usr/local/bin/npu-smi
+                readOnly: true
+              - name: ascend-install-info
+                mountPath: /etc/ascend_install.info
+                readOnly: true
+              - name: hccn-tool
+                mountPath: /usr/bin/hccn_tool
+                readOnly: true
             volumes:
             - name: data
               hostPath:
@@ -552,6 +591,21 @@ spec:
               hostPath:
                 path: /root/.cache
                 type: DirectoryOrCreate
+            - name: dcmi
+              hostPath:
+                path: /usr/local/dcmi
+            - name: npu-smi
+              hostPath:
+                path: /usr/local/bin/npu-smi
+                type: File
+            - name: ascend-install-info
+              hostPath:
+                path: /etc/ascend_install.info
+                type: File
+            - name: hccn-tool
+              hostPath:
+                path: /usr/bin/hccn_tool
+                type: File
 
     - name: decode
       replicas: 4
@@ -639,6 +693,18 @@ spec:
                 mountPath: /root/ascend/log
               - name: cache-path
                 mountPath: /root/.cache
+              - name: dcmi
+                mountPath: /usr/local/dcmi
+                readOnly: true
+              - name: npu-smi
+                mountPath: /usr/local/bin/npu-smi
+                readOnly: true
+              - name: ascend-install-info
+                mountPath: /etc/ascend_install.info
+                readOnly: true
+              - name: hccn-tool
+                mountPath: /usr/bin/hccn_tool
+                readOnly: true
             volumes:
             - name: data
               hostPath:
@@ -678,6 +744,21 @@ spec:
               hostPath:
                 path: /root/.cache
                 type: DirectoryOrCreate
+            - name: dcmi
+              hostPath:
+                path: /usr/local/dcmi
+            - name: npu-smi
+              hostPath:
+                path: /usr/local/bin/npu-smi
+                type: File
+            - name: ascend-install-info
+              hostPath:
+                path: /etc/ascend_install.info
+                type: File
+            - name: hccn-tool
+              hostPath:
+                path: /usr/bin/hccn_tool
+                type: File
 
     - name: union
       replicas: 4
@@ -765,6 +846,18 @@ spec:
                 mountPath: /root/ascend/log
               - name: cache-path
                 mountPath: /root/.cache
+              - name: dcmi
+                mountPath: /usr/local/dcmi
+                readOnly: true
+              - name: npu-smi
+                mountPath: /usr/local/bin/npu-smi
+                readOnly: true
+              - name: ascend-install-info
+                mountPath: /etc/ascend_install.info
+                readOnly: true
+              - name: hccn-tool
+                mountPath: /usr/bin/hccn_tool
+                readOnly: true
             volumes:
             - name: data
               hostPath:
@@ -804,6 +897,21 @@ spec:
               hostPath:
                 path: /root/.cache
                 type: DirectoryOrCreate
+            - name: dcmi
+              hostPath:
+                path: /usr/local/dcmi
+            - name: npu-smi
+              hostPath:
+                path: /usr/local/bin/npu-smi
+                type: File
+            - name: ascend-install-info
+              hostPath:
+                path: /etc/ascend_install.info
+                type: File
+            - name: hccn-tool
+              hostPath:
+                path: /usr/bin/hccn_tool
+                type: File
 
     - name: kv-store
       replicas: 0

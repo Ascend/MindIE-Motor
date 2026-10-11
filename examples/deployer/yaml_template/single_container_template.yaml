@@ -102,14 +102,27 @@ spec:
             mountPath: /mnt
           - name: hccn-tool
             mountPath: /usr/local/Ascend/driver/tools/hccn_tool
+            readOnly: true
           - name: hccn-conf
             mountPath: /etc/hccn.conf
+          - name: ascend-driver
+            mountPath: /usr/local/Ascend/driver
+            readOnly: true
           - name: weight-mount
             mountPath: /mnt/weight
           - name: plog-path
             mountPath: /root/ascend/log
           - name: cache-path
             mountPath: /root/.cache
+          - name: dcmi
+            mountPath: /usr/local/dcmi
+            readOnly: true
+          - name: npu-smi
+            mountPath: /usr/local/bin/npu-smi
+            readOnly: true
+          - name: ascend-install-info
+            mountPath: /etc/ascend_install.info
+            readOnly: true
       volumes:
       - name: data
         hostPath:
@@ -135,9 +148,13 @@ spec:
       - name: hccn-tool
         hostPath:
           path: /usr/local/Ascend/driver/tools/hccn_tool
+          type: File
       - name: hccn-conf
         hostPath:
           path: /etc/hccn.conf
+      - name: ascend-driver
+        hostPath:
+          path: /usr/local/Ascend/driver
       - name: weight-mount
         hostPath:
           path: /mnt/weight
@@ -149,6 +166,17 @@ spec:
         hostPath:
           path: /root/.cache
           type: DirectoryOrCreate
+      - name: dcmi
+        hostPath:
+          path: /usr/local/dcmi
+      - name: npu-smi
+        hostPath:
+          path: /usr/local/bin/npu-smi
+          type: File
+      - name: ascend-install-info
+        hostPath:
+          path: /etc/ascend_install.info
+          type: File
 ---
 apiVersion: v1
 kind: Service

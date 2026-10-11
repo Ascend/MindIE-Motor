@@ -88,6 +88,18 @@ spec:
             mountPath: /dev/infiniband
           - name: hisi-hdc
             mountPath: /dev/hisi_hdc
+          - name: dcmi
+            mountPath: /usr/local/dcmi
+            readOnly: true
+          - name: npu-smi
+            mountPath: /usr/local/bin/npu-smi
+            readOnly: true
+          - name: ascend-install-info
+            mountPath: /etc/ascend_install.info
+            readOnly: true
+          - name: hccn-tool
+            mountPath: /usr/bin/hccn_tool
+            readOnly: true
       volumes:
       - name: data
         hostPath:
@@ -133,3 +145,18 @@ spec:
       - name: hisi-hdc
         hostPath:
           path: /dev/hisi_hdc
+      - name: dcmi
+        hostPath:
+          path: /usr/local/dcmi
+      - name: npu-smi
+        hostPath:
+          path: /usr/local/bin/npu-smi
+          type: File
+      - name: ascend-install-info
+        hostPath:
+          path: /etc/ascend_install.info
+          type: File
+      - name: hccn-tool
+        hostPath:
+          path: /usr/bin/hccn_tool
+          type: File
