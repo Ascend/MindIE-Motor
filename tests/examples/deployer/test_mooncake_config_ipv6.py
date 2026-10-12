@@ -12,6 +12,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 
 def _load_mooncake_config_module():
     repo_root = Path(__file__).resolve().parents[3]
@@ -29,6 +31,18 @@ def _load_mooncake_config_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("name", [None, "", []])
+def test_vllm_model_name_defaults_to_model(name):
+    module = _load_mooncake_config_module()
+    section = {
+        "engine_type": "vllm",
+        "engine_config": {"model": "/weights/model", "served_model_name": name},
+        "model_config": {"model_name": "legacy"},
+    }
+
+    assert module.resolve_model_name(section) == "/weights/model"
 
 
 def test_generate_kv_cache_store_config_brackets_ipv6_master_service(tmp_path, monkeypatch):

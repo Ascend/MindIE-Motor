@@ -25,7 +25,6 @@ if [ -f "$NODEPORT_WARN_FILE" ] && [ -s "$NODEPORT_WARN_FILE" ]; then
 fi
 
  set_cann_env
- setup_jemalloc
 
 # not necessary if no ccae
 python3 -m ccae_reporter.run Coordinator &

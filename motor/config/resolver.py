@@ -219,6 +219,10 @@ class VLLMConfigResolver(BaseConfigResolver):
         "cp_kv_cache_interleave_size": ("cp_kv_cache_interleave_size", "cp-kv-cache-interleave-size"),
     }
 
+    def get_model_name(self, default: str = "") -> str:
+        """Use the model path when vLLM has no explicit served model name."""
+        return self.get("model_name") or self.get_model_path(default)
+
     def get_d2d_config(self) -> dict | None:
         """Read D2D config from model_loader_extra_config.
 

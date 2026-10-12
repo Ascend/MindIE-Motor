@@ -18,7 +18,6 @@ fi
 export MOTOR_DISABLE_LOG_LOGO=1
 
 set_cann_env
-setup_jemalloc
 setup_motor_log_path
 
 for warn_file in \

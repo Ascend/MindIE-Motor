@@ -41,6 +41,14 @@ def test_shared_configmap_assets_have_unique_runtime_names():
     }.issubset(target_names)
 
 
+def test_startup_scripts_do_not_force_jemalloc():
+    startup_root = DEPLOYER_ROOT / "startup"
+    startup_scripts = "\n".join(path.read_text(encoding="utf-8") for path in startup_root.rglob("*.sh"))
+
+    assert "setup_jemalloc" not in startup_scripts
+    assert "libjemalloc" not in startup_scripts
+
+
 def test_local_copy_and_kubectl_args_use_same_asset_manifest(tmp_path):
     user_config = tmp_path / "selected-user.json"
     env_config = tmp_path / "selected-env.json"

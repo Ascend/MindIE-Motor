@@ -74,3 +74,6 @@
 | 2026-09-21 | node_manager | 关闭 vLLM 启动加速仍覆盖原生引擎配置 | [disabled-startup-acceleration-overrides.md](node_manager/disabled-startup-acceleration-overrides.md) | NodeManager, vLLM startup acceleration, disabled feature, engine override |
 | 2026-09-30 | coordinator | Kubernetes 主备倒换时 Coordinator Daemon 退出导致 Pod 重启 | [kubernetes-standby-no-daemon-exit.md](coordinator/kubernetes-standby-no-daemon-exit.md) | Coordinator, Kubernetes, standby, os._exit, failover |
 | 2026-10-09 | coordinator | Decode 高负载拉取已超时释放的 Prefill KV 导致精度问题 | [decode-kv-fetch-timeout-mismatch.md](coordinator/decode-kv-fetch-timeout-mismatch.md) | Coordinator, Decode high load, Mooncake abort timeout, KV release, accuracy |
+
+| 2026-10-12 | deployer | vLLM 可选服务名被 Render 强制要求 | [vllm-service-name-fallback.md](deployer/vllm-service-name-fallback.md) | vLLM, served_model_name, Render, resolver, model fallback |
+| 2026-10-12 | deployer | 启动脚本强制预加载 jemalloc 导致自定义算子不兼容 | [forced-jemalloc-preload.md](deployer/forced-jemalloc-preload.md) | deployer, jemalloc, LD_PRELOAD, CANN, tiling |

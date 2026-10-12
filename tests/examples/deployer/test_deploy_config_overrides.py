@@ -27,10 +27,22 @@ from lib.utils import (
     apply_node_selector_override,
     get_coordinator_infer_node_port,
     load_yaml,
+    resolve_model_name,
 )
 
 
 DEPLOYER_ROOT = Path(__file__).resolve().parents[3] / "examples" / "deployer"
+
+
+@pytest.mark.parametrize("name", [None, "", []])
+def test_vllm_model_name_defaults_to_model(name):
+    section = {
+        "engine_type": "vllm",
+        "engine_config": {"model": "/weights/model", "served_model_name": name},
+        "model_config": {"model_name": "legacy"},
+    }
+
+    assert resolve_model_name(section) == "/weights/model"
 
 
 @pytest.mark.parametrize(

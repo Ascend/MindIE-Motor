@@ -65,7 +65,10 @@ def _resolve_model_config(engine_section: dict[str, Any], section_name: str) -> 
     engine_config = engine_section.get(C.ENGINE_CONFIG, {})
     legacy_model_config = engine_section.get("model_config", {})
     model = engine_config.get("model") or legacy_model_config.get("model_path")
-    served_model_name = engine_config.get("served_model_name") or legacy_model_config.get("model_name")
+    if "served_model_name" in engine_config:
+        served_model_name = engine_config.get("served_model_name") or model
+    else:
+        served_model_name = legacy_model_config.get("model_name") or model
     if not isinstance(model, str) or not model:
         raise ValueError(f"{section_name}.engine_config.model is required when Render is enabled")
     return model, _normalize_served_model_names(served_model_name)

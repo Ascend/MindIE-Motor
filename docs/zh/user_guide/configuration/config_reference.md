@@ -756,6 +756,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 | additional_labels | object | 可选；Union Engine工作负载及其Pod模板的自定义Labels。 |
 | image_name | string | 可选；Union 引擎容器镜像。不填则使用 `motor_deploy_config.image_name`。**仅 Kubernetes 部署生效**；Docker 部署统一使用 `motor_deploy_config.image_name`。 |
 | **engine_config字段** | - | `engine_config` 直接映射所选引擎的原生启动参数；请参阅对应 vLLM/SGLang 版本的官方参数文档。 |
+| engine_config.served_model_name | string/array | vLLM 可选服务名；显式配置为空时使用 `engine_config.model`。字段缺失时保留旧版 `model_config.model_name` 兼容，旧配置也未提供时使用 `engine_config.model`。 |
 | **motor_nodemanger_config字段** |-|-|
 | api_config.pod_ip |string | Pod IP（由环境或部署注入）。默认值：`127.0.0.1`（或 Env.pod_ip）。 |
 | api_config.node_manager_port |int | NodeManager 端口。默认值：`1026`。 |
@@ -988,6 +989,7 @@ Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两
 | npu_chip_name | string | 仅 `motor_engine_prefill_config`。可选；填写后在 Prefill `nodeSelector` 增加 `huawei.com/npu.chip.name`，例如 `Ascend950PR`。不填不加该条。**仅 Kubernetes 部署生效**，Docker 部署下不生效（Docker 无调度器，由人工按机器形态分配容器，见 [Docker多容器PD分离部署](../deployment/docker/multi_container.md)）。见 [PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md)。 |
 | npu_chip_name | string | 仅 `motor_engine_decode_config`。可选；填写后在 Decode `nodeSelector` 增加 `huawei.com/npu.chip.name`，例如 `Ascend950DT`。不填不加该条。**仅 Kubernetes 部署生效**，Docker 部署下不生效。 |
 | **engine_config字段** | - | `engine_config` 直接映射所选引擎的原生启动参数；请参阅对应 vLLM/SGLang 版本的官方参数文档。 |
+| engine_config.served_model_name | string/array | vLLM 可选服务名；显式配置为空时使用 `engine_config.model`。字段缺失时保留旧版 `model_config.model_name` 兼容，旧配置也未提供时使用 `engine_config.model`。 |
 | **motor_nodemanger_config字段** |-|-|
 | api_config.pod_ip |string | Pod IP（由环境或部署注入）。默认值：`127.0.0.1`（或 Env.pod_ip）。 |
 | api_config.node_manager_port |int | NodeManager 端口。默认值：`1026`。 |
