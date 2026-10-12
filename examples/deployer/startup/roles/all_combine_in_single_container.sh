@@ -14,8 +14,6 @@ if [ "$ROLE" != "SINGLE_CONTAINER" ]; then
     exit 1
 fi
 
-setup_jemalloc
-
 # Multiple components start in one container; disable ASCII logo to avoid log spam.
 export MOTOR_DISABLE_LOG_LOGO=1
 

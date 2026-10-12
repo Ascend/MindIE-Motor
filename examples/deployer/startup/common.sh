@@ -136,18 +136,6 @@ apply_patches() {
     fi
 }
 
-setup_jemalloc() {
-    jemalloc_path=$(find /usr -type f -name "libjemalloc.so.2" 2>/dev/null | head -n 1)
-    if [[ -n "$jemalloc_path" ]]; then
-        export LD_PRELOAD="${jemalloc_path}:${LD_PRELOAD}"
-        echo "jemalloc found at: $jemalloc_path"
-        echo "LD_PRELOAD is set successfully."
-    else
-        echo "Warning: libjemalloc.so.2 not found under /usr"
-        echo "Please make sure jemalloc is installed."
-    fi
-}
-
 # Same physical node → same HCCL_LOGIC_SUPERPOD_ID (intra-node fabric OK);
 # different node names → different IDs (force inter-node RoCE).
 # Prefer NODE_NAME, then HOST_IP, then HOSTNAME. Do not hardcode in env.json.

@@ -391,3 +391,20 @@ def test_vllm_world_size_unaffected_by_enable_multi_endpoints_false():
     parallel = resolver.get_parallel_config()
     assert parallel["local_world_size"] == 16
     assert parallel["world_size"] == 256
+
+
+@pytest.mark.parametrize("name", [None, "", []])
+def test_vllm_model_name_matches_engine_default(name):
+    resolver = ConfigResolver(_vllm_section({"model": "/weights/model", "served_model_name": name}))
+    assert resolver.get_model_name() == "/weights/model"
+
+
+def test_vllm_model_name_preserves_legacy_name_when_native_name_is_absent():
+    resolver = ConfigResolver(
+        {
+            "engine_type": "vllm",
+            "engine_config": {"model": "/weights/model"},
+            "model_config": {"model_name": "legacy"},
+        }
+    )
+    assert resolver.get_model_name() == "legacy"

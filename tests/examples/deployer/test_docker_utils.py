@@ -16,6 +16,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 DEPLOYER_ROOT = Path(__file__).resolve().parents[3] / "examples" / "deployer"
 sys.path.insert(0, str(DEPLOYER_ROOT))
 
@@ -517,3 +519,14 @@ class DockerPreflightLayoutTests(unittest.TestCase):
         cfg["motor_deploy_config"]["p_pod_npu_num"] = 4
         with self.assertRaisesRegex(ValueError, "prefill"):
             D.validate_pod_layouts(cfg)
+
+
+@pytest.mark.parametrize("name", [None, "", []])
+def test_vllm_model_name_defaults_to_model(name):
+    section = {
+        "engine_type": "vllm",
+        "engine_config": {"model": "/weights/model", "served_model_name": name},
+        "model_config": {"model_name": "legacy"},
+    }
+
+    assert D.resolve_model_name(section) == "/weights/model"

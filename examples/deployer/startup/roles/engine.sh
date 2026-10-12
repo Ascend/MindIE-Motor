@@ -14,8 +14,6 @@ if [ "$ROLE" != "encode" ] && [ "$ROLE" != "prefill" ] && [ "$ROLE" != "decode" 
     exit 1
 fi
 
-setup_jemalloc
-
 # only A2 and A3 need it, A5 does not need it.
 gen_ranktable_config
 

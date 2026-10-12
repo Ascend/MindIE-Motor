@@ -270,3 +270,14 @@ def test_deployment_mode_adds_render_to_coordinator_pod(tmp_path, monkeypatch, m
     else:
         pod_spec = documents[0][C.SPEC][C.TEMPLATE][C.SPEC]
     assert _render_container(pod_spec)[C.IMAGE] == "vllm-render-cpu:test"
+
+
+@pytest.mark.parametrize("name", [None, "", []])
+def test_render_uses_model_when_served_model_name_is_empty(name):
+    from lib.generator.render import resolve_render_model
+
+    config = _user_config()
+    for key in (C.MOTOR_ENGINE_PREFILL_CONFIG, C.MOTOR_ENGINE_DECODE_CONFIG):
+        config[key][C.ENGINE_CONFIG]["served_model_name"] = name
+        config[key]["model_config"] = {"model_name": "legacy"}
+    assert resolve_render_model(config) == ("/mnt/weight/qwen", ["/mnt/weight/qwen"])

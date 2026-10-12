@@ -55,9 +55,13 @@ def resolve_model_name(engine_section, default="Unknown"):
         name = engine_config.get("served-model-name")
     else:
         name = engine_config.get("served_model_name")
+        if "served_model_name" in engine_config:
+            return name or engine_config.get("model", default)
     if name:
         return name
     model_config = engine_section.get("model_config", {})
+    if engine_type == "vllm":
+        return model_config.get("model_name") or engine_config.get("model") or default
     return model_config.get("model_name", default)
 
 
