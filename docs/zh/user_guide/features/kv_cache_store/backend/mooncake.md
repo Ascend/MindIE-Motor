@@ -71,7 +71,7 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
 | 硬件 | 环境变量 | 说明 |
 |------|-------|------|
 | Ascend 950PR系列产品 | <ul><li>使用 UBOE 协议时：ASCEND_GLOBAL_RESOURCE_CONFIG={"comm_resource_config.protocol_desc":["uboe:device"]}</li><li>使用 UB 协议时：ASCEND_LOCAL_COMM_RES={"version":"1.3"}</li></ul> | UBOE / UB 二选一，按实际使用的通信协议配置。 |
-| Atlas 800I A3 超节点服务器 | ASCEND_ENABLE_USE_FABRIC_MEM=1 | **推荐方案**。<br>启用统一内存地址直传方案。若开启 SSD offload，相关内存大小需按 1GB 对齐,详见 vLLM Ascend 文档 [Fabric memory size alignment](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_pool.html#fabric-memory-size-alignment-a3-ascend-enable-use-fabric-mem-1)。 |
+| Atlas 800I A3 超节点服务器 | ASCEND_ENABLE_USE_FABRIC_MEM=1 | **推荐方案**。<br>启用统一内存地址直传方案。若开启 SSD offload，相关内存大小需按 1GB 对齐,详见 vLLM Ascend 文档 [Fabric memory size alignment](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_cache_pool_ascend_store.html#issue-3-fabric-memory-misalignment-causing-allocation-failure)。 |
 | Atlas 800I A3超节点服务器 | ASCEND_BUFFER_POOL=4:8 | 当[表 1](#table001)依赖列软件版本不满足时，使用该方案。<br>配置 NPU Device 上用于聚合与 KV 传输的 buffer 个数与大小（例如 `4:8` 表示 4 个 8MB buffer）。 |
 | Atlas 800I A2推理服务器 | — | 无需额外环境变量，通用必配项即可。 |
 
@@ -474,7 +474,7 @@ ip -br link | grep ipourma
 
 ### 验证特性
 
-**验证前提：** 使用长 prompt（≥ 128 token，建议 500+ token）发起请求。短请求（prompt < 128 token）不会入池，也不会产生 put 流量，而非故障。
+**验证前提：** 使用长 prompt（≥ 128 token，建议 500+ token）发起请求。短请求（prompt < 128 token）不会入池，也不会产生 put 流量，此为正常现象，非故障。
 
 **验证步骤：**
 
