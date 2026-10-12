@@ -558,7 +558,7 @@
         >- 如需备份数据，可在删除前执行以下命令（TLS参数请按实际证书路径调整）：
         >
         >   ```bash
-        >   kubectl -n <namespace> exec etcd-0 --etcdctl --endpoints=https://etcd-0.etcd:2379 --cacert=/etc/ssl/certs/etcdca/ca.pem --cert=/etc/ssl/certs/etcdca/server.pem --key=/etc/ssl/certs/etcdca/server.key snapshot save /tmp/etcd-backup.db
+        >   kubectl -n <namespace> exec etcd-0 -- etcdctl --endpoints=https://etcd-0.etcd:2379 --cacert=/etc/ssl/certs/etcdca/ca.pem --cert=/etc/ssl/certs/etcdca/server.pem --key=/etc/ssl/certs/etcdca/server.key snapshot save /tmp/etcd-backup.db
         >   ```
         >
         >   备份文件位于容器内 /tmp/etcd-backup.db ，可执行以下命令导出到本地。

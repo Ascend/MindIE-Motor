@@ -44,4 +44,4 @@ MindIE Motor中的PD分离调度与实例角色能力，由Coordinator统一编�
 PD分离服务的部署以及更多详细内容请参见：
 
 - **K8s**：依赖较重，可使用Motor全部能力。RAS（高可靠、高可用）能力在出现软硬件故障时极大降低业务损失；优秀的请求调度能力（KV亲和性调度+KV Cache池化管理），明显提升推理性能。参见[PD分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md)。
-- **Docker**：依赖较轻，可使用Motor的负载均衡能力（KV亲和性调度与池化），明显提升推理性能。参见[基于Docker的服务部署](../deployment/docker/single_container.md)。
+- **Docker only**：依赖较轻，可使用Motor的负载均衡能力（KV亲和性调度与池化），明显提升推理性能。参见[基于Docker的服务部署](../deployment/docker/single_container.md)。

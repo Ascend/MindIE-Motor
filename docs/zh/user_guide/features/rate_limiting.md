@@ -4,7 +4,7 @@
 
 服务限流在 Coordinator 推理面入口限制单位时间内进入的 HTTP 请求，避免瞬时流量把调度和推理实例打满。配置位于 `user_config.json` 的 `motor_coordinator_config.rate_limit_config`，默认关闭。
 
-开启后该特性后，推理进程通过中间件处理进入推理面的请求。内置两种提供者：
+开启该特性后，推理进程通过中间件处理进入推理面的请求。内置两种提供者：
 
 | 提供者 | 实现方式 |
 |----------|------|
@@ -45,7 +45,7 @@ simple采用全局令牌桶实现限流，参数如下：
 
 - `scope` 默认是 `global`。当前 `simple` 实现固定使用这一只全局桶，把 `scope` 改成其他值不会变成按 IP 或按用户限流。
 
-- 限流检查失败时请求默认放行：`is_allowed` 抛错，或中间件调用限流器失败，都不会因为限流模块自身异常把推理面整段拒绝。
+- 限流检查失败时请求默认放行：`is_allowed` 抛错，或中间件调用限流器失败，都不会因为限流模块自身异常把推理面全部拒绝。
 
 **请求拥堵事件**
 
@@ -64,7 +64,7 @@ simple 限流器在每次判定后，计算已用额度 used = max_requests - av
   - 级别：MAJOR
   - reason_id=DEALING_WITH_CONGESTION
 
-- `ControllerApiClient.report_alarms` 失败时不抛异常，返回 `ok=false`（HTTP 非 200 或传输异常）。限流器忽略过这个返回值时，状态会提前置位，Controller 恢复后也不再补报。现在只有返回 `ok` 才翻转状态。未接受时不挡住本次请求，并由之后的请求重试，间隔约 1 秒，避免 Controller 不可达时每个请求都同步打一次上报。
+- `ControllerApiClient.report_alarms` 失败时不抛异常，返回 `ok=false`（HTTP 非 200 或传输异常）。限流器忽略这个返回值时，状态会提前置位，Controller 恢复后也不再补报。现在只有返回 `ok` 才翻转状态。未接受时不挡住本次请求，并由之后的请求重试，间隔约 1 秒，避免 Controller 不可达时每个请求都同步打一次上报。
 
 - `max_requests` 为 1、2、3、4、7、8 时，`int(max_requests × 0.85)` 与 `int(max_requests × 0.75)` 相等，触发和恢复之间没有滞回区间，已用额度在该整数附近来回时会反复上报。其中 `max_requests` 为 1 时，恢复条件是 `used < 0`，置位之后不会清除。`max_requests >= 10` 时两个整数阈值至少相差 1。
 
@@ -175,7 +175,7 @@ Using simple rate limit, Failed to create olc limit middleware
 | 引擎 | 与推理引擎类型无关 |
 | 特性互斥 | 无 |
 | 软件依赖 | `provider=olc` 时需要安装 [OLC](https://gitcode.com/openFuyao/olc-python)（`olc-python` v0.1.0） |
-| 其他限制 | <ul><li>`simple` 按每个推理 Worker 进程独立计数，总通过量约为 `max_requests × num_workers`。</li><li>拥堵告警同样按 Worker 进程分别上报，不会在 Coordinator 内合并成一条。</li><li>`max_requests` 为 1、2、3、4、7、8 时，85% 与 75% 取整后阈值相同，边界附近可能反复上报；为 1 时告警置位后不会清除。</li><li>`scope` 不改变分桶方式，当前固定为进程内全局桶</li><li>启动时未开启限流时，热更新不能补装中间件。</li><li>成功加载的 `olc` 不能通过热更新切换提供者或规则目录。</li></ul> |
+| 其他限制 | <ul><li>`simple` 按每个推理 Worker 进程独立计数，总通过量约为 `max_requests × num_workers`。</li><li>拥堵告警同样按 Worker 进程分别上报，不会在 Coordinator 内合并成一条。</li><li>`max_requests` 为 1、2、3、4、7、8 时，85% 与 75% 取整后阈值相同，边界附近可能反复上报；为 1 时告警置位后不会清除。</li><li>`scope` 不改变分桶方式，当前固定为进程内全局桶</li><li>启动时未开启限流，热更新不能补装中间件。</li><li>成功加载的 `olc` 不能通过热更新切换提供者或规则目录。</li></ul> |
 
 ## 特性使用
 
