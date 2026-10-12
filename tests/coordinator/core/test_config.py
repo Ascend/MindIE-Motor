@@ -90,6 +90,7 @@ COMPLETE_CONFIG = {
         "max_retry": 5,
         "retry_delay": 0.2,
         "first_token_timeout": 600,
+        "decode_first_token_timeout": 480,
         "infer_timeout": 3600,
     },
     "tls_config": {},
@@ -147,6 +148,7 @@ def test_default_config_initialization():
     assert config.exception_config.reschedule_enabled is False
     assert not hasattr(config.exception_config, "recompute_enabled")
     assert config.exception_config.first_token_timeout == 600
+    assert config.exception_config.decode_first_token_timeout == 480
     assert not hasattr(config.scheduler_config, "deploy_mode")
     assert config.scheduler_config.prefill_scheduler_type.value == "load_balance"
     assert config.scheduler_config.decode_scheduler_type.value == "load_balance"
@@ -851,6 +853,7 @@ def test_config_validation_rejects_enabled_management_auth_without_key_file():
         ("max_retry", True, "max_retry must be a number, got bool"),
         ("retry_delay", -0.1, "retry_delay must be greater than 0"),
         ("first_token_timeout", -1, "first_token_timeout must be greater than 0"),
+        ("decode_first_token_timeout", 0, "decode_first_token_timeout must be greater than 0"),
         ("infer_timeout", 0, "infer_timeout must be greater than 0"),
         ("request_timeout", -1, "request_timeout must be greater than 0"),
         ("connection_timeout", 0, "connection_timeout must be greater than 0"),
@@ -876,7 +879,13 @@ def test_config_validation_errors(param, value, expected_error):
         config = CoordinatorConfig()
         if param in ["log_max_line_length"]:
             setattr(config.logging_config, param, value)
-        elif param in ["max_retry", "retry_delay", "first_token_timeout", "infer_timeout"]:
+        elif param in [
+            "max_retry",
+            "retry_delay",
+            "first_token_timeout",
+            "decode_first_token_timeout",
+            "infer_timeout",
+        ]:
             setattr(config.exception_config, param, value)
         elif param in [
             "request_timeout",

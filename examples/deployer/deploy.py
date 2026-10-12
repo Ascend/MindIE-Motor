@@ -66,6 +66,53 @@ from lib.config_validator import (
 )
 from lib.container_snapshot import resolve_infer_service_template, validate_container_snapshot_config
 
+_MOONCAKE_ABORT_TIMEOUT_ENV = "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT"
+_PREFILL_ENV_SECTION = "motor_engine_prefill_env"
+_EXCEPTION_CONFIG = "exception_config"
+_DECODE_STREAM_TIMEOUT_KEY = "decode_first_token_timeout"
+
+
+def sync_decode_first_token_timeout_from_env(user_config: dict, env_config_path: str | None) -> None:
+    """Keep Coordinator's streaming Decode timeout aligned with the vLLM abort timeout."""
+    if not env_config_path or not os.path.exists(env_config_path):
+        return
+
+    env_config = read_json(env_config_path)
+    common_env = env_config.get(C.MOTOR_COMMON_ENV, {})
+    prefill_env = env_config.get(_PREFILL_ENV_SECTION, {})
+    if not isinstance(common_env, dict) or not isinstance(prefill_env, dict):
+        return
+    if _MOONCAKE_ABORT_TIMEOUT_ENV in prefill_env:
+        source_section = _PREFILL_ENV_SECTION
+        raw_timeout = prefill_env[_MOONCAKE_ABORT_TIMEOUT_ENV]
+    elif _MOONCAKE_ABORT_TIMEOUT_ENV in common_env:
+        source_section = C.MOTOR_COMMON_ENV
+        raw_timeout = common_env[_MOONCAKE_ABORT_TIMEOUT_ENV]
+    else:
+        return
+
+    if isinstance(raw_timeout, bool):
+        raise ValueError(f"{source_section}.{_MOONCAKE_ABORT_TIMEOUT_ENV} must be a positive integer")
+    try:
+        timeout = int(raw_timeout)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{source_section}.{_MOONCAKE_ABORT_TIMEOUT_ENV} must be a positive integer") from error
+    if timeout <= 0 or str(raw_timeout).strip() != str(timeout):
+        raise ValueError(f"{source_section}.{_MOONCAKE_ABORT_TIMEOUT_ENV} must be a positive integer")
+
+    coordinator_config = user_config.setdefault(C.MOTOR_COORDINATOR_CONFIG, {})
+    exception_config = coordinator_config.setdefault(_EXCEPTION_CONFIG, {})
+    exception_config[_DECODE_STREAM_TIMEOUT_KEY] = timeout
+    logger.info(
+        "Set %s.%s.%s to %s from %s.%s",
+        C.MOTOR_COORDINATOR_CONFIG,
+        _EXCEPTION_CONFIG,
+        _DECODE_STREAM_TIMEOUT_KEY,
+        timeout,
+        source_section,
+        _MOONCAKE_ABORT_TIMEOUT_ENV,
+    )
+
 
 def handle_update_config(user_config):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
@@ -107,6 +154,7 @@ def handle_update_instance_num(user_config, env_config_path=None):
     baseline_config = get_baseline_config_from_configmap(deploy_config[C.CONFIG_JOB_ID])
     if baseline_config is None:
         raise FileNotFoundError("ConfigMap motor-config not found. Please deploy once before scaling.")
+    sync_decode_first_token_timeout_from_env(user_config, env_config_path)
     validate_only_instance_changed(user_config, baseline_config)
 
     baseline_deploy = baseline_config.get(C.MOTOR_DEPLOY_CONFIG, {})
@@ -135,7 +183,12 @@ def handle_update_instance_num(user_config, env_config_path=None):
         generate_yaml_single_container(
             paths["single_container_input_yaml"], paths["single_container_output_yaml"], user_config
         )
-        exec_all_kubectl_singer(deploy_config, paths["single_container_output_yaml"])
+        exec_all_kubectl_singer(
+            deploy_config,
+            paths["single_container_output_yaml"],
+            user_config=user_config,
+            effective_deploy_mode=deploy_mode_arg,
+        )
         logger.info("instance num update end.")
         return
     if deploy_mode_arg == C.DEPLOY_MODE_INFER_SERVICE_SET:
@@ -218,7 +271,12 @@ def deploy_services_single_container(paths, user_config, dry_run=False):
         paths["single_container_input_yaml"], paths["single_container_output_yaml"], user_config
     )
     if not dry_run:
-        exec_all_kubectl_singer(deploy_config, paths["single_container_output_yaml"])
+        exec_all_kubectl_singer(
+            deploy_config,
+            paths["single_container_output_yaml"],
+            user_config=user_config,
+            effective_deploy_mode=C.DEPLOY_MODE_SINGLE_CONTAINER,
+        )
 
 
 def resolve_deploy_mode_for_services(deploy_config):
@@ -226,6 +284,7 @@ def resolve_deploy_mode_for_services(deploy_config):
 
 
 def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collect=False):
+    sync_decode_first_token_timeout_from_env(user_config, env_config_path)
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     update_kv_store_enabled_flag(user_config)
     update_kv_conductor_enabled_flag(user_config)
@@ -476,6 +535,7 @@ def main():
     validate_instance_nums(user_config)
 
     if args.update_config:
+        sync_decode_first_token_timeout_from_env(user_config, env_config_path)
         handle_update_config(user_config)
         return
     if args.update_instance_num:

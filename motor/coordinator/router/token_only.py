@@ -346,8 +346,8 @@ async def run_token_only_or_fallback(
 
 async def gather_generate_responses(
     requests: list[EngineRequest],
-    send: Callable[[EngineRequest], Awaitable[dict[str, Any]]],
-) -> list[dict[str, Any]]:
+    send: Callable[[EngineRequest], Awaitable[_T]],
+) -> list[_T]:
     """Submit one GenerateRequest per prompt, cancelling siblings on failure."""
     tasks = [asyncio.create_task(send(request)) for request in requests]
     if not tasks:

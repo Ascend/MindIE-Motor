@@ -583,12 +583,16 @@ def exec_all_kubectl_multi(
         elastic_distributed_engine_deploy(deploy_config, baseline_deploy_config, out_deploy_yaml_path)
 
 
-def exec_all_kubectl_singer(deploy_config, yaml_file):
+def exec_all_kubectl_singer(deploy_config, yaml_file, user_config=None, effective_deploy_mode=None):
     """Execute kubectl commands for single container deployment."""
     job_id = deploy_config[C.CONFIG_JOB_ID]
     # Resolve NodePorts before any cluster mutation (configmap / apply).
     resolve_nodeports_for_yaml_files(deploy_config, [yaml_file])
-    create_motor_config_configmap(job_id)
+    create_motor_config_configmap(
+        job_id,
+        user_config=user_config,
+        effective_deploy_mode=effective_deploy_mode,
+    )
     safe_exec_cmd(["kubectl", "apply", "-f", yaml_file, "-n", job_id])
 
 

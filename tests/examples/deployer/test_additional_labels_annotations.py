@@ -118,3 +118,86 @@ def test_main_rejects_reserved_labels_before_deployment(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="reserved.*app"):
         deploy_module.main()
+
+
+@pytest.mark.parametrize("env_section", ["motor_engine_prefill_env", "motor_common_env"])
+@pytest.mark.parametrize("env_value", [480, "480"])
+def test_sync_decode_first_token_timeout_from_env(tmp_path, env_section, env_value):
+    env_config_path = tmp_path / "env.json"
+    env_config_path.write_text(
+        json.dumps({env_section: {"VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT": env_value}}),
+        encoding="utf-8",
+    )
+    user_config = {
+        C.MOTOR_COORDINATOR_CONFIG: {
+            "exception_config": {"decode_first_token_timeout": 123},
+        }
+    }
+
+    deploy_module.sync_decode_first_token_timeout_from_env(user_config, str(env_config_path))
+
+    assert user_config[C.MOTOR_COORDINATOR_CONFIG]["exception_config"]["decode_first_token_timeout"] == 480
+
+
+def test_sync_decode_first_token_timeout_prefill_overrides_common(tmp_path):
+    env_config_path = tmp_path / "env.json"
+    env_config_path.write_text(
+        json.dumps(
+            {
+                "motor_common_env": {"VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT": 360},
+                "motor_engine_prefill_env": {"VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT": 480},
+            }
+        ),
+        encoding="utf-8",
+    )
+    user_config = {}
+
+    deploy_module.sync_decode_first_token_timeout_from_env(user_config, str(env_config_path))
+
+    assert user_config[C.MOTOR_COORDINATOR_CONFIG]["exception_config"]["decode_first_token_timeout"] == 480
+
+
+def test_sync_decode_first_token_timeout_ignores_missing_env(tmp_path):
+    env_config_path = tmp_path / "env.json"
+    env_config_path.write_text(json.dumps({"motor_engine_prefill_env": {}, "motor_common_env": {}}), encoding="utf-8")
+    user_config = {}
+
+    deploy_module.sync_decode_first_token_timeout_from_env(user_config, str(env_config_path))
+
+    assert user_config == {}
+
+
+@pytest.mark.parametrize("env_value", [0, -1, True, "invalid", "1.5"])
+def test_sync_decode_first_token_timeout_rejects_invalid_env(tmp_path, env_value):
+    env_config_path = tmp_path / "env.json"
+    env_config_path.write_text(
+        json.dumps({"motor_engine_prefill_env": {"VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT": env_value}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT must be a positive integer"):
+        deploy_module.sync_decode_first_token_timeout_from_env({}, str(env_config_path))
+
+
+def test_single_container_deploy_passes_effective_user_config_to_configmap(monkeypatch):
+    user_config = {C.MOTOR_DEPLOY_CONFIG: {C.CONFIG_JOB_ID: "job"}}
+    paths = {
+        "single_container_input_yaml": "input.yaml",
+        "single_container_output_yaml": "output.yaml",
+    }
+    calls = []
+    monkeypatch.setattr(deploy_module, "update_kv_store_enabled_flag", lambda *_args: None)
+    monkeypatch.setattr(deploy_module, "generate_yaml_single_container", lambda *_args: None)
+    monkeypatch.setattr(deploy_module, "exec_all_kubectl_singer", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    deploy_module.deploy_services_single_container(paths, user_config)
+
+    assert calls == [
+        (
+            (user_config[C.MOTOR_DEPLOY_CONFIG], "output.yaml"),
+            {
+                "user_config": user_config,
+                "effective_deploy_mode": C.DEPLOY_MODE_SINGLE_CONTAINER,
+            },
+        )
+    ]

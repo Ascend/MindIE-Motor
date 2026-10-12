@@ -531,7 +531,8 @@ class BaseRouter(ABC):
     def _build_request_timeout(self, timeout: int) -> httpx.Timeout:
         """Bound the TCP connect phase without touching the overall request timeout.
 
-        ``timeout`` (first_token_timeout / infer_timeout) keeps governing
+        ``timeout`` (first_token_timeout / decode_first_token_timeout /
+        infer_timeout) keeps governing
         read/write/pool exactly as before; only the connect phase gets an
         independent bounded limit. Without this, a blackholed engine address
         (pod deleted, IP released) fails only after the kernel SYN budget

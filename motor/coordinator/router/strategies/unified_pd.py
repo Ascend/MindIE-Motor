@@ -1000,6 +1000,16 @@ class UnifiedPDRouter(BaseRouter):
             d_api,
             d_req,
             d_client,
+            first_token_start=attempt.prefill_completed_event,
+            first_token_timeout=max(
+                0.0,
+                self.config.exception_config.decode_first_token_timeout
+                - (
+                    time.perf_counter() - attempt.prefill_completed_at
+                    if attempt.prefill_completed_at is not None
+                    else 0.0
+                ),
+            ),
         )
         async with aclosing(
             self._iter_stream_decode_queue(
@@ -1029,18 +1039,28 @@ class UnifiedPDRouter(BaseRouter):
         d_api: str,
         d_req: dict[str, Any],
         d_client,
+        *,
+        first_token_start: asyncio.Event | None = None,
+        first_token_timeout: float | None = None,
     ) -> asyncio.Task:
         d_instance_id = attempt.decode_resource.instance.id
 
         async def decode_task() -> None:
             try:
                 attempt.mark_dispatched(PDRole.ROLE_D.value)
-                async for chunk in self.forward_stream_request(
+                stream = self.forward_stream_request(
                     d_api,
                     d_req,
                     d_client,
                     self.config.exception_config.infer_timeout,
                     on_response_ready=lambda: self._stream_commit_controller.mark_ready("decode", attempt.attempt_seq),
+                )
+                async for chunk in self._iter_with_first_item_timeout(
+                    stream,
+                    first_token_timeout
+                    if first_token_timeout is not None
+                    else self.config.exception_config.decode_first_token_timeout,
+                    start_event=first_token_start,
                 ):
                     if chunk:
                         await queue.put(chunk)
@@ -1060,6 +1080,49 @@ class UnifiedPDRouter(BaseRouter):
                     terminal.set_result(("error", e))
 
         return attempt.register_decode_task(asyncio.create_task(decode_task()))
+
+    @staticmethod
+    async def _iter_with_first_item_timeout(
+        stream,
+        timeout: float,
+        *,
+        start_event: asyncio.Event | None = None,
+    ) -> AsyncGenerator[bytes, None]:
+        """Apply one absolute deadline to the first complete stream item only."""
+        iterator = aiter(stream)
+        first_item_task = asyncio.create_task(anext(iterator))
+        start_task = None
+        try:
+            if start_event is not None and not start_event.is_set():
+                start_task = asyncio.create_task(start_event.wait())
+                done, _ = await asyncio.wait((first_item_task, start_task), return_when=asyncio.FIRST_COMPLETED)
+                if first_item_task in done:
+                    start_task.cancel()
+                    try:
+                        first_item = first_item_task.result()
+                    except StopAsyncIteration:
+                        return
+                    yield first_item
+                    async for item in iterator:
+                        yield item
+                    return
+
+            try:
+                first_item = await asyncio.wait_for(asyncio.shield(first_item_task), timeout=timeout)
+            except StopAsyncIteration:
+                return
+            yield first_item
+            async for item in iterator:
+                yield item
+        finally:
+            if start_task is not None and not start_task.done():
+                start_task.cancel()
+            if not first_item_task.done():
+                first_item_task.cancel()
+            await asyncio.gather(
+                *(task for task in (start_task, first_item_task) if task is not None),
+                return_exceptions=True,
+            )
 
     async def _iter_stream_decode_queue(
         self,
@@ -1218,6 +1281,8 @@ class UnifiedPDRouter(BaseRouter):
         attempt.decode_task = None
         attempt.prefill_dispatched = False
         attempt.prefill_completed = False
+        attempt.prefill_completed_at = None
+        attempt.prefill_completed_event.clear()
         attempt.decode_dispatched = False
         attempt.decode_completed = False
 
@@ -1832,17 +1897,19 @@ class UnifiedPDRouter(BaseRouter):
         p_instance_id = attempt.prefill_resource.instance.id
         async with self._client_for(attempt.prefill_resource) as p_client:
 
-            async def send_prefill(request: EngineRequest) -> dict[str, Any]:
+            async def send_prefill(request: EngineRequest) -> tuple[dict[str, Any], float]:
                 response = await self.forward_request(
                     request.api,
                     request.body,
                     p_client,
                     self.config.exception_config.first_token_timeout,
                 )
-                return response.json()
+                return response.json(), time.perf_counter()
 
             attempt.mark_dispatched(PDRole.ROLE_P.value)
-            prefill_bodies = await gather_generate_responses(prefill_requests, send_prefill)
+            timed_prefill_bodies = await gather_generate_responses(prefill_requests, send_prefill)
+            prefill_bodies = [body for body, _ in timed_prefill_bodies]
+            prefill_completed_at = [completed_at for _, completed_at in timed_prefill_bodies]
             prefill_results = [adapter.parse_prefill_response(body) for body in prefill_bodies]
             if len(prefill_results) == 1 and prefill_results[0].usage is not None:
                 self._capture_prompt_tokens_details({"usage": prefill_results[0].usage})
@@ -1885,12 +1952,19 @@ class UnifiedPDRouter(BaseRouter):
                 lambda: self._stream_commit_controller.mark_ready("decode", attempt.attempt_seq),
             )
             streams = [
-                self.forward_stream_request(
-                    request.api,
-                    request.body,
-                    d_client,
-                    self.config.exception_config.infer_timeout,
-                    on_response_ready=ready_callbacks[index],
+                self._iter_with_first_item_timeout(
+                    self.forward_stream_request(
+                        request.api,
+                        request.body,
+                        d_client,
+                        self.config.exception_config.infer_timeout,
+                        on_response_ready=ready_callbacks[index],
+                    ),
+                    max(
+                        0.0,
+                        self.config.exception_config.decode_first_token_timeout
+                        - (time.perf_counter() - prefill_completed_at[index]),
+                    ),
                 )
                 for index, request in enumerate(decode_requests)
             ]

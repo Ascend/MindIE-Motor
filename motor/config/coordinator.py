@@ -518,8 +518,9 @@ class ExceptionConfig:
     transport_max_retry: int | None = None
     retry_delay: float = 0.2
     first_token_timeout: int = 600  # 10 minutes
+    decode_first_token_timeout: int = 480  # 8 minutes
     infer_timeout: int = 3600  # 60 minutes
-    connect_timeout: float = 5.0  # TCP connect phase only; set 0 to inherit first_token_timeout
+    connect_timeout: float = 5.0  # TCP connect phase only; set 0 to inherit the request timeout
     upstream_error_body_max_bytes: int = 64 * 1024
 
     @property
@@ -1089,6 +1090,10 @@ class CoordinatorConfig:
             )
         self._validate_positive_number(self.exception_config.retry_delay, "retry_delay")
         self._validate_positive_number(self.exception_config.first_token_timeout, "first_token_timeout")
+        self._validate_positive_number(
+            self.exception_config.decode_first_token_timeout,
+            "decode_first_token_timeout",
+        )
         self._validate_positive_number(self.exception_config.infer_timeout, "infer_timeout")
         self._validate_positive_number(self.exception_config.connect_timeout, "connect_timeout", allow_zero=True)
         self._validate_positive_number(
