@@ -59,6 +59,69 @@ from tests.coordinator.router.token_only_support import (
 _ROUTER_LOGGER = _resolve_logger_name("motor.coordinator.router.strategies.base")
 
 
+@pytest.mark.asyncio
+async def test_decode_first_token_timeout_starts_after_prefill_completion():
+    prefill_completed = asyncio.Event()
+    release_first_item = asyncio.Event()
+
+    async def stream():
+        await release_first_item.wait()
+        yield b"first"
+
+    wrapped = UnifiedPDRouter._iter_with_first_item_timeout(
+        stream(),
+        0.01,
+        start_event=prefill_completed,
+    )
+    first_item_task = asyncio.create_task(anext(wrapped))
+    await asyncio.sleep(0.02)
+    assert not first_item_task.done()
+
+    prefill_completed.set()
+    release_first_item.set()
+    assert await asyncio.wait_for(first_item_task, timeout=1) == b"first"
+    await wrapped.aclose()
+
+
+@pytest.mark.asyncio
+async def test_decode_first_token_timeout_is_absolute_and_stops_after_first_item():
+    never_ready = asyncio.Event()
+
+    async def stalled_stream():
+        await never_ready.wait()
+        yield b"unreachable"
+
+    with pytest.raises(TimeoutError):
+        await anext(UnifiedPDRouter._iter_with_first_item_timeout(stalled_stream(), 0.01))
+
+    release_second_item = asyncio.Event()
+
+    async def two_item_stream():
+        yield b"first"
+        await release_second_item.wait()
+        yield b"second"
+
+    wrapped = UnifiedPDRouter._iter_with_first_item_timeout(two_item_stream(), 0.01)
+    assert await anext(wrapped) == b"first"
+    second_item_task = asyncio.create_task(anext(wrapped))
+    await asyncio.sleep(0.02)
+    assert not second_item_task.done()
+    release_second_item.set()
+    assert await asyncio.wait_for(second_item_task, timeout=1) == b"second"
+
+
+@pytest.mark.asyncio
+async def test_decode_first_token_timeout_preserves_empty_stream_completion():
+    async def empty_stream():
+        items = []
+        for item in items:
+            yield item
+
+    wrapped = UnifiedPDRouter._iter_with_first_item_timeout(empty_stream(), 0.01)
+    with pytest.raises(StopAsyncIteration):
+        await anext(wrapped)
+
+
 def _instance(
     instance_id: int,
     role: PDRole,
@@ -435,10 +498,12 @@ class _StreamClient(_Client):
     def __init__(self, name: str, exc_after_chunks: Exception | None = None):
         super().__init__(name)
         self.exc_after_chunks = exc_after_chunks
+        self.timeouts = []
 
     def stream(self, method, path, json=None, headers=None, timeout=None):
         self.requests.append(json)
         self.headers.append(headers or {})
+        self.timeouts.append(timeout)
         return _StreamResponse(
             [
                 b'data: {"choices":[{"delta":{"content":"A"},"index":0}]}\n\n',
@@ -451,12 +516,14 @@ class _TokenOnlyStreamClient(_Client):
     def __init__(self, name: str):
         super().__init__(name)
         self.paths = []
+        self.timeouts = []
 
     def stream(self, method, path, json=None, headers=None, timeout=None):
-        del method, timeout
+        del method
         self.paths.append(str(path))
         self.requests.append(json)
         self.headers.append(headers or {})
+        self.timeouts.append(timeout)
         return _StreamResponse(
             [
                 b'data: {"choices":[{"index":0,"token_ids":[30],"finish_reason":"stop"}]}\n\n',
@@ -747,6 +814,7 @@ async def test_unified_pd_stream_render_uses_token_only_handoff_round_trip(monke
     assert d_client.paths == ["/inference/v1/generate"]
     assert d_client.requests[0]["stream"] is True
     assert d_client.requests[0]["token_ids"] == [10, 20, 30]
+    assert d_client.timeouts[0].read == 3600
     derender_payload = render_client.derender_stream_chunk.await_args.args[1]
     assert derender_payload[f"{'chat' if api == 'v1/chat/completions' else 'completion'}_request"][request_field]
     assert b'"A"' in b"".join(chunks)
@@ -830,8 +898,28 @@ async def test_unified_pd_stream_completion_batch_uses_token_only_handoff(monkey
         stream=True,
         prompts=[[10], [20]],
     )
-    p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
+
+    class DelayedSecondPrefillClient(TokenOnlyEngineClient):
+        async def post(self, path, json=None, headers=None, timeout=None):
+            if json["token_ids"] == [20]:
+                await asyncio.sleep(0.02)
+            return await super().post(path, json=json, headers=headers, timeout=timeout)
+
+    p_client = DelayedSecondPrefillClient(PDRole.ROLE_P)
     d_client = _TokenOnlyStreamClient("decode")
+    first_item_timeouts = []
+    iter_with_timeout = UnifiedPDRouter._iter_with_first_item_timeout
+
+    async def record_first_item_timeout(stream, timeout, *, start_event=None):
+        first_item_timeouts.append(timeout)
+        async for item in iter_with_timeout(stream, timeout, start_event=start_event):
+            yield item
+
+    monkeypatch.setattr(
+        UnifiedPDRouter,
+        "_iter_with_first_item_timeout",
+        staticmethod(record_first_item_timeout),
+    )
     render_client = AsyncMock()
     render_client.derender_stream_chunk.side_effect = [
         DerenderedStreamChunk(
@@ -856,6 +944,8 @@ async def test_unified_pd_stream_completion_batch_uses_token_only_handoff(monkey
     assert [body["token_ids"] for body in p_client.requests] == [[10], [20]]
     assert d_client.paths == ["/inference/v1/generate"] * 2
     assert [body["token_ids"] for body in d_client.requests] == [[10], [20]]
+    assert [timeout.read for timeout in d_client.timeouts] == [3600, 3600]
+    assert first_item_timeouts[0] < first_item_timeouts[1] - 0.01
     assert render_client.derender_stream_chunk.await_count == 2
     assert req_info.prompt_token_ids == []
 
@@ -2503,11 +2593,14 @@ async def test_unified_pd_stream_dispatches_context_and_yields_visible_chunk(
         req_len=10,
     )
     scheduler = _Scheduler()
+    config = _config()
+    config.exception_config.decode_first_token_timeout = 123
+    config.exception_config.infer_timeout = 456
     router = UnifiedPDRouter(
         req_info,
-        _config(),
+        config,
         scheduler=scheduler,
-        request_manager=RequestManager(_config()),
+        request_manager=RequestManager(config),
     )
     p_client = _Client("prefill")
     d_client = _StreamClient("decode")
@@ -2527,6 +2620,7 @@ async def test_unified_pd_stream_dispatches_context_and_yields_visible_chunk(
     assert chunks == [b'data: {"choices":[{"delta":{"content":"A"},"index":0}]}\n\n']
     assert len(p_client.requests) == 1
     assert len(d_client.requests) == 1
+    assert d_client.timeouts[0].read == 456
     assert d_client.requests[0]["rid"] == p_client.requests[0]["rid"]
     assert p_client.requests[0]["bootstrap_room"] == d_client.requests[0]["bootstrap_room"]
     assert scheduler.update_workload.await_count == 2

@@ -278,6 +278,7 @@ motor_coordinator_config字段配置样例如下所示：
     "transport_max_retry": null,
     "retry_delay": 0.2,
     "first_token_timeout": 600,
+    "decode_first_token_timeout": 480,
     "infer_timeout": 3600,
     "upstream_error_body_max_bytes": 65536
   },
@@ -521,6 +522,7 @@ motor_coordinator_config字段配置样例如下所示：
 | transport_max_retry | int/null | Coordinator 传输失败的最大尝试次数；`null` 时使用 `max_retry`。默认值：`null`。 |
 | retry_delay | float | 每次重试前的等待时间（秒）。默认值：`0.2`。 |
 | first_token_timeout | int | 等待首 token 返回的超时时间（秒）。默认值：`600`。 |
+| decode_first_token_timeout | int | 流式 Decode 请求等待首 token 返回的超时时间（秒）。默认值：`480`。仅作用于 Decode 流式转发，其他场景仍使用原有超时配置。使用 `deploy.py` 部署时，本字段会自动使用 Prefill 最终生效的 `VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT`：`motor_engine_prefill_env` 优先，否则回退到 `motor_common_env`。 |
 | infer_timeout | int | 单次推理请求的总超时时间（秒）。非流式场景作用于单次转发；流式场景作为整个流式请求的整体墙钟超时（从请求到达算起，超时后中断并返回 504）。默认：`3600`。 |
 | upstream_error_body_max_bytes | int | 向客户端透传引擎 HTTP 错误体的最大字节数，避免返回超大错误响应。默认值：`65536`。 |
 | **reschedule_config字段** |-|-|

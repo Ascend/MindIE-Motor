@@ -43,6 +43,7 @@ UPDATE_CONFIG_WHITELIST = {
             "max_retry",
             "retry_delay",
             "first_token_timeout",
+            "decode_first_token_timeout",
             "infer_timeout",
         ],
         "timeout_config": [

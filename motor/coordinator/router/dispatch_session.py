@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 import asyncio
+import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -58,6 +59,8 @@ class AttemptContext:
     decode_task: asyncio.Task | None = None
     prefill_dispatched: bool = False
     prefill_completed: bool = False
+    prefill_completed_at: float | None = None
+    prefill_completed_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     decode_dispatched: bool = False
     decode_completed: bool = False
     trigger_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -98,6 +101,8 @@ class AttemptContext:
     def mark_completed(self, role: str) -> None:
         if role == "prefill":
             self.prefill_completed = True
+            self.prefill_completed_at = time.perf_counter()
+            self.prefill_completed_event.set()
         else:
             self.decode_completed = True
 

@@ -201,6 +201,15 @@ Mgmt process checks this SHM for liveness probe: `getppid() != daemon_pid OR rol
 
 ## Scheduling & Routing
 
+Dedicated Decode streaming forwards keep `infer_timeout` as the HTTP transport timeout and apply
+`exception_config.decode_first_token_timeout` (default `480` seconds) as a separate absolute deadline until the
+first complete response frame. The deadline is removed after that frame, so later token gaps retain the existing
+transport behavior. BOOTSTRAP/TRIGGER arm the deadline when Prefill completes rather than when the concurrent Decode
+request is dispatched. HANDOFF subtracts time already spent after Prefill completion; multi-prompt HANDOFF tracks
+that timestamp per prompt. Prefill/Hybrid first-token handling continues to use `first_token_timeout`, non-streaming
+Decode forwards use `infer_timeout`, and the client-facing streaming response keeps `infer_timeout` as its overall
+wall-clock deadline.
+
 ### Scheduling Policies (pluggable)
 
 Located in `scheduler/policy/`, each policy implements `BaseSchedulingPolicy`:

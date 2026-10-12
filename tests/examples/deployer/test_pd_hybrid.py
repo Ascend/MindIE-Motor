@@ -482,14 +482,29 @@ def test_handle_update_instance_num_scales_hybrid_instances(tmp_path, monkeypatc
     current_config[C.MOTOR_DEPLOY_CONFIG][C.DEPLOY_MODE_CONFIG_KEY] = C.DEPLOY_MODE_MULTI_DEPLOYMENT_YAML
     current_config[C.MOTOR_DEPLOY_CONFIG][C.HYBRID_INSTANCES_NUM] = 3
     commands = []
+    configmap_calls = []
     monkeypatch.setattr(deploy_module, "get_baseline_config_from_configmap", lambda _: baseline_config)
     monkeypatch.setattr(deploy_module, "get_deploy_paths", lambda: make_deploy_paths(tmp_path))
     monkeypatch.setattr(C, "OUTPUT_ROOT_PATH", str(tmp_path))
-    monkeypatch.setattr(k8s_utils, "create_motor_config_configmap", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        k8s_utils,
+        "create_motor_config_configmap",
+        lambda *_args, **kwargs: configmap_calls.append(kwargs),
+    )
     monkeypatch.setattr(k8s_utils, "safe_exec_cmd", commands.append)
     monkeypatch.setattr(k8s_utils, "g_host_ipc_enabled", False)
     env_path = tmp_path / "env.json"
-    env_path.write_text(json.dumps({"motor_common_env": {"MOTOR_ENABLE_IPC_HOST": 1}}), encoding="utf-8")
+    env_path.write_text(
+        json.dumps(
+            {
+                "motor_common_env": {
+                    "MOTOR_ENABLE_IPC_HOST": 1,
+                    "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT": 321,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(deploy_module, "set_env_to_shell", lambda *_a: None)
 
     deploy_module.handle_update_instance_num(current_config, str(env_path))
@@ -504,6 +519,8 @@ def test_handle_update_instance_num_scales_hybrid_instances(tmp_path, monkeypatc
         ["kubectl", "apply", "-f", str(tmp_path / "vllm_u1.yaml"), "-n", "pd-hybrid"],
         ["kubectl", "apply", "-f", str(tmp_path / "vllm_u2.yaml"), "-n", "pd-hybrid"],
     ]
+    assert current_config[C.MOTOR_COORDINATOR_CONFIG]["exception_config"]["decode_first_token_timeout"] == 321
+    assert configmap_calls[0]["user_config"] is current_config
 
 
 def test_elastic_distributed_engine_deploy_scales_out_hybrid_instances(tmp_path, monkeypatch):

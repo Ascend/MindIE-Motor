@@ -24,6 +24,8 @@
 
     `exception_config.first_token_timeout`：等待首个 token 返回的超时时间，单位为秒。
 
+    `exception_config.decode_first_token_timeout`：流式 Decode 请求等待首个 token 返回的超时时间，单位为秒。
+
     `exception_config.infer_timeout`：单次推理请求的总超时时间，单位为秒。
 
     `rate_limit_config.max_requests`：限流时间窗口内允许的最大请求数。热更新时会按旧速率结算令牌桶中已累积的令牌，再以新参数继续累积。

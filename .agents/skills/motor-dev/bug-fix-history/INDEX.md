@@ -73,3 +73,4 @@
 | 2026-09-17 | deployer | 容器快照部署进度条停在 90% | [snapshot-progress-wait2start.md](deployer/snapshot-progress-wait2start.md) | deployer, container snapshot, progress, WAIT2START, 90% |
 | 2026-09-21 | node_manager | 关闭 vLLM 启动加速仍覆盖原生引擎配置 | [disabled-startup-acceleration-overrides.md](node_manager/disabled-startup-acceleration-overrides.md) | NodeManager, vLLM startup acceleration, disabled feature, engine override |
 | 2026-09-30 | coordinator | Kubernetes 主备倒换时 Coordinator Daemon 退出导致 Pod 重启 | [kubernetes-standby-no-daemon-exit.md](coordinator/kubernetes-standby-no-daemon-exit.md) | Coordinator, Kubernetes, standby, os._exit, failover |
+| 2026-10-09 | coordinator | Decode 高负载拉取已超时释放的 Prefill KV 导致精度问题 | [decode-kv-fetch-timeout-mismatch.md](coordinator/decode-kv-fetch-timeout-mismatch.md) | Coordinator, Decode high load, Mooncake abort timeout, KV release, accuracy |
