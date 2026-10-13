@@ -125,5 +125,10 @@ load_env_script /usr/local/Ascend/nnal/atb/set_env.sh
 exec "$@"
 EOF
 
+# Create an unprivileged runtime identity after image setup and build steps.
+RUN set -eux; useradd --system --create-home --shell /bin/bash motor; chown motor:motor /workspace
+
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["/bin/bash"]
+
+USER motor
