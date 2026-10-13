@@ -53,3 +53,6 @@
   - [Controller](../developer_guide/components/controller.md)
   - [Coordinator](../developer_guide/components/coordinator.md)
   - [Node Manager](../developer_guide/components/node_manager.md)
+- [错误码参考]()
+  - [使用说明](./error_code/usage_instruction.md)
+  - [MindIE Motor错误码参考](./error_code/error_code_reference.md)
