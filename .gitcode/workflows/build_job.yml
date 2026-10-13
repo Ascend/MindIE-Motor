@@ -12,6 +12,9 @@ on:
       runs_on_arch:
         required: true
         type: string
+      abi_type:
+        required: true
+        type: string
 
 jobs:
   JOB_Compile:

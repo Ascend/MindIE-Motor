@@ -33,7 +33,7 @@ jobs:
           WORKSPACE=${{atomgit.workspace}}
           arch=`uname -m`
           endpoint='obs.cn-north-4.myhuaweicloud.com'
-          obs_base_path="obs://mindie-pr/monitor/ascend/MindIE-SD"
+          obs_base_path="obs://mindie-pr/monitor/ascend/MindIE-Motor"
           python_3rdparty_path=/opt/buildtools/python-3.11.4/lib/python3.11/site-packages
           export PYTHONPATH=${python_3rdparty_path}:$PYTHONPATH
           export PATH=/opt/buildtools/python-3.11.4/bin:$PATH
