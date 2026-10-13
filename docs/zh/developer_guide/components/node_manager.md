@@ -274,6 +274,9 @@ services/
     __init__.py
     worker.py         ← memcache worker 子进程入口（DistributedObjectStore）
     lifecycle.py      ← daemon 侧生命周期管理（@register_service）
+  yuanrong/
+    __init__.py
+    lifecycle.py      ← YuanrongService（Worker 拉取与监控，@register_service）
 ```
 
 ### 服务注册

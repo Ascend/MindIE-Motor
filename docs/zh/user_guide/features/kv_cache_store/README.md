@@ -11,8 +11,8 @@ KV 池化通过 `MultiConnector` 组合传输 Connector 和 Store Connector。�
 **AscendStoreConnector**
 
 - P/D 实例都加载 `AscendStoreConnector`，P 侧以 `kv_producer` 写入 KV Pool，D 侧以 `kv_consumer` 查询并加载 KV Cache。
-- `AscendStoreConnector` 负责统一的匹配、加载和保存流程，其 `backend` 决定底层使用 MemCache 还是 Mooncake Store。
-- `kv_cache_store_config` 配置所选后端的服务地址、端口和运行参数。其中，MemCache 使用 MetaService，Mooncake 使用 `mooncake_master`。
+- `AscendStoreConnector` 负责统一的匹配、加载和保存流程，其 `backend` 决定底层使用 MemCache、Mooncake Store 或 Yuanrong。
+- `kv_cache_store_config` 配置所选后端的服务地址、端口和运行参数。其中，MemCache 使用 MetaService，Mooncake 使用 `mooncake_master`，Yuanrong 由每个 P/D Pod 的 NodeManager 启动本地 Worker。
 - `connectors[0]` 的 Mooncake 传输 Connector 负责 P/D 实时 KV 传输，与 `connectors[1]` 的共享 KV Pool 职责不同。
 
 **UCMConnector**
@@ -27,6 +27,7 @@ MindIE Motor 使用 `MultiConnector` 组合 P/D 传输 Connector 与 Store Conne
 
 - **基于 Mooncake 的共享 KV Pool**：P/D 均加载 `AscendStoreConnector`，并配置 `backend: "mooncake"`，分别写入和读取共享 KV Cache。详细信息请参见 [Mooncake Backend](./backend/mooncake.md)。
 - **基于 MemCache 的共享 KV Pool**：P/D 均加载 `AscendStoreConnector`，并配置 `backend: "memcache"`，分别写入和读取共享 KV Cache。详细信息请参见 [MemCache Backend](./backend/memcache.md)。
+- **基于 Yuanrong 的共享 KV Pool**：P/D 均加载 `AscendStoreConnector`，并配置 `backend: "yuanrong"`；NodeManager 在每个 P/D Pod 内启动 Yuanrong Worker。详细信息请参见 [Yuanrong 后端](./backend/yuanrong.md)。
 - **UCM**：通过 `UCMConnector` 的 `store_pipeline` 组合 Cache、POSIX 等 UCM Store。当前分布式 P/D 方案在 Prefill 保存和加载跨请求前缀，Decode 不加载 UCM。详细信息请参见 [MindIE Motor 中部署 UCM](./backend/ucm.md)。
 
 > [!NOTE] 说明
@@ -42,7 +43,7 @@ MindIE Motor 使用 `MultiConnector` 组合 P/D 传输 Connector 与 Store Conne
 | 部署场景 | 仅支持 PD 分离部署场景。 |
 | 引擎 | 仅支持 vLLM 推理引擎。 |
 | 特性互斥 | <ul><li>禁止配置 `"backend": "ucm"`，UCM 不通过 `AscendStoreConnector` 的 backend 机制。</li><li>`AscendStoreConnector` 和 `kv_cache_store_config` 中的 `backend` 必须保持一致。</li><li>`MooncakeConnectorV1` 等负责 P/D 实时传输，与 `AscendStoreConnector` 的 Mooncake Backend 不是同一层配置，不可混淆。</li></ul> |
-| 软件依赖 | <ul><li>依赖 vllm-ascend KV 传输层。</li><li>MemCache 无需额外安装，已预装在 Motor 镜像中。</li><li>Mooncake 由 vllm-ascend 集成，无需额外安装。</li><li>UCM 需额外安装 UCM wheel。</li></ul> |
+| 软件依赖 | <ul><li>依赖 vllm-ascend KV 传输层。</li><li>MemCache 无需额外安装，已预装在 Motor 镜像中。</li><li>Mooncake 由 vllm-ascend 集成，无需额外安装。</li><li>Yuanrong 需额外安装 wheel，并准备可访问的外部 ETCD。</li><li>UCM 需额外安装 UCM wheel。</li></ul> |
 | 其他限制 | <ul><li>`lookup_rpc_port` 无需手动填写，由 Motor 自动适配。</li><li>`default_kv_lease_ttl` 需大于 `env.json` 中的 `ASCEND_CONNECT_TIMEOUT` 和 `ASCEND_TRANSFER_TIMEOUT`。</li><li>Mooncake 后端的 `eviction_high_watermark_ratio` 和 `eviction_ratio` 为必填参数，`deploy.py` 会进行强制校验。</li><li>MemCache 内部配置项在对应模式的 `mmc-local-inprocess.conf` 或 `mmc-local-standalone.conf` 中管理，无需在 `user_config.json` 中配置。</li></ul> |
 
 ## 特性使用
@@ -57,7 +58,7 @@ MindIE Motor 使用 `MultiConnector` 组合 P/D 传输 Connector 与 Store Conne
 ### 使用场景
 
 - 场景一：共享 KV Pool（使用 `AscendStoreConnector`）
-  P/D 实例均加载 `AscendStoreConnector`，通过 `backend` 选择 MemCache 或 Mooncake Store 作为共享 KV Cache 后端。适用于需要 P/D 实例共享 KV Cache 以降低传输开销的场景。
+  P/D 实例均加载 `AscendStoreConnector`，通过 `backend` 选择 MemCache、Mooncake Store 或 Yuanrong 作为共享 KV Cache 后端。适用于需要 P/D 实例共享 KV Cache 以降低传输开销的场景。
 - 场景二：UCM（使用 `UCMConnector`）
   Prefill 通过 `UCMConnector` 接入 UCM Store Pipeline，保存和加载跨请求相同前缀的 KV Cache，减少重复 Prefill 计算。Decode 不加载 UCM，P/D 实时 KV 传输仍由 Mooncake 传输 Connector 完成。适用于请求之间存在大量相同前缀（如共享 Prompt 前缀）的场景。
 
@@ -151,7 +152,7 @@ P/D传输Connector选型如下表所示：
        - kv_connector：连接器类型，`MultiConnector` 用于组合多个 Connector。
        - connectors[0]：P/D 实时传输 Connector，负责 P/D 实例间的 KV Cache 传输。
        - connectors[1]：池化后端 Store Connector，负责读写共享 KV Pool。
-       - backend：`AscendStoreConnector` 的后端类型，可选 `memcache` 或 `mooncake`，需与全局 `kv_cache_store_config.backend` 保持一致。
+       - backend：`AscendStoreConnector` 的后端类型，可选 `memcache`、`mooncake` 或 `yuanrong`，需与全局 `kv_cache_store_config.backend` 保持一致。
        - lookup_rpc_port：无需手动填写，每个 DP 实例的值由 Motor 自动适配。
 
 2. 配置 kv_cache_store_config（全局配置）。
@@ -171,7 +172,7 @@ P/D传输Connector选型如下表所示：
 
     | 配置项 | 类型 | 取值范围 | 必填/选填 | 默认值 | 说明 |
     | --- | --- | --- | --- | --- | --- |
-    | `backend` | string | `mooncake`、`memcache` | 选填 | `memcache` | 池化后端；未配置时默认 `memcache` |
+    | `backend` | string | `mooncake`、`memcache`、`yuanrong` | 选填 | `memcache` | 池化后端；未配置时默认 `memcache` |
     | `target_job_id` | string | 目标服务的 motor_deploy_config.job_id（即目标 namespace） | 选填 | 未配置 | 复用其他 K8s 推理服务的 kv_store |
 
     **表 3** Mooncake 专属参数
@@ -198,6 +199,8 @@ P/D传输Connector选型如下表所示：
 
     > [!NOTE] 说明
     > 所有 MemCache 内部配置项（DRAM 池大小、通信协议、MetaService 端口、SSD 缓存、UBSIO 参数等）均由用户在对应模式的 `mmc-local-inprocess.conf` 或 `mmc-local-standalone.conf` 中管理，无需在 `user_config.json` 中配置。请参见 [MemCache 后端文档](./backend/memcache.md)。
+
+    Yuanrong 使用外部 ETCD，并由 NodeManager 在每个 P/D Pod 内执行固定的 `dscli start` 启动 Worker。`worker_launcher.start_args` 和 `worker_launcher.worker_args` 分别配置 `-w` 前后的有序参数，完整结构和保留参数规则请参见 [Yuanrong 后端](./backend/yuanrong.md)。
 
 3. （可选）<a id="step3"></a>配置多套服务共享kv_store。
 
@@ -255,7 +258,7 @@ P/D传输Connector选型如下表所示：
 
     - 集群中会创建/更新 ConfigMap `motor-config`（内容来自当前输入的 `user_config.json`），作为后续扩缩容与刷新的基线。
     - `output_yamls/` 下会生成各服务的 YAML 文件。
-    - 使用 `AscendStoreConnector` 时，deployer 根据 `kv_cache_store_config.backend` 拉起对应服务：Mooncake 使用 `mooncake_master`，MemCache 使用 MetaService，并按配置准备 LocalService。
+    - 使用 `AscendStoreConnector` 时，deployer 根据 `kv_cache_store_config.backend` 拉起对应服务：Mooncake 使用 `mooncake_master`，MemCache 使用 MetaService，并按配置准备 LocalService；Yuanrong 不创建中央 kv-store Pod，而是在每个 P/D Pod 内由 NodeManager 拉起 Worker。
 
     **部署注意**
 
