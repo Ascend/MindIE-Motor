@@ -108,7 +108,7 @@ def test_main_rejects_reserved_labels_before_deployment(tmp_path, monkeypatch):
     monkeypatch.setattr(
         deploy_module.sys,
         "argv",
-        ["deploy.py", "--config", str(user_config_path), "--env", str(env_config_path)],
+        ["deploy.py", "--config", str(user_config_path), "--env", str(env_config_path), "--skip-check"],
     )
     monkeypatch.setattr(
         deploy_module,

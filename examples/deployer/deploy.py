@@ -70,6 +70,32 @@ _MOONCAKE_ABORT_TIMEOUT_ENV = "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT"
 _PREFILL_ENV_SECTION = "motor_engine_prefill_env"
 _EXCEPTION_CONFIG = "exception_config"
 _DECODE_STREAM_TIMEOUT_KEY = "decode_first_token_timeout"
+_DEPLOYMENT_PRECHECK_MESSAGE = (
+    "Deployment pre-check requires attention.\n"
+    "The following items are not configured:\n"
+    " - Inference TLS\n"
+    " - Management API Key authentication\n\n"
+    "Configuration guides (v3.2.0):\n"
+    " - Inference TLS: https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/docs/zh/user_guide/deployment/"
+    "inference_tls_security.md\n"
+    " - Management API Key: https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/docs/zh/user_guide/deployment/"
+    "management_api_security.md\n\n"
+    "Configure the listed items and rerun the command.\n"
+    "To continue with the current settings, rerun the command with --skip-check."
+)
+
+
+def is_security_configured(user_config: dict) -> bool:
+    deploy_config = user_config.get(C.MOTOR_DEPLOY_CONFIG) or {}
+    tls_config = deploy_config.get("tls_config") or {}
+    infer_tls_config = tls_config.get("infer_tls_config") or {}
+    coordinator_config = user_config.get(C.MOTOR_COORDINATOR_CONFIG) or {}
+    management_api_key_config = coordinator_config.get("mgmt_api_key_config") or {}
+    return (
+        infer_tls_config.get("enable_tls") is True
+        and management_api_key_config.get("enable_api_key") is True
+        and bool(management_api_key_config.get("api_key_file"))
+    )
 
 
 def sync_decode_first_token_timeout_from_env(user_config: dict, env_config_path: str | None) -> None:
@@ -445,6 +471,11 @@ def parse_arguments():
         action="store_true",
         help="Do not display the service startup progress bar after deployment",
     )
+    parser.add_argument(
+        "--skip-check",
+        action="store_true",
+        help="Acknowledge the deployment pre-check warning and continue",
+    )
     return parser.parse_args()
 
 
@@ -524,8 +555,12 @@ def main():
     )
 
     set_user_config_path(user_config_path)
-    os.makedirs(C.OUTPUT_ROOT_PATH, exist_ok=True)
     user_config = read_json(user_config_path)
+    if not args.skip_check and not is_security_configured(user_config):
+        print(_DEPLOYMENT_PRECHECK_MESSAGE, file=sys.stderr)
+        sys.exit(1)
+
+    os.makedirs(C.OUTPUT_ROOT_PATH, exist_ok=True)
     validate_reserved_labels(user_config)
     validate_container_snapshot_config(user_config)
     if C.HYBRID_INSTANCES_NUM in user_config.get(C.MOTOR_DEPLOY_CONFIG, {}):
