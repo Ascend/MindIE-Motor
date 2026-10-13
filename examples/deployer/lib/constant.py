@@ -129,6 +129,10 @@ DEFAULT_KV_LEASE_TTL = "default_kv_lease_ttl"
 DEFAULT_KV_CACHE_STORE_PORT = 50088
 DEFAULT_KV_STORE_BACKEND = "memcache"
 MMC_STORE_BACKEND = "memcache"
+YUANRONG_STORE_BACKEND = "yuanrong"
+# Yuanrong config key and generated environment
+YUANRONG_ETCD_ADDRESS_KEY = "etcd_address"
+ENV_ETCD_ADDRESS = "ETCD_ADDRESS"
 # memcache MetaService defaults
 MMC_CONFIG_STORE_PORT_KEY = "config_store_port"
 MMC_METRICS_PORT_KEY = "metrics_port"

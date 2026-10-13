@@ -10,6 +10,8 @@
 
 import os
 import json
+import ipaddress
+import re
 from typing import Any
 from enum import Enum
 from dataclasses import dataclass, field, asdict
@@ -85,6 +87,80 @@ ENABLE_SNAPSHOT_KEY = "enable_snapshot"
 SNAPSHOT_METADATA_PATH_KEY = "snapshot_metadata_path"
 
 logger = get_logger(__name__)
+
+
+def _validate_yuanrong_etcd_address(address: str) -> str:
+    """Validate the effective comma-separated IPv4 / DNS / bracketed IPv6 endpoints."""
+    address = address.strip()
+    message = "kv_cache_store_config.etcd_address or ETCD_ADDRESS must contain valid host:port endpoints"
+    if not address:
+        raise ValueError(message)
+    for endpoint in address.split(","):
+        match = re.fullmatch(r"(\[[^\]]+\]|[A-Za-z0-9.-]+):([0-9]{1,5})", endpoint)
+        if match is None or not 1 <= int(match[2]) <= 65535:
+            raise ValueError(message)
+        host = match[1]
+        try:
+            if host.startswith("["):
+                ipaddress.IPv6Address(host[1:-1])
+            elif re.fullmatch(r"[0-9.]+", host):
+                ipaddress.IPv4Address(host)
+            elif len(host) > 253 or not all(
+                re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) for label in host.split(".")
+            ):
+                raise ValueError(message)
+        except ValueError as exc:
+            raise ValueError(message) from exc
+    return address
+
+
+def _parse_yuanrong_positive_int(value: object, field_name: str, maximum: int | None = None) -> int:
+    """Parse a required positive Yuanrong integer from user_config.json."""
+    range_description = f"between 1 and {maximum}" if maximum is not None else "a positive integer"
+    message = f"kv_cache_store_config.{field_name} must be {range_description}"
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        raise ValueError(message)  # noqa: TRY004
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(message) from exc
+    if parsed <= 0 or (maximum is not None and parsed > maximum):
+        raise ValueError(message)  # noqa: TRY004
+    return parsed
+
+
+_YUANRONG_RESERVED_ARGS = frozenset({"w", "worker_address", "etcd_address", "shared_memory_size_mb"})
+
+
+def _validate_yuanrong_args(value: object, field_name: str) -> list[dict[str, Any]]:
+    """Validate one ordered Yuanrong CLI argument section.
+
+    Every list item maps exactly one argument name to its value. Argument names
+    omit the CLI prefix: one-character names become ``-x`` and longer names
+    become ``--name`` when the command is built.
+    """
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be an array")  # noqa: TRY004
+
+    validated: list[dict[str, Any]] = []
+    scalar_types = (str, int, float, bool)
+    for index, item in enumerate(value):
+        if not isinstance(item, dict) or len(item) != 1:
+            raise ValueError(f"{field_name}[{index}] must be an object containing exactly one argument")
+        arg_name, arg_value = next(iter(item.items()))
+        if (
+            not isinstance(arg_name, str)
+            or not arg_name
+            or arg_name.startswith("-")
+            or any(char.isspace() for char in arg_name)
+        ):
+            raise ValueError(f"{field_name}[{index}] has invalid argument name {arg_name!r}")
+        if arg_name in _YUANRONG_RESERVED_ARGS:
+            raise ValueError(f"{field_name}[{index}] contains Motor-managed argument {arg_name!r}")
+        if arg_value is not None and not isinstance(arg_value, scalar_types):
+            raise ValueError(f"{field_name}[{index}] value must be a scalar or null")
+        validated.append({arg_name: arg_value})
+    return validated
 
 
 class HardwareType(str, Enum):
@@ -343,6 +419,14 @@ class NodeManagerFaultToleranceConfig:
 
 
 @dataclass
+class YuanrongWorkerLauncherConfig:
+    """Ordered ``dscli start`` arguments on both sides of the ``-w`` marker."""
+
+    start_args: list[dict[str, Any]] = field(default_factory=list)
+    worker_args: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
 class KVCacheStoreConfig:
     """KV cache store configuration — parsed from ``kv_cache_store_config``."""
 
@@ -380,6 +464,15 @@ class KVCacheStoreConfig:
     metadata_server: str = "P2PHANDSHAKE"
     protocol: str = "ascend"
     device_name: str = ""
+
+    # --- Yuanrong ---
+    etcd_address: str = ""
+    # Worker listen port — used for health checks, DS_WORKER_ADDR and
+    # --worker_address. Required for the Yuanrong backend.
+    worker_port: int = 0
+    # Worker shared-memory limit passed to dscli. Required for the Yuanrong backend.
+    shared_memory_size_mb: int = 0
+    worker_launcher: YuanrongWorkerLauncherConfig = field(default_factory=YuanrongWorkerLauncherConfig)
 
 
 @dataclass
@@ -875,6 +968,41 @@ class NodeManagerConfig:
         config_path = kv.get("local_config_path", "") or os.getenv("MMC_LOCAL_CONFIG_PATH", "")
         if config_path:
             kcfg.local_config_path = config_path
+
+        # --- Yuanrong ---
+        if kcfg.backend == "yuanrong":
+            if "worker_port" not in kv:
+                raise ValueError("kv_cache_store_config.worker_port is required for the yuanrong backend")
+            kcfg.worker_port = _parse_yuanrong_positive_int(kv["worker_port"], "worker_port", maximum=65535)
+            if "shared_memory_size_mb" not in kv:
+                raise ValueError("kv_cache_store_config.shared_memory_size_mb is required for the yuanrong backend")
+            kcfg.shared_memory_size_mb = _parse_yuanrong_positive_int(
+                kv["shared_memory_size_mb"],
+                "shared_memory_size_mb",
+            )
+            config_etcd_address = kv.get("etcd_address", "")
+            etcd_address = os.getenv("ETCD_ADDRESS", "").strip() or (
+                str(config_etcd_address).strip() if config_etcd_address is not None else ""
+            )
+            kcfg.etcd_address = _validate_yuanrong_etcd_address(etcd_address)
+            if "worker_args" in kv:
+                raise ValueError("kv_cache_store_config.worker_args is unsupported; use worker_launcher.worker_args")
+            worker_launcher = kv.get("worker_launcher", {})
+            if not isinstance(worker_launcher, dict):
+                raise ValueError("kv_cache_store_config.worker_launcher must be an object")  # noqa: TRY004
+            unknown_launcher_keys = set(worker_launcher) - {"start_args", "worker_args"}
+            if unknown_launcher_keys:
+                raise ValueError(
+                    f"kv_cache_store_config.worker_launcher contains unsupported fields: {sorted(unknown_launcher_keys)}"
+                )
+            kcfg.worker_launcher.start_args = _validate_yuanrong_args(
+                worker_launcher.get("start_args", []),
+                "kv_cache_store_config.worker_launcher.start_args",
+            )
+            kcfg.worker_launcher.worker_args = _validate_yuanrong_args(
+                worker_launcher.get("worker_args", []),
+                "kv_cache_store_config.worker_launcher.worker_args",
+            )
 
         # --- Mooncake ---
         if kcfg.backend == "mooncake":

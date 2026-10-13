@@ -11,8 +11,9 @@
 from __future__ import annotations
 
 import lib.constant as C
-from lib.utils import apply_node_selector_override, load_yaml, write_yaml, logger
 from lib.generator import k8s_utils
+from lib.utils import apply_node_selector_override, load_yaml, logger, write_yaml
+from lib.yuanrong_config import validate_yuanrong_config
 
 
 def resolve_kv_store_target_job_id(kv_config, current_job_id):
@@ -103,7 +104,7 @@ def apply_kv_store_service_domain(deploy_config, user_config, *, paths=None, inf
 def normalize_kv_cache_store_config(user_config):
     kv_config = user_config.get(C.KV_CACHE_STORE_CONFIG)
     if not isinstance(kv_config, dict):
-        raise ValueError(f"Missing or invalid '{C.KV_CACHE_STORE_CONFIG}' in user config")
+        raise ValueError(f"Missing or invalid '{C.KV_CACHE_STORE_CONFIG}' in user config")  # noqa: TRY004
 
     if C.KV_CACHE_STORE_PORT not in kv_config:
         kv_config[C.KV_CACHE_STORE_PORT] = C.DEFAULT_KV_CACHE_STORE_PORT
@@ -116,6 +117,9 @@ def normalize_kv_cache_store_config(user_config):
     k8s_utils.g_mmc_config_store_port = kv_config.get(C.MMC_CONFIG_STORE_PORT_KEY, C.DEFAULT_MMC_CONFIG_STORE_PORT)
     k8s_utils.g_mmc_metrics_port = kv_config.get(C.MMC_METRICS_PORT_KEY, C.DEFAULT_MMC_METRICS_PORT)
     k8s_utils.g_mmc_local_service_mode = kv_config.get(C.MMC_LOCAL_SERVICE_CONFIG_KEY, "")
+    k8s_utils.g_yuanrong_etcd_address = kv_config.get(C.YUANRONG_ETCD_ADDRESS_KEY, "")
+    if kv_config[C.KV_STORE_BACKEND] == C.YUANRONG_STORE_BACKEND:
+        validate_yuanrong_config(kv_config)
 
     return kv_config
 
@@ -161,10 +165,18 @@ def gen_kv_store_env(kv_store_config):
         kv_store_env.append({C.NAME: C.ENV_MMC_CONFIG_STORE_URL, C.VALUE: f"tcp://0.0.0.0:{mmc_config_store_port}"})
         kv_store_env.append({C.NAME: C.ENV_MMC_METRICS_URL, C.VALUE: f"http://0.0.0.0:{mmc_metrics_port}"})
 
+    elif backend == C.YUANRONG_STORE_BACKEND:
+        etcd_address = kv_store_config.get(C.YUANRONG_ETCD_ADDRESS_KEY, "")
+        if etcd_address:
+            kv_store_env.append({C.NAME: C.ENV_ETCD_ADDRESS, C.VALUE: str(etcd_address)})
+
     return kv_store_env
 
 
 def generate_yaml_kv_store(input_yaml, output_file, user_config, kv_store_config):
+    if kv_store_config.get(C.KV_STORE_BACKEND, C.DEFAULT_KV_STORE_BACKEND) == C.YUANRONG_STORE_BACKEND:
+        logger.info("Skip generating kv_store YAML for backend=%s", kv_store_config.get(C.KV_STORE_BACKEND))
+        return
     logger.info(f"Generating YAML from {input_yaml} to {output_file}")
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     data = load_yaml(input_yaml, False)

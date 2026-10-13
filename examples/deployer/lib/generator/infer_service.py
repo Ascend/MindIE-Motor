@@ -395,7 +395,9 @@ def _configure_kv_store_role(infer_doc, user_config):
         return
 
     kv_store_config = normalize_kv_cache_store_config(user_config)
-    if not k8s_utils.g_kv_store_deploy_pod:
+    backend = kv_store_config.get(C.KV_STORE_BACKEND, C.DEFAULT_KV_STORE_BACKEND)
+    # Yuanrong uses per-P/D Workers and has no central kv_store role.
+    if backend == C.YUANRONG_STORE_BACKEND or not k8s_utils.g_kv_store_deploy_pod:
         role[C.REPLICAS] = 0
         workload_spec[C.REPLICAS] = 1
         return
@@ -404,7 +406,6 @@ def _configure_kv_store_role(infer_doc, user_config):
     workload_spec[C.REPLICAS] = 1
     _set_role_primary_service_port(role, kv_store_config[C.KV_CACHE_STORE_PORT])
     # Sync memcache MetaService ports from config (port indices 1,2 in template)
-    backend = kv_store_config.get(C.KV_STORE_BACKEND, C.DEFAULT_KV_STORE_BACKEND)
     if backend == C.MMC_STORE_BACKEND:
         services = role.get(C.SERVICES, [])
         if services:

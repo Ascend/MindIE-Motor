@@ -24,6 +24,7 @@ from urllib.parse import quote
 
 import lib.constant as C
 from lib.prepare_utils import prepare_rendered_local_configmap
+from lib.yuanrong_config import validate_yuanrong_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -267,6 +268,9 @@ def normalize_kv_cache_store_config(user_config):
         kv_config[C.KV_CACHE_STORE_PORT] = C.DEFAULT_KV_CACHE_STORE_PORT
     if C.KV_STORE_BACKEND not in kv_config:
         kv_config[C.KV_STORE_BACKEND] = C.DEFAULT_KV_STORE_BACKEND
+    # Yuanrong-specific validation (single source of truth for docker path)
+    if kv_config[C.KV_STORE_BACKEND] == C.YUANRONG_STORE_BACKEND:
+        validate_yuanrong_config(kv_config)
     return kv_config
 
 
@@ -303,6 +307,10 @@ def gen_kv_store_env(kv_store_config):
         mmc_metrics_port = kv_store_config.get(C.MMC_METRICS_PORT_KEY, C.DEFAULT_MMC_METRICS_PORT)
         items.append({C.NAME: C.ENV_MMC_CONFIG_STORE_URL, C.VALUE: f"tcp://0.0.0.0:{mmc_config_store_port}"})
         items.append({C.NAME: C.ENV_MMC_METRICS_URL, C.VALUE: f"http://0.0.0.0:{mmc_metrics_port}"})
+    elif backend == C.YUANRONG_STORE_BACKEND:
+        etcd_address = kv_store_config.get(C.YUANRONG_ETCD_ADDRESS_KEY, "")
+        if etcd_address:
+            items.append({C.NAME: C.ENV_ETCD_ADDRESS, C.VALUE: str(etcd_address)})
     return items
 
 

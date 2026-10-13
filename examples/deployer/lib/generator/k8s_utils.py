@@ -39,6 +39,7 @@ g_kv_store_backend = C.DEFAULT_KV_STORE_BACKEND
 g_mmc_config_store_port = C.DEFAULT_MMC_CONFIG_STORE_PORT
 g_mmc_metrics_port = C.DEFAULT_MMC_METRICS_PORT
 g_mmc_local_service_mode = ""  # 空 → 由 common.sh 按硬件默认
+g_yuanrong_etcd_address = ""
 g_engine_base_name = "mindie-server"
 g_generate_yaml_list = []
 g_user_config_path = None
@@ -74,7 +75,7 @@ def set_user_config_path(path):
 
 
 def build_kv_store_env_items():
-    """Return KV-store env items that cannot be derived from config."""
+    """Return KV-store runtime environment items."""
     items = [
         {C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: g_kv_store_service},
         {C.NAME: C.ENV_KV_STORE_BACKEND, C.VALUE: g_kv_store_backend},
@@ -91,6 +92,9 @@ def build_kv_store_env_items():
             items.append(
                 {C.NAME: C.ENV_MMC_LOCAL_SERVICE_MODE, C.VALUE: g_mmc_local_service_mode},
             )
+    elif g_kv_store_backend == C.YUANRONG_STORE_BACKEND:
+        if g_yuanrong_etcd_address:
+            items.append({C.NAME: C.ENV_ETCD_ADDRESS, C.VALUE: g_yuanrong_etcd_address})
     return items
 
 
