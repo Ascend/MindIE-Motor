@@ -141,7 +141,7 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
 
 ### 修改特性
 
-- KV Cache亲和性调度能力增强，支持HBM/CPU/Disk的命中；DPLB调度增加KV usage加权。
+- KV Cache亲和性调度能力增强，支持HBM/CPU/Disk的命中；DPLB调度增加KV usage加权（POC）。
 - 安全增强，缺省要求开启TLS加密通信。
 
 ### 删除特性
