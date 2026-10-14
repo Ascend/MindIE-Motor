@@ -93,7 +93,7 @@ vllm_ascend_<模型名>-<芯片系列>-<操作系统>-<python版本>
 
 ### 前置要求（可选）
 
-- 宿主机上已经安装好固件与驱动，具体可参考[安装驱动和固件](https://www.hiascend.com/document/detail/zh/mindie/100/envdeployment/instg/mindie_instg_0006.html)。
+- 宿主机上已经安装好固件与驱动，具体可参考[环境准备](https://www.hiascend.com/document/detail/zh/mindie/latest/mindiemotor/motordev/docs/zh/user_guide/environment_preparation.md)。
 - 宿主机上已经安装好 Docker 和 k8s。
 
 ### 使用 Motor
