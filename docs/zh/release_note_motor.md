@@ -14,27 +14,15 @@
 
 ## 相关产品版本配套说明
 
-**表 2**  版本配套表（Atlas 800I A2推理服务器/Atlas 800I A3超节点服务器）
-
-| 产品名称 | 版本 |
-| --- | --- |
-| MindIE Motor | 3.1.0 |
-| MindCluster | 26.1.0 |
-| vLLM | v0.23.0 |
-| vLLM Ascend | releases/v0.23.0 |
-| CCAE  | iMaster CCAE V100R026C10SPC100 |
-| Ascend HDK | 26.0.RC1 |
-
-**表 3**  版本配套表（Ascend 950PR系列产品）
+**表 2**  版本配套表
 
 | 产品名称 | 版本 |
 | --- | --- |
 | MindIE Motor | 3.2.0 |
-| MindCluster | 26.1.0 |
-| vLLM | v0.23.0 |
-| vLLM Ascend | releases/v0.23.0 |
-| CCAE  | iMaster CCAE V100R026C10SPC100 |
-| Ascend HDK | 26.0.RC1 |
+| MindCluster | 26.2.0 |
+| vLLM | v0.30.0 |
+| vLLM Ascend | releases/v0.30.0 |
+| Ascend HDK | 26.2.0 |
 
 ## 版本兼容性说明
 
@@ -43,7 +31,7 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
 > [!NOTE]说明
 > 下方表格中的“/”表示不配套，“Y”表示可配套。
 
-**表 4**  MindIE Motor与CANN版本兼容
+**表 3**  MindIE Motor与MindCluster版本兼容
 
 <table style="table-layout: fixed; width: 750px">
   <colgroup>
@@ -55,53 +43,12 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
   <thead>
     <tr>
       <th rowspan="2">MindIE Motor</th>
-      <th colspan="3">CANN版本</th>
-    </tr>
-    <tr>
-      <th>9.0.0</th>
-      <th>9.0.1</th>
-      <th>9.1.0</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>3.0.0</td>
-      <td>Y</td>
-      <td>/</td>
-      <td>/</td>
-    </tr>
-    <tr>
-      <td>3.1.0</td>
-      <td>Y</td>
-      <td>Y</td>
-      <td>Y</td>
-    </tr>
-    <tr>
-      <td>3.2.0</td>
-      <td>/</td>
-      <td>/</td>
-      <td>Y</td>
-    </tr>
-  </tbody>
-
-</table>
-
-**表 5**  MindIE Motor与MindCluster版本兼容
-
-<table style="table-layout: fixed; width: 750px">
-  <colgroup>
-    <col style="width: 150px">
-    <col style="width: 150px">
-    <col style="width: 150px">
-  </colgroup>
-  <thead>
-    <tr>
-      <th rowspan="2">MindIE Motor</th>
-      <th colspan="2">MindCluster版本</th>
+      <th colspan="3">MindCluster版本</th>
     </tr>
     <tr>
       <th>26.0.X</th>
       <th>26.1.X</th>
+      <th>26.2.X</th>
     </tr>
   </thead>
   <tbody>
@@ -109,14 +56,17 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
       <td>3.0.0</td>
       <td>Y</td>
       <td>/</td>
+      <td>/</td>
     </tr>
     <tr>
       <td>3.1.0</td>
       <td>Y</td>
       <td>Y</td>
+      <td>/</td>
     </tr>
     <tr>
       <td>3.2.0</td>
+      <td>Y</td>
       <td>Y</td>
       <td>Y</td>
     </tr>
@@ -124,10 +74,11 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
 
 </table>
 
-**表 6**  MindIE Motor与TorchNPU版本兼容
+**表 4**  MindIE Motor与vLLM Ascend版本兼容
 
 <table style="table-layout: fixed; width: 750px">
   <colgroup>
+    <col style="width: 150px">
     <col style="width: 150px">
     <col style="width: 150px">
     <col style="width: 150px">
@@ -135,49 +86,12 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
   <thead>
     <tr>
       <th rowspan="2">MindIE Motor</th>
-      <th colspan="2">TorchNPU版本</th>
+      <th colspan="3">vLLM Ascend版本</th>
     </tr>
     <tr>
-      <th>26.0.X</th>
-      <th>26.1.X</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>3.0.0</td>
-      <td>Y</td>
-      <td>/</td>
-    </tr>
-    <tr>
-      <td>3.1.0</td>
-      <td>Y</td>
-      <td>Y</td>
-    </tr>
-    <tr>
-      <td>3.2.0</td>
-      <td>/</td>
-      <td>Y</td>
-    </tr>
-  </tbody>
-
-</table>
-
-**表 7**  MindIE Motor与CCAE版本兼容
-
-<table style="table-layout: fixed; width: 750px">
-  <colgroup>
-    <col style="width: 150px">
-    <col style="width: 150px">
-    <col style="width: 150px">
-  </colgroup>
-  <thead>
-    <tr>
-      <th rowspan="2">MindIE Motor</th>
-      <th colspan="2">CCAE版本</th>
-    </tr>
-    <tr>
-      <th>iMaster CCAE V100R026C00SPCXXX</th>
-      <th>iMaster CCAE V100R026C10SPCXXX</th>
+      <th>releases/v0.18.0</th>
+      <th>releases/v0.23.0</th>
+      <th>releases/v0.30.0</th>
     </tr>
   </thead>
   <tbody>
@@ -185,14 +99,17 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
       <td>3.0.0</td>
       <td>Y</td>
       <td>/</td>
+      <td>/</td>
     </tr>
     <tr>
       <td>3.1.0</td>
       <td>Y</td>
       <td>Y</td>
+      <td>/</td>
     </tr>
     <tr>
       <td>3.2.0</td>
+      <td>Y</td>
       <td>Y</td>
       <td>Y</td>
     </tr>
