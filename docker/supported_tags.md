@@ -71,6 +71,20 @@ Released to pair with the vllm-ascend v0.26.0rc images.
 | `3.2.0b1-vllm_ascend0.26.0rc1-a5-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a5-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 |
 | `3.2.0b1-vllm_ascend0.26.0rc1-a5-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a5-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 |
 
+### Base image and dependency vulnerability risk
+
+The base image may contain unfixed vulnerabilities. These tags are built from the vllm-ascend `v0.26.0rc1` images. The A2 openEuler Dockerfile uses `quay.nju.edu.cn/ascend/vllm-ascend:v0.26.0rc1-openeuler`. A3 and A5 use `v0.26.0rc1-a3-openeuler` and `v0.26.0rc1-a5-openeuler`. The Ubuntu tags use the matching `v0.26.0rc1` tags without the openEuler suffix.
+
+vLLM `0.26.0rc1` has multiple disclosed CVEs. Examples:
+
+- [CVE-2026-71486](https://nvd.nist.gov/vuln/detail/CVE-2026-71486): resource exhaustion that can lead to denial of service.
+- [CVE-2026-73556](https://nvd.nist.gov/vuln/detail/CVE-2026-73556): ReDoS that can exhaust CPU.
+- [CVE-2026-73557](https://nvd.nist.gov/vuln/detail/CVE-2026-73557): a race condition.
+
+These issues are fixed in the vLLM 0.26.0 release.
+
+The vulnerability status of the underlying openEuler base image is unknown. The Dockerfiles do not pin a specific openEuler minor version. openEuler 24.03 has published vulnerabilities, such as [CVE-2026-63387](https://nvd.nist.gov/vuln/detail/CVE-2026-63387) in libevent. If the base image is unpatched, that risk is inherited by the final image.
+
 ## MindIE-Motor 3.1.0
 
 | Tag | Dockerfile | Architecture | Updated |
