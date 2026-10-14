@@ -30,6 +30,7 @@ nav:
           - 全量配置参数说明: user_guide/configuration/config_reference.md
           - 热更新配置项说明: user_guide/configuration/update_config_whitelist.md
       - 特性指南:
+          - 特性支持列表: user_guide/features/supported_features.md
           - 推理引擎对接说明: user_guide/features/supported_inference_engines.md
           - EPD 分离: user_guide/features/EPD_disaggregation.md
           - PD 分离: user_guide/features/pd_disaggregation.md
@@ -41,6 +42,8 @@ nav:
               - Mooncake 后端: user_guide/features/kv_cache_store/backend/mooncake.md
               - UCM 部署: user_guide/features/kv_cache_store/backend/ucm.md
               - Yuanrong 后端: user_guide/features/kv_cache_store/backend/yuanrong.md
+          - max_tokens自适应: user_guide/features/max_tokens_adaptation.md
+          - 自动弹性扩缩容: user_guide/features/auto_scaling.md
           - 手动扩缩容: user_guide/features/manual_scaling.md
           - 主备倒换: user_guide/features/fault_tolerance/standby.md
           - 链路追踪: user_guide/features/tracing.md
