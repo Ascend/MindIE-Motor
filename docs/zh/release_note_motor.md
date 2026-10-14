@@ -8,8 +8,8 @@
 | 项目 | 内容 |
 | ---- | ---- |
 | 产品名称 | MindIE Motor |
-| 产品版本 | 3.1.0 |
-| 版本类型 | 正式版本 |
+| 产品版本 | 3.2.0 |
+| 版本类型 | Release版本 |
 | 维护周期 | 三个月 |
 
 ## 相关产品版本配套说明
@@ -19,12 +19,9 @@
 | 产品名称 | 版本 |
 | --- | --- |
 | MindIE Motor | 3.1.0 |
-| CANN | 9.0.1 |
 | MindCluster | 26.1.0 |
-| TorchNPU | 26.0.0 |
 | vLLM | v0.23.0 |
 | vLLM Ascend | releases/v0.23.0 |
-| Mooncake | v0.3.11.post1 |
 | CCAE  | iMaster CCAE V100R026C10SPC100 |
 | Ascend HDK | 26.0.RC1 |
 
@@ -32,13 +29,10 @@
 
 | 产品名称 | 版本 |
 | --- | --- |
-| MindIE Motor | 3.1.0 |
-| CANN | 9.1.0 |
+| MindIE Motor | 3.2.0 |
 | MindCluster | 26.1.0 |
-| TorchNPU | 26.1.0 |
 | vLLM | v0.23.0 |
 | vLLM Ascend | releases/v0.23.0 |
-| Mooncake | v0.3.11.post1 |
 | CCAE  | iMaster CCAE V100R026C10SPC100 |
 | Ascend HDK | 26.0.RC1 |
 
@@ -82,6 +76,12 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
       <td>Y</td>
       <td>Y</td>
     </tr>
+    <tr>
+      <td>3.2.0</td>
+      <td>/</td>
+      <td>/</td>
+      <td>Y</td>
+    </tr>
   </tbody>
 
 </table>
@@ -112,6 +112,11 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
     </tr>
     <tr>
       <td>3.1.0</td>
+      <td>Y</td>
+      <td>Y</td>
+    </tr>
+    <tr>
+      <td>3.2.0</td>
       <td>Y</td>
       <td>Y</td>
     </tr>
@@ -148,6 +153,11 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
       <td>Y</td>
       <td>Y</td>
     </tr>
+    <tr>
+      <td>3.2.0</td>
+      <td>/</td>
+      <td>Y</td>
+    </tr>
   </tbody>
 
 </table>
@@ -181,6 +191,11 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
       <td>Y</td>
       <td>Y</td>
     </tr>
+    <tr>
+      <td>3.2.0</td>
+      <td>Y</td>
+      <td>Y</td>
+    </tr>
   </tbody>
 
 </table>
@@ -189,31 +204,38 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
 
 无
 
-## 3.1.0更新说明
-
-原 MindIE PyMotor 代码仓自 3.1.0 版本起更名为 MindIE Motor，后续版本将沿用该命名。其软件定位与基本功能保持不变，兼容 vLLM-Ascend 推理引擎。
+## 3.2.0更新说明
 
 ### 新增特性
 
-- 支持Coordinator根据请求字段自定义流控规格，实现定制化流控。
-- 支持推理指标可视化展示，在链路追踪中补充故障请求状态跟踪及性能异常事件记录。
-- 支持在Ascend 950系列产品部署推理服务。
-- 支持部署PD混部服务。
-- 支持部署服务时配置cp/pp字段。
-- 支持基于业务繁忙程度自动增加或减少推理实例数量。
+- 支持SGLang推理引擎服务化后端，可对接SGLang引擎提供PD分离推理服务（POC）。
+- 支持D2D权重加载，新实例启动时可从集群内同角色就绪实例直接拉取权重，缩短实例启动时间。
+- 支持max_tokens自适应，在路由前按实际输入token数裁剪输出上限，避免请求因超出模型上下文窗口被引擎拒绝。
+- 支持Docker only场景一键部署推理服务，并新增基于Slurm + Apptainer的部署方式。
+- 支持跨超节点部署服务、PD异构部署，以及推理大EP场景下DP域缩容运行。
+- 新增容量规划指标，支持基于HPA的自动扩缩容与PD配比推导。
+- 支持Prefill与Decode分别配置调度策略。
+- 新增 standalone Coordinator 独立部署模式与 Mooncake standalone 部署适配。
+- 支持 Ascend 950PR&950DT 系列产品 IPv6 单栈组网下部署推理服务。
+- 推理引擎服务启动加速
+- Coordinator支持独立的vLLM Render实现Tokenizer能力的服务。
+- 支持数据混淆推理（PMCC），Coordinator侧完成混淆词表与多模态张量的双向置换，可直接承载数据混淆权重。
+- 支持长短序列动态分桶调度，在长短请求混合场景下降低TPOT、提升Decode输出吞吐（POC）。
 
 ### 修改特性
 
-- 支持KV亲和性调度特性与Function Call特性叠加。
-- 支持Atlas 800I A3超节点服务器、IPv6单栈场景下部署vLLM推理服务。
+- KV Cache亲和性调度能力增强，支持HBM/CPU/Disk的命中；DPLB调度增加KV usage加权。
+- 安全增强，缺省要求开启TLS加密通信。
 
 ### 删除特性
 
-无
+- 删除EngineServer模块，与推理引擎解耦。
 
 ### 接口变更说明
 
-无
+- 新增`/v1/responses`接口。
+- `GET /instances`接口返回内容新增pool/healthy状态与熔断快照字段。
+- 新增`motor:*`调度指标端点，通过共享内存对外暴露调度指标。
 
 ### 已解决的问题
 
@@ -245,6 +267,18 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
 
   对网络通信无影响。
 
-## 漏洞修补列表
+## 病毒扫描及漏洞修补列表
+
+### 病毒扫描结果
+
+通过病毒扫描，未发现病毒。
+
+### 漏洞修补列表
 
 无
+
+## 修订记录
+
+| 文档版本 | 发布日期 | 修改说明 |
+|--|--|--|
+| 01 | 2026-10-15 | 第一次正式发布。 |
