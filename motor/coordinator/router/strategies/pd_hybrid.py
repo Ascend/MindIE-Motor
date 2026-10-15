@@ -47,6 +47,12 @@ from motor.coordinator.router.adapters.pd_protocol import (
     VllmProtocolAdapter,
 )
 from motor.coordinator.router.strategies.base import BaseRouter, check_cancel_error
+from motor.coordinator.router.render_execution import (
+    RenderExecutionMode,
+    merge_native_completion_responses,
+    merge_native_completion_streams,
+    resolve_render_execution_mode,
+)
 from motor.coordinator.router.rescheduler.rescheduler import Rescheduler, RetryRequestPlan
 import motor.coordinator.router.adapters as adapters
 from motor.coordinator.router.adapters.completion_to_chat import adapt_completion_nonstream_to_chat
@@ -106,6 +112,32 @@ class PDHybridRouter(BaseRouter):
     def set_render_client(self, render_client: VLLMRenderClient | None) -> None:
         """Attach the request worker's shared Render/Derender client."""
         self._render_client = render_client
+
+    def _render_execution_mode(self) -> RenderExecutionMode:
+        resource = self._scheduled_resource
+        engine_type = ""
+        if resource is not None and resource.instance is not None:
+            engine_type = resource.instance.engine_type
+        return resolve_render_execution_mode(self.req_info, self.config, engine_type)
+
+    def _inject_render_tokens_into_native_request(
+        self,
+        body: dict[str, Any],
+        api: str,
+    ) -> bool:
+        if self._render_execution_mode() is not RenderExecutionMode.RENDER_PREFILL_NATIVE_DECODE:
+            return False
+        return VllmProtocolAdapter.inject_render_prompt_tokens(
+            body,
+            api,
+            token_only_requests_for_attempt(
+                self.req_info,
+                self._render_client,
+                allow_streaming=True,
+                retry_plan=self._active_retry_plan,
+                require_render_client=False,
+            ),
+        )
 
     @contextlib.asynccontextmanager
     async def _optional_request_context(self, manage_request_context: bool):
@@ -336,15 +368,18 @@ class PDHybridRouter(BaseRouter):
             tokenized_requests = self._tokenized_hybrid_requests(
                 attempt,
                 allow_streaming=True,
+                request_data=req_data,
                 tokenized_inputs=tokenized_inputs,
             )
+            native_decode = self._render_execution_mode() is RenderExecutionMode.RENDER_PREFILL_NATIVE_DECODE
             if tokenized_requests:
                 await self._claim_precision_sample_tokenized(resource, tokenized_requests, sampling_state)
             else:
                 await self._claim_precision_sample(resource, req_data, sampling_state)
+                self._inject_render_tokens_into_native_request(req_data, api)
 
             if tokenized_requests:
-                if self._render_client is None:
+                if not native_decode and self._render_client is None:
                     raise RuntimeError("Derender client is not configured")
                 ready_callbacks = build_response_ready_callbacks(len(tokenized_requests), ready_cb)
                 streams = [
@@ -363,15 +398,24 @@ class PDHybridRouter(BaseRouter):
                         return self._collect_logprobs_from_stream_chunk(chunk, sampling_state)
                     return chunk
 
-                response_stream = merge_token_only_streams(
-                    self.req_info,
-                    self._render_client,
-                    streams,
-                    tokenized_requests=tokenized_inputs,
-                    session=self._get_streaming_render_session(),
-                    emit_prompt_token_ids=not bool(self.req_info.prompt_token_ids),
-                    before_derender=before_derender,
-                )
+                if native_decode:
+                    response_stream = merge_native_completion_streams(
+                        streams,
+                        request_id=self.req_info.req_id,
+                        model=self.req_info.req_data.get("model"),
+                        choices_per_prompt=int(self.req_info.req_data.get("n", 1)),
+                        before_merge=before_derender,
+                    )
+                else:
+                    response_stream = merge_token_only_streams(
+                        self.req_info,
+                        self._render_client,
+                        streams,
+                        tokenized_requests=tokenized_inputs,
+                        session=self._get_streaming_render_session(),
+                        emit_prompt_token_ids=not bool(self.req_info.prompt_token_ids),
+                        before_derender=before_derender,
+                    )
             else:
                 response_stream = self.forward_stream_request(
                     api,
@@ -382,16 +426,12 @@ class PDHybridRouter(BaseRouter):
                 )
 
             async for chunk in response_stream:
-                if not tokenized_requests:
-                    chunk = self._collect_logprobs_from_stream_chunk(chunk, sampling_state)
-                if reschedule_enabled and len(tokenized_requests) <= 1:
-                    # Cache prompt/output token ids so a node-fault reschedule can
-                    # continue generation from where the failed leg stopped.
-                    yield self.rescheduler.process_stream_chunk(chunk, stream_adapter_state=stream_adapter_state)
-                else:
-                    yield adapters.strip_stream_chunk_bytes_for_client(
-                        chunk, client_return_token_ids=self.req_info.client_expects_token_ids
-                    )
+                yield self._process_stream_chunk_for_client(
+                    chunk,
+                    sampling_state=None if tokenized_requests else sampling_state,
+                    stream_adapter_state=stream_adapter_state,
+                    rescheduler=(self.rescheduler if reschedule_enabled and len(tokenized_requests) <= 1 else None),
+                )
 
             self.req_info.update_state(ReqState.DECODE_END)
             await self._maybe_submit_hybrid_sample(resource, sampling_state)
@@ -555,14 +595,22 @@ class PDHybridRouter(BaseRouter):
         allow_streaming: bool = False,
     ) -> list[TokenizedRequest]:
         resource = self._scheduled_resource
+        if self._render_execution_mode() is RenderExecutionMode.NATIVE_FULL:
+            return []
         if resource is None or str(getattr(resource.instance, "engine_type", "")).strip().lower() != "vllm":
             return []
-        return token_only_requests_for_attempt(
+        requests = token_only_requests_for_attempt(
             self.req_info,
             self._render_client,
             allow_streaming=allow_streaming,
             retry_plan=self._active_retry_plan if allow_streaming else None,
         )
+        if (
+            self._render_execution_mode() is RenderExecutionMode.RENDER_PREFILL_NATIVE_DECODE
+            and self.req_info.effective_entry_api().strip("/") != "v1/completions"
+        ):
+            return []
+        return requests
 
     def _tokenized_hybrid_requests(
         self,
@@ -570,6 +618,7 @@ class PDHybridRouter(BaseRouter):
         *,
         allow_streaming: bool = False,
         tokenized_inputs: list[TokenizedRequest] | None = None,
+        request_data: dict[str, Any] | None = None,
     ) -> list[EngineRequest]:
         resource = self._scheduled_resource
         if resource is None:
@@ -580,6 +629,26 @@ class PDHybridRouter(BaseRouter):
             return []
 
         adapter = VllmProtocolAdapter()
+        if self._render_execution_mode() is RenderExecutionMode.RENDER_PREFILL_NATIVE_DECODE:
+            requests = []
+            for index, tokenized in enumerate(tokenized_inputs):
+                body = (request_data or self.req_info.req_data).copy()
+                body["stream"] = allow_streaming
+                adapter.inject_request_id(
+                    body,
+                    token_only_request_id(
+                        self.req_info.req_id,
+                        attempt_seq=attempt + 1,
+                        prompt_index=index,
+                    ),
+                )
+                VllmProtocolAdapter.inject_render_prompt_tokens(
+                    body,
+                    self.req_info.entry_api,
+                    [tokenized],
+                )
+                requests.append(EngineRequest(api=self.req_info.entry_api, body=body))
+            return requests
 
         def leg_factory(index: int) -> EngineLegSpec:
             return EngineLegSpec(
@@ -621,15 +690,19 @@ class PDHybridRouter(BaseRouter):
                     async with self._inference_lifecycle(
                         attempt, max_retries, manage_request_context=manage_request_context
                     ) as client:
-                        tokenized_requests = self._tokenized_hybrid_requests(attempt)
+                        tokenized_requests = self._tokenized_hybrid_requests(attempt, request_data=attempt_req)
+                        native_decode = (
+                            self._render_execution_mode() is RenderExecutionMode.RENDER_PREFILL_NATIVE_DECODE
+                        )
                         if tokenized_requests:
-                            # Token-only path: inject precision-sampling fields into the
-                            # tokenized bodies, the ones actually sent to the engine.
+                            # Per-prompt path: inject precision-sampling fields into the
+                            # bodies actually sent to the engine.
                             await self._claim_precision_sample_tokenized(
                                 self._scheduled_resource, tokenized_requests, sampling_state
                             )
                         else:
                             await self._claim_precision_sample(self._scheduled_resource, attempt_req, sampling_state)
+                            self._inject_render_tokens_into_native_request(attempt_req, self.req_info.api)
                         body = None
                         generate_responses: list[dict[str, Any]] = []
                         if tokenized_requests:
@@ -651,16 +724,24 @@ class PDHybridRouter(BaseRouter):
                                     tokenized_requests,
                                     send_generate,
                                 )
-                                if self._render_client is None:
-                                    raise RuntimeError("Derender client is not configured")
-                                body = await finish_token_only_response(
-                                    self._render_client,
-                                    self.req_info,
-                                    generate_responses,
-                                )
+                                if native_decode:
+                                    body = merge_native_completion_responses(
+                                        generate_responses,
+                                        request_id=self.req_info.req_id,
+                                        choices_per_prompt=int(self.req_info.req_data.get("n", 1)),
+                                    )
+                                else:
+                                    if self._render_client is None:
+                                        raise RuntimeError("Derender client is not configured")
+                                    body = await finish_token_only_response(
+                                        self._render_client,
+                                        self.req_info,
+                                        generate_responses,
+                                    )
                             except UpstreamHTTPError as error:
                                 if (
-                                    not is_token_only_unsupported(error)
+                                    native_decode
+                                    or not is_token_only_unsupported(error)
                                     or self.req_info._token_obfuscation_service is not None
                                 ):
                                     raise
@@ -688,8 +769,8 @@ class PDHybridRouter(BaseRouter):
                         if "chat" in self.req_info.effective_entry_api() and body.get("object") == "text_completion":
                             adapt_completion_nonstream_to_chat(body, req_id=self.req_info.req_id)
                         if sampling_state["enabled"] and sampling_state["logprobs_metadata"] is None:
-                            # Token-only path: per-prompt GenerateResponses carry the
-                            # logprobs; collect from them in place of the derendered body.
+                            # Per-prompt responses carry the logprobs; collect from them
+                            # in place of the merged client-visible body.
                             for gen_response in generate_responses:
                                 self._collect_logprobs_from_nonstream_body(gen_response, sampling_state)
                         else:

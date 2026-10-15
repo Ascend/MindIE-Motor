@@ -11,7 +11,7 @@
 """Stateless native-engine protocol mapping for PD requests."""
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
@@ -19,6 +19,7 @@ from types import MappingProxyType
 from typing import Any, Protocol
 
 from motor.common.constants import CHAT_COMPLETION_PREFIX, COMPLETION_PREFIX
+from motor.coordinator.render.models import TokenizedRequest
 
 NATIVE_GENERATE_API = "inference/v1/generate"
 VLLM_GENERATE_REQUEST_PREFIX = "generate-tokens-"
@@ -139,6 +140,33 @@ class VllmProtocolAdapter:
     engine_type = "vllm"
     coordination_mode = CoordinationMode.HANDOFF
     internal_response_fields = frozenset({"kv_transfer_params"})
+
+    @staticmethod
+    def inject_render_prompt_tokens(
+        body: dict[str, Any],
+        api: str,
+        tokenized_requests: Sequence[TokenizedRequest],
+    ) -> bool:
+        """Reuse one Render prompt through vLLM's native OpenAI request shape."""
+        if len(tokenized_requests) != 1:
+            return False
+        prompt_token_ids = list(tokenized_requests[0].physical_prompt_token_ids)
+        normalized_api = api.strip("/")
+        if normalized_api == "v1/chat/completions":
+            kv_transfer_params = body.get("kv_transfer_params")
+            if kv_transfer_params is None:
+                kv_transfer_params = {}
+            elif not isinstance(kv_transfer_params, dict):
+                return False
+            else:
+                kv_transfer_params = dict(kv_transfer_params)
+            kv_transfer_params["prompt_token_ids"] = prompt_token_ids
+            body["kv_transfer_params"] = kv_transfer_params
+            return True
+        if normalized_api == "v1/completions":
+            body["prompt"] = prompt_token_ids
+            return True
+        return False
 
     def build_prefill_request(
         self,

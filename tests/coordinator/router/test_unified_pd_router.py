@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -46,11 +47,11 @@ from motor.coordinator.router.dispatch_session import (
 from motor.common.utils.error import RequestCancelledError
 from motor.coordinator.router.rescheduler.rescheduler import Rescheduler, RetryRequestPlan
 from motor.coordinator.router.precision_sample.request import LogprobsRequestMetadata
+from motor.coordinator.router.render_execution import RenderExecutionMode
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
 from motor.coordinator.router.upstream_error import UpstreamHTTPError
 from tests.coordinator.router.token_only_support import (
     TokenOnlyEngineClient,
-    assert_completion_derender,
     assert_generate_requests,
     make_render_client,
     make_render_request_info,
@@ -270,9 +271,22 @@ class _NativeHandoffPrefillClient(_Client):
 
 
 async def _run_vllm_handoff(
-    monkeypatch, req_info: RequestInfo, p_client, *, d_client=None, render_client=None, sampling_manager=None
+    monkeypatch,
+    req_info: RequestInfo,
+    p_client,
+    *,
+    d_client=None,
+    render_client=None,
+    sampling_manager=None,
+    enable_streaming=True,
+    force_token_only=False,
 ):
     config = _config()
+    if enable_streaming is None:
+        config.render_config = SimpleNamespace()
+    else:
+        config.render_config.enable_streaming = enable_streaming
+    config.token_obfuscation_config.enable = force_token_only
     router = UnifiedPDRouter(
         req_info,
         config,
@@ -826,6 +840,95 @@ async def test_unified_pd_stream_render_uses_token_only_handoff_round_trip(monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("api", "enable_streaming"),
+    [("v1/chat/completions", None), ("v1/completions", False)],
+)
+async def test_unified_pd_stream_native_decode_reuses_render_prompt_tokens(monkeypatch, api, enable_streaming):
+    req_info = _render_info("root-native-stream", api=api, stream=True, prompts=[10, 20, 30])
+    p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
+    d_client = _StreamClient("decode")
+    render_client = AsyncMock()
+
+    response, d_client = await _run_vllm_handoff(
+        monkeypatch,
+        req_info,
+        p_client,
+        d_client=d_client,
+        render_client=render_client,
+        enable_streaming=enable_streaming,
+    )
+    chunks = [chunk async for chunk in response.body_iterator]
+
+    assert p_client.paths == ["/inference/v1/generate"]
+    assert p_client.requests[0]["token_ids"] == [10, 20, 30]
+    assert d_client.requests[0]["stream"] is True
+    if api == "v1/chat/completions":
+        assert d_client.requests[0]["kv_transfer_params"]["prompt_token_ids"] == [10, 20, 30]
+    else:
+        assert d_client.requests[0]["prompt"] == [10, 20, 30]
+    assert b'"A"' in b"".join(chunks)
+    render_client.derender_stream_chunk.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_native_decode_injection_replays_tokens_and_fails_closed():
+    req_info = _render_info(
+        "root-native-retry",
+        api="v1/completions",
+        stream=True,
+        prompts=[10, 20],
+    )
+    config = _config()
+    config.render_config.enable_streaming = False
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=_Scheduler(prefill_engine_type="vllm", decode_engine_type="vllm"),
+        request_manager=RequestManager(config),
+    )
+    attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+    router._active_retry_plan = RetryRequestPlan(
+        prompt_token_ids=(10, 20, 30),
+        api="v1/completions",
+        remove_chat_fields=False,
+        cached_output_tokens=1,
+    )
+    body = {"prompt": "hello"}
+
+    assert router._inject_render_tokens_into_native_request(attempt, body)
+    assert body["prompt"] == [10, 20, 30]
+
+    with pytest.raises(EngineProtocolError, match="failed to inject Render prompt tokens"):
+        router._inject_render_tokens_into_native_request(
+            attempt,
+            {},
+            tokenized_requests=req_info.tokenized_requests * 2,
+        )
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_render_execution_mode_uses_attempt_engine_type():
+    req_info = _render_info(
+        "root-sglang-render-mode",
+        api="v1/completions",
+        stream=True,
+        prompts=[10, 20],
+    )
+    config = _config()
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=_Scheduler(prefill_engine_type="sglang", decode_engine_type="sglang"),
+        request_manager=RequestManager(config),
+    )
+
+    attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+
+    assert router._render_execution_mode(attempt) is RenderExecutionMode.NATIVE_FULL
+
+
+@pytest.mark.asyncio
 async def test_unified_pd_stream_render_reschedule_stays_token_only_and_reuses_derender_state(monkeypatch):
     req_info = _render_info(
         "root-token-only-reschedule",
@@ -834,6 +937,7 @@ async def test_unified_pd_stream_render_reschedule_stays_token_only_and_reuses_d
         prompts=[10, 20],
     )
     config = _config()
+    config.render_config.enable_streaming = True
     config.exception_config.transport_max_retry = 2
     config.exception_config.reschedule_enabled = True
     router = UnifiedPDRouter(
@@ -891,7 +995,7 @@ async def test_unified_pd_stream_render_reschedule_stays_token_only_and_reuses_d
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_stream_completion_batch_uses_token_only_handoff(monkeypatch):
+async def test_unified_pd_stream_completion_batch_uses_per_prompt_decode_timeout(monkeypatch):
     req_info = _render_info(
         "root-stream-completion-batch",
         api="v1/completions",
@@ -906,7 +1010,7 @@ async def test_unified_pd_stream_completion_batch_uses_token_only_handoff(monkey
             return await super().post(path, json=json, headers=headers, timeout=timeout)
 
     p_client = DelayedSecondPrefillClient(PDRole.ROLE_P)
-    d_client = _TokenOnlyStreamClient("decode")
+    d_client = _StreamClient("decode")
     first_item_timeouts = []
     iter_with_timeout = UnifiedPDRouter._iter_with_first_item_timeout
 
@@ -921,59 +1025,27 @@ async def test_unified_pd_stream_completion_batch_uses_token_only_handoff(monkey
         staticmethod(record_first_item_timeout),
     )
     render_client = AsyncMock()
-    render_client.derender_stream_chunk.side_effect = [
-        DerenderedStreamChunk(
-            chunk={"choices": [{"index": 0, "text": "first-result"}]},
-            stream_state={"step": 1},
-        ),
-        DerenderedStreamChunk(
-            chunk={"choices": [{"index": 0, "text": "second-result"}]},
-            stream_state={"step": 1},
-        ),
-    ]
     response, _ = await _run_vllm_handoff(
         monkeypatch,
         req_info,
         p_client,
         d_client=d_client,
         render_client=render_client,
+        enable_streaming=False,
     )
     _ = [chunk async for chunk in response.body_iterator]
 
-    assert p_client.paths == ["/inference/v1/generate"] * 2
     assert [body["token_ids"] for body in p_client.requests] == [[10], [20]]
-    assert d_client.paths == ["/inference/v1/generate"] * 2
-    assert [body["token_ids"] for body in d_client.requests] == [[10], [20]]
+    assert [body["prompt"] for body in d_client.requests] == [[10], [20]]
     assert [timeout.read for timeout in d_client.timeouts] == [3600, 3600]
     assert first_item_timeouts[0] < first_item_timeouts[1] - 0.01
-    assert render_client.derender_stream_chunk.await_count == 2
-    assert req_info.prompt_token_ids == []
+    render_client.derender_stream_chunk.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_decode_falls_back_when_token_only_is_unsupported(monkeypatch):
-    req_info = _render_info("root-token-only-fallback")
-    p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
-    d_client = TokenOnlyEngineClient(PDRole.ROLE_D, unsupported_status=404)
+async def test_unified_pd_nonstream_native_decode_reuses_render_prompt_tokens(monkeypatch):
+    req_info = _render_info("root-native-nonstream", prompts=[10, 20, 30])
     render_client = AsyncMock()
-    response, _ = await _run_vllm_handoff(
-        monkeypatch, req_info, p_client, d_client=d_client, render_client=render_client
-    )
-
-    assert response.status_code == 200
-    assert d_client.paths == ["/inference/v1/generate", "/v1/chat/completions"]
-    render_client.derender.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_unified_pd_vllm_render_completes_token_only_round_trip(monkeypatch):
-    req_info = _render_info("root-token-round-trip", prompts=[10, 20, 30])
-    render_client = AsyncMock()
-    render_client.derender.return_value = {
-        "id": "engine-id",
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
-        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
-    }
     p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
     d_client = TokenOnlyEngineClient(PDRole.ROLE_D)
 
@@ -986,51 +1058,22 @@ async def test_unified_pd_vllm_render_completes_token_only_round_trip(monkeypatc
     )
     body = json.loads(response.body)
 
-    assert d_client.paths == ["/inference/v1/generate"]
-    derender_request = render_client.derender.await_args.args[1]
-    assert derender_request["prompt_tokens"] == 3
-    assert body["id"] == req_info.req_id
-    assert body["choices"][0]["message"]["content"] == "ok"
-    assert "prompt_token_ids" not in body
-    assert "token_ids" not in body["choices"][0]
+    assert p_client.paths == ["/inference/v1/generate"]
+    assert d_client.paths == ["/v1/chat/completions"]
+    assert d_client.requests[0]["kv_transfer_params"]["prompt_token_ids"] == [10, 20, 30]
+    render_client.derender.assert_not_awaited()
+    assert body["choices"][0]["message"]["content"] == "fallback response"
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_handoff_single_completion_uses_single_request_lifecycle(monkeypatch):
-    req_info = _render_info(
-        "root-single-completion",
-        api="v1/completions",
-        prompts=[10, 20],
-    )
-    render_client = make_render_client(completion_count=1)
-    p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
-    d_client = TokenOnlyEngineClient(PDRole.ROLE_D)
-
-    response, _ = await _run_vllm_handoff(
-        monkeypatch,
-        req_info,
-        p_client,
-        d_client=d_client,
-        render_client=render_client,
-    )
-
-    assert response.status_code == 200
-    assert [request["request_id"] for request in p_client.requests] == ["root-single-completion#a1"]
-    assert [request["request_id"] for request in d_client.requests] == ["root-single-completion#a1"]
-    assert_completion_derender(
-        render_client,
-        prompt_lengths=[2],
-        response_count=1,
-        original_request=req_info.req_data,
-    )
-
-
-@pytest.mark.asyncio
-async def test_unified_pd_handoff_completion_batch_fans_out_and_derenders_once(monkeypatch):
+async def test_unified_pd_handoff_completion_batch_builds_matching_tickets(monkeypatch):
     req_info = _render_info("root-completion-batch", api="v1/completions", prompts=[[10], [20, 21]])
     render_client = make_render_client(completion_count=2)
     p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
-    d_client = TokenOnlyEngineClient(PDRole.ROLE_D)
+    d_client = TokenOnlyEngineClient(
+        PDRole.ROLE_D,
+        native_response={"object": "text_completion", "choices": [{"index": 0, "text": "native"}]},
+    )
 
     response, _ = await _run_vllm_handoff(
         monkeypatch,
@@ -1039,24 +1082,19 @@ async def test_unified_pd_handoff_completion_batch_fans_out_and_derenders_once(m
         d_client=d_client,
         render_client=render_client,
     )
-    body = json.loads(response.body)
 
+    expected_ids = ["root-completion-batch#a1#p0", "root-completion-batch#a1#p1"]
+    assert response.status_code == 200
     assert_generate_requests(
         p_client.requests,
-        request_ids=["root-completion-batch#a1#p0", "root-completion-batch#a1#p1"],
+        request_ids=expected_ids,
         prompt_token_ids=[[10], [20, 21]],
     )
-    assert [request["request_id"] for request in d_client.requests] == [
-        "root-completion-batch#a1#p0",
-        "root-completion-batch#a1#p1",
-    ]
-    assert_completion_derender(
-        render_client,
-        prompt_lengths=[1, 2],
-        response_count=2,
-        original_request=req_info.req_data,
-    )
-    assert [choice["text"] for choice in body["choices"]] == ["result-0", "result-1"]
+    assert [request["request_id"] for request in d_client.requests] == expected_ids
+    assert [request["kv_transfer_params"]["remote_request_id"] for request in d_client.requests] == expected_ids
+    assert d_client.paths == ["/v1/completions"] * 2
+    assert [request["prompt"] for request in d_client.requests] == [[10], [20, 21]]
+    render_client.derender.assert_not_awaited()
 
 
 class _RecordingSamplingManager:
@@ -1105,6 +1143,7 @@ async def test_unified_pd_handoff_completion_batch_sampling_claims_and_injects_b
     sampling_manager = _RecordingSamplingManager()
 
     config = _config()
+    config.token_obfuscation_config.enable = True
     _enable_precision_sampling(config)
     router = UnifiedPDRouter(
         req_info,
@@ -1155,6 +1194,7 @@ async def test_unified_pd_handoff_completion_batch_no_admission_no_injection(mon
     sampling_manager = _RecordingSamplingManager(claimed=False)
 
     config = _config()
+    config.token_obfuscation_config.enable = True
     _enable_precision_sampling(config)
     router = UnifiedPDRouter(
         req_info,
@@ -1181,18 +1221,27 @@ async def test_unified_pd_handoff_completion_batch_no_admission_no_injection(mon
 
 @pytest.mark.asyncio
 async def test_unified_pd_derender_timeout_does_not_repeat_decode(monkeypatch):
-    req_info = _render_info("root-derender-timeout")
+    req_info = _render_info(
+        "root-derender-timeout",
+        api="v1/completions",
+        prompts=[[10], [20]],
+    )
     render_client = AsyncMock()
     render_client.derender.side_effect = RenderTimeoutError("Derender request timed out")
     d_client = TokenOnlyEngineClient(PDRole.ROLE_D)
 
     with pytest.raises(HTTPException) as exc_info:
         await _run_vllm_handoff(
-            monkeypatch, req_info, TokenOnlyEngineClient(PDRole.ROLE_P), d_client=d_client, render_client=render_client
+            monkeypatch,
+            req_info,
+            TokenOnlyEngineClient(PDRole.ROLE_P),
+            d_client=d_client,
+            render_client=render_client,
+            force_token_only=True,
         )
 
     assert exc_info.value.status_code == 504
-    assert d_client.paths == ["/inference/v1/generate"]
+    assert d_client.paths == ["/inference/v1/generate"] * 2
     render_client.derender.assert_awaited_once()
 
 
