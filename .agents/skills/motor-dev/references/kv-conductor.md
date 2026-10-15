@@ -241,10 +241,13 @@ registered medium and is included in the subscriber startup log.
 {"type": "BlockStored", "block_hashes": [100], "parent_block_hash": null, "token_ids": [1, 2], "block_size": 2, "medium": "GPU"}
 ```
 
-Map fields are decoded by name with typed serde parsing and `FlexHash` hash decoding.
-Optional fields may be omitted or null; unknown fields (including `extra_keys`) are ignored.
-`type` is required. `BlockRemoved` and `AllBlocksCleared` use the same map decoder.
-Legacy arrays use `rmpv::Value` + tag-based dispatch + type-pattern parsing.
+Map fields are decoded by name through `rmpv::Value` and explicit conversions,
+including flexible hash decoding. Optional fields may be omitted or null;
+unknown fields (including `extra_keys`) are ignored. A missing or non-string
+`type` becomes an empty tag and normalizes to an ignored event. Invalid core
+field types are logged and treated as omitted, rather than rejected by serde.
+`BlockRemoved` and `AllBlocksCleared` use the same map decoder. Legacy arrays
+use tag-based dispatch and type-pattern parsing.
 
 **Attention-group filtering:** A deny-list excludes SlidingWindow, SlidingWindowMla, Mamba,
 ChunkedLocalAttention, EncoderOnlyAttention and CrossAttention (case/underscore insensitive).
@@ -261,6 +264,10 @@ FullAttention, MlaAttention, SinkFullAttention, absent and unknown kinds are ret
    - Compute `tokens_hash` from `token_ids` via `compute_block_hash_for_seq(block_size)`
    - Insert into `hbm_tree` via `apply_store(worker, lookup, store_data)`
    - Update reverse lookup: `seq_hash → tree_node`
+   - `BlockRemoved` always removes HBM tree residency. It bypasses the
+     offload/pool matching caches so a pending CPU/Disk offload of the same
+     hash survives until pool confirmation. `Unknown` follows the indexer's
+     HBM dispatch rule as well.
 5. **Non-HBM (CPU/Disk) events:**
    - Compute `tokens_hash` and cache `(block_hash, tokens_hash)` in `offload_pool_state.offload`
    - Check `pending_pool` for matching pool events → if found, insert into lower-tier index under pool worker key
@@ -403,7 +410,7 @@ The former vLLM bare / Pool legacy array (`ZmqEventMap`) / Pool bare formats hav
 - msgpack string (hex `0xABCD` or decimal) → parsed `u64`
 
 Both `FlexHash` and the field-by-field binary parser in `events/vllm.rs` accept long binary
-hashes by taking the trailing eight bytes; do not document the typed path as rejecting them.
+hashes by taking the trailing eight bytes.
 
 ### Replay on Registration
 

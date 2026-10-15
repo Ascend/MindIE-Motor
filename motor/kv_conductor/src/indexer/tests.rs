@@ -11,6 +11,82 @@
 use super::*;
 
 #[test]
+fn test_hbm_removal_preserves_unconfirmed_offload() {
+    for hbm_medium in [StorageMedium::Npu, StorageMedium::Unknown] {
+        for pool_medium in [StorageMedium::Cpu, StorageMedium::Disk] {
+            let indexer = Indexer::new();
+            let entry = indexer.get_or_create("model-offload", "t1");
+            let tokens = vec![1i64, 2];
+            let tokens_hash = compute_block_hash_for_seq(&tokens, 2)[0].0;
+            let hbm_worker = WorkerKey {
+                instance_id: "inst-1".into(),
+                backend_id: "inst-1".into(),
+                dp_rank: 0,
+                medium: hbm_medium,
+            };
+            let pool_worker = WorkerKey {
+                backend_id: "pool-1".into(),
+                medium: pool_medium,
+                ..hbm_worker.clone()
+            };
+            let store = KvCacheEventData::Stored(KvCacheStoreData {
+                parent_hash: None,
+                start_position: None,
+                blocks: vec![KvCacheStoredBlockData {
+                    block_hash: 100,
+                    tokens_hash,
+                }],
+            });
+            entry.apply_event(&hbm_worker, &store).unwrap();
+            assert_eq!(
+                indexer
+                    .query("model-offload", "t1", &tokens, 2)
+                    .unwrap()
+                    .tenants["t1"]["inst-1"]
+                    .dp["0"]
+                    .npu_blocks,
+                1
+            );
+
+            // Engine offload precedes pool confirmation and HBM eviction.
+            assert!(entry
+                .ingest_offload_blocks(&[(100, tokens_hash, None)])
+                .is_empty());
+            let block_hashes = entry.evict_pending_blocks(&[100], &hbm_worker);
+            entry
+                .apply_event(&hbm_worker, &KvCacheEventData::Removed { block_hashes })
+                .unwrap();
+            assert!(entry.find_matches(&tokens, 2).blocks.is_empty());
+
+            // Late pool confirmation must still resolve the offload content.
+            let confirmed = entry.ingest_pool_blocks(&[100], &pool_worker);
+            assert_eq!(confirmed.len(), 1);
+            for (parent_hash, block) in confirmed {
+                entry
+                    .apply_event(
+                        &pool_worker,
+                        &KvCacheEventData::Stored(KvCacheStoreData {
+                            parent_hash,
+                            start_position: None,
+                            blocks: vec![block],
+                        }),
+                    )
+                    .unwrap();
+            }
+            let response = indexer.query("model-offload", "t1", &tokens, 2).unwrap();
+            let dp0 = &response.tenants["t1"]["inst-1"].dp["0"];
+            assert_eq!(dp0.npu_blocks, 0);
+            assert_eq!(dp0.cpu_blocks, u32::from(pool_medium == StorageMedium::Cpu));
+            assert_eq!(
+                dp0.disk_blocks,
+                u32::from(pool_medium == StorageMedium::Disk)
+            );
+            assert_eq!(dp0.matched_tokens, 2);
+        }
+    }
+}
+
+#[test]
 fn test_indexer_get_or_create_and_query() {
     let indexer = Indexer::new();
     let entry = indexer.get_or_create("model-a", "tenant-1");

@@ -633,7 +633,7 @@ impl IndexerEntry {
         matched
     }
 
-    /// Evict blocks from pending caches (for removal events).
+    /// Evict lower-tier blocks from pending caches (for removal events).
     ///
     /// Returns `block_hashes` that need lower-tier / tree removal — already
     /// confirmed into a tier, or with no matching pending state for this
@@ -641,7 +641,13 @@ impl IndexerEntry {
     /// Unconfirmed `offload` / `pending_pool`-only entries are dropped
     /// without tier removal. Retained `content` is left for the migration
     /// window (bounded by [`CONTENT_TTL`]) and may resolve a later Disk store.
+    /// HBM removals bypass these caches: a pending offload does not determine
+    /// HBM residency and must remain available for a later pool confirmation.
     pub fn evict_pending_blocks(&self, block_hashes: &[u64], worker: &WorkerKey) -> Vec<u64> {
+        if matches!(worker.medium, StorageMedium::Npu | StorageMedium::Unknown) {
+            return block_hashes.to_vec();
+        }
+
         let mut state = self.offload_pool_state.write();
         let mut need_tree_removal = Vec::new();
 

@@ -2165,13 +2165,56 @@ fn test_vllm_map_optional_fields_and_attention_filter() {
 }
 
 #[test]
-fn test_vllm_map_rejects_missing_tag_and_invalid_field_types() {
+fn test_vllm_map_ignores_missing_or_invalid_tag() {
     for event in [
         serde_json::json!({"block_hashes": [1]}),
-        serde_json::json!({"type": "BlockStored", "block_size": "invalid"}),
-        serde_json::json!({"type": "BlockStored", "block_hashes": [false]}),
+        serde_json::json!({"type": false, "block_hashes": [1]}),
     ] {
         let packed = rmp_serde::to_vec(&event).unwrap();
-        assert!(from_slice::<VllmEventMap>(&packed).is_err());
+        let parsed: VllmEventMap = from_slice(&packed).unwrap();
+        assert!(matches!(parsed.normalize(), VllmEvent::Ignored));
+    }
+}
+
+#[test]
+fn test_vllm_map_omits_invalid_core_fields_and_preserves_valid_fields() {
+    for (field, value) in [
+        ("block_size", serde_json::json!("invalid")),
+        ("block_hashes", serde_json::json!([false])),
+        ("token_ids", serde_json::json!(["invalid"])),
+    ] {
+        let mut event = serde_json::json!({
+            "type": "BlockStored", "block_hashes": [100],
+            "token_ids": [1, 2], "block_size": 2
+        });
+        event[field] = value;
+        let packed = rmp_serde::to_vec(&event).unwrap();
+        let parsed: VllmEventMap = from_slice(&packed).unwrap();
+        let VllmEvent::BlockStored {
+            block_hashes,
+            token_ids,
+            block_size,
+            ..
+        } = parsed.normalize()
+        else {
+            panic!("expected a stored event with only {field} omitted");
+        };
+        assert_eq!(
+            block_hashes,
+            if field == "block_hashes" {
+                vec![]
+            } else {
+                vec![100]
+            }
+        );
+        assert_eq!(
+            token_ids,
+            if field == "token_ids" {
+                vec![]
+            } else {
+                vec![1, 2]
+            }
+        );
+        assert_eq!(block_size, if field == "block_size" { 0 } else { 2 });
     }
 }

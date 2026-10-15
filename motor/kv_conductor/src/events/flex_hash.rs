@@ -30,7 +30,7 @@ impl<'de> Deserialize<'de> for FlexHash {
         D: serde::Deserializer<'de>,
     {
         struct FlexHashVisitor;
-        impl<'de> serde::de::Visitor<'de> for FlexHashVisitor {
+        impl serde::de::Visitor<'_> for FlexHashVisitor {
             type Value = FlexHash;
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {

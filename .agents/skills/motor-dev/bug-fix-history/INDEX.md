@@ -47,6 +47,7 @@
 
 | 日期 | 模块 | 案例 | 文件 | 关键词 |
 |------|------|------|------|--------|
+| 2026-10-12 | kv_conductor | HBM 淘汰误清待确认 offload，目录残留 Device 命中 | [hbm-removal-pending-offload.md](kv_conductor/hbm-removal-pending-offload.md) | HBM eviction, pending offload, two-phase matching, Host affinity, stale residency |
 | 2026-09-29 | node_manager | Relaunch 后同一 endpoint 再次异常未触发恢复 | [relaunch-fault-episode-dedup.md](node_manager/relaunch-fault-episode-dedup.md) | NodeManager, engine relaunch, suicide freeze, abnormal dedup, repeated recovery |
 | 2026-09-29 | node_manager | Prefill KV容量耗尽导致虚推误判异常 | [virtual-inference-capacity-waiting.md](node_manager/virtual-inference-capacity-waiting.md) | NodeManager, virtual inference, KV Cache, capacity waiting, false positive |
 | 2026-09-28 | deployer | 快照 YAML 误删共享内存挂载 | [snapshot-shm-mount.md](deployer/snapshot-shm-mount.md) | snapshot, dshm, emptyDir, InferServiceSet |
@@ -64,7 +65,7 @@
 | 2026-09-02 | controller | A2 linkdown 被降成 L2 无法自杀 | [a2-linkdown-nm-suicide.md](controller/a2-linkdown-nm-suicide.md) | A2, linkdown, 0x81078603, NmSuicide, PreSeparateNPU |
 | 2026-09-03 | coordinator | Responses input items were rejected by Chat message validation | [responses-developer-role-rejected.md](coordinator/responses-developer-role-rejected.md) | coordinator, responses, input-item, developer-role, function-call-output, validation, HTTP-400 |
 | 2026-09-04 | coordinator | SHM CAS 分配成功后被取消，active_tokens 永久泄漏 | [workload-ledger-orphan-leak.md](coordinator/workload-ledger-orphan-leak.md) | active_tokens leak, CancelledError, cas_add rollback, pop_residual_workloads |
-| 2026-09-09 | kv_conductor | map 格式 BlockStored 无法解析 | `kv_conductor/map-block-stored.md` | BlockStored, msgspec, map, deserialize_any |
+| 2026-09-09 | kv_conductor | map 格式 BlockStored 解析与容错契约 | `kv_conductor/map-block-stored.md` | BlockStored, msgspec, map, deserialize_any, invalid fields |
 | 2026-09-09 | kv_conductor | CPU/Disk 订阅器误按 vLLM 事件解析 | `kv_conductor/event-source-routing.md` | ZmqSubscriber, EventSource, PoolEvent, CPU, Disk |
 | 2026-09-16 | kv_conductor | HBM→CPU 续查未按 (instance_id, dp_rank) 对齐导致跨 DP 虚高 cpu_blocks | `kv_conductor/hbm-cpu-continuation-same-dp.md` | lower_tier_lookup, continuation, instance_id, dp_rank, IpOnly, cpu_blocks |
 | 2026-09-23 | controller | DP 缩容恢复竞态导致路由冻结、误缩容或跳过 ScaleP2D | [dp-scale-down-state-safety.md](controller/dp-scale-down-state-safety.md) | DP scale-down, ScaleP2D, node reboot, reconfiguration, INITIAL, WAITING_ENGINE_FAULT |
