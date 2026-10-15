@@ -192,7 +192,7 @@ class TestRouterNativeTrigger:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("api", "req_data", "response_data", "request_field"),
+        ("api", "req_data", "response_data", "expected_path", "expected_request_id", "request_field"),
         [
             (
                 "v1/chat/completions",
@@ -203,22 +203,34 @@ class TestRouterNativeTrigger:
                     "max_tokens": 8,
                 },
                 {"choices": [{"message": {"role": "assistant", "content": "token response"}}]},
-                "chat_request",
+                "/v1/chat/completions",
+                "test-id",
+                None,
             ),
             (
                 "/v1/completions",
                 {"model": "test-model", "prompt": "first", "stream": False, "max_tokens": 8},
                 {"choices": [{"index": 0, "text": "token response"}]},
+                "/inference/v1/generate",
+                "test-id#p0",
                 "completion_request",
             ),
         ],
     )
-    async def test_nonstream_trigger_single_request_uses_token_only_decode_and_derender(
-        self, monkeypatch, trigger_pair, api, req_data, response_data, request_field
+    async def test_nonstream_trigger_single_request_uses_expected_render_decode_path(
+        self,
+        monkeypatch,
+        trigger_pair,
+        api,
+        req_data,
+        response_data,
+        expected_path,
+        expected_request_id,
+        request_field,
     ):
         del trigger_pair
         p_client = _UnifiedPDPrefillClient()
-        d_client = TokenOnlyEngineClient(PDRole.ROLE_D)
+        d_client = TokenOnlyEngineClient(PDRole.ROLE_D, native_response=response_data)
         req_info = make_render_request_info("test-id", req_data, api, [10, 20])
         render_client = AsyncMock()
         render_client.derender.return_value = response_data
@@ -228,10 +240,13 @@ class TestRouterNativeTrigger:
         response = await router.handle_request()
 
         assert response.status_code == 200
-        assert d_client.paths == ["/inference/v1/generate"]
-        assert (d_client.requests[0]["request_id"], p_client.requests) == (req_info.req_id, [])
-        derender_request = render_client.derender.await_args.args[1]
-        assert derender_request[request_field] == req_data
+        assert d_client.paths == [expected_path]
+        assert (d_client.requests[0]["request_id"], p_client.requests) == (expected_request_id, [])
+        if request_field is None:
+            render_client.derender.assert_not_awaited()
+        else:
+            derender_request = render_client.derender.await_args.args[1]
+            assert derender_request[request_field] == req_data
 
     @pytest.mark.asyncio
     async def test_nonstream_trigger_completion_batch_uses_unique_generate_ids(self, monkeypatch, trigger_pair):

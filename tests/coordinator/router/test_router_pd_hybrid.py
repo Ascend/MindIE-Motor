@@ -560,22 +560,21 @@ class TestRouterPDHybrid:
         assert payload["choices"][0]["message"]["content"] == "hello"
 
     @pytest.mark.asyncio
-    async def test_pd_hybrid_render_uses_token_only_round_trip(
+    async def test_pd_hybrid_render_uses_native_decode(
         self,
         monkeypatch: MonkeyPatch,
         setup_pd_hybrid,
     ):
-        generate_response = {
-            "request_id": "engine-id",
-            "choices": [{"index": 0, "token_ids": [30, 31], "finish_reason": "stop"}],
-        }
-        paths = []
+        requests = []
 
         async def mock_forward(self, api, req_data, client, timeout):
-            del self, req_data, client, timeout
-            paths.append(api)
+            del self, client, timeout
+            requests.append((api, req_data))
             response = MagicMock()
-            response.json.return_value = generate_response
+            response.json.return_value = {
+                "id": "engine-id",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "native"}}],
+            }
             return response
 
         monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
@@ -585,27 +584,29 @@ class TestRouterPDHybrid:
             "stream": False,
             "max_tokens": 8,
         }
-        req_info = make_render_request_info(
-            "rid-token-only-hybrid", req_data, "v1/chat/completions", [10, 20], req_len=99
-        )
+        req_info = make_render_request_info("rid-native-hybrid", req_data, "v1/chat/completions", [10, 20], req_len=99)
         render_client = AsyncMock()
-        render_client.derender.return_value = {
-            "id": "engine-id",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "token-only"}}],
-        }
-        response = await self._render_router(req_info, render_client).handle_request()
+        router = self._render_router(req_info, render_client)
+        # setup_pd_hybrid replaces CoordinatorConfig with a MagicMock; pin the three
+        # mode flags so this test exercises the production default.
+        router.config.render_config.enable_streaming = False
+        router.config.token_obfuscation_config.enable = False
+        router.config.token_obfuscation_config.image_config.enable = False
+        response = await router.handle_request()
         payload = json.loads(response.body.decode())
 
-        assert paths == ["inference/v1/generate"]
-        derender = render_client.derender.await_args.args[1]
-        assert (derender["generate_response"], derender["prompt_tokens"]) == (generate_response, 2)
-        assert payload["choices"][0]["message"]["content"] == "token-only"
+        assert requests[0][0] == "v1/chat/completions"
+        assert requests[0][1]["kv_transfer_params"]["prompt_token_ids"] == [10, 20]
+        render_client.derender.assert_not_awaited()
+        assert payload["choices"][0]["message"]["content"] == "native"
 
     @pytest.mark.asyncio
-    async def test_pd_hybrid_stream_completion_batch_uses_token_only_union(
+    @pytest.mark.parametrize("use_fallback", [False, True], ids=["direct", "pd-fallback"])
+    async def test_pd_hybrid_stream_completion_batch_uses_native_union(
         self,
         monkeypatch: MonkeyPatch,
         setup_pd_hybrid,
+        use_fallback,
     ):
         requests = []
 
@@ -614,7 +615,7 @@ class TestRouterPDHybrid:
             requests.append((api, req_data))
             if on_response_ready is not None:
                 on_response_ready()
-            yield b'data: {"choices":[{"index":0,"token_ids":[30],"finish_reason":"stop"}]}\n\n'
+            yield b'data: {"choices":[{"index":0,"text":"native","finish_reason":"stop"}]}\n\n'
             yield b"data: [DONE]\n\n"
 
         monkeypatch.setattr(PDHybridRouter, "forward_stream_request", mock_forward_stream)
@@ -625,29 +626,34 @@ class TestRouterPDHybrid:
             "max_tokens": 8,
         }
         req_info = make_render_request_info(
-            "rid-stream-token-only-hybrid",
+            "rid-stream-native-hybrid",
             req_data,
             "v1/completions",
             [[10], [20]],
             req_len=99,
         )
         render_client = AsyncMock()
-        render_client.derender_stream_chunk.side_effect = [
-            DerenderedStreamChunk(
-                chunk={"choices": [{"index": 0, "text": "first-result"}]},
-                stream_state={"step": 1},
-            ),
-            DerenderedStreamChunk(
-                chunk={"choices": [{"index": 0, "text": "second-result"}]},
-                stream_state={"step": 1},
-            ),
-        ]
-        response = await self._render_router(req_info, render_client).handle_request()
-        _ = [chunk async for chunk in response.body_iterator]
+        router = self._render_router(req_info, render_client)
+        # setup_pd_hybrid replaces CoordinatorConfig with a MagicMock; pin the
+        # mode flags so this test exercises the production default.
+        router.config.render_config.enable_streaming = False
+        router.config.token_obfuscation_config.enable = False
+        router.config.token_obfuscation_config.image_config.enable = False
+        if use_fallback:
+            _ = [
+                chunk
+                async for chunk in router.stream_fallback_from_existing_context(
+                    req_data=req_data,
+                    attempt_id=2,
+                )
+            ]
+        else:
+            response = await router.handle_request()
+            _ = [chunk async for chunk in response.body_iterator]
 
-        assert [api for api, _ in requests] == ["inference/v1/generate"] * 2
-        assert [body["token_ids"] for _, body in requests] == [[10], [20]]
-        assert render_client.derender_stream_chunk.await_count == 2
+        assert [api for api, _ in requests] == ["v1/completions"] * 2
+        assert [body["prompt"] for _, body in requests] == [[10], [20]]
+        render_client.derender_stream_chunk.assert_not_awaited()
         assert req_info.prompt_token_ids == []
 
     @pytest.mark.asyncio
@@ -1238,6 +1244,7 @@ class TestPDHybridCancelReschedule:
         hybrid_pool,
     ):
         config = _make_cancel_test_config(monkeypatch, transport_max_retry=2, reschedule_enabled=True)
+        config.render_config.enable_streaming = True
         calls: list[tuple[str, dict]] = []
 
         async def mock_forward(self, api, req_data, client, timeout, *, on_response_ready=None):
@@ -1480,6 +1487,7 @@ class TestPDHybridCancelReschedule:
             interval_seconds=0.0,
             logprobs_count=3,
         )
+        config.token_obfuscation_config.enable = True
         config.infer_tls_config = TLSConfig(enable_tls=False)
         sampling_manager = _RecordingSamplingManager()
         forwarded_requests = []

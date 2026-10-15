@@ -18,6 +18,7 @@ from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.config.coordinator import RenderConfig
 from motor.coordinator.render.image_obfuscation_service import ImageObfuscationError
 from motor.coordinator.render.models import TokenizedRequest, TokenizerSource
+from motor.coordinator.render.token_obfuscation_service import TokenObfuscationError
 from motor.coordinator.render.tokenization_service import TokenizationService
 from motor.coordinator.render.vllm_render_client import (
     RenderRequestError,
@@ -75,9 +76,8 @@ def render_client():
 
 @pytest.fixture
 def service_factory(render_client, local):
-    def make(enabled=True, enable_streaming=False, **kwargs):
-        config = RenderConfig(enable=enabled, enable_streaming=enable_streaming)
-        return TokenizationService(config, render_client, local, **kwargs)
+    def make(enabled=True, **kwargs):
+        return TokenizationService(RenderConfig(enable=enabled), render_client, local, **kwargs)
 
     return make
 
@@ -93,28 +93,20 @@ async def test_render_success_does_not_call_local_tokenizer(service_factory, ren
     local.encode.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    ("enable_streaming", "expected_source"),
-    [(False, TokenizerSource.LOCAL), (True, TokenizerSource.RENDER)],
-)
-async def test_streaming_render_requires_explicit_enable(
-    service_factory, render_client, local, enable_streaming, expected_source
-):
+async def test_streaming_request_uses_render_when_streaming_derender_is_disabled(service_factory, render_client, local):
     request = {"model": "model", "prompt": "hello", "max_tokens": 10, "stream": True}
 
-    result = await service_factory(enable_streaming=enable_streaming).tokenize(
-        "request-stream", "v1/completions", request
-    )
+    result = await service_factory().tokenize("request-stream", "v1/completions", request)
 
-    assert result[0].tokenizer_source is expected_source
-    assert render_client.render.await_count == int(enable_streaming)
-    assert local.encode.call_count == int(not enable_streaming)
+    assert result[0].tokenizer_source is TokenizerSource.RENDER
+    render_client.render.assert_awaited_once_with("v1/completions", request)
+    local.encode.assert_not_called()
 
 
 @pytest.mark.parametrize(
     ("service_kwargs", "error_type"),
     [
-        ({"obfuscation_service": MagicMock()}, RuntimeError),
+        ({"obfuscation_service": MagicMock()}, TokenObfuscationError),
         ({"image_obfuscation_service": MagicMock()}, ImageObfuscationError),
     ],
 )

@@ -50,6 +50,7 @@ from motor.coordinator.router.adapters.stream import (
     encode_stream_chunk_bytes,
     stream_chunk_needs_sampling_parse,
     update_token_id_cache,
+    strip_stream_chunk_bytes_for_client,
 )
 from motor.common.resources.instance import Instance
 from motor.common.resources.endpoint import Endpoint, Workload
@@ -1053,6 +1054,35 @@ class BaseRouter(ABC):
         if not has_logprobs_field or not changed:
             return chunk
         return encode_stream_chunk_bytes(chunk, chunk_json)
+
+    def _process_stream_chunk_for_client(
+        self,
+        chunk: bytes,
+        *,
+        sampling_state: dict | None = None,
+        stream_adapter_state: dict[str, Any] | None = None,
+        rescheduler: Any | None = None,
+        usage_merger: Callable[[bytes], bytes] | None = None,
+        internal_filter: Callable[[bytes], bytes] | None = None,
+    ) -> bytes:
+        """Apply the shared client-visible stream transformations in one order."""
+        if sampling_state is not None:
+            chunk = self._collect_logprobs_from_stream_chunk(chunk, sampling_state)
+        if rescheduler is not None:
+            chunk = rescheduler.process_stream_chunk(
+                chunk,
+                stream_adapter_state=stream_adapter_state if stream_adapter_state is not None else {},
+            )
+        else:
+            if usage_merger is not None:
+                chunk = usage_merger(chunk)
+            chunk = strip_stream_chunk_bytes_for_client(
+                chunk,
+                client_return_token_ids=self.req_info.client_expects_token_ids,
+            )
+        if internal_filter is not None:
+            chunk = internal_filter(chunk)
+        return chunk
 
     def _collect_logprobs_from_nonstream_body(self, body: dict, sampling_state: dict) -> dict:
         if not sampling_state["enabled"]:

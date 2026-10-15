@@ -33,33 +33,18 @@ CoordinatorDaemon (parent process, async main loop)
 
 ### vLLM Render Tokenization
 
-With `render_config.enable=true`, each inference worker prefers the local vLLM Render sidecar before context-budget
-adaptation and routing. Normalized token IDs are stored in `RequestInfo`, so scheduling and P/D routing remain
-independent of the tokenizer source. Render health does not gate Coordinator startup; sidecar availability is
-reported after Coordinator becomes ready. When using `prefill_scheduler_type=kv_cache_affinity`, enabling Render is
-recommended so routing and inference reuse the same prompt IDs. Streaming requests use Render only when
-`render_config.enable_streaming=true`; it defaults to `false`, preserving the native streaming path.
+With `render_config.enable=true`, each inference worker tries the local vLLM Render sidecar before routing and stores
+the normalized token IDs in `RequestInfo`. Render failures fall back to the local tokenizer; validation errors are
+returned directly, and Render health does not gate Coordinator startup.
 
-Render unavailability, timeout, or unsupported endpoints fall back to `TokenizerManager`; request-validation errors
-(400/422, or 404 with a structured error response) are returned directly. Transient failures open a five-second
-circuit.
-With Render enabled, context budget reuses Render token IDs and keeps the local tokenizer lazy until fallback; KV
-affinity/Conductor still load it eagerly. Failed local loads have a 30-second retry cooldown.
+Normal text Chat/Completion requests use Render IDs for PD Prefill and native OpenAI Decode; Completion
+multi-prompt runs one Prefill and native Decode per prompt, then merges choices and usage. Union follows the same
+per-prompt rule. `render_config.enable_streaming=true` and data obfuscation retain token-only Decode plus Derender.
+Chat `echo=true`, non-text Chat, unsupported APIs/engines, and
+locally tokenized requests remain on the native path. Streaming Derender requires vLLM 0.27.0 or later.
 
-Render-facing models remain topology-neutral: `TokenizedRequest` carries token IDs and Render metadata, while Router
-strategies translate their scheduling result into an `EngineLegSpec` containing only phase, generation constraints,
-leg context, and optional KV transfer parameters. `VllmProtocolAdapter.build_tokenized_request()` is the single
-token-only request builder; Trigger keeps compatibility wrappers that only translate metaserver callback parameters.
-
-vLLM Chat and Completion requests tokenized by Render use `/inference/v1/generate` across HANDOFF, TRIGGER, and
-Union/PDHybrid. Non-streaming responses are Derendered once; streaming responses keep request-scoped Derender state per
-prompt/choice. Streaming Derender is stateless per chunk, so long prompts and high concurrency add Sidecar CPU and
-transport cost. Handoff and Union support concurrent multi-prompt fan-out/merge and cancel sibling streams on failure.
-
-Single-prompt rescheduling remains token-only: committed output IDs are replayed through Prefill and Decode, while
-Derender resumes from the last client-visible state. Multi-prompt requests support whole-request retry before visible
-output, but not per-prompt replay afterward. Trigger multi-prompt streaming Completion, SGLang, and locally tokenized
-requests keep the existing path. Streaming Derender requires vLLM 0.27.0 or later.
+Context-budget checks reuse Render IDs. KV affinity/Conductor still load the local tokenizer eagerly; other modes
+load it only after Render fallback.
 
 With `token_obfuscation_config.enable=true`, each Worker initializes one `ai-asset-obfuscate` data permutation.
 Render token IDs remain the semantic IDs used by Derender, while `engine_prompt_token_ids` are the physical IDs sent
