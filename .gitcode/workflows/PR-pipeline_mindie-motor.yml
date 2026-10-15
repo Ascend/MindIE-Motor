@@ -3,7 +3,7 @@ name: PR-pipeline_mindie-motor
 on:
   pull_request_comment:
     types: [ created ]
-    branches: [ "dev", "master" ]
+    branches: [ "dev", "master", '^v\d+\.\d+\.\d+$' ]
     comments: [ '^compile$' ]
 
 env:
