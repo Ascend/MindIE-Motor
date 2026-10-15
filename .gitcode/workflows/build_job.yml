@@ -34,13 +34,11 @@ jobs:
 
       - name: Execute_shell
         run: |-
-          abi_type=${{ inputs.abi_type }}
-          python_version=3.11
           arch=$(uname -m)
           WORKSPACE=${{atomgit.workspace}}
-          python_3rdparty_path=/opt/buildtools/python-3.11.4/lib/python3.11/site-packages
+          python_3rdparty_path=/usr/local/python3.12.13/lib/python3.12/site-packages
           export PYTHONPATH=${python_3rdparty_path}:$PYTHONPATH
-          export PATH=/opt/buildtools/python-3.11.4/bin:$PATH
+          export PATH=/usr/local/python3.12.13/bin:$PATH
 
           pip install -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple -r requirements.txt
           cd ${WORKSPACE}
