@@ -1,21 +1,21 @@
 # 快速入门
 
-本文档通过**简单快速**的部署案例（以Atlas 800I A2推理服务器、Qwen3-8B模型、P/D 实例各一个的场景为例）指导开发者体验基于MindIE Motor的PD分离服务部署流程。
+本文档通过**简单快速**的部署案例，以Atlas 800I A2推理服务器（8卡）、Qwen3-8B模型、P/D实例各1个的场景为例，指导开发者体验基于MindIE Motor的PD分离服务部署流程。
 
-如需详细的PD分离部署指导，请参考 [PD 分离部署指导](./deployment/k8s/pd_disaggregation_deployment.md)。
+如需详细的PD分离部署指导，请参考[PD 分离部署指导](./deployment/k8s/pd_disaggregation_deployment.md)。
 
-## 什么是 PD 分离？
+## 什么是PD分离？
 
-模型推理的 Prefill 阶段和 Decode 阶段分别实例化部署在不同的硬件资源上进行推理，提升推理性能，其特性介绍详情请参见 [PD分离说明](./features/pd_disaggregation.md)。
+模型推理的Prefill阶段和Decode阶段分别实例化部署在不同的硬件资源上进行推理，提升推理性能，其特性介绍详情请参考[PD分离说明](./features/pd_disaggregation.md)。
 
 ## 环境要求
 
-- 支持 Atlas 800I A2推理服务器、Atlas 800I A3超节点服务器和Ascend 950PR系列产品。
-- 至少需要 1 台已完成 [环境准备](./environment_preparation.md) 的服务器。
+- 支持Atlas 800I A2推理服务器、Atlas 800I A3超节点服务器和Ascend 950PR系列产品。
+- 至少需要1台已完成[环境准备](./environment_preparation.md)的服务器。
 
 ## 模型下载
 
-请自行下载 Qwen3-8B 模型的权重文件并将权重文件上传至服务器任意目录（以 `/mnt/weight` 为例）。执行以下命令，修改文件权限：
+请自行下载Qwen3-8B模型的权重文件并将权重文件上传至服务器任意目录（例：/mnt/weight）。执行以下命令，修改文件权限：
 
 ```bash
 chmod -R 755 /mnt/weight
@@ -23,14 +23,14 @@ chmod -R 755 /mnt/weight
 
 ## 镜像准备
 
-- 方式一：进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框查询 `motor`，进入搜索结果后根据设备型号下载对应的MindIE Motor镜像。
-- 方式二：参考[准备MindIE Motor镜像](./maintenance/build_motor_image_from_vllm_ascend.md)章节自制MindIE Motor镜像。
+- 方式一：进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框输入`motor`，单击“mindie-motor”卡片，在“镜像下载”页签根据设备型号下载对应的MindIE Motor镜像。
+- 方式二：请参考[准备MindIE Motor镜像](./maintenance/build_motor_image_from_vllm_ascend.md)章节自制MindIE Motor镜像。
 
 ## 服务部署
 
-1. **准备服务启动脚本**
+1. 准备服务启动脚本。
 
-   MindIE Motor官方完整镜像内已保存服务启动脚本（`/tmp/motor/examples`），可通过以下命令将镜像内的文件拷贝至宿主机。
+   MindIE Motor官方完整镜像内已保存服务启动脚本（/tmp/motor/examples），可通过以下命令将镜像内的文件拷贝至宿主机。
 
    ```bash
    IMAGE="<镜像名或镜像ID>"
@@ -40,43 +40,54 @@ chmod -R 755 /mnt/weight
    docker rm "$cid"
    ```
 
-   请将上述脚本目录（examples 目录）上传至k8s集群的管理节点（master 节点），后续部署操作均在管理节点执行。
+   请将上述脚本（examples目录）上传至k8s集群的管理节点（master节点），后续部署操作均在管理节点执行。
 
-2. **配置服务化参数**
+2. 配置服务化参数。
 
-   配置文件（`user_config.json`、`env.json`）可通过以下方式获取：
+   配置文件（user_config.json、env.json）可通过以下三种方式获取：
 
-   - **使用已有典配（推荐常用模型）**：`model_configs/vllm/models/` 下已按模型与硬件提供典型配置，路径规则为：
+   - **方式一：使用已有典配（推荐常用模型）**
+
+     代码仓中已有按模型与硬件提供典型配置，路径如下：
 
      ```text
      model_configs/vllm/models/<模型名>/<硬件型号>/
      ```
 
-     例如 DeepSeek-V4-Flash 在 Atlas 800I A2推理服务器 上的典配目录为 `model_configs/vllm/models/deepseek_v4_flash/A2/`（内含 `user_config.json` 与 `env.json`）。选用典配后，按实际场景修改镜像名（`image_name`）、权重路径（`weight_mount_path` / `model`）等少量字段即可部署。当前已提供的模型目录包括 `deepseek_v3.1`、`deepseek_v4_flash`、`deepseek_v4_pro`、`glm_5`、`glm_5.1`、`qwen_235b` 等，硬件子目录为 `A2` / `A3` / `A5`（以实际目录为准）。
+     例如：DeepSeek-V4-Flash模型在Atlas 800I A2推理服务器上的典配目录为： model_configs/vllm/models/deepseek_v4_flash/A2/。
 
-   - **自动生成**：可将 vllm-ascend 社区部署脚本一键转换为 Motor 配置。将社区脚本粘贴到 `examples/deployer/config_tool/` 下对应模板后，在 `examples/deployer/` 执行（以 PD 分离、Atlas 800I A2推理服务器 为例）：
+     其中包含user_config.json与env.json配置文件。选用典配后，按实际场景修改镜像名（image_name）、权重路径（weight_mount_path/model）等少量字段即可部署。
+
+     当前已提供的模型目录包括：deepseek_v3.1、deepseek_v4_flash、deepseek_v4_pro、glm_5、glm_5.1、qwen_235b。
+
+   - **方式二：自动生成**
+     将vLLM Ascend社区部署脚本一键转换为MindIE Motor配置。
+
+     将vLLM Ascend社区脚本复制到`examples/deployer/config_tool/`目录下对应模板文件后，进入`examples/deployer/`目录执行以下命令（以PD分离服务部署、Atlas 800I A2推理服务器为例）：
 
      ```bash
      python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A2
      ```
 
-     生成结果位于 `examples/deployer/config_tool/output_config/`。完整步骤与注意事项见 [MindIE Motor 配置自动生成指导](../../../model_configs/vllm/models/README.md)。
+     生成的user_config.json和env.json配置文件结果件位于`examples/deployer/config_tool/output_config/`目录，一键转换工具详细步骤请参考[MindIE Motor配置自动生成指导](../../../model_configs/vllm/models/README.md)。
 
-   - **手工编辑（本快速入门）**：下文以 Qwen3-8B、P/D 各 1 实例为例，直接编辑 `model_configs/vllm/` 下配置。
+   - **方式三：手工编辑**
 
-     在管理节点执行以下命令，进入服务启动脚本所在目录并修改配置文件。
+     下文以Qwen3-8B、P/D各1实例为例，直接编辑`model_configs/vllm/`目录下的user_config.json和env.json配置文件。
+
+     在管理节点执行以下命令，进入服务启动脚本所在目录。
 
      ```bash
      cd examples/deployer/
      ```
 
-     - **修改 `user_config.json`**
+     - **修改user_config.json配置文件**
 
        ```bash
        vim ../../model_configs/vllm/user_config.json
        ```
 
-       `user_config.json` 文件**完整示例**如下（可直接复制使用，5 项 xxxxxx 内容需用户自行修改，如需了解各字段含义可参考 [user_config 全量参数说明](./configuration/config_reference.md)）：
+       user_config.json配置文件的完整示例如下所示（可直接复制使用，5项`xxxxxx`变量需用户根据实际内容自行修改，如需了解各字段含义请参考[user_config.json配置文件全量参数说明](./configuration/config_reference.md)）：
 
        ```json
        {
@@ -88,10 +99,10 @@ chmod -R 755 /mnt/weight
            "single_d_instance_pod_num": 1,
            "p_pod_npu_num": 4,
            "d_pod_npu_num": 4,
-           "image_name": "xxxxxxx 镜像名称。例如：mindie-motor-vllm:dev-26.1.0.B050-800I-A2-py311-Ubuntu24.04-lts-aarch64",
+           "image_name": "xxxxxx镜像名称。例如：mindie-motor-vllm:dev-26.1.0.B050-800I-A2-py311-Ubuntu24.04-lts-aarch64",
            "job_id": "mindie-motor",
-           "hardware_type": "xxxxxx 硬件类型。Atlas 800I A2推理服务器：800I_A2， Atlas 800I A3超节点服务器：800I_A3",
-           "weight_mount_path": "xxxxxx 权重文件路径。例如：/mnt/weight/qwen3_8B"
+           "hardware_type": "xxxxxx硬件类型。Atlas 800I A2推理服务器：800I_A2； Atlas 800I A3超节点服务器：800I_A3；Ascend 950PR系列产品：Ascend950",
+           "weight_mount_path": "xxxxxx权重文件路径。例如：/mnt/weight/qwen3_8B"
          },
          "motor_controller_config": {},
          "motor_coordinator_config": {},
@@ -149,13 +160,13 @@ chmod -R 755 /mnt/weight
        }
        ```
 
-     - **修改 `env.json`**
+     - **修改env.json配置文件**
 
        ```bash
        vim ../../model_configs/vllm/env.json
        ```
 
-       `env.json` 文件**完整示例**如下（可直接复制使用）：
+       env.json配置文件完整示例如下所示（可直接复制使用）：
 
        ```json
        {
@@ -187,40 +198,49 @@ chmod -R 755 /mnt/weight
        }
        ```
 
-3. **启动与终止服务**
+3. 创建命名空间（namespace）。
 
-   创建命名空间（namespace），namespace 的值必须与 `user_config.json` 中的 `job_id` 字段相同（默认值为 mindie-motor）。
+   namespace的值必须与`user_config.json`中的`job_id`字段相同（默认值：mindie-motor）。
 
    ```bash
    kubectl create ns mindie-motor
    ```
 
-   在 `examples/deployer` 目录下通过 `deploy.py` 脚本部署 PD 分离服务（更多参数与用法见 [Deployer 部署工具说明](../../../examples/deployer/README.md)）：
+4. 启动与终止服务。
+
+   在`examples/deployer`目录下通过`deploy.py`脚本部署PD分离服务（更多参数与用法请参考[Deployer部署工具说明](../../../examples/deployer/README.md)）：
 
    ```bash
-   cd examples/deployer
    python3 deploy.py --config_dir ../../model_configs/vllm
    ```
 
-   需要终止服务时，在同一目录执行以下命令即可：
+   需要终止服务时，在同一目录执行以下命令：
 
    ```bash
-   bash delete.sh 命名空间(填入手动创建的命名空间名称，例如：mindie-motor)
+   bash delete.sh mindie-motor
    ```
 
-4. **查看日志**
+   命令中的mindie-motor为命名空间，根据实际名称修改。
 
-   执行 `vim log_collect/log_config.ini` 命令，将 `name_space` 填写为命名空间名称（例如：mindie-motor），然后执行以下命令收集日志：
+5. 查看日志。
+
+   执行以下命令，将`name_space`字段填写为命名空间名称（例如：mindie-motor）。
+
+   ```bash
+   vim log_collect/log_config.ini
+   ```
+
+   然后执行以下命令收集日志：
 
    ```bash
    bash show_log.sh
    ```
 
-   所有业务日志（controller、coordinator、P/D 实例）均会保存于 `examples/deployer/log_collect/log` 目录下，并持续刷新，直到服务被终止。
+   所有业务日志（controller、coordinator、P/D实例）均会保存在`examples/deployer/log_collect/log`目录下，并持续刷新，直到服务被终止。
 
 ## 推理验证
 
-新建一个命令行窗口，在 k8s 集群的管理节点（master 节点）执行以下命令：
+新建一个命令行窗口，在K8s集群的管理节点（master节点）执行以下命令：
 
 ```bash
 curl -X POST http://127.0.0.1:31015/v1/chat/completions \
@@ -244,20 +264,20 @@ curl -X POST http://127.0.0.1:31015/v1/chat/completions \
 
 如果返回如下结果，则说明尚未启动就绪：
 
-```json
+```Output
 {"detail":"Service is not available"}
 ```
 
 等待一段时间后再次尝试，回显类似如下内容说明推理服务已就绪：
 
-```text
-data: {"id":"17658563046856100000c836403d","object":"chat.completion.chunk","created":1765856304,"model":"qwen3","choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}],"prompt_token_ids":null}
+```Output
+data: {"id":"17658563046856100000c836403d","object":"chat.completion.chunk","created":1765856304,"model":"qwen3-8B","choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}],"prompt_token_ids":null}
 
-data: {"id":"17658563046856100000c836403d","object":"chat.completion.chunk","created":1765856304,"model":"qwen3","choices":[{"index":0,"delta":{"content":"<think>"},"logprobs":null,"finish_reason":null,"token_ids":null}]}
+data: {"id":"17658563046856100000c836403d","object":"chat.completion.chunk","created":1765856304,"model":"qwen3-8B","choices":[{"index":0,"delta":{"content":"<think>"},"logprobs":null,"finish_reason":null,"token_ids":null}]}
 
-data: {"id":"17658563046856100000c836403d","object":"chat.completion.chunk","created":1765856304,"model":"qwen3","choices":[{"index":0,"delta":{"content":"\n"},"logprobs":null,"finish_reason":null,"token_ids":null}]}
+data: {"id":"17658563046856100000c836403d","object":"chat.completion.chunk","created":1765856304,"model":"qwen3-8B","choices":[{"index":0,"delta":{"content":"\n"},"logprobs":null,"finish_reason":null,"token_ids":null}]}
 
-data: {"id":"17658563046856100000c836403d","object":"chat.completion.chunk","created":1765856304,"model":"qwen3","choices":[{"index":0,"delta":{"content":"Okay"},"logprobs":null,"finish_reason":null,"token_ids":null}]}
+data: {"id":"17658563046856100000c836403d","object":"chat.completion.chunk","created":1765856304,"model":"qwen3-8B","choices":[{"index":0,"delta":{"content":"Okay"},"logprobs":null,"finish_reason":null,"token_ids":null}]}
 
 ...
 

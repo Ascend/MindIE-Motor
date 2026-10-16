@@ -89,8 +89,8 @@
 
 - 最大并发数通过[user_config.json](../../configuration/config_reference.md#motor_coordinator_config)中的`max_requests`配置。
 - Coordinator内存上限通过部署YAML中Coordinator容器的`resources.limits.memory`配置。
-  - CRD模式可参考[examples/deployer/yaml_template/infer_service_template.yaml](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)。
-  - Multi模式可参考[examples/deployer/yaml_template/coordinator_template.yaml](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/coordinator_template.yaml)。
+  - CRD模式可参考[examples/deployer/yaml_template/infer_service_template.yaml](../../../../../examples/deployer/yaml_template/infer_service_template.yaml)。
+  - Multi模式可参考[examples/deployer/yaml_template/coordinator_template.yaml](../../../../../examples/deployer/yaml_template/coordinator_template.yaml)。
 
 参考配置如下：
 

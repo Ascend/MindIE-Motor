@@ -115,7 +115,7 @@ MindIE Motor依赖Kubernetes提供的容器编排能力，包括Pod部署、服�
 
 1. 准备脚本。
 
-    当前目录下准备了k8s的[安装脚本](https://gitcode.com/Ascend/MindIE-Motor/tree/master/docs/zh/user_guide/deployment/k8s/deployment_script)，将该文件夹直接拷贝至需要安装的服务器。
+    当前目录下准备了k8s的[安装脚本](./deployment/k8s/deployment_script/deploy_k8s.sh)，将该文件夹直接拷贝至需要安装的服务器。
 
 2. 配置参数。
 
