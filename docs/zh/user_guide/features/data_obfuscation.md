@@ -2,7 +2,7 @@
 
 ## 特性介绍
 
-PMCC 数据混淆推理特性让 MindIE Motor 能够直接承载**数据混淆权重**：Coordinator 在请求侧把 prompt token ID 与多模态（图像）张量映射到混淆权重所在的「受保护词表 / 受保护视觉空间」，在响应侧把引擎输出的受保护 token ID 还原为原始词表，使明文 token 与明文图像张量不进入引擎。
+PMCC 数据混淆推理特性让 MindIE Motor 能够直接承载**数据混淆权重**，Coordinator 在请求侧把 prompt token ID 与多模态（图像）张量映射到混淆权重所在的「受保护词表 / 受保护视觉空间」，在响应侧把引擎输出的受保护 token ID 还原为原始词表，使明文 token 与明文图像张量不进入引擎。
 
 该特性通过「离线权重混淆 + 线上同 seed 双向置换」机制，在**不修改推理引擎代码**的前提下让混淆权重可用：
 实测 Qwen3-VL-30B-A3B 混淆权重（58 GiB）在 4 卡（P 2 + D 2，TP=2）PD 分离部署下，纯文本与图像请求经 Render → 混淆 → 引擎 → 反混淆全链路返回正确结果（红图 → `"red"`，`2+2` → `"4"`）。
@@ -51,7 +51,7 @@ flowchart LR
 | 部署场景 | 需要 **vLLM Render sidecar**（token-only 链路）与 PD 分离部署，且必须配置`render_config.enable=true` 。 |
 | 推理引擎 | 仅支持 **vLLM**（依赖其 Render token-only 接口）。 |
 | 特性互斥 | <ul><li>可与 KV Cache 亲和性调度、PD 分离、扩缩容、故障重调度等特性同时使用。</li><li>**流式请求**：设置 `render_config.enable_streaming=true` 后支持流式 Token In、token-only Generate 和 Derender；要求 vLLM >= 0.27.0，性能及 reasoning/tool call 等高级场景需按具体版本验证。</li><li>**仅支持 `/v1/chat/completions` 与 `/v1/completions`**：Render 没有为其他 API 登记契约，任一混淆开关开启时 `/v1/responses`、`/v1/messages` 等路径直接返回 HTTP 501，不会退回本地 tokenizer。把明文 prompt 发给混淆权重引擎。</li><li>**不回退**：Render 不可用时不会退回 Coordinator 本地 tokenizer（否则明文 token 会进入引擎），请求直接失败（任一混淆开关开启即生效）。</li></ul> |
-| 软件依赖 | <ul><li>ai-asset-obfuscate：需安装该依赖（见[环境准备](#环境准备)），版本必须与离线生成混淆权重的版本一致，且其原生库需能被加载。</li><li>混淆权重必须由**同一版本 SDK、同一 seed、同一 `token_white_list`/`vocab_size`**、以及同一视觉几何（`patch_size`/`merge_size`/`temporal_patch_size`/`longest_edge`/`shortest_edge`）生成，否则结果错乱。</li></ul> |
+| 软件依赖 | <ul><li>ai-asset-obfuscate：MindIE Motor 官方镜像已内置该依赖（见[环境准备](#环境准备)），其版本须与离线生成混淆权重的 SDK 版本一致。</li><li>混淆权重必须由**同一版本 SDK、同一 seed、同一 `token_white_list`/`vocab_size`**、以及同一视觉几何（`patch_size`/`merge_size`/`temporal_patch_size`/`longest_edge`/`shortest_edge`）生成，否则结果错乱。</li></ul> |
 | 其他限制 | <ul><li>混淆相关参数均与模型/权重相关，代码不含内置默认值：`token_white_list`、`seed_content` 必须显式配置；`vocab_size` 与图像几何（`patch_size` 等 5 项）**可省略**，未配置时从被服务权重目录自动读取，显式配置始终优先（取值来源见[参数来源](#参数来源)）。</li><li>其中 `token_white_list` **无法从模型目录推导**（模型元数据里没有记录），只能由离线权重混淆方提供；漏配/多配不会报错，但会造成 token 错位。</li><li>自动读取的参数会在解析后再次校验：白名单 id 超过解析出的 `vocab_size`、或解析后的`longest_edge < shortest_edge`，都会直接拒绝启动，而不是带着不一致的参数运行。</li><li>`seed_content` 可还原词表置换，须与混淆权重同权限保管，通过受控配置注入，禁止进入代码仓库、日志与截图。</li><li>引擎对多模态张量按 `mm_hash` 缓存：**更换 SDK 版本或混淆实现后必须重启引擎（或更换图片）**，否则同 hash 图片会命中旧缓存。</li><li>混淆后的 token ID 属于「物理词表」，任何跨实例 Token 统计/对账都需要按物理 ID 解释。</li><li>开启混淆且 thinking 生效、客户端未显式传 `temperature` 时，Coordinator 会强制贪心解码（`temperature=0`）；需保留采样行为时请显式传参。</li></ul> |
 
 ## 特性使用
@@ -61,15 +61,7 @@ flowchart LR
 1. 已使用 MindIE Motor 完成基础推理服务部署（PD 分离），服务运行正常。参考 [PD 分离部署](pd_disaggregation.md)。
 2. 镜像/环境内的 vLLM 提供 Render token-only 接口（Coordinator 通过 `render_config.endpoint` 访问），
    且 `render_config.enable=true`。
-3. 已安装 `ai-asset-obfuscate` 并保证其原生库可加载：
-
-   ```bash
-   pip install ./ai_asset_obfuscate-26.1.0.2-py3-none-any.whl   # 版本需与离线生成混淆权重的版本一致
-   # Coordinator 启动时会把 <site-packages>/ai_asset_obfuscate/libs 追加到 LD_LIBRARY_PATH
-   ```
-
-   若在容器内由启动脚本安装 wheel，需保证 `libcrypto.so` / `libssl.so` 等符号链接存在且
-   `LD_LIBRARY_PATH` 在 **python 进程启动前**导出（进程内 `os.environ` 修改对已加载库无效）。
+3. 使用 MindIE Motor 官方镜像部署时，运行环境已内置 `ai-asset-obfuscate`（版本与仓库 `requirements.txt` 一致），须与离线生成混淆权重的 SDK **版本一致**。
 
 4. 已准备与待部署权重**同 seed** 的混淆权重目录。离线生成示例（在 CPU 环境即可执行）：
 
@@ -93,16 +85,14 @@ flowchart LR
    ```
 
    生成结果目录中会额外生成一个 `obf_config.json`，**其内容仅为混淆标记**（如 `{"flag": "OBF_DATA"}`），
-   不包含 seed、白名单与视觉几何，因此上述参数不能从该文件读取（取值来源见[参数取值从哪里来](#config-sources)）。
+   不包含 seed、白名单与视觉几何，因此上述参数不能从该文件读取（取值来源见[参数来源](#参数来源)）。
 
-   >[!NOTE] 说明
+   > [!NOTE] 说明
    >
-   > - `ModelType`、`seed_type` / `obf_type` 的取值随模型和 SDK 版本而异，上例为 Qwen3-VL 验证通过的取值，
-   > - 其它模型请按 SDK 文档选择对应枚举；关键是**权重生成与线上 Coordinator 必须使用同一 `seed_content` 与白名单**。
+   >- `ModelType`、`seed_type` / `obf_type` 的取值随模型和 SDK 版本而异，上例为 Qwen3-VL 验证通过的取值，
+   >- 其它模型请按 SDK 文档选择对应枚举；关键是**权重生成与线上 Coordinator 必须使用同一 `seed_content` 与白名单**。
 
 5. 后续操作均在 K8s 集群管理节点执行，且已 `source` 集群 kubeconfig。
-
-<a id="config-sources"></a>
 
 ### 参数来源
 
@@ -239,12 +229,10 @@ EOF
    日志中可看到混淆启用标志：
 
    ```bash
-   kubectl logs -n <namespace> <coordinator-pod> -c mindie-motor-coordinator | grep -E "Vision data obfuscation|Successfully installed"
+   kubectl logs -n <namespace> <coordinator-pod> -c mindie-motor-coordinator | grep "Vision data obfuscation"
    ```
 
    ```text
-   Successfully installed motor-3.1.0
-   Successfully installed ai-asset-obfuscate-26.1.0.2
    Vision data obfuscation is enabled for Render image items
    ```
 
@@ -268,7 +256,7 @@ EOF
        }'
    ```
 
-   返回HTTP 200，`choices[0].message.content` 为 `"red"`（蓝色图片应为 `"blue"`）。
+   返回 HTTP 200，`choices[0].message.content` 为 `"red"`（蓝色图片应为 `"blue"`）。
    若返回乱码或颜色错误，说明 seed / 白名单 / 视觉几何与权重不一致，或命中了引擎侧陈旧 mm 缓存（见常见问题）。
 
 2. 检查 Coordinator 日志中每个请求的混淆计数。
@@ -312,9 +300,9 @@ EOF
 
 **解决步骤**
 
-1. 确认版本：`python -c "import ai_asset_obfuscate, importlib.metadata as m; print(m.version('ai-asset-obfuscate'))"`，
-   需要与离线生成混淆权重的版本一致（本特性验证版本：`26.1.0.2`）。
-2. 用新版 wheel 覆盖安装后重启 Coordinator 容器（镜像内的 wheel 需要随部署重新投放）。
+1. 确认 Coordinator 容器内版本：`python -c "import ai_asset_obfuscate, importlib.metadata as m; print(m.version('ai-asset-obfuscate'))"`，
+   须与离线生成混淆权重的 SDK 版本一致（与当前 MindIE Motor 镜像/`requirements.txt` 中 `ai-asset-obfuscate==26.0.22` 对齐）。
+2. 使用包含该版本 SDK 的 MindIE Motor 官方镜像重新部署或重启 Coordinator 容器。
 
 ### 日志显示混淆已开启，但同一张图的答案一直不变（例如始终返回 `"gray"`）
 
@@ -355,14 +343,12 @@ Coordinator 启动成功或请求时才报 SDK 不可用/原生库加载失败�
 
 **原因分析**
 
-环境未安装 `ai-asset-obfuscate`，或其原生库（`ai_asset_obfuscate/libs/*.so`）依赖的动态库路径未准备好。
+运行环境未包含可用的 `ai-asset-obfuscate`（例如未使用 MindIE Motor 官方镜像，或镜像版本过旧）。
 
 **解决步骤**
 
-1. 确认已安装：`python -c "import ai_asset_obfuscate"`；
-2. 确认 `LD_LIBRARY_PATH` 含 `<site-packages>/ai_asset_obfuscate/libs`，且该设置在 python 进程启动前生效
-   （容器内由启动脚本导出，例如 OpenSSL 的 `libcrypto.so` / `libssl.so` 符号链接需存在）；
-3. 确认 `token_obfuscation_config.image_config.enable=true` 时 `render_config.enable=true`，否则配置校验会直接失败：
+1. 确认使用 MindIE Motor 官方镜像，且在容器内可导入：`python -c "import ai_asset_obfuscate"`；
+2. 确认 `token_obfuscation_config.image_config.enable=true` 时 `render_config.enable=true`，否则配置校验会直接失败：
    `token_obfuscation_config.image_config requires render_config.enable=true`。
 
 ### 模型输出乱码或答非所问
