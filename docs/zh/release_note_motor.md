@@ -125,16 +125,16 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
 
 ### 新增特性
 
-- 支持SGLang推理引擎服务化后端，可对接SGLang引擎提供PD分离推理服务（POC）。
+- 支持SGLang推理引擎服务化后端，可对接SGLang引擎提供PD分离推理服务。
 - 支持D2D权重加载，新实例启动时可从集群内同角色就绪实例直接拉取权重，缩短实例启动时间。
 - 支持max_tokens自适应，在路由前按实际输入token数裁剪输出上限，避免请求因超出模型上下文窗口被引擎拒绝。
 - 支持Docker only场景一键部署推理服务，并新增基于Slurm + Apptainer的部署方式。
 - 支持跨超节点部署服务、PD异构部署，以及推理大EP场景下DP域缩容运行。
 - 新增容量规划指标，支持基于HPA的自动扩缩容与PD配比推导。
 - 支持Prefill与Decode分别配置调度策略。
-- 新增 standalone Coordinator 独立部署模式与 Mooncake standalone 部署适配。
+- 新增 Coordinator 独立部署模式与 Mooncake standalone 部署适配。
 - 支持 Ascend 950PR&950DT 系列产品 IPv6 单栈组网下部署推理服务。
-- 推理引擎服务启动加速
+- 推理引擎服务启动加速。
 - Coordinator支持独立的vLLM Render实现Tokenizer能力的服务。
 - 支持数据混淆推理（PMCC），Coordinator侧完成混淆词表与多模态张量的双向置换，可直接承载数据混淆权重。
 - 支持长短序列动态分桶调度，在长短请求混合场景下降低TPOT、提升Decode输出吞吐（POC）。
