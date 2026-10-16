@@ -2,11 +2,11 @@
 
 本文档通过**完整详细**的部署案例，指导开发者体验基于 Motor 的 PD 分离服务部署，并指导生产环境配置优化实践。若底层引擎为 **SGLang**，请优先参阅 [SGLang PD 分离服务部署指导](./pd_disaggregation_sglang.md)。
 
-## 950系列服务器预检查（其他系列服务器可跳过检查）
+## Ascend 950PR&DT系列产品预检查（其他系列服务器可跳过检查）
 
 - **准备hixlep配置路径**
 
-    使用950系列服务器部署推理服务时，请在每台服务器检查 `/lib/route.conf`、`/etc/hccl_rootinfo.json` 配置文件以及 `/etc/hixlep` 目录（UB 链路拓扑结构）是否存在且正确；若不存在或不正确，请参考[hixlep配置文件生成文档](https://gitcode.com/cann/hixl/wiki/A5%20LocalCommRes%E9%85%8D%E7%BD%AE%E6%8C%87%E5%8D%97.md)生成对应内容，在生成 `/etc/hixlep` 时使用“D2D场景”即可。
+    使用Ascend 950PR&DT系列产品部署推理服务时，请在每台服务器检查 `/lib/route.conf`、`/etc/hccl_rootinfo.json` 配置文件以及 `/etc/hixlep` 目录（UB 链路拓扑结构）是否存在且正确；若不存在或不正确，请参考[hixlep配置文件生成文档](https://gitcode.com/cann/hixl/wiki/A5%20LocalCommRes%E9%85%8D%E7%BD%AE%E6%8C%87%E5%8D%97.md)生成对应内容，在生成 `/etc/hixlep` 时使用“D2D场景”即可。
 
 ## 获取启动脚本 (Setup and Image Preparation)
 
@@ -244,7 +244,7 @@ NodeManager 负责原生引擎的就绪探测、进程监管和虚推健康探�
 
 ### PD 异构（PR / DT）调度
 
-Ascend950 机器分为 PR、DT 两类：PR 使用白鹭内存，DT 使用 HBM。HBM 带宽更大、性能更好，更适合 Decode；Prefill 可部署在 PR 上。因此 **PR + DT 组网** 时，需要把 P 实例调度到 PR 节点、D 实例调度到 DT 节点。
+Ascend 950PR&DT系列产品分为 PR、DT 两类：PR 使用白鹭内存，DT 使用 HBM。HBM 带宽更大、性能更好，更适合 Decode；Prefill 可部署在 PR 上。因此 **PR + DT 组网** 时，需要把 P 实例调度到 PR 节点、D 实例调度到 DT 节点。
 
 - **原理**：在 PD 分离的 Prefill / Decode Pod 上追加 `huawei.com/npu.chip.name` 到 `nodeSelector`，与节点上已有的芯片标签匹配。
 - **开启**：在 Prefill / Decode 各自配置中填写对应字段；不填则不加该条 `nodeSelector`。

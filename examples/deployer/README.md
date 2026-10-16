@@ -1,4 +1,4 @@
-# Deployer 部署工具
+# Deployer部署工具
 
 本目录包含 PD disaggregation 服务的部署脚本与配置模板，用于在集群中部署 Controller、Coordinator、Engine 等组件。
 

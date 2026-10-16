@@ -38,6 +38,8 @@
     </a>
 </p>
 
+**镜像获取**：单击[链接](https://www.hiascend.com/developer/ascendhub/detail/f1690465f39847a8b0a1f9e5b36a03c4)，切换至“镜像下载”页签，即可获取官方完整的MindIE Motor镜像。
+
 **环境准备**：安装前的相关软硬件环境准备，以及安装步骤，请参见[环境准备](./docs/zh/user_guide/environment_preparation.md)。
 
 **快速部署**：快速体验启动服务、接口调用、精度&性能测试和停止服务全流程，请参见[快速部署](./docs/zh/user_guide/quick_start.md)。
