@@ -22,6 +22,7 @@ from motor.common.resources import (
     Endpoint,
     DeviceInfo,
     Ranktable,
+    ServerInfo,
     PDRole,
 )
 from motor.common.etcd.etcd_client import EtcdClient
@@ -103,6 +104,7 @@ class InstanceAssembler(ThreadSafeSingleton):
             self.instance_assembler_check_interval = config.instance_config.instance_assembler_check_interval
             self.instance_assembler_cmd_send_internal = config.instance_config.instance_assembler_cmd_send_interval
             self.send_cmd_retry_times = config.instance_config.send_cmd_retry_times
+            self.enable_dp_scale_up = config.fault_tolerance_config.enable_dp_scale_up
 
         # Version control for data persistence
         self._data_version = 0
@@ -180,6 +182,7 @@ class InstanceAssembler(ThreadSafeSingleton):
             self.instance_assembler_check_interval = config.instance_config.instance_assembler_check_interval
             self.instance_assembler_cmd_send_internal = config.instance_config.instance_assembler_cmd_send_interval
             self.send_cmd_retry_times = config.instance_config.send_cmd_retry_times
+            self.enable_dp_scale_up = config.fault_tolerance_config.enable_dp_scale_up
 
             # Update ETCD client with new configuration
             self.etcd_client = EtcdClient(etcd_config=self.etcd_config, tls_config=self.etcd_tls_config)
@@ -304,11 +307,11 @@ class InstanceAssembler(ThreadSafeSingleton):
         node manager to start inference engine and handle this instance to the
         instance manager to manager instance's status.
         """
+        join_assembled = False
         with self.lock:
             status = self._eval_register_status(msg.job_name)
             if status == RegisterStatus.ASSEMBLED:
-                logger.info("Instance %s already registered, no need to register again.", msg.job_name)
-                return -1
+                join_assembled = True
             elif status == RegisterStatus.NOT_REGISTERED:
                 instance = Instance(
                     job_name=msg.job_name,
@@ -341,7 +344,7 @@ class InstanceAssembler(ThreadSafeSingleton):
                 with metadata.lock:
                     metadata.register_timestamp = time.time()
 
-            if metadata.instance.ft_capability != msg.ft_capability:
+            if not join_assembled and metadata.instance.ft_capability != msg.ft_capability:
                 logger.error(
                     "Instance %s received inconsistent FT capability from pod %s: expected=%s, actual=%s",
                     msg.job_name,
@@ -350,6 +353,9 @@ class InstanceAssembler(ThreadSafeSingleton):
                     msg.ft_capability.model_dump(),
                 )
                 return -1
+
+        if join_assembled:
+            return self._join_or_reject_assembled(msg)
 
         if metadata.instance.has_node_mgr(msg.pod_ip):
             logger.info("Pod %s already registered in node_managers, skip duplicate registration.", msg.pod_ip)
@@ -403,11 +409,11 @@ class InstanceAssembler(ThreadSafeSingleton):
         instance assembler will recover its instance info and max instance's id and
         max device's cluster id according to the reregister msg.
         """
+        join_assembled = False
         with self.lock:
             status = self._eval_register_status(msg.job_name)
             if status == RegisterStatus.ASSEMBLED:
-                logger.info("Instance %s already registered, no need to reregister again.", msg.job_name)
-                return -1
+                join_assembled = True
             elif status == RegisterStatus.NOT_REGISTERED:
                 instance = Instance(
                     job_name=msg.job_name,
@@ -437,7 +443,7 @@ class InstanceAssembler(ThreadSafeSingleton):
                 with metadata.lock:
                     metadata.register_timestamp = time.time()
 
-            if metadata.instance.ft_capability != msg.ft_capability:
+            if not join_assembled and metadata.instance.ft_capability != msg.ft_capability:
                 logger.error(
                     "Instance %s received inconsistent FT capability from pod %s during reregistration: "
                     "expected=%s, actual=%s",
@@ -448,13 +454,18 @@ class InstanceAssembler(ThreadSafeSingleton):
                 )
                 return -1
 
-            # recover ins_id_cnt
-            self.ins_id_cnt = max(self.ins_id_cnt, msg.instance_id + 1)
+            if not join_assembled:
+                # recover ins_id_cnt
+                self.ins_id_cnt = max(self.ins_id_cnt, msg.instance_id + 1)
+
+        if join_assembled:
+            return self._join_or_reject_assembled(msg)
 
         metadata.instance.add_node_mgr(msg.pod_ip, msg.nm_port, msg.device_num)
-        # Re-registration carries original node_rank: mark slave endpoints as headless immediately
+        # Re-registration carries original node_rank: mark cross-node PCP slave endpoints as
+        # headless immediately. Without PCP node_rank is the plain pod rank and every pod serves.
         for endpoint in msg.endpoints:
-            if msg.node_rank != 0:
+            if msg.nnodes > 1 and msg.node_rank != 0:
                 endpoint.headless = True
         metadata.instance.add_endpoints(msg.pod_ip, {endpoint.id: endpoint for endpoint in msg.endpoints})
         logger.info("Recovery instance assembler's info, current ins_id_idx is %d.", self.ins_id_cnt)
@@ -560,6 +571,347 @@ class InstanceAssembler(ThreadSafeSingleton):
             )
         logger.debug("Built %d endpoints for pod %s", len(pod_endpoints), msg.pod_ip)
         return pod_endpoints
+
+    def _join_or_reject_assembled(self, msg: RegisterMsg | ReregisterMsg) -> int:
+        """Attach a replacement Pod to a still-ACTIVE scaled-down instance.
+
+        Replacement join is only available when DP scale-up is enabled. With the
+        switch off, an already assembled instance rejects every registration.
+        A replacement must report the same ``ft_capability`` as the instance.
+        Mixing engines with different FT capabilities is rejected the same way
+        as a pod that joins while the instance is still assembling.
+        """
+        with self.config_lock:
+            scale_up_enabled = self.enable_dp_scale_up
+        if not scale_up_enabled:
+            logger.info("Instance %s already registered, no need to register again.", msg.job_name)
+            return -1
+
+        instance = self._active_instance_by_job_name(msg.job_name)
+        if instance is None:
+            logger.info("Instance %s already registered, no need to register again.", msg.job_name)
+            return -1
+
+        if instance.ft_capability != msg.ft_capability:
+            logger.error(
+                "Instance %s received inconsistent FT capability from pod %s: expected=%s, actual=%s",
+                msg.job_name,
+                msg.pod_ip,
+                instance.ft_capability.model_dump(),
+                msg.ft_capability.model_dump(),
+            )
+            return -1
+
+        if instance.has_node_mgr(msg.pod_ip):
+            logger.info("Pod %s already registered in node_managers, skip duplicate registration.", msg.pod_ip)
+            return 0
+
+        from motor.controller.fault_tolerance.dp_scale_down import FtPhase, get_ft_runtime_store
+
+        runtime = get_ft_runtime_store().get(instance.id)
+        if runtime is None or runtime.get("phase") not in {
+            FtPhase.SCALED_DOWN_RUNNING.value,
+            FtPhase.POST_SCALE_CLEANUP.value,
+            FtPhase.WARMING_UP.value,
+        }:
+            logger.info("Instance %s already registered, no need to register again.", msg.job_name)
+            return -1
+
+        missing_ranks = self._missing_dp_ranks(instance, runtime)
+        slot_ranks = self._pick_replacement_rank_slot(msg, missing_ranks)
+        if not slot_ranks:
+            logger.info(
+                "Instance %s: replacement pod %s cannot fill missing ranks %s (device_num=%s, ports=%s)",
+                msg.job_name,
+                msg.pod_ip,
+                missing_ranks,
+                getattr(msg, "device_num", None),
+                len(self._replacement_business_ports(msg)),
+            )
+            return -1
+
+        new_endpoints = self._build_replacement_endpoints(msg, slot_ranks)
+        if not new_endpoints:
+            logger.error(
+                "Instance %s: failed to build endpoints for ranks %s on pod %s",
+                msg.job_name,
+                slot_ranks,
+                msg.pod_ip,
+            )
+            return -1
+
+        with self.lock:
+            if instance.has_node_mgr(msg.pod_ip):
+                logger.info("Pod %s already registered in node_managers, skip duplicate registration.", msg.pod_ip)
+                return 0
+            missing_ranks = self._missing_dp_ranks(instance, runtime)
+            if any(rank not in missing_ranks for rank in slot_ranks):
+                logger.info(
+                    "Instance %s: ranks %s no longer missing when joining %s (missing=%s)",
+                    msg.job_name,
+                    slot_ranks,
+                    msg.pod_ip,
+                    missing_ranks,
+                )
+                return -1
+            instance.add_endpoints(msg.pod_ip, new_endpoints)
+            instance.add_node_mgr(msg.pod_ip, msg.nm_port, msg.device_num)
+
+        try:
+            started = self._send_replacement_start_command(instance, msg, new_endpoints)
+        except Exception as e:
+            logger.error(
+                "Replacement start raised for pod %s instance %s: %s",
+                msg.pod_ip,
+                msg.job_name,
+                e,
+            )
+            started = False
+        if started:
+            logger.info(
+                "Replacement pod %s joined instance %s(id:%d), ranks=%s",
+                msg.pod_ip,
+                msg.job_name,
+                instance.id,
+                sorted(new_endpoints),
+            )
+            InstanceManager().persist_topology("replacement pod %s joined" % msg.pod_ip)
+            return 0
+
+        with self.lock:
+            instance.del_node_mgr(msg.pod_ip, msg.nm_port)
+            instance.del_endpoints(msg.pod_ip)
+        logger.error(
+            "Failed to start replacement pod %s for instance %s, rolled back roster.",
+            msg.pod_ip,
+            msg.job_name,
+        )
+        return -1
+
+    @staticmethod
+    def _missing_dp_ranks(instance: Instance, runtime: dict) -> list[int]:
+        original = list(runtime.get("original_dp_ranks") or [])
+        if not original:
+            parallel_config = getattr(instance, "parallel_config", None)
+            dp_size = getattr(parallel_config, "dp_size", 0) or 0
+            original = list(range(dp_size)) if isinstance(dp_size, int) and dp_size > 0 else []
+        registered = {nm.pod_ip for nm in instance.get_node_managers()}
+        present = {
+            endpoint.id for endpoint in instance.get_all_endpoints(include_headless=True) if endpoint.ip in registered
+        }
+        return sorted(set(original) - present)
+
+    @staticmethod
+    def _replacement_business_ports(msg: RegisterMsg | ReregisterMsg) -> list[str]:
+        """Ports for a replacement pod.
+
+        ``RegisterMsg`` carries ``business_port``. ``ReregisterMsg`` does not;
+        each carried endpoint already has its own port.
+        """
+        explicit = getattr(msg, "business_port", None) or []
+        if explicit:
+            return [str(port) for port in explicit]
+        return [str(endpoint.business_port) for endpoint in (getattr(msg, "endpoints", None) or [])]
+
+    @staticmethod
+    def _pick_replacement_rank_slot(msg: RegisterMsg | ReregisterMsg, missing_ranks: list[int]) -> list[int]:
+        if not missing_ranks:
+            return []
+        devices_per_rank = getattr(getattr(msg, "parallel_config", None), "local_world_size", 1) or 1
+        ports = InstanceAssembler._replacement_business_ports(msg)
+        device_num = int(getattr(msg, "device_num", 0) or 0)
+        if device_num < devices_per_rank:
+            return []
+        max_ranks_by_device = device_num // devices_per_rank
+        max_ranks_by_ports = len(ports) if ports else max_ranks_by_device
+        capacity = min(max_ranks_by_device, max_ranks_by_ports)
+        if capacity <= 0:
+            return []
+        slot = missing_ranks[:capacity]
+        if device_num < len(slot) * devices_per_rank:
+            return []
+        if ports and len(ports) < len(slot):
+            return []
+        return slot
+
+    def _build_replacement_endpoints(
+        self, msg: RegisterMsg | ReregisterMsg, rank_ids: list[int]
+    ) -> dict[int, Endpoint]:
+        from motor.common.resources.endpoint import EndpointStatus
+
+        rank_ids = sorted(rank_ids)
+        devices_per_rank = getattr(msg.parallel_config, "local_world_size", 1) or 1
+
+        if isinstance(msg, ReregisterMsg):
+            carried = list(getattr(msg, "endpoints", None) or [])
+            if len(carried) < len(rank_ids):
+                logger.error(
+                    "replacement pod %s reregistered %d endpoints but needs %d for ranks %s",
+                    msg.pod_ip,
+                    len(carried),
+                    len(rank_ids),
+                    rank_ids,
+                )
+                return {}
+            built: dict[int, Endpoint] = {}
+            for idx, rank_id in enumerate(rank_ids):
+                src = carried[idx]
+                built[rank_id] = src.model_copy(
+                    update={
+                        "id": rank_id,
+                        "ip": msg.pod_ip,
+                        "status": EndpointStatus.INITIAL,
+                        "hb_timestamp": 0,
+                    }
+                )
+            return built
+
+        ports = self._replacement_business_ports(msg)
+        if len(ports) < len(rank_ids):
+            logger.error(
+                "replacement pod %s has %d business ports but needs %d for ranks %s",
+                msg.pod_ip,
+                len(ports),
+                len(rank_ids),
+                rank_ids,
+            )
+            return {}
+
+        built = {}
+        for idx, rank_id in enumerate(rank_ids):
+            start_idx = devices_per_rank * idx
+            device_infos = self._build_device_infos(msg, start_idx, devices_per_rank, 0)
+            if not device_infos:
+                device_infos = [
+                    DeviceInfo(device_id=str(start_idx + j), rank_id=str(rank_id * devices_per_rank + j))
+                    for j in range(devices_per_rank)
+                    if start_idx + j < int(getattr(msg, "device_num", 0) or 0)
+                ]
+            built[rank_id] = Endpoint(
+                id=rank_id,
+                ip=msg.pod_ip,
+                business_port=ports[idx],
+                bootstrap_port=getattr(msg, "bootstrap_port", None),
+                device_infos=device_infos,
+                status=EndpointStatus.INITIAL,
+            )
+        return built
+
+    @staticmethod
+    def _active_instance_by_job_name(job_name: str) -> Instance | None:
+        current_id: int | None = None
+        for candidate in InstanceManager().get_instances({InsStatus.ACTIVE}):
+            if candidate.job_name != job_name:
+                continue
+            if current_id is None or candidate.id >= current_id:
+                current_id = candidate.id
+        if current_id is None:
+            return None
+        return InstanceManager().get_instance(current_id)
+
+    def _send_replacement_start_command(
+        self,
+        instance: Instance,
+        msg: RegisterMsg | ReregisterMsg,
+        endpoints: dict[int, Endpoint],
+    ) -> bool:
+        """Start replacement engines only; survivors expand via /scale_elastic_ep."""
+        pod_ip = msg.pod_ip
+        node_mgr = next((nm for nm in instance.get_node_managers() if nm.pod_ip == pod_ip), None)
+        if node_mgr is None:
+            return False
+
+        all_endpoints = list(endpoints.values())
+        for nm in instance.get_node_managers():
+            if nm.pod_ip == pod_ip:
+                continue
+            all_endpoints.extend(instance.get_endpoints(nm.pod_ip).values())
+        if not all_endpoints:
+            return False
+        master_ep = min(all_endpoints, key=lambda ep: ep.id)
+        master_dp_ip = master_ep.ip
+        logger.info(
+            "Replacement start master_dp_ip=%s (rank=%s) for pod %s joining ranks=%s",
+            master_dp_ip,
+            master_ep.id,
+            pod_ip,
+            sorted(endpoints),
+        )
+        ep_ids = sorted(endpoints)
+        node_rank = (min(ep_ids) // len(ep_ids)) if ep_ids else 0
+        start_cmd_msg = StartCmdMsg(
+            job_name=instance.job_name,
+            role=instance.role,
+            instance_id=instance.id,
+            endpoints=list(endpoints.values()),
+            master_dp_ip=master_dp_ip,
+            ranktable=self._instance_ranktable_for_replacement(instance, msg),
+            node_rank=node_rank,
+            # Joiner / warmup Pod for elastic scale-up: engine starts in
+            # VLLM_ELASTIC_EP_SCALE_UP_LAUNCH mode until /scale_elastic_ep + resume.
+            extra_env={"VLLM_ELASTIC_EP_SCALE_UP_LAUNCH": "1"},
+        )
+        return NodeManagerApiClient.send_start_command(node_mgr, start_cmd_msg)
+
+    @staticmethod
+    def _pod_ranktable_servers(msg: RegisterMsg | ReregisterMsg) -> list:
+        ranktable = getattr(msg, "ranktable", None)
+        if not isinstance(ranktable, Ranktable) or not ranktable.server_list:
+            return []
+        matched = [
+            server.model_copy(deep=True)
+            for server in ranktable.server_list
+            if msg.pod_ip in (server.container_ip, server.server_id)
+        ]
+        return matched or [ranktable.server_list[0].model_copy(deep=True)]
+
+    @classmethod
+    def _instance_ranktable_for_replacement(
+        cls, instance: Instance, msg: RegisterMsg | ReregisterMsg
+    ) -> Ranktable | None:
+        """Rebuild the instance ranktable so a cross-server joiner sees survivors and itself.
+
+        First-start aggregation lives on AssembleInstanceMetadata and is dropped
+        after ``StartCmdMsg``. Replacement therefore rebuilds from live survivor
+        endpoint device rows, then appends the joiner's own HCCL servers. A5
+        joiners send no ranktable and have no device rows, so this returns None.
+        """
+        servers: list[ServerInfo] = []
+        seen: set[tuple[str, str]] = set()
+        joiner_ip = msg.pod_ip
+        for nm in instance.get_node_managers():
+            if nm.pod_ip == joiner_ip:
+                continue
+            devices = [
+                device.model_copy(deep=True)
+                for endpoint in instance.get_endpoints(nm.pod_ip).values()
+                for device in endpoint.device_infos
+            ]
+            if not devices:
+                continue
+            key = (nm.pod_ip, nm.pod_ip)
+            if key in seen:
+                continue
+            seen.add(key)
+            servers.append(ServerInfo(server_id=nm.pod_ip, container_ip=nm.pod_ip, device=devices))
+        for server in cls._pod_ranktable_servers(msg):
+            key = (server.server_id, server.container_ip)
+            if key in seen:
+                continue
+            seen.add(key)
+            servers.append(server)
+        if not servers:
+            return None
+        version = "1.2"
+        joiner_table = getattr(msg, "ranktable", None)
+        if isinstance(joiner_table, Ranktable) and joiner_table.version:
+            version = joiner_table.version
+        return Ranktable(
+            version=version,
+            status="completed",
+            server_count=str(len(servers)),
+            server_list=servers,
+        )
 
     def _build_device_infos(
         self, msg: RegisterMsg, start_idx: int, devices_per_endpoint: int, id_offset: int

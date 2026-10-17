@@ -41,6 +41,8 @@ from motor.node_manager.core.services.registry import SERVICE_ENGINE, register_s
 
 logger = get_logger(__name__)
 
+VLLM_ASCEND_MOE_DISTRIBUTE_V3_ENV = "VLLM_ASCEND_ENABLE_MOE_DISTRIBUTE_V3"
+
 
 def _create_native_engine(hardware_type: str, config):
     """Factory for NativeEngineService — keeps constructor details out of the daemon."""
@@ -62,6 +64,7 @@ def _create_native_engine(hardware_type: str, config):
             else None
         ),
         startup_acceleration_config=config.vllm_startup_acceleration_config,
+        enable_dp_scale_up=config.fault_tolerance_config.enable_dp_scale_up,
     )
 
 
@@ -83,6 +86,7 @@ class NativeEngineService:
         dp_rpc_port: int | None = None,
         snapshot_metadata: str | None = None,
         startup_acceleration_config: VLLMStartupAccelerationConfig | None = None,
+        enable_dp_scale_up: bool = False,
     ):
         self.engine_type = str(engine_type).strip().lower()
         self.config_path = config_path
@@ -96,6 +100,7 @@ class NativeEngineService:
         self.dp_rpc_port = dp_rpc_port
         self.snapshot_metadata = snapshot_metadata
         self.startup_acceleration_config = startup_acceleration_config or VLLMStartupAccelerationConfig()
+        self.enable_dp_scale_up = enable_dp_scale_up
         self.backend = get_backend(self.engine_type)
         self.supervisor = ProcessSupervisor()
         # Serializes pull/stop so a completed stop() cannot be followed by a late monitor install.
@@ -159,6 +164,26 @@ class NativeEngineService:
                         inspect_startup_plan_profiles(cache_root)
                     if self.startup_acceleration_config.enable_graph_reuse:
                         inspect_graph_reuse_cache_root(cache_root)
+            # Controller-supplied launch env (e.g. VLLM_ELASTIC_EP_SCALE_UP_LAUNCH for joiners).
+            try:
+                from motor.node_manager.core.register_manager import RegisterManager
+
+                extra_env = dict(getattr(RegisterManager(), "extra_env", None) or {})
+            except Exception:
+                extra_env = {}
+            if extra_env:
+                base_env.update({str(k): str(v) for k, v in extra_env.items()})
+                logger.info("Applying StartCmdMsg.extra_env keys=%s", sorted(extra_env))
+            if self.engine_type == "vllm" and self.enable_dp_scale_up:
+                previous = base_env.get(VLLM_ASCEND_MOE_DISTRIBUTE_V3_ENV)
+                if previous not in (None, "1"):
+                    logger.warning(
+                        "Motor overrides environment %s=%r with '1' because DP scale-up is enabled",
+                        VLLM_ASCEND_MOE_DISTRIBUTE_V3_ENV,
+                        previous,
+                    )
+                base_env[VLLM_ASCEND_MOE_DISTRIBUTE_V3_ENV] = "1"
+                logger.info("DP scale-up enabled; set %s=1", VLLM_ASCEND_MOE_DISTRIBUTE_V3_ENV)
             pod_ip = base_env.get("POD_IP")
             if pod_ip and not base_env.get("VLLM_HOST_IP"):
                 base_env["VLLM_HOST_IP"] = pod_ip
@@ -246,6 +271,10 @@ class NativeEngineService:
         with self._pull_lock:
             self._clear_virtual_monitor()
             return self.supervisor.stop_all()
+
+    def kill_workers(self, endpoint_ids: list[int] | None = None) -> dict[str, list[int]]:
+        """SIGKILL VLLM::Worker children for the given endpoints (or all local)."""
+        return self.supervisor.kill_workers(endpoint_ids)
 
     def pid_list(self) -> list[int]:
         return self.supervisor.pid_list()

@@ -217,6 +217,21 @@ class NodeManagerApiClient:
         return cls._post_ft(node_mgr, "/node-manager/fault-tolerance/guard", data, timeout)
 
     @classmethod
+    def kill_engine_workers(
+        cls,
+        node_mgr: NodeManagerInfo,
+        endpoint_ids: list[int],
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """Ask NodeManager to SIGKILL local VLLM::Worker processes only."""
+        return cls._post_ft(
+            node_mgr,
+            "/node-manager/fault-tolerance/kill-workers",
+            {"endpoint_ids": list(endpoint_ids)},
+            timeout,
+        )
+
+    @classmethod
     def _post_ft(cls, node_mgr: NodeManagerInfo, path: str, data: dict[str, Any], timeout: float) -> dict[str, Any]:
         """Post one NodeManager FT request and always close its client."""
         client = SafeHTTPSClient(**cls._generate_client_args(node_mgr), timeout=timeout)

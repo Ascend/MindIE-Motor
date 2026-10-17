@@ -447,6 +447,50 @@ curl -X POST "http://{IP}:{Port}/precision/alarm_cleared" \
 }
 ```
 
+## DP 扩容恢复接口
+
+**接口功能**
+
+减卡缩容之后，触发实例扩容恢复。扩容开关 `enable_dp_scale_up` 必须与缩容开关 `enable_dp_scale_down` 同时开启，该接口才可用。
+
+**接口格式**
+
+请求类型：**POST**
+> URL：`http(s)://{IP}:{Port}/controller/fault_tolerance/recover`
+
+IP 为 Controller 服务地址，端口为 [`user_config.json`](../configuration/config_reference.md#motor_controller_config) 中 `controller_api_port`，默认 `1026`。
+
+**请求参数**
+无
+
+**使用样例**
+
+```bash
+curl -X POST "http://{IP}:{Port}/controller/fault_tolerance/recover"
+```
+
+**响应示例**
+
+```json
+{
+  "code": 200,
+  "message": "scale-up accepted via /scale_elastic_ep after empty-shell recycle",
+  "data": {
+    "instances": [
+      {"instance_id": 1, "action": "scale_up"}
+    ]
+  }
+}
+```
+
+**常见错误**
+
+| HTTP 状态码 | 说明 |
+|---|---|
+| 400 | 开关未开。故障自愈或缩容开关未开时返回 `DP scale-down is not enabled`；扩容开关未开时返回 `DP scale-up is not enabled`。 |
+| 404 | 无可恢复实例。没有处于缩容后状态的实例时返回 `no recoverable instance (need scaled-down state)`；找不到故障实例时返回 `no faulted instance to recover`。 |
+| 409 | 已有恢复进行中，返回 `recovery already in progress`。 |
+
 ## 根路径服务信息接口
 
 **接口功能**

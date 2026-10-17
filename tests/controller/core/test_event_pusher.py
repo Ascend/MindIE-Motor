@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch, MagicMock
 from motor.config.controller import ControllerConfig
 from motor.controller.core.event_pusher import EventPusher, Event
 from motor.common.resources.instance import Instance, ReadOnlyInstance
-from motor.common.resources.endpoint import Endpoint
+from motor.common.resources.endpoint import Endpoint, EndpointStatus
 from motor.controller.core.observer import ObserverEvent
 from motor.common.resources.http_msg_spec import EventType
 from motor.controller.fault_tolerance.dp_scale_down import (
@@ -248,6 +248,58 @@ def test_event_consumer_set_projects_scaled_down_view_without_mutating_source(ev
         assert runtime["serving_published"] is True
         assert runtime["can_serve"] is True
         assert runtime["last_error"] is None
+    finally:
+        get_ft_runtime_store().clear()
+
+
+def test_event_consumer_set_during_warmup_publishes_survivor_ranks_only(event_pusher, mock_http_client):
+    """A full SET while scale-up is warming must not advertise joiner ranks.
+
+    Heartbeat maps engine READY to EndpointStatus.NORMAL before FT is healthy,
+    so the filter is the survivor rank list, not endpoint status.
+    """
+    event_pusher.enable_dp_scale_down = True
+    test_instance = Instance(job_name="test_decode_job", model_name="test_model", id=11, role="decode")
+    test_instance.add_endpoints(
+        "10.0.0.2",
+        {
+            0: Endpoint(id=0, ip="10.0.0.2", business_port="8000", status=EndpointStatus.NORMAL),
+            1: Endpoint(id=1, ip="10.0.0.2", business_port="8002", status=EndpointStatus.NORMAL),
+        },
+    )
+    test_instance.add_endpoints(
+        "10.0.0.3",
+        {
+            2: Endpoint(id=2, ip="10.0.0.3", business_port="18000", status=EndpointStatus.NORMAL),
+            3: Endpoint(id=3, ip="10.0.0.3", business_port="18002", status=EndpointStatus.NORMAL),
+        },
+    )
+    event_pusher.instances[test_instance.job_name] = ReadOnlyInstance(test_instance)
+    get_ft_runtime_store().put(
+        FtRuntime(
+            instance_id=11,
+            phase=FtPhase.WARMING_UP,
+            original_dp_ranks=[0, 1, 2, 3],
+            serving_dp_ranks=[0, 1],
+            dead_committed=[],
+        )
+    )
+
+    try:
+        with patch.object(
+            event_pusher.event_queue,
+            "get",
+            side_effect=[Event(event_type=EventType.SET, instance=None), StopIteration],
+        ):
+            with pytest.raises(StopIteration):
+                event_pusher._event_consumer()
+
+        event_msg = mock_http_client.call_args.args[0]
+        assert event_msg.event == EventType.SET
+        published = event_msg.instances[0]
+        assert sorted(endpoint.id for endpoint in published.get_all_endpoints(True)) == [0, 1]
+        assert list(published.endpoints) == ["10.0.0.2"]
+        assert sorted(endpoint.id for endpoint in test_instance.get_all_endpoints(True)) == [0, 1, 2, 3]
     finally:
         get_ft_runtime_store().clear()
 

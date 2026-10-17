@@ -11,6 +11,8 @@
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import threading
+import time
 
 import pytest
 
@@ -23,7 +25,7 @@ from motor.controller.fault_tolerance.dp_scale_down import (
     ScaleDownContext,
     get_ft_runtime_store,
 )
-from motor.controller.fault_tolerance.strategy.dp_scale_down import DpScaleDownStrategy
+from motor.controller.fault_tolerance.strategy.dp_scale_down import DpScaleDownStrategy, _engine_http_url
 from motor.controller.fault_tolerance.strategy.fast_recovery import EngineFastRecoveryStrategy
 
 
@@ -33,10 +35,8 @@ def _config(**overrides):
         "poll_interval_sec": 0.001,
         "execution_deadline_sec": 1,
     }
-    enable_dp_scale_up = overrides.pop("enable_dp_scale_up", True)
     values.update(overrides)
     return SimpleNamespace(
-        enable_dp_scale_up=enable_dp_scale_up,
         enable_dp_scale_down=True,
         dp_scale_down_config=SimpleNamespace(**values),
     )
@@ -281,7 +281,9 @@ def test_success_uses_fault_candidates_not_observational_mask():
     assert result.finalize.call_args.args[3] is True
     assert result.finalize.call_args.args[2] == result.runtime["request_id"]
     assert result.finalize.call_args.args[4] == 0
-    log_info.assert_called_once_with(
+    # execute() also emits the logical-removed-ranks debug log, so assert the
+    # success summary by content instead of by call count.
+    log_info.assert_any_call(
         "%s succeeded: instance_id=%d, request_id=%s, removed_dp_ranks=%s, surviving_dp_ranks=%s, new_master_rank=%d",
         "DpScaleDownStrategy",
         1,
@@ -302,16 +304,17 @@ def test_withdraw_failure_falls_back_without_applying_scale_down():
 
 
 @pytest.mark.parametrize(
-    ("committed_ranks", "candidate", "expected_master_rank", "expected_master_ip"),
+    ("committed_ranks", "candidate", "expected_removed", "expected_master_rank", "expected_master_ip"),
     [
-        ([], 0, 1, "192.0.2.2"),
-        ([0], 1, 2, "192.0.2.3"),
+        ([], 0, [0], 1, "192.0.2.2"),
+        ([0], 1, [1], 2, "192.0.2.3"),
     ],
     ids=["dp0-to-dp1", "dp1-to-dp2"],
 )
 def test_consecutive_master_scale_down_selects_rank_specific_store_port_input(
     committed_ranks,
     candidate,
+    expected_removed,
     expected_master_rank,
     expected_master_ip,
 ):
@@ -323,10 +326,13 @@ def test_consecutive_master_scale_down_selects_rank_specific_store_port_input(
         original_dp_ranks=[0, 1, 2],
         dead_committed=committed_ranks,
     )
+    config = _config()
+    config.enable_dp_scale_up = True
     result = _execute(
         endpoints=endpoints,
         candidates=(candidate,),
         initial_runtime=initial_runtime,
+        config=config,
         statuses=[
             {rank: {"id": rank, "status": "unhealthy"} for rank in survivors},
             {rank: {"id": rank, "status": "healthy"} for rank in survivors},
@@ -334,9 +340,31 @@ def test_consecutive_master_scale_down_selects_rank_specific_store_port_input(
     )
 
     params = result.apply.call_args.args[1]
+    assert params["removed_dp_ranks"] == expected_removed
     assert params["dp_master_rank"] == expected_master_rank
     assert params["dp_master_ip"] == expected_master_ip
     assert result.finalize.call_args.args[4] == expected_master_rank
+
+
+def test_second_scale_down_keeps_stored_ranks_when_scale_up_disabled():
+    endpoints = _endpoints(3)
+    initial_runtime = FtRuntime(
+        instance_id=1,
+        phase=FtPhase.SCALED_DOWN_RUNNING,
+        original_dp_ranks=[0, 1, 2],
+        dead_committed=[0],
+    )
+    result = _execute(
+        endpoints=endpoints,
+        candidates=(1,),
+        initial_runtime=initial_runtime,
+        statuses=[
+            {2: {"id": 2, "status": "unhealthy"}},
+            {2: {"id": 2, "status": "healthy"}},
+        ],
+    )
+
+    assert result.apply.call_args.args[1]["removed_dp_ranks"] == [0, 1]
 
 
 @pytest.mark.parametrize(
@@ -360,6 +388,24 @@ def test_duplicate_committed_fault_preserves_existing_runtime(phase, serving_pub
     assert result.runtime["serving_published"] is serving_published
     result.query.assert_not_called()
     result.apply.assert_not_called()
+
+
+def test_healthy_recovering_waits_only_when_scale_up_enabled():
+    config = _config()
+    config.enable_dp_scale_up = True
+    result = _execute(
+        config=config,
+        statuses=[
+            {0: {"id": 0, "status": "unhealthy"}},
+            {0: {"id": 0, "status": "healthy", "ft_state": "recovering"}},
+            {0: {"id": 0, "status": "healthy"}},
+        ],
+    )
+
+    assert result.strategy.is_failed() is False
+    assert result.query.call_count == 3
+    assert result.runtime["phase"] == FtPhase.SCALED_DOWN_RUNNING.value
+    assert result.finalize.call_args.args[3] is True
 
 
 @pytest.mark.parametrize(
@@ -441,15 +487,12 @@ def test_transaction_stage_failure_aborts_without_retry(execute_kwargs, expected
     assert result.apply.call_count == expected_applies
 
 
-@pytest.mark.parametrize(
-    "enable_dp_scale_up,expected_stops",
-    [(True, 1), (False, 0)],
-)
-def test_pod_recycle_is_controlled_by_scale_up(enable_dp_scale_up, expected_stops):
-    result = _execute(config=_config(enable_dp_scale_up=enable_dp_scale_up))
+def test_software_scale_down_does_not_recycle_pods():
+    """Fault-triggered scale-down stays scaled down. Only user recover recycles pods."""
+    result = _execute(config=_config())
 
     assert result.runtime["phase"] == FtPhase.SCALED_DOWN_RUNNING.value
-    assert result.stop.call_count == expected_stops
+    assert result.stop.call_count == 0
 
 
 def test_publication_failure_keeps_committed_runtime_hidden():
@@ -566,3 +609,510 @@ def test_stopped_fast_recovery_placeholder_reaches_terminal_state():
 
     assert strategy.is_finished() is True
     assert strategy.is_failed() is False
+
+
+def test_run_problem_pod_recover_kills_waits_recycles_and_scales_up():
+    """Kill → wait native scale-down → recycle empty shells → elastic scale-up."""
+    endpoints = [
+        Endpoint(id=rank, ip="192.0.2.1" if rank < 8 else "192.0.2.2", business_port="8000") for rank in range(16)
+    ]
+    nm_low = NodeManagerInfo(pod_ip="192.0.2.1", port="9000")
+    nm_high = NodeManagerInfo(pod_ip="192.0.2.2", port="9000")
+    instance = MagicMock()
+    instance.get_all_endpoints.return_value = endpoints
+    instance.get_node_managers.return_value = [nm_low, nm_high]
+    instance.endpoints = {
+        "192.0.2.1": {ep.id: ep for ep in endpoints if ep.ip == "192.0.2.1"},
+        "192.0.2.2": {ep.id: ep for ep in endpoints if ep.ip == "192.0.2.2"},
+    }
+
+    strategy = DpScaleDownStrategy()
+    strategy.bind_config(SimpleNamespace(fault_tolerance_config=_config()))
+    get_ft_runtime_store().get_or_create(7)
+
+    with (
+        patch(
+            "motor.controller.fault_tolerance.strategy.dp_scale_down._get_instance",
+            return_value=instance,
+        ),
+        patch(
+            "motor.controller.fault_tolerance.strategy.dp_scale_down.ServingOverlay.withdraw",
+            return_value=True,
+        ),
+        patch.object(strategy, "_drain_inflight_requests", return_value=False),
+        patch.object(strategy, "_probe_survivor_rank") as probe,
+        patch.object(strategy, "_kill_problem_pod_workers") as kill,
+        patch.object(strategy, "_wait_native_scale_down", return_value=True) as wait_sd,
+        patch.object(strategy, "_wait_survivors_healthy_before_recycle", return_value=True) as wait_healthy,
+        patch(
+            "motor.controller.fault_tolerance.strategy.dp_scale_down.TopologyResolver.recyclable_pods",
+            return_value=["192.0.2.2"],
+        ),
+        patch("motor.controller.fault_tolerance.strategy.dp_scale_down.PodLifecycle.stop_recyclable_pods") as stop_pods,
+        patch.object(strategy, "_auto_scale_up", return_value=True) as scale_up,
+        patch.object(strategy, "execute") as execute,
+    ):
+        get_ft_runtime_store().transition(
+            7,
+            phase=FtPhase.SCALED_DOWN_RUNNING,
+            dead_committed=list(range(8, 16)),
+        )
+        ok = strategy.run_problem_pod_recover(
+            7,
+            list(range(16)),
+            set(range(8, 16)),
+            8,
+            _config(),
+        )
+
+    assert ok is True
+    kill.assert_called_once()
+    probe.assert_called_once()
+    assert probe.call_args.args[1] == set(range(8, 16))
+    wait_sd.assert_called_once()
+    wait_healthy.assert_called_once()
+    stop_pods.assert_called_once()
+    assert scale_up.call_count == 1
+    assert scale_up.call_args.args[0] == 7
+    assert scale_up.call_args.args[1] == list(range(16))
+    execute.assert_not_called()
+    assert hasattr(strategy, "_soft_inject_for_kill_shrink") is False
+
+
+def test_run_user_elastic_recover_keeps_original_survivor_ranks():
+    """A low-rank problem Pod is killed; survivors keep original ids for scale-up."""
+    endpoints = [
+        Endpoint(id=rank, ip="192.0.2.1" if rank < 8 else "192.0.2.2", business_port="8000") for rank in range(16)
+    ]
+    instance = MagicMock()
+    instance.get_all_endpoints.return_value = endpoints
+    instance.get_node_managers.return_value = [
+        NodeManagerInfo(pod_ip="192.0.2.1", port="9000"),
+        NodeManagerInfo(pod_ip="192.0.2.2", port="9000"),
+    ]
+    instance.endpoints = {
+        "192.0.2.1": {ep.id: ep for ep in endpoints if ep.ip == "192.0.2.1"},
+        "192.0.2.2": {ep.id: ep for ep in endpoints if ep.ip == "192.0.2.2"},
+    }
+
+    strategy = DpScaleDownStrategy()
+    strategy.bind_config(SimpleNamespace(fault_tolerance_config=_config()))
+    get_ft_runtime_store().get_or_create(11)
+
+    with (
+        patch(
+            "motor.controller.fault_tolerance.strategy.dp_scale_down._get_instance",
+            return_value=instance,
+        ),
+        patch(
+            "motor.controller.fault_tolerance.strategy.dp_scale_down.ServingOverlay.withdraw",
+            return_value=True,
+        ),
+        patch.object(strategy, "_drain_inflight_requests", return_value=False),
+        patch.object(strategy, "_probe_survivor_rank") as probe,
+        patch.object(strategy, "_kill_problem_pod_workers") as kill,
+        patch.object(strategy, "_wait_native_scale_down", return_value=True),
+        patch.object(strategy, "_wait_survivors_healthy_before_recycle", return_value=True),
+        patch(
+            "motor.controller.fault_tolerance.strategy.dp_scale_down.TopologyResolver.recyclable_pods",
+            return_value=["192.0.2.1"],
+        ),
+        patch("motor.controller.fault_tolerance.strategy.dp_scale_down.PodLifecycle.stop_recyclable_pods"),
+        patch.object(strategy, "_auto_scale_up", return_value=True) as scale_up,
+    ):
+        ok = strategy.run_problem_pod_recover(
+            11,
+            list(range(16)),
+            set(range(8)),
+            8,
+            _config(),
+        )
+
+    assert ok is True
+    kill.assert_called_once()
+    assert kill.call_args.args[1] == set(range(8))
+    probe.assert_called_once()
+    assert probe.call_args.args[1] == set(range(8))
+    assert scale_up.call_args.kwargs["survivor_rank_ids"] == set(range(8, 16))
+
+
+def test_recycle_empty_shells_scale_up_success_releases_strategy_slot():
+    """The user-recover empty-shell path finishes the strategy on success."""
+    endpoints = [
+        Endpoint(id=rank, ip="192.0.2.1" if rank < 8 else "192.0.2.2", business_port="8000") for rank in range(16)
+    ]
+    instance = MagicMock()
+    instance.get_all_endpoints.return_value = endpoints
+    instance.get_node_managers.return_value = [
+        NodeManagerInfo(pod_ip="192.0.2.1", port="9000"),
+        NodeManagerInfo(pod_ip="192.0.2.2", port="9000"),
+    ]
+    instance.endpoints = {
+        "192.0.2.1": {ep.id: ep for ep in endpoints if ep.ip == "192.0.2.1"},
+        "192.0.2.2": {ep.id: ep for ep in endpoints if ep.ip == "192.0.2.2"},
+    }
+
+    strategy = DpScaleDownStrategy()
+    strategy.bind_config(SimpleNamespace(fault_tolerance_config=_config()))
+    store = get_ft_runtime_store()
+    store.clear()
+    store.get_or_create(9)
+
+    with (
+        patch(
+            "motor.controller.fault_tolerance.strategy.dp_scale_down._get_instance",
+            return_value=instance,
+        ),
+        patch(
+            "motor.controller.fault_tolerance.strategy.dp_scale_down.TopologyResolver.recyclable_pods",
+            return_value=["192.0.2.2"],
+        ),
+        patch("motor.controller.fault_tolerance.strategy.dp_scale_down.PodLifecycle.stop_recyclable_pods") as stop_pods,
+        patch.object(strategy, "_wait_survivors_healthy_before_recycle", return_value=True) as wait_healthy,
+        patch.object(strategy, "_auto_scale_up", return_value=True) as scale_up,
+    ):
+        ok = strategy._recycle_empty_shells_then_scale_up(
+            9,
+            list(range(16)),
+            set(range(8, 16)),
+            _config(),
+            set(range(8)),
+        )
+
+    assert ok is True
+    wait_healthy.assert_called_once()
+    stop_pods.assert_called_once()
+    scale_up.assert_called_once()
+    assert scale_up.call_args.kwargs["survivor_rank_ids"] == set(range(8))
+    # Success must release the FaultManager strategy slot.
+    assert strategy.is_finished() is True
+    assert strategy.is_failed() is False
+
+
+def test_recycle_empty_shells_scale_up_failure_releases_strategy_slot():
+    """A failed scale-up still finishes the strategy so the slot is freed."""
+    endpoints = [
+        Endpoint(id=rank, ip="192.0.2.1" if rank < 8 else "192.0.2.2", business_port="8000") for rank in range(16)
+    ]
+    instance = MagicMock()
+    instance.get_all_endpoints.return_value = endpoints
+    instance.get_node_managers.return_value = [
+        NodeManagerInfo(pod_ip="192.0.2.1", port="9000"),
+        NodeManagerInfo(pod_ip="192.0.2.2", port="9000"),
+    ]
+    instance.endpoints = {
+        "192.0.2.1": {ep.id: ep for ep in endpoints if ep.ip == "192.0.2.1"},
+        "192.0.2.2": {ep.id: ep for ep in endpoints if ep.ip == "192.0.2.2"},
+    }
+
+    strategy = DpScaleDownStrategy()
+    strategy.bind_config(SimpleNamespace(fault_tolerance_config=_config()))
+    store = get_ft_runtime_store()
+    store.clear()
+    store.get_or_create(9)
+
+    with (
+        patch(
+            "motor.controller.fault_tolerance.strategy.dp_scale_down._get_instance",
+            return_value=instance,
+        ),
+        patch(
+            "motor.controller.fault_tolerance.strategy.dp_scale_down.TopologyResolver.recyclable_pods",
+            return_value=["192.0.2.2"],
+        ),
+        patch("motor.controller.fault_tolerance.strategy.dp_scale_down.PodLifecycle.stop_recyclable_pods"),
+        patch.object(strategy, "_wait_survivors_healthy_before_recycle", return_value=True),
+        patch.object(strategy, "_auto_scale_up", return_value=False) as scale_up,
+    ):
+        ok = strategy._recycle_empty_shells_then_scale_up(
+            9,
+            list(range(16)),
+            set(range(8, 16)),
+            _config(),
+            set(range(8)),
+        )
+
+    assert ok is False
+    scale_up.assert_called_once()
+    # Failure must also release the FaultManager strategy slot.
+    assert strategy.is_finished() is True
+    assert strategy.is_failed() is True
+    runtime = store.get_or_create(9)
+    assert runtime.last_error == "DP scale-up failed"
+
+
+def test_empty_shell_ports_follow_endpoint_business_and_bootstrap_ports():
+    """A live engine on its real port blocks recycle; unused 10000/10002/9000 do not."""
+    shell = [
+        Endpoint(id=8, ip="192.0.2.2", business_port="18000", bootstrap_port=19000),
+        Endpoint(id=9, ip="192.0.2.2", business_port="18002", bootstrap_port=19000),
+    ]
+    survivor = [Endpoint(id=0, ip="192.0.2.1", business_port="8000", bootstrap_port=8100)]
+    instance = MagicMock()
+    instance.endpoints = {
+        "192.0.2.1": {ep.id: ep for ep in survivor},
+        "192.0.2.2": {ep.id: ep for ep in shell},
+    }
+    probed: list[tuple[str, int]] = []
+
+    def _connect(address, timeout):
+        probed.append((address[0], int(address[1])))
+        if address[1] == 18000:
+            raise OSError("closed")
+        if address[1] in (18002, 19000):
+            return MagicMock()
+        raise OSError("not an endpoint port")
+
+    with patch("socket.create_connection", side_effect=_connect):
+        closed, detail = DpScaleDownStrategy._empty_shell_ports_closed(instance, ["192.0.2.2"])
+
+    assert closed is False
+    assert "192.0.2.2:18002" in detail or "192.0.2.2:19000" in detail
+    assert probed == [("192.0.2.2", 18000), ("192.0.2.2", 19000), ("192.0.2.2", 18002)]
+    assert not any(port in (10000, 10002, 9000) for _, port in probed)
+
+    def _all_closed(address, timeout):
+        probed.append((address[0], int(address[1])))
+        raise OSError("closed")
+
+    probed.clear()
+    with patch("socket.create_connection", side_effect=_all_closed):
+        closed, detail = DpScaleDownStrategy._empty_shell_ports_closed(instance, ["192.0.2.2"])
+
+    assert closed is True
+    assert detail == "closed"
+    assert ("192.0.2.1", 8000) not in probed
+
+
+def test_scale_up_ready_sees_ranks_hidden_by_get_all_endpoints():
+    """Presence uses the raw roster, not get_all_endpoints()'s id==0 filter."""
+    endpoints = [
+        Endpoint(id=rank, ip="192.0.2.1" if rank < 8 else "192.0.2.2", business_port="8000") for rank in range(16)
+    ]
+    instance = MagicMock()
+    instance.get_all_endpoints.return_value = tuple(ep for ep in endpoints if ep.id == 0)
+    instance.get_node_managers.return_value = [
+        NodeManagerInfo(pod_ip="192.0.2.1", port="9000"),
+        NodeManagerInfo(pod_ip="192.0.2.2", port="9000"),
+    ]
+    instance.endpoints = {
+        "192.0.2.1": {ep.id: ep for ep in endpoints if ep.ip == "192.0.2.1"},
+        "192.0.2.2": {ep.id: ep for ep in endpoints if ep.ip == "192.0.2.2"},
+    }
+    healthy = {rank: {"id": rank, "status": "healthy", "ft_state": "normal"} for rank in range(16)}
+    group = MagicMock()
+    group.survivor_endpoint_ids = list(range(16))
+    strategy = DpScaleDownStrategy()
+
+    with (
+        patch.object(strategy, "_build_node_manager_groups", return_value=[group]) as build,
+        patch.object(strategy, "_query_via_node_managers", return_value=healthy) as query,
+    ):
+        ready, statuses = strategy._scale_up_ready(instance, list(range(16)), 1.0)
+
+    assert ready is True
+    assert statuses == healthy
+    build.assert_called_once()
+    query.assert_called_once()
+    instance.get_all_endpoints.assert_not_called()
+
+
+def test_engine_http_calls_bracket_ipv6_literals():
+    """Scale, status, resume, metrics and probe URLs keep the IPv6 host intact."""
+    ep = Endpoint(id=0, ip="2001:db8::1", business_port="8000")
+    assert _engine_http_url(ep, "/scale_elastic_ep") == "http://[2001:db8::1]:8000/scale_elastic_ep"
+    instance = MagicMock()
+    instance.model_name = "qwen3_235b"
+    instance.endpoints = {ep.ip: {ep.id: ep}}
+    instance.get_node_managers.return_value = [NodeManagerInfo(pod_ip=ep.ip, port="9000")]
+    strategy = DpScaleDownStrategy()
+    seen: list[str] = []
+
+    def capture(req, timeout=None):
+        seen.append(req.full_url if hasattr(req, "full_url") else req)
+        response = MagicMock()
+        response.status = 200
+        response.read.return_value = b'{"phase":"paused","epoch":"e1","engines":[{"id":0,"dp_rank":0}]}'
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        return response
+
+    with patch("urllib.request.urlopen", side_effect=capture):
+        strategy._poll_is_scaling_status(ep, 1)
+        strategy._resume_elastic_ep(instance, "e1", 1)
+        strategy._probe_endpoint_ft_status(ep, 1)
+        strategy._read_inflight_requests(ep)
+        strategy._probe_survivor_rank(instance, set(), 1)
+        dispatch = strategy._trigger_scale_elastic_ep(instance, target_dp_size=1, old_rank_ids={0}, timeout=1)
+        strategy._drain_scale_elastic_ep(dispatch, timeout=2)
+
+    assert seen == [
+        "http://[2001:db8::1]:8000/is_scaling_elastic_ep",
+        "http://[2001:db8::1]:8000/resume_elastic_ep",
+        "http://[2001:db8::1]:8000/v1/fault_tolerance/status",
+        "http://[2001:db8::1]:8000/metrics",
+        "http://[2001:db8::1]:8000/v1/chat/completions",
+        "http://[2001:db8::1]:8000/scale_elastic_ep",
+    ]
+
+
+def _scale_up_instance():
+    endpoints = [
+        Endpoint(id=rank, ip="192.0.2.1" if rank < 2 else "192.0.2.2", business_port="8000") for rank in range(4)
+    ]
+    instance = MagicMock()
+    instance.get_node_managers.return_value = [
+        NodeManagerInfo(pod_ip="192.0.2.1", port="9000"),
+        NodeManagerInfo(pod_ip="192.0.2.2", port="9000"),
+    ]
+    instance.endpoints = {
+        "192.0.2.1": {ep.id: ep for ep in endpoints if ep.ip == "192.0.2.1"},
+        "192.0.2.2": {ep.id: ep for ep in endpoints if ep.ip == "192.0.2.2"},
+    }
+    return instance
+
+
+def _dispatch(error=None):
+    import concurrent.futures
+
+    from motor.controller.fault_tolerance.strategy.dp_scale_down import _ScaleDispatch
+
+    fut = concurrent.futures.Future()
+    if error is None:
+        fut.set_result("0 -> 200")
+    else:
+        fut.set_exception(error)
+    return _ScaleDispatch(pool=MagicMock(), futures={fut: Endpoint(id=0, ip="192.0.2.1", business_port="8000")})
+
+
+def test_scale_up_ready_loop_aborts_on_survivor_engine_failure():
+    strategy = DpScaleDownStrategy()
+    get_ft_runtime_store().clear()
+    get_ft_runtime_store().get_or_create(1)
+    instance = _scale_up_instance()
+    started = time.monotonic()
+    with (
+        patch(
+            "motor.controller.fault_tolerance.strategy.dp_scale_down._get_instance",
+            return_value=instance,
+        ),
+        patch.object(strategy, "_wait_elastic_preparing", return_value="epoch-1"),
+        patch.object(strategy, "_wait_elastic_paused", return_value="epoch-1"),
+        patch.object(strategy, "_resume_elastic_ep"),
+        patch.object(
+            strategy,
+            "_scale_up_ready",
+            return_value=(False, {0: {"status": "healthy", "ft_state": "failed"}, 1: {"status": "healthy"}}),
+        ),
+        patch("motor.controller.fault_tolerance.strategy.dp_scale_down.ServingOverlay.publish_restored") as publish,
+    ):
+        ok = strategy._run_scale_up_gates(
+            1,
+            list(range(4)),
+            {0, 1},
+            _config(),
+            time.monotonic() + 30.0,
+            1.0,
+            _dispatch(),
+            get_ft_runtime_store(),
+        )
+    assert ok is False
+    assert time.monotonic() - started < 1.0
+    publish.assert_not_called()
+
+
+def test_scale_up_ready_loop_waits_out_joiner_engine_failure():
+    strategy = DpScaleDownStrategy()
+    get_ft_runtime_store().clear()
+    instance = _scale_up_instance()
+    polls = {"count": 0}
+
+    def joiner_failed(_instance, _ranks, _timeout):
+        polls["count"] += 1
+        return False, {
+            2: {"status": "failed", "ft_state": "failed"},
+            0: {"status": "healthy"},
+            1: {"status": "healthy"},
+        }
+
+    with (
+        patch(
+            "motor.controller.fault_tolerance.strategy.dp_scale_down._get_instance",
+            return_value=instance,
+        ),
+        patch.object(strategy, "_wait_elastic_preparing", return_value="epoch-1"),
+        patch.object(strategy, "_wait_elastic_paused", return_value="epoch-1"),
+        patch.object(strategy, "_resume_elastic_ep"),
+        patch.object(strategy, "_scale_up_ready", side_effect=joiner_failed),
+    ):
+        ok = strategy._run_scale_up_gates(
+            1,
+            list(range(4)),
+            {0, 1},
+            _config(poll_interval_sec=0.001, execution_deadline_sec=0.05),
+            time.monotonic() + 0.05,
+            1.0,
+            _dispatch(),
+            get_ft_runtime_store(),
+        )
+    assert ok is False
+    assert polls["count"] > 1
+
+
+def test_auto_scale_up_does_not_scale_when_joiners_absent():
+    strategy = DpScaleDownStrategy()
+    get_ft_runtime_store().clear()
+    get_ft_runtime_store().get_or_create(1)
+    with (
+        patch.object(strategy, "_wait_joiner_ranks_present", return_value=False),
+        patch.object(strategy, "_trigger_scale_elastic_ep") as trigger,
+    ):
+        ok = strategy._auto_scale_up(1, list(range(4)), _config(), survivor_rank_ids={0, 1})
+    assert ok is False
+    trigger.assert_not_called()
+
+
+def test_auto_scale_up_runs_one_round_at_a_time():
+    """A second instance waits until the in-flight scale-up round finishes."""
+    get_ft_runtime_store().clear()
+    get_ft_runtime_store().get_or_create(1)
+    get_ft_runtime_store().get_or_create(2)
+    entered = []
+    hold = threading.Event()
+    first_entered = threading.Event()
+
+    def wait_joiners(instance_id, *_args, **_kwargs):
+        entered.append(instance_id)
+        first_entered.set()
+        if instance_id == 1:
+            assert hold.wait(timeout=2.0)
+        return False
+
+    first = DpScaleDownStrategy()
+    second = DpScaleDownStrategy()
+    with (
+        patch.object(DpScaleDownStrategy, "_wait_joiner_ranks_present", side_effect=wait_joiners),
+        patch.object(DpScaleDownStrategy, "_trigger_scale_elastic_ep") as trigger,
+    ):
+        worker = threading.Thread(
+            target=lambda: first._auto_scale_up(1, list(range(4)), _config(), survivor_rank_ids={0, 1})
+        )
+        blocked = threading.Thread(
+            target=lambda: second._auto_scale_up(2, list(range(4)), _config(), survivor_rank_ids={0, 1})
+        )
+        worker.start()
+        blocked_started = False
+        try:
+            assert first_entered.wait(timeout=2.0)
+            blocked.start()
+            blocked_started = True
+            blocked.join(timeout=0.2)
+            assert blocked.is_alive()
+            assert entered == [1]
+        finally:
+            hold.set()
+            worker.join(timeout=2.0)
+            if blocked_started:
+                blocked.join(timeout=2.0)
+    assert entered == [1, 2]
+    trigger.assert_not_called()

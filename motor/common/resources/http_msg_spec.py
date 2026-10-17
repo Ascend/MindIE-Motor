@@ -96,6 +96,13 @@ class StartCmdMsg(BaseModel):
         default=None, description="IP addresses of ready peer instances for D2D weight transfer"
     )
     node_rank: int = Field(default=0, description="Node rank assigned by Controller (registration order)")
+    extra_env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Extra environment variables merged into native-engine launch env. "
+            "Used e.g. for elastic scale-up joiners: VLLM_ELASTIC_EP_SCALE_UP_LAUNCH=1."
+        ),
+    )
 
 
 class ReregisterMsg(BaseModel):

@@ -56,6 +56,7 @@ class RegisterManager(ThreadSafeSingleton):
         # Controller does not re-send StartCmdMsg on relaunch).
         self.master_dp_ip: str = ""
         self.role: str = ""
+        self.extra_env: dict[str, str] = {}
         self.is_working = False
 
         # for snapshot restore, should be recorded during a snapshot-enabled cold start
@@ -245,6 +246,7 @@ class RegisterManager(ThreadSafeSingleton):
         self.node_rank = start_cmd.node_rank
         self.master_dp_ip = start_cmd.master_dp_ip
         self.role = start_cmd.role
+        self.extra_env = {str(k): str(v) for k, v in dict(getattr(start_cmd, "extra_env", None) or {}).items()}
 
         if (
             self._config.snapshot_config.enable_snapshot
@@ -272,6 +274,7 @@ class RegisterManager(ThreadSafeSingleton):
             "master_dp_ip": self.master_dp_ip,
             "d2d_peer_ips": self.d2d_peer_ips,
             "node_rank": self.node_rank,
+            "extra_env": dict(self.extra_env),
         }
 
     def stop(self) -> None:

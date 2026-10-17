@@ -314,11 +314,9 @@ class TestControllerInstanceManagerPrestop:
         with (
             patch('motor.controller.core.instance_manager.EtcdClient') as mock_etcd,
             patch('threading.Thread') as mock_thread,
-            patch('motor.controller.core.instance_manager.EventPusher') as mock_ep,
         ):
             mock_etcd.return_value = MagicMock()
             mock_thread.return_value = MagicMock()
-            mock_ep.return_value = MagicMock()
             # Clear singleton
             InstanceManager._instances.clear()
             mgr = InstanceManager(MagicMock())
@@ -757,7 +755,6 @@ class TestE2EPrestopFlow:
         with (
             patch('motor.controller.core.instance_manager.EtcdClient') as mock_etcd,
             patch('threading.Thread') as mock_thread,
-            patch('motor.controller.core.instance_manager.EventPusher'),
         ):
             mock_etcd.return_value = MagicMock()
             mock_thread.return_value = MagicMock()
@@ -870,7 +867,6 @@ class TestE2EPrestopFlow:
         with (
             patch('motor.controller.core.instance_manager.EtcdClient') as mock_etcd,
             patch('threading.Thread') as mock_thread,
-            patch('motor.controller.core.instance_manager.EventPusher'),
         ):
             mock_etcd.return_value = MagicMock()
             mock_thread.return_value = MagicMock()
@@ -918,7 +914,6 @@ class TestE2EPrestopFlow:
         with (
             patch('motor.controller.core.instance_manager.EtcdClient') as mock_etcd,
             patch('threading.Thread') as mock_thread,
-            patch('motor.controller.core.instance_manager.EventPusher'),
         ):
             mock_etcd.return_value = MagicMock()
             mock_thread.return_value = MagicMock()

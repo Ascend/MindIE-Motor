@@ -389,3 +389,28 @@ def test_cleanup_uses_cached_process_group_when_leader_has_exited(mock_popen):
         supervisor._terminate_group(runtime)
 
     killpg.assert_called_once_with(12345, signal.SIGTERM)
+
+
+@patch("motor.node_manager.core.services.native_engine.supervisor.subprocess.Popen")
+def test_kill_workers_sigkills_workers_not_launcher(mock_popen):
+    process = MagicMock(pid=100)
+    process.poll.return_value = None
+    mock_popen.return_value = process
+    supervisor = ProcessSupervisor()
+    supervisor.start(8, _command(), _probe())
+
+    with (
+        patch.object(ProcessSupervisor, "_find_worker_pids", return_value=[201, 202]),
+        patch("motor.node_manager.core.services.native_engine.supervisor.os.kill") as kill,
+        patch.object(ProcessSupervisor, "_kill_group") as kill_group,
+    ):
+        result = supervisor.kill_workers([8])
+
+    assert result["endpoint_ids"] == [8]
+    assert result["killed_pids"] == [201, 202]
+    assert kill.call_args_list == [
+        call(201, signal.SIGKILL),
+        call(202, signal.SIGKILL),
+    ]
+    kill_group.assert_not_called()
+    assert supervisor.pid_list() == [100]

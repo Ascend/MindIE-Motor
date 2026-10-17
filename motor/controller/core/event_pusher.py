@@ -8,6 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import contextlib
 import queue
 import threading
 import time
@@ -250,59 +251,70 @@ class EventPusher(Observer):
                 if event_type == EventType.SET:
                     self._failed_incremental_set_pending = False
                 set_fingerprint: tuple | None = None
-                if event_type == EventType.ADD:
-                    event_msg = InsEventMsg(event=event_type, instances=[event.instance])
-                elif event_type == EventType.DEL:
-                    event_msg = InsEventMsg(event=event_type, instances=[event.instance])
-                elif event_type == EventType.PAUSE:
-                    event_msg = InsEventMsg(event=event_type, instances=[event.instance])
-                elif event_type == EventType.RESUME:
-                    event_msg = InsEventMsg(event=event_type, instances=[event.instance])
-                elif event_type == EventType.SET:
-                    instances, set_fingerprint = self._serving_snapshot()
-                    if instances:
-                        event_msg = InsEventMsg(event=event_type, instances=instances)
+                event_msg = None
+                success = False
+                # Snapshot and POST one SET under the overlay lock so a
+                # publish_restored() cut-over cannot interleave a stale roster.
+                send_lock = (
+                    _get_serving_overlay().publish_lock() if event_type == EventType.SET else contextlib.nullcontext()
+                )
+                with send_lock:
+                    if event_type == EventType.ADD:
+                        event_msg = InsEventMsg(event=event_type, instances=[event.instance])
+                    elif event_type == EventType.DEL:
+                        event_msg = InsEventMsg(event=event_type, instances=[event.instance])
+                    elif event_type == EventType.PAUSE:
+                        event_msg = InsEventMsg(event=event_type, instances=[event.instance])
+                    elif event_type == EventType.RESUME:
+                        event_msg = InsEventMsg(event=event_type, instances=[event.instance])
+                    elif event_type == EventType.SET:
+                        instances, set_fingerprint = self._serving_snapshot()
+                        if instances:
+                            event_msg = InsEventMsg(event=event_type, instances=instances)
+                        else:
+                            logger.debug(
+                                "SET event skipped: no instances in memory "
+                                "(Controller may have lost its own instances)."
+                            )
                     else:
-                        logger.debug(
-                            "SET event skipped: no instances in memory (Controller may have lost its own instances)."
-                        )
-                        event_msg = None
-                else:
-                    logger.error("Unknown event type: %s", event_type)
-                    continue
-
-                if event_msg is not None:
-                    success = False
-                    try:
-                        success = CoordinatorApiClient.send_instance_refresh(event_msg)
-                    except Exception as e:
-                        logger.error("Failed to send instance refresh event, error: %s", e)
-                    if not success:
-                        if event_type == EventType.SET and self._resync_after_hb_loss:
-                            _rl.error_window(
-                                "event_pusher.ha_set_retry",
-                                "Instance SET failed after Coordinator heartbeat loss; retrying",
-                                window_sec=60,
-                                level="WARNING",
-                            )
-                            if self.stop_event.wait(timeout=_HA_SET_RETRY_DELAY_SEC):
-                                continue
-                            self.event_queue.put(Event(EventType.SET, None))
-                            continue
-                        if event_type != EventType.SET and not self._failed_incremental_set_pending:
-                            self._failed_incremental_set_pending = True
-                            self.event_queue.put(Event(EventType.SET, None))
-                            logger.warning(
-                                "Incremental instance refresh %s failed; queued a full SET reconciliation",
-                                event_type,
-                            )
+                        logger.error("Unknown event type: %s", event_type)
                         continue
-                    if event_type == EventType.SET:
-                        self._last_sent_fingerprint = set_fingerprint
-                        self.is_coordinator_reset = False
-                        self._resync_after_hb_loss = False
-                    if self.enable_dp_scale_down and event_type in {EventType.ADD, EventType.RESUME, EventType.SET}:
-                        _get_serving_overlay().mark_published(event_msg.instances)
+
+                    if event_msg is not None:
+                        try:
+                            success = CoordinatorApiClient.send_instance_refresh(event_msg)
+                        except Exception as e:
+                            logger.error("Failed to send instance refresh event, error: %s", e)
+                            success = False
+
+                if event_msg is None:
+                    continue
+                if not success:
+                    if event_type == EventType.SET and self._resync_after_hb_loss:
+                        _rl.error_window(
+                            "event_pusher.ha_set_retry",
+                            "Instance SET failed after Coordinator heartbeat loss; retrying",
+                            window_sec=60,
+                            level="WARNING",
+                        )
+                        if self.stop_event.wait(timeout=_HA_SET_RETRY_DELAY_SEC):
+                            continue
+                        self.event_queue.put(Event(EventType.SET, None))
+                        continue
+                    if event_type != EventType.SET and not self._failed_incremental_set_pending:
+                        self._failed_incremental_set_pending = True
+                        self.event_queue.put(Event(EventType.SET, None))
+                        logger.warning(
+                            "Incremental instance refresh %s failed; queued a full SET reconciliation",
+                            event_type,
+                        )
+                    continue
+                if event_type == EventType.SET:
+                    self._last_sent_fingerprint = set_fingerprint
+                    self.is_coordinator_reset = False
+                    self._resync_after_hb_loss = False
+                if self.enable_dp_scale_down and event_type in {EventType.ADD, EventType.RESUME, EventType.SET}:
+                    _get_serving_overlay().mark_published(event_msg.instances)
 
     def notify_coordinator_failover(self, master_host: str | None = None) -> None:
         """Push all instances after a Coordinator reported it became master.

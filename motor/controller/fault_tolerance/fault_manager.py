@@ -11,6 +11,7 @@ import concurrent.futures
 import threading
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from motor.config.controller import ControllerConfig
 from motor.common.logger import get_logger
@@ -25,6 +26,7 @@ from motor.controller.fault_tolerance.dp_scale_down import (
     FaultNormalizer,
     FtPhase,
     ScaleDownContext,
+    TopologyResolver,
     get_ft_runtime_store,
 )
 from motor.controller.fault_tolerance.fault_types import (
@@ -134,6 +136,11 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
 
         # For dual handle function trigger, we use a thread pool executor to handle it.
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+        # Kill→wait-native-scale-down→recycle→scale-up runs here without taking
+        # metadata.strategy, so software-fault DpScaleDownStrategy can still run.
+        # A not-done placeholder is published under metadata.lock before submit,
+        # together with the strategy-slot check.
+        self._problem_pod_recover_futures: dict[int, concurrent.futures.Future] = {}
 
         self.strategies = generate_strategy_map()
 
@@ -513,6 +520,31 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                     logger.error(
                         "Failed to withdraw instance %d after the first engine fault report",
                         resolved_instance_id,
+                    )
+                if instance is not None:
+                    from motor.controller.fault_tolerance.strategy.dp_scale_down import (
+                        DpScaleDownStrategy,
+                    )
+
+                    skip = set()
+                    prefer = None
+                    if isinstance(fault_info.engine_id, int):
+                        if fault_info.engine_status == 1:
+                            skip.add(int(fault_info.engine_id))
+                        elif fault_info.engine_status == 2:
+                            prefer = int(fault_info.engine_id)
+                    threading.Thread(
+                        target=DpScaleDownStrategy()._probe_survivor_rank,
+                        args=(instance, skip, 10.0),
+                        kwargs={"prefer_rank": prefer},
+                        daemon=True,
+                        name="ft-survivor-probe-%s" % resolved_instance_id,
+                    ).start()
+                    logger.info(
+                        "Instance %d: first-fault survivor probe queued skip=%s prefer=%s",
+                        resolved_instance_id,
+                        sorted(skip),
+                        prefer,
                     )
             with self.config_lock:
                 timeout = self.config.fault_tolerance_config.fault_collection_timeout_seconds
@@ -1077,6 +1109,24 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             if current_strategy is not None:
                 return
 
+            # Elastic scale-up in progress (scale → bootstrap → joiners → resume).
+            # Joiner faults stay on the scale-up deadline. A survivor hard fault
+            # aborts inside the scale-up worker and uses its reconfiguration exit.
+            runtime_guard = get_ft_runtime_store().get(ins_id)
+            # Only a scale-up failure may escalate after the fault record is already healthy.
+            scale_up_left_reconfiguring = (
+                self.config.fault_tolerance_config.enable_dp_scale_up
+                and ins_metadata.prev_strategy_name == "DpScaleDownStrategy"
+                and runtime_guard is not None
+                and runtime_guard.get("phase") == FtPhase.RECONFIGURING.value
+            )
+            if runtime_guard is not None and runtime_guard.get("phase") == FtPhase.WARMING_UP.value:
+                logger.info(
+                    "Instance %d: skip new recovery plan while WARMING_UP (scale-up in progress)",
+                    ins_id,
+                )
+                return
+
             if superseded:
                 # Most stale-instance strategies may stop the replacement's
                 # NodeManagers and must be skipped. ScaleP2D is the exception:
@@ -1096,9 +1146,13 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                         "Skip strategy for superseded instance %d (job already has a newer instance)",
                         ins_id,
                     )
-            elif fault_level != FaultLevel.HEALTHY and ins_metadata.prev_strategy_failed:
+            elif ins_metadata.prev_strategy_failed and (
+                fault_level != FaultLevel.HEALTHY or scale_up_left_reconfiguring
+            ):
                 # Engine FT and relaunch are single-attempt recovery stages;
-                # failure advances to whole-instance reconfiguration. Other
+                # failure advances to whole-instance reconfiguration. A scale-up
+                # failure does the same, including after user recover on an
+                # instance whose fault level was already cleared. Other
                 # baseline strategies retain master's optional relaunch stage.
                 if ins_metadata.prev_strategy_name == "InstanceReconfigurationStrategy":
                     # Reconfiguration dispatch failure is terminal for the
@@ -1246,6 +1300,392 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             )
         self._refresh_instance_fault_level(ins_id)
         return True
+
+    def _recovery_round_busy(self, instance_id: int, metadata: InstanceMetadata) -> bool:
+        """Whether a user recovery round is already committed for this instance.
+
+        Caller holds ``metadata.lock``. The strategy slot and the kill-worker
+        future are both read here so the two checks cannot observe a stale
+        "idle" state across separate critical sections.
+        """
+        current = metadata.strategy
+        current_future = metadata.strategy_future
+        if current is not None and not (current.is_finished() and (current_future is None or current_future.done())):
+            return True
+        prior = self._problem_pod_recover_futures.get(instance_id)
+        return prior is not None and not prior.done()
+
+    def _try_kill_problem_pod_workers(
+        self,
+        instance_id: int,
+        metadata: "InstanceMetadata",
+        original: list[int],
+        expanded: set[int],
+        target_dp: int,
+        *,
+        phase: Any,
+        seed: set[int],
+        to_remove: list[int],
+    ) -> dict[str, Any] | None:
+        """Accept kill→wait-native-scale-down→recycle→scale-up without owning FT strategy.
+
+        Soft-inject / ``execute()`` are intentionally not used here: native
+        software-fault planning still owns ``DpScaleDownStrategy``. This helper
+        only kicks workers on the problem Pods and then waits for that commit
+        before recycling empty shells and elastic scale-up. Returns a result
+        dict, or ``None`` when another recovery round is already in progress.
+
+        The strategy slot and ``_problem_pod_recover_futures`` are checked and
+        the future is reserved under one ``metadata.lock`` hold. ``transition``
+        and ``executor.submit`` stay outside that lock: persistence takes
+        ``FaultManager.lock``, and the opposite order deadlocks. The
+        reservation is a not-done placeholder, so a concurrent
+        ``start_user_recovery`` or user-strategy submit observes this round
+        before the real future is swapped in. This path still does not set
+        ``metadata.strategy``; native software-fault planning must be able to
+        commit scale-down while the kill worker waits.
+        """
+        from motor.controller.fault_tolerance.strategy import DpScaleDownStrategy
+
+        reservation: concurrent.futures.Future = concurrent.futures.Future()
+        with metadata.lock:
+            if self._recovery_round_busy(instance_id, metadata):
+                return None
+            self._problem_pod_recover_futures[instance_id] = reservation
+
+        try:
+            strategy = DpScaleDownStrategy()
+            strategy.bind_config(self.config)
+            get_ft_runtime_store().transition(
+                instance_id,
+                original_dp_ranks=list(original),
+                pending_removed_ranks=sorted(expanded),
+                last_error=None,
+            )
+            future = self.executor.submit(
+                strategy.run_problem_pod_recover,
+                instance_id,
+                list(original),
+                expanded,
+                target_dp,
+                self.config.fault_tolerance_config,
+            )
+        except Exception:
+            with metadata.lock:
+                if self._problem_pod_recover_futures.get(instance_id) is reservation:
+                    self._problem_pod_recover_futures.pop(instance_id, None)
+            raise
+
+        with metadata.lock:
+            if self._problem_pod_recover_futures.get(instance_id) is reservation:
+                self._problem_pod_recover_futures[instance_id] = future
+
+        logger.info(
+            "Instance %d: user recovery action=kill_problem_pod_workers "
+            "seed=%s expanded=%s target_dp=%s to_remove=%s "
+            "(wait native scale-down, then recycle + scale-up)",
+            instance_id,
+            sorted(seed),
+            sorted(expanded),
+            target_dp,
+            to_remove,
+        )
+        return {
+            "instance_id": instance_id,
+            "action": "kill_problem_pod_workers",
+            "ok": True,
+            "accepted": True,
+            "target_dp_size": target_dp,
+            "expanded_dp_ranks": sorted(expanded),
+            "removed_dp_ranks": list(to_remove),
+            "phase": phase,
+        }
+
+    def _accept_empty_shell_scale_up(
+        self,
+        instance_id: int,
+        metadata: "InstanceMetadata",
+        instance: Any,
+        strategy: Any,
+        original: list[int],
+        dead: list[int],
+        phase: Any,
+    ) -> dict[str, Any] | None:
+        """Recycle empty shells and elastic scale-up.
+
+        The strategy slot is reserved under one ``metadata.lock`` hold.
+        ``transition`` and ``executor.submit`` stay outside that lock:
+        persistence takes ``FaultManager.lock``, and the opposite order
+        deadlocks. The reservation is a not-done placeholder, so a concurrent
+        ``start_user_recovery`` observes this round before the real future is
+        swapped in. Returns ``None`` when another recovery round is in progress.
+        """
+        reservation: concurrent.futures.Future = concurrent.futures.Future()
+        with metadata.lock:
+            if self._recovery_round_busy(instance_id, metadata):
+                return None
+            previous = (
+                metadata.strategy,
+                metadata.strategy_future,
+                metadata.strategy_fault_level,
+                metadata.prev_strategy_failed,
+                metadata.recovery_plan_source,
+                metadata.recovery_plan_strategy,
+                metadata.recovery_plan_fallback,
+            )
+            metadata.strategy = strategy
+            metadata.strategy_future = reservation
+            metadata.strategy_fault_level = FaultLevel.L2
+            metadata.prev_strategy_failed = False
+            metadata.recovery_plan_source = "user"
+            metadata.recovery_plan_strategy = "DpScaleDownStrategy"
+            metadata.recovery_plan_fallback = "InstanceReconfigurationStrategy"
+        recyclable = TopologyResolver.recyclable_pods(instance, set(dead))
+        survivors = {int(rank) for rank in original} - {int(rank) for rank in dead}
+        try:
+            get_ft_runtime_store().transition(instance_id, phase=FtPhase.SCALED_DOWN_RUNNING)
+            future = self.executor.submit(
+                strategy._recycle_empty_shells_then_scale_up,
+                instance_id,
+                original,
+                set(dead),
+                self.config.fault_tolerance_config,
+                survivors,
+            )
+            future.add_done_callback(self._on_strategy_finished)
+        except Exception:
+            with metadata.lock:
+                if metadata.strategy_future is reservation:
+                    (
+                        metadata.strategy,
+                        metadata.strategy_future,
+                        metadata.strategy_fault_level,
+                        metadata.prev_strategy_failed,
+                        metadata.recovery_plan_source,
+                        metadata.recovery_plan_strategy,
+                        metadata.recovery_plan_fallback,
+                    ) = previous
+            raise
+        with metadata.lock:
+            if metadata.strategy_future is reservation:
+                metadata.strategy_future = future
+        logger.info(
+            "Instance %d: user recovery action=scale_up ranks=%s recyclable=%s",
+            instance_id,
+            original,
+            recyclable,
+        )
+        return {
+            "instance_id": instance_id,
+            "action": "scale_up",
+            "original_dp_ranks": original,
+            "phase": phase,
+        }
+
+    def start_user_recovery(self) -> list[dict[str, Any]]:
+        """User recover for an instance that has already scaled down.
+
+        Expand the dead seed to the problem Pods. If workers remain, kill them,
+        wait for native FT to commit scale-down, recycle empty shells, then
+        elastic expand. If the problem Pods are already empty shells, recycle
+        and elastic expand only. Survivors keep original DP ids; joiners fill
+        the missing ranks.
+
+        A healthy instance with no prior FT shrink is left alone. Killing its
+        high-suffix workers from recover was a debug entry and is not part of
+        this path.
+        """
+        from motor.controller.fault_tolerance.strategy import (
+            DpScaleDownStrategy,
+            InstanceReconfigurationStrategy,
+        )
+
+        results: list[dict[str, Any]] = []
+        in_progress = 0
+        with self.lock:
+            instance_ids = list(self.instances)
+        for instance_id in instance_ids:
+            runtime = get_ft_runtime_store().get(instance_id) or {}
+            phase = runtime.get("phase")
+            dead = list(runtime.get("dead_committed") or [])
+            original = list(runtime.get("original_dp_ranks") or [])
+            if phase in (FtPhase.SCALED_DOWN_RUNNING.value, FtPhase.WARMING_UP.value) or dead:
+                instance = InstanceManager().get_instance(instance_id)
+                if instance is None:
+                    continue
+                if not original:
+                    try:
+                        original = TopologyResolver.original_dp_ranks(instance)
+                    except ValueError:
+                        original = sorted({ep.id for ep in instance.get_all_endpoints(include_headless=False)})
+                metadata = self.instances.get(instance_id)
+                if metadata is None:
+                    continue
+                seed = set(dead)
+                try:
+                    expanded = TopologyResolver.expand_problem_pod_ranks(instance, seed)
+                except ValueError:
+                    expanded = set(seed)
+                to_remove = sorted(expanded - set(dead))
+                strategy = DpScaleDownStrategy()
+                strategy.bind_config(self.config)
+                # Whole problem Pods: kill remaining workers; FT finishes scale-down.
+                target_dp = TopologyResolver.elastic_pod_cut_target_dp(original, expanded)
+                if to_remove and target_dp is None:
+                    logger.warning(
+                        "Instance %d: problem Pod ranks %s leave no elastic survivor; "
+                        "kill-worker recover unsupported — falling back to reconfigure",
+                        instance_id,
+                        sorted(expanded),
+                    )
+                    try:
+                        self._submit_user_strategy(
+                            metadata,
+                            InstanceReconfigurationStrategy(),
+                            None,
+                            source="user",
+                            strategy_name="InstanceReconfigurationStrategy",
+                        )
+                    except RuntimeError:
+                        in_progress += 1
+                        continue
+                    results.append(
+                        {
+                            "instance_id": instance_id,
+                            "action": "reconfigure",
+                            "reason": "problem_pod_cut_leaves_no_survivor",
+                            "expanded_dp_ranks": sorted(expanded),
+                            "phase": phase,
+                        }
+                    )
+                    continue
+                if to_remove and target_dp is not None:
+                    item = self._try_kill_problem_pod_workers(
+                        instance_id,
+                        metadata,
+                        original,
+                        expanded,
+                        target_dp,
+                        phase=phase,
+                        seed=seed,
+                        to_remove=to_remove,
+                    )
+                    if item is None:
+                        in_progress += 1
+                    else:
+                        results.append(item)
+                    continue
+                # Problem pods already empty shells: recycle + wait for join/warmup.
+                # transition/submit stay outside metadata.lock; see _accept_empty_shell_scale_up.
+                item = self._accept_empty_shell_scale_up(
+                    instance_id,
+                    metadata,
+                    instance,
+                    strategy,
+                    original,
+                    dead,
+                    phase,
+                )
+                if item is None:
+                    in_progress += 1
+                    continue
+                results.append(item)
+                continue
+
+            with self.lock:
+                metadata = self.instances.get(instance_id)
+            if metadata is None:
+                continue
+            with metadata.lock:
+                faulted = metadata.fault_level != FaultLevel.HEALTHY
+            context = self._build_scale_down_context(instance_id)
+            ranks = set(context.pending_removed_ranks)
+            if not faulted and not ranks and not context.engine_fault_observed and not context.hardware_fault_observed:
+                continue
+            instance = InstanceManager().get_instance(instance_id)
+            if instance is None:
+                continue
+            scale_down = bool(ranks) and TopologyResolver.can_stop_all_problem_pods(instance, ranks)
+            if scale_down:
+                strategy = DpScaleDownStrategy()
+                strategy_context = ScaleDownContext(
+                    pending_removed_ranks=tuple(sorted(ranks)),
+                    source="user",
+                    fallback_strategy="InstanceReconfigurationStrategy",
+                    fault_keys=context.fault_keys,
+                    collection_complete=True,
+                    engine_fault_observed=True,
+                    hardware_fault_observed=context.hardware_fault_observed,
+                )
+                action = "scale_down"
+                strategy_name = "DpScaleDownStrategy"
+            elif not ranks:
+                # L1 hardware noise / empty evidence must never trigger whole-instance
+                # restart from user recover.
+                logger.info(
+                    "Instance %d: user recover skipped — no removable ranks "
+                    "(faulted=%s, avoid reconfigure on empty evidence)",
+                    instance_id,
+                    faulted,
+                )
+                continue
+            else:
+                strategy = InstanceReconfigurationStrategy()
+                strategy_context = None
+                action = "reconfigure"
+                strategy_name = "InstanceReconfigurationStrategy"
+            try:
+                self._submit_user_strategy(
+                    metadata,
+                    strategy,
+                    strategy_context,
+                    source="user",
+                    strategy_name=strategy_name,
+                )
+            except RuntimeError:
+                in_progress += 1
+                continue
+            logger.info(
+                "Instance %d: user recovery action=%s ranks=%s",
+                instance_id,
+                action,
+                sorted(ranks),
+            )
+            runtime = get_ft_runtime_store().get(instance_id) or {
+                "instance_id": instance_id,
+                "phase": FtPhase.DECIDING.value if scale_down else FtPhase.RECONFIGURING.value,
+            }
+            results.append({**runtime, "action": action, "removed_dp_ranks": sorted(ranks)})
+        if results:
+            return results
+        if in_progress:
+            raise RuntimeError("recovery already in progress")
+        raise LookupError("no faulted instance to recover")
+
+    def _submit_user_strategy(
+        self,
+        metadata: InstanceMetadata,
+        strategy: Any,
+        context: Any,
+        *,
+        source: str,
+        strategy_name: str,
+    ) -> None:
+        with metadata.lock:
+            if self._recovery_round_busy(metadata.instance_id, metadata):
+                raise RuntimeError("recovery already in progress")
+            strategy.bind_config(self.config)
+            if context is not None:
+                strategy.bind_context(context)
+            future = self.executor.submit(strategy.execute, metadata.instance_id)
+            future.add_done_callback(self._on_strategy_finished)
+            metadata.strategy = strategy
+            metadata.strategy_future = future
+            metadata.strategy_fault_level = FaultLevel.L2
+            metadata.prev_strategy_failed = False
+            metadata.recovery_plan_source = source
+            metadata.recovery_plan_strategy = strategy_name
+            metadata.recovery_plan_fallback = "InstanceReconfigurationStrategy"
 
     def _on_strategy_finished(self, _future: concurrent.futures.Future) -> None:
         """Wake the strategy center as soon as an asynchronous strategy returns."""

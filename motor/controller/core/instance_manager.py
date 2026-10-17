@@ -29,7 +29,6 @@ from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.config.controller import ControllerConfig
 from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient
 from motor.controller.core import Observer, ObserverEvent
-from motor.controller.core.event_pusher import EventPusher
 from motor.controller.fault_tolerance.dp_scale_down import (
     committed_dp_ranks,
     partial_loss_policy,
@@ -48,6 +47,14 @@ _rl = RateLimitedLogger(logger)
 HEARTBEAT_HANDLER_SUCCESS = 200
 HEARTBEAT_HANDLER_ERROR = 500
 HEARTBEAT_HANDLER_RE_REGISTER = 503
+
+
+def _is_event_pusher(observer: object) -> bool:
+    """Match EventPusher without importing it (avoids event_pusher ↔ overlay ↔ here)."""
+    if type(observer).__name__ == "EventPusher":
+        return True
+    spec = getattr(observer, "_spec_class", None)
+    return getattr(spec, "__name__", None) == "EventPusher"
 
 
 class InstanceManager(ThreadSafeSingleton):
@@ -248,6 +255,23 @@ class InstanceManager(ThreadSafeSingleton):
             logger.error("Error persisting instance manager data: %s", e)
             return False
 
+    def persist_topology(self, reason: str) -> bool:
+        """Save the current roster when Pod membership or ranks change.
+
+        A healthy heartbeat keeps an ACTIVE instance ACTIVE. ``_handle_active``
+        returns without persisting, so recovery must save explicitly. Otherwise
+        a restart reloads the previous Pod IPs and ranks.
+        """
+        with self.config_lock:
+            enabled = bool(self.etcd_config.enable_etcd_persistence)
+        if not enabled:
+            return True
+        logger.info("Persisting instance roster after %s", reason)
+        if self.persist_data():
+            return True
+        logger.error("Failed to persist instance roster after %s", reason)
+        return False
+
     def restore_data(self) -> bool:
         """Restore instance manager data from ETCD with version control and validation"""
         try:
@@ -313,7 +337,7 @@ class InstanceManager(ThreadSafeSingleton):
             # Notify Coordinator that Controller just restarted,
             # it should refresh all instance status.
             for observer in self.observers:
-                if isinstance(observer, EventPusher):
+                if _is_event_pusher(observer):
                     observer.push_event(EventType.SET)
                     break
 

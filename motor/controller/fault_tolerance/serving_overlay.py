@@ -9,7 +9,9 @@
 # See the Mulan PSL v2 for more details.
 """Coordinator serving view for instances under fault tolerance."""
 
-from motor.common.resources import EventType, InsEventMsg, Instance, ReadOnlyInstance
+import threading
+
+from motor.common.resources import EventType, InsEventMsg, InsStatus, Instance, ReadOnlyInstance
 from motor.controller.api_client.coordinator_api_client import CoordinatorApiClient
 from motor.controller.fault_tolerance.dp_scale_down import FtPhase, get_ft_runtime_store
 
@@ -24,6 +26,22 @@ class ServingOverlay:
         FtPhase.POST_SCALE_CLEANUP.value,
         FtPhase.RECONFIGURING.value,
     }
+    # Instances withdrawn by user recovery while their FT phase is still NORMAL.
+    # Without this, the full SET the Controller pushes when the emptied
+    # Coordinator turns not-ready re-adds the instance a second later.
+    _held: set[int] = set()
+    # One SET at a time: construct roster → POST → commit NORMAL. Two overlapping
+    # publish_restored() calls would otherwise SET a stale projection of the
+    # instance that just restored.
+    _publish_lock = threading.Lock()
+
+    @classmethod
+    def hold(cls, instance_id: int) -> None:
+        cls._held.add(instance_id)
+
+    @classmethod
+    def release(cls, instance_id: int) -> None:
+        cls._held.discard(instance_id)
 
     @staticmethod
     def _copy(instance: Instance | ReadOnlyInstance) -> Instance:
@@ -55,13 +73,24 @@ class ServingOverlay:
             FtPhase.DISABLED.value,
             FtPhase.NORMAL.value,
         }:
-            return snapshot
+            return None if snapshot.id in cls._held else snapshot
         if runtime["phase"] in cls._WITHDRAWN_PHASES:
             return None
 
         dead_ranks = set(runtime["dead_committed"])
         if runtime["phase"] == FtPhase.SCALED_DOWN_RUNNING.value:
             return cls._without_dead_ranks(snapshot, dead_ranks)
+        if runtime["phase"] == FtPhase.WARMING_UP.value:
+            # Periodic SET, heartbeat-loss SET, and not-ready SET all call
+            # project(). Keep them on the survivor ranks recorded when warmup
+            # started. Heartbeat may already mark a joiner NORMAL before FT is
+            # healthy, so hide by rank id. publish_restored() is the only full
+            # cut-over, and it does not route this instance through project().
+            serving_ranks = {int(rank) for rank in runtime.get("serving_dp_ranks") or []}
+            if serving_ranks:
+                hidden = {endpoint.id for endpoint in snapshot.get_all_endpoints(True)} - serving_ranks
+                return cls._without_dead_ranks(snapshot, hidden)
+            return snapshot
         return snapshot
 
     @classmethod
@@ -108,3 +137,76 @@ class ServingOverlay:
             return False
         event = InsEventMsg(event=EventType.ADD, instances=[projected])
         return CoordinatorApiClient.send_instance_refresh(event)
+
+    @classmethod
+    def _restored_roster(cls, restored: Instance) -> list[Instance]:
+        """Full serving roster for a SET refresh, with ``restored`` overriding its id.
+
+        SET is a diff against the complete roster: any registered instance left
+        out of the list is deleted, so every live instance must be enumerated.
+        Other instances still go through ``project()`` (WARMING_UP stays on
+        survivors) — a second scale-up waits on the cluster lock, so it is
+        not cut over here.
+        """
+        from motor.controller.core.instance_manager import InstanceManager
+
+        roster = {restored.id: restored}
+        for candidate in InstanceManager().get_instances({InsStatus.ACTIVE}):
+            if candidate.id == restored.id:
+                continue
+            projected = cls.project(candidate)
+            if projected is not None:
+                roster[projected.id] = projected
+        return list(roster.values())
+
+    @classmethod
+    def publish_lock(cls) -> threading.Lock:
+        """Shared SET lock for scale-up restore and EventPusher full refresh."""
+        return cls._publish_lock
+
+    @classmethod
+    def publish_restored(cls, instance: Instance | ReadOnlyInstance) -> bool:
+        """Second Coordinator sync: publish full topology after DP scale-up warmup.
+
+        Callers hold the cluster scale-up lock so only one restore round runs.
+        This method still takes ``_publish_lock`` so a periodic SET cannot
+        interleave. After the Coordinator accepts the SET, every restored pod
+        of this instance is on the roster and the phase returns to NORMAL.
+        """
+        store = get_ft_runtime_store()
+        snapshot = cls._copy(instance)
+        runtime = store.get(snapshot.id)
+        if runtime is None or runtime["phase"] != FtPhase.WARMING_UP.value:
+            return False
+        with cls._publish_lock:
+            runtime = store.get(snapshot.id)
+            if runtime is None or runtime["phase"] != FtPhase.WARMING_UP.value:
+                return False
+            # Scale-up grows the endpoint set, which the Coordinator rejects on ADD
+            # as an instance-id conflict. SET carries the whole roster instead.
+            event = InsEventMsg(event=EventType.SET, instances=cls._restored_roster(snapshot))
+            try:
+                published = CoordinatorApiClient.send_instance_refresh(event)
+            except Exception:
+                published = False
+            if not published:
+                store.transition(
+                    snapshot.id,
+                    last_error="ServingOverlay restored publication pending",
+                )
+                return False
+            store.transition(
+                snapshot.id,
+                phase=FtPhase.NORMAL,
+                dead_committed=[],
+                pending_removed_ranks=[],
+                serving_dp_ranks=[],
+                serving_published=True,
+                last_error=None,
+            )
+            return True
+
+
+def complete_dp_scale_up(instance: Instance | ReadOnlyInstance) -> bool:
+    """Entry point for the warmup path to perform the second Coordinator sync."""
+    return ServingOverlay.publish_restored(instance)

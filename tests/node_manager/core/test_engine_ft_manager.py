@@ -508,6 +508,58 @@ def test_poll_failures_then_recover(_report, reporter, endpoints):
     assert reporter._known_statuses[0][0] == "healthy"
 
 
+@patch("motor.node_manager.core.engine_ft_manager.ControllerApiClient.report_software_fault", return_value=True)
+def test_scaling_503_within_grace_is_not_counted(mock_report, reporter, endpoints):
+    """An Elastic EP commit shorter than the grace window never reaches DEAD,
+    and the next successful poll clears the scaling streak.
+    """
+    from motor.common.http.http_client import HttpStatusError
+
+    reporter._config.fault_tolerance_config.enable_dp_scale_up = True
+    ep = endpoints[0]
+    reporter._known_statuses = {}
+    reporter._consecutive_failures = {}
+    scaling = HttpStatusError(503, "http response error 503, The model is currently scaling.")
+
+    with patch.object(reporter, "_query_engine_status", side_effect=scaling):
+        for offset in (0.0, 1.0, 7.0, 29.0):
+            with patch("motor.node_manager.core.engine_ft_manager.time.monotonic", return_value=100.0 + offset):
+                reporter._poll_engine(ep)
+
+    mock_report.assert_not_called()
+    assert reporter._consecutive_failures == {}
+    assert reporter._scaling_since == {0: 100.0}
+
+    with patch.object(reporter, "_query_engine_status", return_value={"id": 0, "status": "healthy"}):
+        reporter._poll_engine(ep)
+    assert reporter._scaling_since == {}
+    assert reporter._consecutive_failures == {0: 0}
+
+
+@patch("motor.node_manager.core.engine_ft_manager.ControllerApiClient.report_software_fault", return_value=True)
+def test_scaling_503_beyond_grace_counts_toward_dead(mock_report, reporter, endpoints):
+    """A commit stuck past the grace window is counted like any poll failure."""
+    from motor.common.http.http_client import HttpStatusError
+
+    reporter._config.fault_tolerance_config.enable_dp_scale_up = True
+    ep = endpoints[0]
+    reporter._known_statuses = {}
+    reporter._consecutive_failures = {}
+    scaling = HttpStatusError(503, "http response error 503, The model is currently scaling.")
+
+    with patch.object(reporter, "_query_engine_status", side_effect=scaling):
+        for offset in (0.0, 30.0, 31.0):
+            with patch("motor.node_manager.core.engine_ft_manager.time.monotonic", return_value=100.0 + offset):
+                reporter._poll_engine(ep)
+        mock_report.assert_not_called()
+        with patch("motor.node_manager.core.engine_ft_manager.time.monotonic", return_value=132.0):
+            reporter._poll_engine(ep)
+
+    assert reporter._consecutive_failures == {0: 3}
+    mock_report.assert_called_once()
+    assert reporter._known_statuses[0][0] == "dead"
+
+
 def test_main_loop_polls_all_endpoints_then_stops(reporter, endpoints):
     """The loop polls every endpoint once per tick and exits on stop_event."""
     config = reporter._config
@@ -563,8 +615,12 @@ def test_poll_engine_malformed_payload_does_not_raise(reporter, endpoints):
             reporter._poll_engine(ep)  # must not raise
 
 
-def test_process_engine_status_rejects_mismatched_global_rank(reporter):
-    """A response for another global DP rank must not be attributed locally."""
+def test_process_engine_status_rejects_rank_mismatch(reporter):
+    with pytest.raises(ValueError, match="rank mismatch"):
+        reporter._process_engine_status(1, {"id": 0, "status": "healthy"})
+    assert reporter._known_statuses == {}
+
+    reporter._config.fault_tolerance_config.enable_dp_scale_up = True
     with pytest.raises(ValueError, match="rank mismatch"):
         reporter._process_engine_status(1, {"id": 0, "status": "healthy"})
     assert reporter._known_statuses == {}

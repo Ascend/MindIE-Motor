@@ -144,8 +144,9 @@ class FaultToleranceConfig:
     # Engine-native capabilities remain in each engine config and are checked
     # independently by FtGate; enabling scale-down never enables them implicitly.
     enable_dp_scale_down: bool = False
-    # Provisional name: allow Pod recycling only when scale-up can replenish
-    # the capacity. DP ranks may still be masked when this switch is disabled.
+    # User switch for elastic scale-up after DP scale-down. The recover API
+    # rejects the call when this is false. When true, vLLM is launched with
+    # VLLM_ASCEND_ENABLE_MOE_DISTRIBUTE_V3=1.
     enable_dp_scale_up: bool = False
     dp_scale_down_config: DpScaleDownConfig = field(default_factory=DpScaleDownConfig)
     # Controller-owned window for collecting one DP domain's engine fault

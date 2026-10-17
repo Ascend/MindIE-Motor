@@ -31,15 +31,17 @@ def client():
     return TestClient(app)
 
 
-def _ft_config(enabled=True):
+def _ft_config(enabled=True, scale_up=False):
     return SimpleNamespace(
         fault_tolerance_config=SimpleNamespace(
             enable_dp_scale_down_proxy=enabled,
+            enable_dp_scale_up=scale_up,
             poll_timeout_sec=3,
             engine_restart_freeze_sec=30,
         ),
         basic_config=SimpleNamespace(
             parallel_config=SimpleNamespace(dp_master_port=29500),
+            coord_store_port=29510,
         ),
     )
 
@@ -102,11 +104,49 @@ def test_engine_ft_apply_guard_and_finalize_routes(client):
         )
 
     assert apply_response.status_code == 200
-    apply.assert_called_once_with([0], "scale_down", {"removed_dp_ranks": [1]}, "request", 3, 29500)
+    apply.assert_called_once_with([0], "scale_down", {"removed_dp_ranks": [1]}, "request", 3, 29500, None)
     assert guard_response.status_code == 200
     guard.assert_called_once_with("request", 45)
     assert finalize_response.json() == {"status": "committed"}
     finalize.assert_called_once_with("request", [], True, 2)
+
+
+def test_engine_ft_apply_sends_coord_store_port_when_scale_up_enabled(client):
+    with patch("motor.node_manager.api_server.node_manager_api.Daemon") as daemon:
+        daemon.return_value.config = _ft_config(scale_up=True)
+        apply = daemon.return_value.engine_ft_manager.apply
+        response = client.post(
+            "/node-manager/fault-tolerance/apply",
+            json={
+                "endpoint_ids": [0],
+                "instruction": "scale_down",
+                "params": {"removed_dp_ranks": [1]},
+                "request_id": "request",
+            },
+        )
+
+    assert response.status_code == 200
+    apply.assert_called_once_with([0], "scale_down", {"removed_dp_ranks": [1]}, "request", 3, 29500, 29510)
+
+
+def test_engine_ft_finalize_commit_allows_empty_retired_ranks(client):
+    """Survivor-only Pods finalize with no local ranks to retire."""
+    with patch("motor.node_manager.api_server.node_manager_api.Daemon") as daemon:
+        daemon.return_value.config = _ft_config()
+        finalize = daemon.return_value.engine_ft_manager.finalize
+        response = client.post(
+            "/node-manager/fault-tolerance/finalize",
+            json={
+                "request_id": "request",
+                "retired_endpoint_ids": [],
+                "commit": True,
+                "dp_master_rank": 0,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "committed"}
+    finalize.assert_called_once_with("request", [], True, 0)
 
 
 @pytest.mark.parametrize(

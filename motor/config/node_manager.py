@@ -198,6 +198,10 @@ class BasicConfig:
     device_num: int = 0
     # Parallel configuration
     parallel_config: ParallelConfig = field(default_factory=ParallelConfig)
+    # Port for the frontend coordination store that survivors rebuild when FT
+    # scale-down removes the DP master. Must differ from dp_master_port and stay
+    # below the ephemeral range so random engine ports cannot take it.
+    coord_store_port: int = 29510
     # Multi-endpoints configuration
     enable_multi_endpoints: bool = True
     # Cross-node PCP configuration
@@ -365,6 +369,9 @@ class NodeManagerFaultToleranceConfig:
     # Internal execution gate derived from the Controller-level switches in
     # the shared user_config. It is not a NodeManager user-facing switch.
     enable_dp_scale_down_proxy: bool = False
+    # Copied from Controller fault_tolerance_config.enable_dp_scale_up.
+    # When true, vLLM launch sets VLLM_ASCEND_ENABLE_MOE_DISTRIBUTE_V3=1.
+    enable_dp_scale_up: bool = False
     #: Whether an external supervisor (Kubernetes, Docker restart policy, etc.)
     #: restarts this NodeManager container after exit. When false, suicide and
     #: container-restart escalation are suppressed so the management plane
@@ -641,6 +648,7 @@ class NodeManagerConfig:
             node_manager_ft = {}
             config_data[FAULT_TOLERANCE_CONFIG_KEY] = node_manager_ft
         node_manager_ft["enable_dp_scale_down_proxy"] = proxy_enabled
+        node_manager_ft["enable_dp_scale_up"] = controller_ft.get("enable_dp_scale_up", False) in (True, 1)
 
         if BASIC_CONFIG_KEY not in config_data:
             config_data[BASIC_CONFIG_KEY] = {}

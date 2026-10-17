@@ -8,6 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import os
 import threading
 from types import SimpleNamespace
 from unittest import mock
@@ -120,6 +121,32 @@ def _log_level_warning_emitted(mock_warning) -> bool:
     return any(
         "ASCEND_GLOBAL_LOG_LEVEL" in str(call.args[0]) if call.args else False for call in mock_warning.call_args_list
     )
+
+
+def test_pull_sets_moe_distribute_v3_when_dp_scale_up_is_enabled():
+    service = _native_engine_service(engine_type="vllm")
+    service.enable_dp_scale_up = True
+    service.backend.prepare.return_value = _make_launch_spec(_fake_deploy_config(enable_virtual_inference=False))
+    service.supervisor.start.return_value = True
+
+    service.pull(PDRole.ROLE_U, [_make_endpoint(0)], instance_id=1, master_dp_ip="127.0.0.1")
+
+    environment = service.backend.prepare.call_args.args[0].environment
+    assert environment["VLLM_ASCEND_ENABLE_MOE_DISTRIBUTE_V3"] == "1"
+
+
+def test_pull_leaves_moe_distribute_v3_unset_when_dp_scale_up_is_disabled():
+    service = _native_engine_service(engine_type="vllm")
+    service.enable_dp_scale_up = False
+    service.backend.prepare.return_value = _make_launch_spec(_fake_deploy_config(enable_virtual_inference=False))
+    service.supervisor.start.return_value = True
+
+    with patch.dict("os.environ", {}, clear=False):
+        os.environ.pop("VLLM_ASCEND_ENABLE_MOE_DISTRIBUTE_V3", None)
+        service.pull(PDRole.ROLE_U, [_make_endpoint(0)], instance_id=1, master_dp_ip="127.0.0.1")
+
+    environment = service.backend.prepare.call_args.args[0].environment
+    assert "VLLM_ASCEND_ENABLE_MOE_DISTRIBUTE_V3" not in environment
 
 
 def test_pull_forwards_snapshot_metadata_to_launch_context():

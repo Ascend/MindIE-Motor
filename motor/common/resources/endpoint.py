@@ -70,6 +70,10 @@ class Endpoint(BaseModel):
     hb_timestamp: float = Field(default=0, description="Last heartbeat timestamp")
     workload: Workload = Field(default_factory=Workload, description="Current workload of the endpoint")
     headless: bool = Field(default=False, description="Whether this endpoint runs in headless mode (PCP slave node)")
+    engine_rank: int | None = Field(
+        default=None,
+        description="Unused. Kept so older payloads still parse; Motor stores only id",
+    )
 
     def __init__(  # pylint: disable=redefined-builtin
         self,
@@ -82,6 +86,7 @@ class Endpoint(BaseModel):
         hb_timestamp: float | None = None,
         workload: Workload | None = None,
         headless: bool = False,
+        engine_rank: int | None = None,
     ) -> None:
         super().__init__(
             id=id,
@@ -93,8 +98,14 @@ class Endpoint(BaseModel):
             hb_timestamp=hb_timestamp if hb_timestamp is not None else time.time(),
             workload=workload if workload is not None else Workload(),
             headless=headless,
+            engine_rank=engine_rank,
         )
         logger.debug("Init endpoint with id:%s ip:%s business_port:%s", id, ip, business_port)
+
+    @property
+    def engine_dp_rank(self) -> int:
+        """The only DP rank Motor stores. It is the engine's public FT id."""
+        return self.id
 
     def add_device(self, device_info: DeviceInfo) -> None:
         if device_info not in self.device_infos:

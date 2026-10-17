@@ -11,6 +11,7 @@
 import asyncio
 import json
 import os
+import shutil
 import signal
 import socket
 import logging
@@ -153,6 +154,9 @@ async def fault_tolerance_apply(request: Request):
         payload.get("request_id", ""),
         config.fault_tolerance_config.poll_timeout_sec,
         config.basic_config.parallel_config.dp_master_port,
+        # Survivors rebuild the coordination store only on the scale-up path.
+        # Ordinary scale-down keeps the previous apply payload.
+        config.basic_config.coord_store_port if config.fault_tolerance_config.enable_dp_scale_up else None,
     )
     return {"status": "accepted"}
 
@@ -192,6 +196,59 @@ async def fault_tolerance_finalize(request: Request):
         dp_master_rank,
     )
     return {"status": "committed" if commit else "aborted"}
+
+
+@app.post("/node-manager/fault-tolerance/kill-workers")
+async def fault_tolerance_kill_workers(request: Request):
+    """SIGKILL local VLLM::Worker processes for Controller user-recover shrink.
+
+    Body: ``{"endpoint_ids": [...]}``. Empty list kills workers for every local
+    endpoint. Does not stop the launcher / API process group.
+    """
+    payload = await _parse_ft_payload(request, "kill-workers")
+    endpoint_ids = _require_int_list(payload, "endpoint_ids", allow_empty=True)
+
+    def _kill() -> dict:
+        daemon = Daemon()
+        if hasattr(daemon, "kill_engine_workers"):
+            return daemon.kill_engine_workers(endpoint_ids)
+        # Fallback when Daemon was loaded before kill_workers landed: pkill Workers.
+        import subprocess
+
+        killed: list[int] = []
+        pgrep = shutil.which("pgrep")
+        if pgrep is None:
+            logger.warning("pgrep unavailable; kill-workers fallback skipped")
+            return {"endpoint_ids": list(endpoint_ids), "killed_pids": killed}
+        try:
+            out = subprocess.check_output([pgrep, "-af", "VLLM::Worker"], text=True)
+        except subprocess.CalledProcessError:
+            out = ""
+        for line in out.splitlines():
+            parts = line.strip().split(None, 1)
+            if not parts:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed.append(pid)
+            except ProcessLookupError:
+                pass
+        logger.warning("Daemon.kill_engine_workers missing; pkill fallback killed=%s", killed)
+        return {"endpoint_ids": list(endpoint_ids), "killed_pids": killed}
+
+    try:
+        result = await asyncio.to_thread(_kill)
+    except Exception as err:
+        logger.error("Failed to kill engine workers: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Engine FT kill-workers failed",
+        ) from err
+    return result
 
 
 @app.post("/node-manager/start")

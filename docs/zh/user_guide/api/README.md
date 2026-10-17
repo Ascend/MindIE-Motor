@@ -41,6 +41,7 @@ MindIE Motor提供下列管理接口：
 - [实例查询接口](./management_interfaces.md#实例查询接口)：`/instances`
 - [实例刷新接口](./management_interfaces.md#实例刷新接口)：`/instances/refresh`
 - [精度告警状态清理接口](./management_interfaces.md#精度告警状态清理接口)：`/precision/alarm_cleared`
+- [DP 扩容恢复接口](./management_interfaces.md#dp-扩容恢复接口)：`POST /controller/fault_tolerance/recover`
 - [根路径服务信息接口](./management_interfaces.md#根路径服务信息接口)：`/`
 - [健康状态查询接口](./management_interfaces.md#健康状态查询接口)：`/health`
 
@@ -49,6 +50,7 @@ MindIE Motor提供下列管理接口：
 > - 除实例查询外，管理接口仅限Kubernetes集群内使用，不提供给集群外使用。
 > - `/instances` 同时保留在内部管理端口 `1026`，并通过 Coordinator Observability 端口 `1027`（K8s nodePort `31017`）对外提供只读查询。
 > - `/health` 与 `/metrics` 同挂 Coordinator Observability 端口（`coordinator_obs_port`，默认 `1027`），**不在**管理接口端口（`coordinator_api_mgmt_port`，默认 `1026`）上，详见[管理接口](./management_interfaces.md#健康状态查询接口)。
+> - `POST /controller/fault_tolerance/recover` 挂在 Controller API 端口（`controller_api_port`，默认 `1026`）。扩容开关 `enable_dp_scale_up` 必须与缩容开关 `enable_dp_scale_down` 同时开启，该接口才可用。
 
 ### 管理接口的IP/端口与配置
 

@@ -17,6 +17,8 @@
 7. Strategy Center Processing
 """
 
+import concurrent.futures
+import threading
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -2120,6 +2122,65 @@ def test_failed_strategy_uses_next_fallback(
         assert metadata.strategy._controller_config is manager.config
 
 
+def test_healthy_scale_down_failure_reconfigures_only_when_scale_up_enabled(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.HEALTHY
+    metadata.fault_code = 0
+    metadata.prev_strategy_failed = True
+    metadata.prev_strategy_name = "DpScaleDownStrategy"
+    metadata.strategy = None
+    get_ft_runtime_store().transition(1, phase=FtPhase.RECONFIGURING)
+    manager.config.fault_tolerance_config.enable_dp_scale_up = False
+
+    with patch.object(manager.executor, "submit") as submit:
+        manager._process_instance_strategy(1)
+    submit.assert_not_called()
+    assert metadata.strategy is None
+
+    manager.config.fault_tolerance_config.enable_dp_scale_up = True
+    with patch.object(manager.executor, "submit") as submit:
+        manager._process_instance_strategy(1)
+    submit.assert_called_once()
+    assert isinstance(metadata.strategy, InstanceReconfigurationStrategy)
+
+
+def test_restore_warming_up_reconfigures_like_interrupted_scale_down(fault_manager):
+    from motor.common.etcd.persistent_state import PersistentState
+
+    manager = fault_manager
+    manager.config.fault_tolerance_config.enable_dp_scale_up = True
+    fault_data = {
+        "nodes": {},
+        "instances": {"1": _etcd_instance_entry(instance_id=1, fault_level=FaultLevel.HEALTHY, fault_code=0x0)},
+        "ft_runtime": {
+            "1": {
+                "phase": FtPhase.WARMING_UP.value,
+                "original_dp_ranks": [0, 1],
+                "dead_committed": [],
+            }
+        },
+    }
+    persistent_state = PersistentState(data=fault_data, version=1, timestamp=1234567890.0, checksum="")
+    persistent_state.checksum = persistent_state.calculate_checksum()
+
+    with patch.object(manager.etcd_client, "restore_data", return_value={"state": persistent_state}):
+        assert manager.restore_data() is True
+
+    metadata = manager.instances[1]
+    runtime = get_ft_runtime_store().get(1)
+    assert runtime["phase"] == FtPhase.RECONFIGURING.value
+    assert runtime["last_error"] == "controller restarted during DP scale-up; original fallback required"
+    assert metadata.prev_strategy_failed is True
+    assert metadata.prev_strategy_name == "DpScaleDownStrategy"
+    assert metadata.prev_strategy_fallback == "InstanceReconfigurationStrategy"
+
+    with patch.object(manager.executor, "submit") as submit:
+        manager._process_instance_strategy(1)
+    submit.assert_called_once()
+    assert isinstance(metadata.strategy, InstanceReconfigurationStrategy)
+
+
 def test_late_hardware_fault_escalates_failed_reconfiguration_to_scale_p2d(fault_manager_with_instances):
     manager = fault_manager_with_instances
     metadata = manager.instances[1]
@@ -3234,3 +3295,165 @@ def test_linkdown_warning_is_rate_limited(caplog, fault_manager, hardware_type, 
     assert bool(node.hardware_fault_infos) is stored
     assert all(fragment in caplog.text for fragment in fragments)
     assert caplog.text.count(count_message) == 1
+
+
+def _kill_recover_kwargs(instance_id: int, metadata: InstanceMetadata) -> dict:
+    return {
+        "instance_id": instance_id,
+        "metadata": metadata,
+        "original": [0, 1],
+        "expanded": {1},
+        "target_dp": 1,
+        "phase": FtPhase.SCALED_DOWN_RUNNING.value,
+        "seed": {1},
+        "to_remove": [1],
+    }
+
+
+def _done_future() -> concurrent.futures.Future:
+    future: concurrent.futures.Future = concurrent.futures.Future()
+    future.set_result(True)
+    return future
+
+
+def test_kill_recover_reserves_future_before_submit(fault_manager):
+    """A re-entrant start_user_recovery must see the reservation and submit once."""
+    instance_id = 7
+    metadata = InstanceMetadata(instance_id=instance_id)
+    fault_manager.instances[instance_id] = metadata
+    submitted: dict = {}
+
+    def submit(fn, *args, **kwargs):
+        second = fault_manager._try_kill_problem_pod_workers(**_kill_recover_kwargs(instance_id, metadata))
+        assert second is None
+        future = _done_future()
+        submitted["fn"] = fn
+        submitted["future"] = future
+        submitted["calls"] = submitted.get("calls", 0) + 1
+        return future
+
+    fault_manager.executor.submit = submit
+    result = fault_manager._try_kill_problem_pod_workers(**_kill_recover_kwargs(instance_id, metadata))
+
+    assert result is not None
+    assert result["accepted"] is True
+    assert result["action"] == "kill_problem_pod_workers"
+    assert submitted["calls"] == 1
+    assert submitted["fn"].__name__ == "run_problem_pod_recover"
+    assert fault_manager._problem_pod_recover_futures[instance_id] is submitted["future"]
+    assert metadata.strategy is None
+
+
+def _seed_empty_shell_runtime(instance_id: int) -> None:
+    get_ft_runtime_store().transition(
+        instance_id,
+        phase=FtPhase.SCALED_DOWN_RUNNING,
+        dead_committed=[1],
+        original_dp_ranks=[0, 1],
+    )
+
+
+class _TrackingLock:
+    def __init__(self):
+        self._lock = threading.RLock()
+        self.held = 0
+
+    def __enter__(self):
+        self._lock.acquire()  # pylint: disable=consider-using-with
+        self.held += 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.held -= 1
+        return self._lock.__exit__(exc_type, exc, tb)
+
+
+def test_empty_shell_scale_up_reserves_strategy_before_transition(fault_manager):
+    """transition and submit run without metadata.lock; a re-entrant recover sees the reservation."""
+    instance_id = 5
+    metadata = InstanceMetadata(instance_id=instance_id)
+    metadata.lock = _TrackingLock()
+    fault_manager.instances[instance_id] = metadata
+    _seed_empty_shell_runtime(instance_id)
+    store = get_ft_runtime_store()
+    real_transition = store.transition
+    observed = {"held": None}
+
+    def transition(*args, **kwargs):
+        observed["held"] = metadata.lock.held
+        return real_transition(*args, **kwargs)
+
+    submitted: dict = {}
+
+    def submit(fn, *args, **kwargs):
+        with pytest.raises(RuntimeError, match="recovery already in progress"):
+            fault_manager.start_user_recovery()
+        future = _done_future()
+        submitted["fn"] = fn
+        submitted["future"] = future
+        submitted["calls"] = submitted.get("calls", 0) + 1
+        return future
+
+    fault_manager.executor.submit = submit
+    instance_manager = Mock()
+    instance_manager.get_instance.return_value = Mock()
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager", return_value=instance_manager),
+        patch(
+            "motor.controller.fault_tolerance.fault_manager.TopologyResolver.expand_problem_pod_ranks",
+            side_effect=ValueError("topology unavailable"),
+        ),
+        patch(
+            "motor.controller.fault_tolerance.fault_manager.TopologyResolver.recyclable_pods",
+            return_value=["192.0.2.2"],
+        ),
+        patch.object(store, "transition", side_effect=transition),
+    ):
+        result = fault_manager.start_user_recovery()
+
+    assert observed["held"] == 0
+    assert submitted["calls"] == 1
+    assert submitted["fn"].__name__ == "_recycle_empty_shells_then_scale_up"
+    assert result == [
+        {
+            "instance_id": instance_id,
+            "action": "scale_up",
+            "original_dp_ranks": [0, 1],
+            "phase": FtPhase.SCALED_DOWN_RUNNING.value,
+        }
+    ]
+    assert metadata.strategy_future is submitted["future"]
+    assert metadata.recovery_plan_source == "user"
+    assert metadata.recovery_plan_strategy == "DpScaleDownStrategy"
+
+
+def test_empty_shell_scale_up_clears_reservation_when_submit_fails(fault_manager):
+    instance_id = 6
+    metadata = InstanceMetadata(instance_id=instance_id)
+    metadata.recovery_plan_source = "kept"
+    fault_manager.instances[instance_id] = metadata
+    _seed_empty_shell_runtime(instance_id)
+
+    def submit(*_args, **_kwargs):
+        raise RuntimeError("submit failed")
+
+    fault_manager.executor.submit = submit
+    instance_manager = Mock()
+    instance_manager.get_instance.return_value = Mock()
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager", return_value=instance_manager),
+        patch(
+            "motor.controller.fault_tolerance.fault_manager.TopologyResolver.expand_problem_pod_ranks",
+            side_effect=ValueError("topology unavailable"),
+        ),
+        patch(
+            "motor.controller.fault_tolerance.fault_manager.TopologyResolver.recyclable_pods",
+            return_value=["192.0.2.2"],
+        ),
+        pytest.raises(RuntimeError, match="submit failed"),
+    ):
+        fault_manager.start_user_recovery()
+
+    assert metadata.strategy is None
+    assert metadata.strategy_future is None
+    assert metadata.recovery_plan_source == "kept"

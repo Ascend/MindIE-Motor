@@ -100,6 +100,7 @@ class ControllerAPI:
         self.enable_observability_api = config.observability_config.observability_enable
         self.enable_fault_tolerance = config.fault_tolerance_config.enable_fault_tolerance
         self.enable_dp_scale_down = config.fault_tolerance_config.enable_dp_scale_down
+        self.enable_dp_scale_up = config.fault_tolerance_config.enable_dp_scale_up
         self.observability_api_host = host if host is not None else config.api_config.controller_api_host
         self.observability_api_port = config.api_config.observability_api_port
         self.observability_tls_config = config.observability_tls_config
@@ -175,6 +176,7 @@ class ControllerAPI:
             self.enable_observability_api = config.observability_config.observability_enable
             self.enable_fault_tolerance = config.fault_tolerance_config.enable_fault_tolerance
             self.enable_dp_scale_down = config.fault_tolerance_config.enable_dp_scale_down
+            self.enable_dp_scale_up = config.fault_tolerance_config.enable_dp_scale_up
             self.precision_auto_recovery_enabled = config.precision_auto_recovery_enabled
 
             logger.info("ControllerAPI configuration updated (runtime changes may require restart)")
@@ -247,6 +249,7 @@ class ControllerAPI:
             "/controller/reregister": logging.INFO,
             "/controller/terminate_instance": logging.INFO,
             "/controller/report_software_fault": logging.INFO,
+            "/controller/fault_tolerance/recover": logging.INFO,
             "/observability/add_alarm": logging.INFO,
             "/startup": logging.ERROR,
             "/readiness": logging.ERROR,
@@ -282,6 +285,11 @@ class ControllerAPI:
             "/controller/fault_tolerance/status",
             self._get_fault_tolerance_status,
             methods=get_methods,
+        )
+        app.add_api_route(
+            "/controller/fault_tolerance/recover",
+            self._recover_dp_scale_down,
+            methods=post_methods,
         )
 
         return app
@@ -325,6 +333,51 @@ class ControllerAPI:
                 ),
             ).to_dict()
         return format_success_response(data=runtime)
+
+    def _require_dp_scale_down(self) -> None:
+        if not self.enable_fault_tolerance or not self.enable_dp_scale_down:
+            raise HTTPException(status_code=400, detail="DP scale-down is not enabled")
+
+    def _require_dp_scale_up(self) -> None:
+        self._require_dp_scale_down()
+        if not self.enable_dp_scale_up:
+            raise HTTPException(status_code=400, detail="DP scale-up is not enabled")
+
+    async def _recover_dp_scale_down(self) -> dict:
+        """User-triggered recovery for an instance that has already scaled down.
+
+        No separate scale-up API. Controller kills any remaining VLLM::Worker
+        processes on the problem Pod, waits for FT scale-down, recycles the
+        empty shell, then expands via ``/scale_elastic_ep``. A healthy instance
+        is not cut from this API. This endpoint takes no parameters.
+        """
+        self._require_dp_scale_up()
+        try:
+            results = FaultManager().start_user_recovery()
+        except LookupError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        except Exception as e:
+            logger.error("Failed to start user DP recovery: %s", e)
+            return raise_internal_error(f"Internal server error: {str(e)}")
+        if not results:
+            raise HTTPException(
+                status_code=404,
+                detail="no recoverable instance (need scaled-down state)",
+            )
+        if all(item.get("action") == "reconfigure" for item in results):
+            message = "whole-instance restart accepted"
+        elif any(item.get("action") == "reconfigure" for item in results):
+            message = "recovery accepted; some instances restart, others kill problem-pod workers"
+        elif any(item.get("action") == "kill_problem_pod_workers" for item in results):
+            message = (
+                "problem-pod worker kill accepted; waiting for native FT scale-down, "
+                "then empty-shell recycle and elastic scale-up"
+            )
+        else:
+            message = "scale-up accepted via /scale_elastic_ep after empty-shell recycle"
+        return format_success_response(data={"instances": results}, message=message)
 
     async def _heartbeat(self, request: Request):
         body = await request.json()

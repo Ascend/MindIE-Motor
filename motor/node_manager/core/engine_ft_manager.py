@@ -24,6 +24,7 @@ from motor.common.http.engine_ft_client import (
     EngineFtEndpointUnsupported,
     query_engine_ft_entry,
 )
+from motor.common.http.http_client import HttpStatusError
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.common.resources.endpoint import Endpoint
@@ -44,6 +45,10 @@ _REPORT_REJECT_BACKOFF_SEC = 60.0
 
 # Maximum lease accepted while an FT transaction freezes suicide handling.
 MAX_GUARD_LEASE_SEC = 300.0
+# vLLM ScalingMiddleware text while an Elastic EP scale is committing.
+_SCALING_BUSY_MARKER = "currently scaling"
+# Those HTTP 503 answers are not poll failures until they have lasted this long.
+_SCALING_BUSY_GRACE_SEC = 30.0
 
 
 class EngineFtManager:
@@ -55,6 +60,8 @@ class EngineFtManager:
     must use the endpoint's global DP rank. Status is polled in a background
     thread every ``poll_interval_sec``. An engine that cannot be reached
     after readiness is reported dead after ``max_poll_failures`` attempts.
+    HTTP 503 "currently scaling" (Elastic EP scale commit) is not counted
+    until it has lasted ``_SCALING_BUSY_GRACE_SEC``.
 
     Reporting is enabled solely by the current role's normalized engine FT
     capability (``basic_config.ft_capability.enabled``), derived from the
@@ -87,6 +94,9 @@ class EngineFtManager:
         # loop does not re-report statuses that were already delivered.
         self._known_statuses: dict[int, tuple[Any, ...]] = {}
         self._consecutive_failures: dict[int, int] = {}
+        # Monotonic time of the first "currently scaling" 503 in the current
+        # streak; cleared by any successful poll.
+        self._scaling_since: dict[int, float] = {}
         # A Controller rejection is not delivery, so it must not be added to
         # _known_statuses. Keep a short signature-scoped cooldown instead to
         # avoid polling the Controller once per tick for a permanent rejection.
@@ -180,6 +190,7 @@ class EngineFtManager:
             for endpoint_id in endpoint_ids:
                 self._known_statuses.pop(endpoint_id, None)
                 self._consecutive_failures.pop(endpoint_id, None)
+                self._scaling_since.pop(endpoint_id, None)
 
     def validate_retire_endpoints(self, endpoint_ids: list[int]) -> None:
         """Validate ranks before Daemon commits retirement to any subsystem."""
@@ -220,7 +231,10 @@ class EngineFtManager:
 
         def refresh(endpoint: Endpoint) -> tuple[int, dict[str, Any]]:
             try:
-                entry = query_engine_ft_entry(endpoint, timeout)
+                entry = query_engine_ft_entry(
+                    endpoint,
+                    timeout,
+                )
             except Exception as error:
                 entry = {
                     "id": endpoint.id,
@@ -243,6 +257,7 @@ class EngineFtManager:
         request_id: str,
         timeout: float,
         dp_store_port: int,
+        coord_store_port: int | None = None,
     ) -> None:
         if instruction not in {"retry", "scale_down"}:
             raise ValueError("unsupported engine FT instruction: %s" % instruction)
@@ -260,6 +275,8 @@ class EngineFtManager:
                     "resolved dp_store_port exceeds 65535: base=%d, dp_master_rank=%d" % (dp_store_port, dp_master_rank)
                 )
             engine_params["dp_store_port"] = resolved_dp_store_port
+            if coord_store_port is not None:
+                engine_params.setdefault("coord_store_port", coord_store_port)
             logger.info(
                 "Resolved DP scale-down store endpoint: master_rank=%d, address=%s:%d",
                 dp_master_rank,
@@ -295,6 +312,10 @@ class EngineFtManager:
         with self._config_lock:
             self._retired_endpoint_ids.clear()
 
+    def get_endpoints(self) -> list[Endpoint]:
+        with self._config_lock:
+            return list(self._endpoints)
+
     def _is_retired(self, endpoint_id: int) -> bool:
         with self._config_lock:
             return endpoint_id in self._retired_endpoint_ids
@@ -302,6 +323,11 @@ class EngineFtManager:
     def _poll_interval_sec(self) -> float:
         with self._config_lock:
             return self._config.fault_tolerance_config.poll_interval_sec
+
+    def _elastic_scale_up_enabled(self) -> bool:
+        """True while Controller asked this NodeManager to recover via Elastic EP."""
+        with self._config_lock:
+            return bool(self._config.fault_tolerance_config.enable_dp_scale_up)
 
     def _query_engine_status(self, ep: Endpoint) -> dict:
         """GET the FT status entry matching this endpoint's global DP rank."""
@@ -329,6 +355,7 @@ class EngineFtManager:
         self._pause_event.clear()
         self._known_statuses.clear()
         self._consecutive_failures.clear()
+        self._scaling_since.clear()
         self._rejected_statuses.clear()
         # Re-pulled engines may run a new image — retry the FT API once.
         self._clear_unsupported_endpoints()
@@ -398,19 +425,22 @@ class EngineFtManager:
                     count,
                 )
             return
+        except HttpStatusError as e:
+            if self._elastic_scale_up_enabled() and e.status_code == 503 and _SCALING_BUSY_MARKER in str(e).lower():
+                now = time.monotonic()
+                since = self._scaling_since.setdefault(ep.id, now)
+                if now - since < _SCALING_BUSY_GRACE_SEC:
+                    logger.debug(
+                        "Engine %d is committing an Elastic EP scale (%.1fs); not counted",
+                        ep.id,
+                        now - since,
+                    )
+                    return
+            self._record_poll_failure(ep, e)
+            return
         except Exception as e:
-            # A poll failure must never kill the polling thread. Require the
-            # configured consecutive threshold before classifying it as DEAD.
-            failures = self._consecutive_failures.get(ep.id, 0) + 1
-            self._consecutive_failures[ep.id] = failures
-            _rl.error_window(
-                f"node_manager.engine_ft_manager.poll.{ep.id}",
-                f"Failed to poll engine {ep.id} FT status: {e}",
-            )
-            with self._config_lock:
-                max_failures = self._config.fault_tolerance_config.max_poll_failures
-            if failures >= max_failures:
-                self._report_unreachable_dead(ep, failures)
+            # A poll failure must never kill the polling thread.
+            self._record_poll_failure(ep, e)
             return
 
         # Any non-404 answer proves the FT API exists on this endpoint.
@@ -418,6 +448,7 @@ class EngineFtManager:
         self._unsupported_endpoint_ids.discard(ep.id)
         self._unsupported_since.pop(ep.id, None)
         self._consecutive_failures[ep.id] = 0
+        self._scaling_since.pop(ep.id, None)
         try:
             self._process_engine_status(ep.id, engine)
         except Exception as e:
@@ -428,15 +459,11 @@ class EngineFtManager:
                 f"Failed to parse engine {ep.id} FT status: {e}",
             )
 
-    def _process_engine_status(
-        self,
-        ep_id: int,
-        engine: dict,
-    ) -> None:
+    def _process_engine_status(self, ep_id: int, engine: dict) -> None:
         """Report a single engine's status if it is non-healthy and new.
 
-        The managed endpoint id and response id are both global DP ranks and
-        must match. The same id is used as the report-dedup key.
+        ``ep_id`` is the only rank Motor stores and the report-dedup key.
+        The payload id must equal that rank.
         """
         if self._is_retired(ep_id):
             return
@@ -514,6 +541,19 @@ class EngineFtManager:
             engine.get("ft_error"),
             mask,
         )
+
+    def _record_poll_failure(self, ep: Endpoint, error: Exception) -> None:
+        """Count one poll failure and report DEAD at the configured threshold."""
+        failures = self._consecutive_failures.get(ep.id, 0) + 1
+        self._consecutive_failures[ep.id] = failures
+        _rl.error_window(
+            f"node_manager.engine_ft_manager.poll.{ep.id}",
+            f"Failed to poll engine {ep.id} FT status: {error}",
+        )
+        with self._config_lock:
+            max_failures = self._config.fault_tolerance_config.max_poll_failures
+        if failures >= max_failures:
+            self._report_unreachable_dead(ep, failures)
 
     def _report_unreachable_dead(self, ep: Endpoint, failures: int) -> None:
         """Report an unreachable ready engine as dead (deduped)."""

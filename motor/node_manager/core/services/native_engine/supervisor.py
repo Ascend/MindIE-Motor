@@ -212,6 +212,45 @@ class ProcessSupervisor:
         self._remove_stopped([runtime])
         return stopped
 
+    def kill_workers(self, endpoint_ids: list[int] | None = None) -> dict[str, list[int]]:
+        """SIGKILL ``VLLM::Worker`` children only; leave API/EngineCore alive.
+
+        Used by Controller user-recover first shrink: empty a problem Pod by
+        killing workers so FT ``scale_down`` can retire ranks without
+        ``/scale_elastic_ep``. Never calls ``_kill_group`` on the endpoint.
+        """
+        with self._lock:
+            if endpoint_ids:
+                wanted = {int(endpoint_id) for endpoint_id in endpoint_ids}
+                targets = [runtime for endpoint_id, runtime in self._processes.items() if endpoint_id in wanted]
+            else:
+                targets = list(self._processes.values())
+
+        killed: list[int] = []
+        for runtime in targets:
+            for pid in self._find_worker_pids(runtime):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    killed.append(pid)
+                    logger.info(
+                        "Killed VLLM::Worker pid=%s for endpoint %s",
+                        pid,
+                        runtime.endpoint_id,
+                    )
+                except ProcessLookupError:
+                    pass
+                except (OSError, PermissionError) as err:
+                    logger.warning(
+                        "Failed to kill worker pid=%s endpoint=%s: %s",
+                        pid,
+                        runtime.endpoint_id,
+                        err,
+                    )
+        return {
+            "endpoint_ids": [runtime.endpoint_id for runtime in targets],
+            "killed_pids": killed,
+        }
+
     def _stop_runtimes(self, runtimes: list[RuntimeProcess]) -> list[int]:
         for runtime in runtimes:
             runtime.state = RuntimeState.STOPPING
@@ -313,3 +352,70 @@ class ProcessSupervisor:
             logger.warning("Failed to inspect engine process group %s: %s", runtime.process_group_id, err)
             return True
         return True
+
+    @staticmethod
+    def _find_worker_pids(runtime: RuntimeProcess) -> list[int]:
+        """Return PIDs in the endpoint process group whose cmdline is a Worker."""
+        if os.name != "posix":
+            return []
+        pgid = runtime.process_group_id
+        if pgid is None:
+            return []
+        leader_pid = runtime.process.pid
+        workers: list[int] = []
+        try:
+            proc_entries = os.listdir("/proc")
+        except OSError as err:
+            logger.warning("Cannot list /proc to find workers: %s", err)
+            return []
+        for name in proc_entries:
+            if not name.isdigit():
+                continue
+            pid = int(name)
+            if pid == leader_pid:
+                continue
+            if ProcessSupervisor._proc_pgrp(pid) != pgid:
+                continue
+            if not ProcessSupervisor._proc_cmdline_is_worker(pid):
+                continue
+            workers.append(pid)
+        return workers
+
+    @staticmethod
+    def _proc_pgrp(pid: int) -> int | None:
+        """Read process group id from ``/proc/<pid>/stat``."""
+        try:
+            with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError:
+            return None
+        close = text.rfind(")")
+        if close < 0:
+            return None
+        fields = text[close + 2 :].split()
+        # After ``(comm)``: state ppid pgrp ...
+        if len(fields) < 3:
+            return None
+        try:
+            return int(fields[2])
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _proc_cmdline_is_worker(pid: int) -> bool:
+        """True when cmdline/comm looks like a vLLM Worker process title."""
+        markers = ("VLLM::Worker", "Worker_TP", "Worker_PP", "Worker_DP")
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as handle:
+                raw = handle.read().replace(b"\x00", b" ")
+            cmdline = raw.decode("utf-8", errors="replace")
+        except OSError:
+            cmdline = ""
+        if any(marker in cmdline for marker in markers):
+            return True
+        try:
+            with open(f"/proc/{pid}/comm", encoding="utf-8") as handle:
+                comm = handle.read().strip()
+        except OSError:
+            return False
+        return any(marker in comm for marker in markers)

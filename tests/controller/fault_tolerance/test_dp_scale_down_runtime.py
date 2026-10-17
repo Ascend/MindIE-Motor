@@ -121,6 +121,11 @@ def test_runtime_restore_resumes_committed_view_and_fails_interrupted_attempt():
                 "fallback_strategy": "InstanceReconfigurationStrategy",
                 "reconfiguration_dispatched": True,
             },
+            "10": {
+                "phase": FtPhase.WARMING_UP.value,
+                "original_dp_ranks": [0, 1],
+                "dead_committed": [],
+            },
             "bad": {"phase": "not-a-phase"},
         }
     )
@@ -132,8 +137,11 @@ def test_runtime_restore_resumes_committed_view_and_fails_interrupted_attempt():
     assert store.get(8)["pending_removed_ranks"] == []
     assert store.get(9)["phase"] == FtPhase.RECONFIGURING.value
     assert store.get(9)["reconfiguration_dispatched"] is True
+    assert store.get(10)["phase"] == FtPhase.RECONFIGURING.value
+    assert store.get(10)["dead_committed"] == []
+    assert store.get(10)["last_error"] == "controller restarted during DP scale-up; original fallback required"
     assert store.get("bad") is None
-    assert interrupted == {8: "ScaleP2DStrategy"}
+    assert interrupted == {8: "ScaleP2DStrategy", 10: "InstanceReconfigurationStrategy"}
 
 
 def test_runtime_status_reports_effective_alive_ranks_and_serving_state():

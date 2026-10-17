@@ -35,6 +35,7 @@ class FtPhase(str, Enum):
     SCALING_DOWN = "SCALING_DOWN"
     POST_SCALE_CLEANUP = "POST_SCALE_CLEANUP"
     SCALED_DOWN_RUNNING = "SCALED_DOWN_RUNNING"
+    WARMING_UP = "WARMING_UP"
     RECONFIGURING = "RECONFIGURING"
 
 
@@ -158,6 +159,9 @@ class FtRuntime:
     original_dp_ranks: list[int] = field(default_factory=list)
     request_id: str = ""
     dead_committed: list[int] = field(default_factory=list)
+    # Ranks still advertised to the Coordinator while phase is WARMING_UP.
+    # Recorded from the survivor roster at warmup entry. Empty means no filter.
+    serving_dp_ranks: list[int] = field(default_factory=list)
     pending_removed_ranks: list[int] = field(default_factory=list)
     fallback_strategy: str = ""
     gate: GateSnapshot = field(default_factory=GateSnapshot)
@@ -175,6 +179,7 @@ class FtRuntime:
             in {
                 FtPhase.NORMAL,
                 FtPhase.SCALED_DOWN_RUNNING,
+                FtPhase.WARMING_UP,
             }
             and self.serving_published
         )
@@ -197,6 +202,7 @@ class FtRuntimeStore:
         FtPhase.WAITING_ENGINE_FAULT,
         FtPhase.SCALING_DOWN,
         FtPhase.RECONFIGURING,
+        FtPhase.WARMING_UP,
     }
 
     def __init__(self) -> None:
@@ -296,7 +302,10 @@ class FtRuntimeStore:
                     restored_phase = FtPhase.RECONFIGURING
                     fallback = fallback or "InstanceReconfigurationStrategy"
                     interrupted[instance_id] = fallback
-                    error = "controller restarted during DP scale-down; original fallback required"
+                    if phase == FtPhase.WARMING_UP:
+                        error = "controller restarted during DP scale-up; original fallback required"
+                    else:
+                        error = "controller restarted during DP scale-down; original fallback required"
                 else:
                     restored_phase = phase
                     error = None
@@ -332,6 +341,7 @@ class FtRuntimeStore:
                 if runtime is None or runtime.phase not in {
                     FtPhase.NORMAL,
                     FtPhase.SCALED_DOWN_RUNNING,
+                    FtPhase.WARMING_UP,
                 }:
                     continue
                 runtime.serving_published = True
@@ -422,11 +432,57 @@ class TopologyResolver:
         return result
 
     @classmethod
+    def expand_problem_pod_ranks(cls, instance: Any, seed_ranks: set[int]) -> set[int]:
+        """Expand seed ranks to every original DP rank on any touched Pod."""
+        if not seed_ranks:
+            return set()
+        expanded: set[int] = set()
+        for pod_ranks in cls.pod_dp_ranks(instance).values():
+            if pod_ranks & seed_ranks:
+                expanded.update(pod_ranks)
+        return expanded
+
+    @staticmethod
+    def elastic_pod_cut_target_dp(
+        original_ranks: list[int] | set[int],
+        expanded_ranks: set[int],
+    ) -> int | None:
+        """Return keep-size for Elastic EP recovery after emptying whole problem Pods.
+
+        ``expanded`` must already be the union of whole Pods. Any position is
+        accepted; survivors keep original DP ids and joiners fill the holes.
+        At least one rank must survive.
+        """
+        if not expanded_ranks:
+            return None
+        original = set(original_ranks)
+        expanded = set(expanded_ranks)
+        if not original or not expanded <= original:
+            return None
+        keep = len(original) - len(expanded)
+        return keep if keep >= 1 else None
+
+    @classmethod
     def recyclable_pods(cls, instance: Any, dead_committed: set[int]) -> list[str]:
         """Return Pods whose complete original DP set has been removed."""
         return sorted(
             pod_ip for pod_ip, pod_ranks in cls.pod_dp_ranks(instance).items() if pod_ranks.issubset(dead_committed)
         )
+
+    @classmethod
+    def can_stop_all_problem_pods(cls, instance: Any, dead_ranks: set[int]) -> bool:
+        """True when every failed rank sits on a Pod that can be stopped entirely."""
+        if not dead_ranks:
+            return False
+        try:
+            pod_ranks = cls.pod_dp_ranks(instance)
+        except ValueError:
+            return False
+        covered: set[int] = set()
+        for ranks in pod_ranks.values():
+            if ranks and ranks.issubset(dead_ranks):
+                covered.update(ranks)
+        return dead_ranks <= covered
 
 
 _RUNTIME_STORE = FtRuntimeStore()
@@ -467,7 +523,7 @@ def partial_loss_policy(instance_id: int) -> PartialLossPolicy:
     phase = runtime["phase"]
     if phase in _PARTIAL_LOSS_TRANSACTION_PHASES:
         return PartialLossPolicy(protect_transaction=True, suppress_legacy_shutdown=True)
-    if phase == FtPhase.SCALED_DOWN_RUNNING.value:
+    if phase in (FtPhase.SCALED_DOWN_RUNNING.value, FtPhase.WARMING_UP.value):
         return PartialLossPolicy(
             ignored_dead_ranks=frozenset(runtime["dead_committed"]),
             suppress_legacy_shutdown=True,

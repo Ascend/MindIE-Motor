@@ -76,20 +76,33 @@ def query_engine_ft_status(ep: Endpoint, timeout: float = ENGINE_FT_TIMEOUT) -> 
     return payload
 
 
-def query_engine_ft_entry(ep: Endpoint, timeout: float = ENGINE_FT_TIMEOUT) -> dict[str, Any]:
-    """Return the status entry matching one endpoint rank."""
+def query_engine_ft_entry(
+    ep: Endpoint,
+    timeout: float = ENGINE_FT_TIMEOUT,
+) -> dict[str, Any]:
+    """Return this endpoint's FT status entry.
+
+    Motor stores one rank, ``ep.id``, and that id must match the engine payload.
+    """
     engines = query_engine_ft_status(ep, timeout).get("engines")
     if not isinstance(engines, list) or not engines:
         raise ValueError("engine %d FT status contains no engines" % ep.id)
-    for status in engines:
-        if isinstance(status, dict) and status.get("id") == ep.id:
+    entries = [status for status in engines if isinstance(status, dict)]
+    for status in entries:
+        if status.get("id") == ep.id:
             return status
     raise ValueError("engine %d FT status has no matching rank" % ep.id)
 
 
-def query_engine_ft_entries(endpoints: list[Endpoint], timeout: float = ENGINE_FT_TIMEOUT) -> dict[int, dict[str, Any]]:
+def query_engine_ft_entries(
+    endpoints: list[Endpoint],
+    timeout: float = ENGINE_FT_TIMEOUT,
+) -> dict[int, dict[str, Any]]:
     """Query status entries concurrently for a group of engine endpoints."""
-    return _run_engine_requests(endpoints, partial(query_engine_ft_entry, timeout=timeout))
+    return _run_engine_requests(
+        endpoints,
+        partial(query_engine_ft_entry, timeout=timeout),
+    )
 
 
 def apply_engine_ft_instruction(

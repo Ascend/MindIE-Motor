@@ -34,6 +34,36 @@ def client():
     return TestClient(controller_api.ControllerAPI(config).app)
 
 
+def test_recover_rejects_when_scale_up_is_disabled():
+    config = ControllerConfig()
+    config.fault_tolerance_config.enable_dp_scale_down = True
+    config.fault_tolerance_config.enable_dp_scale_up = False
+    api_client = TestClient(controller_api.ControllerAPI(config).app)
+
+    with patch("motor.controller.api_server.controller_api.FaultManager") as fault_manager:
+        response = api_client.post("/controller/fault_tolerance/recover")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "DP scale-up is not enabled"
+    fault_manager.assert_not_called()
+
+
+def test_recover_starts_when_scale_up_is_enabled():
+    config = ControllerConfig()
+    config.fault_tolerance_config.enable_dp_scale_down = True
+    config.fault_tolerance_config.enable_dp_scale_up = True
+    api_client = TestClient(controller_api.ControllerAPI(config).app)
+    accepted = [{"instance_id": 1, "action": "scale_up"}]
+
+    with patch("motor.controller.api_server.controller_api.FaultManager") as fault_manager:
+        fault_manager.return_value.start_user_recovery.return_value = accepted
+        response = api_client.post("/controller/fault_tolerance/recover")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["instances"] == accepted
+    fault_manager.return_value.start_user_recovery.assert_called_once_with()
+
+
 def test_get_fault_tolerance_status_is_disabled_when_scale_down_is_disabled():
     config = ControllerConfig()
     config.fault_tolerance_config.enable_dp_scale_down = False

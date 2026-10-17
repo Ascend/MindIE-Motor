@@ -902,6 +902,31 @@ def test_dp_scale_down_proxy_gate_is_derived_from_controller(controller_ft, expe
     assert config_data["fault_tolerance_config"]["enable_dp_scale_down_proxy"] is expected
 
 
+@pytest.mark.parametrize(
+    "controller_ft,expected",
+    [
+        ({"enable_dp_scale_up": True}, True),
+        ({"enable_dp_scale_up": 1}, True),
+        ({"enable_dp_scale_up": False}, False),
+        ({}, False),
+    ],
+)
+@patch.dict("os.environ", {"ROLE": "prefill"})
+def test_dp_scale_up_flag_is_copied_from_controller(controller_ft, expected):
+    user_config = {
+        "motor_deploy_config": {"hardware_type": "800I-A3"},
+        "motor_controller_config": {"fault_tolerance_config": controller_ft},
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "engine_config": {},
+        },
+    }
+
+    config_data = NodeManagerConfig._load_node_manager_config_data(user_config)
+
+    assert config_data["fault_tolerance_config"]["enable_dp_scale_up"] is expected
+
+
 @patch.dict("os.environ", {"ROLE": "prefill"})
 def test_user_dispatch_capabilities_cannot_enable_unknown_connector():
     user_config = {

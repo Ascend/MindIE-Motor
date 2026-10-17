@@ -178,6 +178,8 @@ class Daemon(ThreadSafeSingleton):
         with self._retired_endpoint_lock:
             self._retired_endpoint_ids.clear()
         self._engine_ft_manager.reset_retired_endpoints()
+        for endpoint in endpoints_info:
+            endpoint.engine_rank = None
         self._endpoints_info = endpoints_info
         self._instance_id = instance_id
 
@@ -234,6 +236,8 @@ class Daemon(ThreadSafeSingleton):
                 raise EngineRestartParamError("no engine start recorded")
             if instance_id is not None and instance_id != restart_params["instance_id"]:
                 raise EngineRestartParamError("instance id mismatch")
+            for endpoint in restart_params["endpoints"]:
+                endpoint.engine_rank = None
             with self.config_lock:
                 freeze_sec = self._config.fault_tolerance_config.engine_restart_freeze_sec
             self.freeze_suicide(freeze_sec)
@@ -406,6 +410,13 @@ class Daemon(ThreadSafeSingleton):
         if engine is None:
             return None
         return engine.metrics_target(endpoint)  # type: ignore[attr-defined]
+
+    def kill_engine_workers(self, endpoint_ids: list[int] | None = None) -> dict[str, list[int]]:
+        """SIGKILL local VLLM::Worker processes; leave engine API/EngineCore up."""
+        engine = self._services.get(SERVICE_ENGINE)
+        if engine is None:
+            raise RuntimeError("no engine service to kill workers")
+        return engine.kill_workers(endpoint_ids)  # type: ignore[attr-defined]
 
     @property
     def engine_ready_event(self) -> threading.Event:

@@ -356,6 +356,314 @@ def test_register_rejects_inconsistent_ft_capability(instance_assembler, test_co
     assert not metadata.instance.has_node_mgr(test_config["pod_ip2"])
 
 
+def _seed_scaled_down_instance(test_config: dict, capability: FtCapabilitySnapshot) -> Instance:
+    """ACTIVE instance missing the high DP ranks, ready for a replacement pod."""
+    from motor.controller.fault_tolerance.dp_scale_down import FtPhase, get_ft_runtime_store
+
+    instance = Instance(
+        job_name="test_job",
+        model_name="test_model",
+        id=11,
+        role=test_config["role"],
+        status=InsStatus.ACTIVE,
+        parallel_config=test_config["parallel_config"],
+        ft_capability=capability,
+        enable_multi_endpoints=True,
+    )
+    instance.add_node_mgr(test_config["pod_ip1"], "8088", device_num=2 * test_config["tp"])
+    instance.add_endpoints(
+        test_config["pod_ip1"],
+        {
+            0: Endpoint(id=0, ip=test_config["pod_ip1"], business_port="8080"),
+            1: Endpoint(id=1, ip=test_config["pod_ip1"], business_port="8084"),
+        },
+    )
+    InstanceManager().add_instance(instance)
+    store = get_ft_runtime_store()
+    store.set_persist_callback(None)
+    store.clear()
+    store.transition(
+        instance.id,
+        phase=FtPhase.SCALED_DOWN_RUNNING,
+        original_dp_ranks=[0, 1, 2, 3],
+    )
+    return instance
+
+
+def _enable_scale_up(instance_assembler) -> None:
+    instance_assembler.enable_dp_scale_up = True
+
+
+def test_join_assembled_rejected_when_scale_up_disabled(instance_assembler, test_config):
+    """Scale-up off: an assembled instance rejects a replacement and a repeat register."""
+    capability = FtCapabilitySnapshot(enabled=True, scale_down_supported=True, external_lb=True)
+    instance = _seed_scaled_down_instance(test_config, capability)
+    replacement = create_register_msg(
+        "test_job",
+        test_config["pod_ip2"],
+        test_config,
+        ft_capability=capability.model_copy(),
+    )
+    repeat = create_register_msg(
+        "test_job",
+        test_config["pod_ip1"],
+        test_config,
+        ft_capability=capability.model_copy(),
+    )
+
+    reregister = create_reregister_msg(
+        "test_job",
+        test_config["pod_ip2"],
+        instance_id=instance.id,
+        config=test_config,
+        endpoints=[Endpoint(id=2, ip=test_config["pod_ip2"], business_port="8080")],
+    )
+    reregister.ft_capability = capability.model_copy()
+
+    assert instance_assembler.register(replacement) == -1
+    assert instance_assembler.register(repeat) == -1
+    assert instance_assembler.reregister(reregister) == -1
+    assert not instance.has_node_mgr(test_config["pod_ip2"])
+    assert test_config["pod_ip2"] not in instance.endpoints
+
+
+def test_reregister_join_rejects_inconsistent_ft_capability(instance_assembler, test_config):
+    _enable_scale_up(instance_assembler)
+    capability = FtCapabilitySnapshot(enabled=True, scale_down_supported=True, external_lb=True)
+    instance = _seed_scaled_down_instance(test_config, capability)
+    msg = create_reregister_msg(
+        "test_job",
+        test_config["pod_ip2"],
+        instance_id=instance.id,
+        config=test_config,
+        endpoints=[Endpoint(id=2, ip=test_config["pod_ip2"], business_port="8080")],
+    )
+    msg.ft_capability = FtCapabilitySnapshot()
+
+    assert instance_assembler.reregister(msg) == -1
+    assert not instance.has_node_mgr(test_config["pod_ip2"])
+    assert test_config["pod_ip2"] not in instance.endpoints
+
+
+def test_reregister_join_accepts_matching_ft_capability(instance_assembler, test_config):
+    """A scaled-down instance accepts a reregistered pod that carries endpoints."""
+    _enable_scale_up(instance_assembler)
+    capability = FtCapabilitySnapshot(enabled=True, scale_down_supported=True, external_lb=True)
+    instance = _seed_scaled_down_instance(test_config, capability)
+    msg = create_reregister_msg(
+        "test_job",
+        test_config["pod_ip2"],
+        instance_id=instance.id,
+        config=test_config,
+        endpoints=[
+            Endpoint(id=8, ip=test_config["pod_ip2"], business_port="18000"),
+            Endpoint(id=9, ip=test_config["pod_ip2"], business_port="18002"),
+        ],
+    )
+    msg.ft_capability = capability.model_copy()
+    msg.device_num = 2 * test_config["tp"]
+
+    with patch.object(instance_assembler, "_send_replacement_start_command", return_value=True):
+        assert instance_assembler.reregister(msg) == 0
+
+    joined = instance.endpoints[test_config["pod_ip2"]]
+    assert instance.has_node_mgr(test_config["pod_ip2"])
+    assert set(joined) == {2, 3}
+    assert joined[2].business_port == "18000"
+    assert joined[3].business_port == "18002"
+
+
+def test_recovery_roster_survives_controller_restart(instance_assembler, test_config):
+    """A restarted Controller keeps the Pod that replaced a scaled-down rank."""
+    import json
+
+    from motor.common.resources.endpoint import EndpointStatus
+    from motor.controller.fault_tolerance.dp_scale_down import FtPhase, get_ft_runtime_store
+    from motor.controller.fault_tolerance.pod_lifecycle import PodLifecycle
+
+    class MemoryEtcd:
+        """In-memory stand-in for the ETCD prefix used by persist/restore."""
+
+        def __init__(self):
+            self.store = {}
+            self.writes = 0
+
+        def persist_data(self, key_prefix, data):
+            self.store[key_prefix] = json.loads(json.dumps(data))
+            self.writes += 1
+            return True
+
+        def restore_data(self, key_prefix, model_class=None):
+            raw = self.store.get(key_prefix)
+            if not raw:
+                return None
+            if model_class is None:
+                return raw
+            return {key: model_class(**value) for key, value in raw.items()}
+
+    old_ip = "10.0.0.1"
+    survivor_ip = "10.0.0.2"
+    new_ip = "10.0.0.3"
+    capability = FtCapabilitySnapshot(enabled=True, scale_down_supported=True, external_lb=True)
+    instance = Instance(
+        job_name="test_job",
+        model_name="test_model",
+        id=11,
+        role=test_config["role"],
+        status=InsStatus.ACTIVE,
+        parallel_config=test_config["parallel_config"],
+        ft_capability=capability,
+        enable_multi_endpoints=True,
+    )
+    for ip, ranks in ((old_ip, (0, 1)), (survivor_ip, (2, 3))):
+        instance.add_node_mgr(ip, "8088", device_num=2 * test_config["tp"])
+        instance.add_endpoints(
+            ip,
+            {
+                rank: Endpoint(
+                    id=rank,
+                    ip=ip,
+                    business_port="8080" if rank % 2 == 0 else "8084",
+                    status=EndpointStatus.NORMAL,
+                )
+                for rank in ranks
+            },
+        )
+
+    config = ControllerConfig()
+    config.etcd_config.enable_etcd_persistence = True
+    manager = InstanceManager(config)
+    memory = MemoryEtcd()
+    manager.etcd_client = memory
+    manager.add_instance(instance)
+    assert manager.persist_data() is True
+    writes_after_old_roster = memory.writes
+
+    now = time.time()
+    for pod_endpoints in instance.endpoints.values():
+        for endpoint in pod_endpoints.values():
+            endpoint.status = EndpointStatus.NORMAL
+            endpoint.hb_timestamp = now
+    assert manager._handle_state_transition(instance) is True
+    assert instance.status == InsStatus.ACTIVE
+    assert memory.writes == writes_after_old_roster
+
+    store = get_ft_runtime_store()
+    store.set_persist_callback(None)
+    store.clear()
+    store.transition(instance.id, phase=FtPhase.SCALED_DOWN_RUNNING, original_dp_ranks=[0, 1, 2, 3])
+    with patch("motor.controller.fault_tolerance.pod_lifecycle.NodeManagerApiClient.stop", return_value=True):
+        PodLifecycle.stop_recyclable_pods(instance, [old_ip])
+
+    _enable_scale_up(instance_assembler)
+    msg = create_register_msg(
+        "test_job",
+        new_ip,
+        test_config,
+        ft_capability=capability.model_copy(),
+        business_port=["18000", "18002"],
+    )
+    with patch.object(instance_assembler, "_send_replacement_start_command", return_value=True):
+        assert instance_assembler.register(msg) == 0
+
+    def roster_of(target):
+        return {(endpoint.ip, endpoint.id) for endpoint in target.get_all_endpoints(include_headless=True)}
+
+    expected = {(survivor_ip, 2), (survivor_ip, 3), (new_ip, 0), (new_ip, 1)}
+    assert roster_of(instance) == expected
+    assert manager.restore_data() is True
+    restored = manager.get_instance(instance.id)
+    assert restored is not None
+    assert restored.status == InsStatus.ACTIVE
+    assert roster_of(restored) == expected
+
+
+def test_replacement_start_command_sends_instance_ranktable(instance_assembler, test_config):
+    """A3 joiners on another server need survivors plus their own HCCL servers."""
+    from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient
+
+    _enable_scale_up(instance_assembler)
+    capability = FtCapabilitySnapshot(enabled=True, scale_down_supported=True, external_lb=True)
+    instance = _seed_scaled_down_instance(test_config, capability)
+    survivor = instance.endpoints[test_config["pod_ip1"]][0]
+    survivor.device_infos = [
+        DeviceInfo(device_ip="10.0.0.1", device_id="0", rank_id="0", super_device_id="0"),
+        DeviceInfo(device_ip="10.0.0.1", device_id="1", rank_id="1", super_device_id="0"),
+    ]
+    instance.endpoints[test_config["pod_ip1"]][1].device_infos = [
+        DeviceInfo(device_ip="10.0.0.1", device_id="2", rank_id="2", super_device_id="0"),
+        DeviceInfo(device_ip="10.0.0.1", device_id="3", rank_id="3", super_device_id="0"),
+    ]
+    joiner_ip = "10.0.0.9"
+    joiner_ranktable = Ranktable(
+        version="1.2",
+        status="completed",
+        server_count="1",
+        server_list=[
+            ServerInfo(
+                server_id="192.168.1.9",
+                container_ip=joiner_ip,
+                device=[
+                    DeviceInfo(device_ip="192.168.1.91", device_id="0", rank_id="0", super_device_id="0"),
+                    DeviceInfo(device_ip="192.168.1.91", device_id="1", rank_id="1", super_device_id="0"),
+                    DeviceInfo(device_ip="192.168.1.91", device_id="2", rank_id="2", super_device_id="0"),
+                    DeviceInfo(device_ip="192.168.1.91", device_id="3", rank_id="3", super_device_id="0"),
+                ],
+            )
+        ],
+    )
+    msg = create_register_msg(
+        "test_job",
+        joiner_ip,
+        test_config,
+        ft_capability=capability.model_copy(),
+        ranktable=joiner_ranktable,
+        nm_port="9000",
+    )
+    captured = {}
+
+    def capture(_node_mgr, start_cmd):
+        captured["cmd"] = start_cmd
+        return True
+
+    with patch.object(NodeManagerApiClient, "send_start_command", side_effect=capture):
+        assert instance_assembler.register(msg) == 0
+
+    ranktable = captured["cmd"].ranktable
+    assert ranktable is not None
+    assert ranktable.server_count == "2"
+    assert ranktable.server_list[0].container_ip == test_config["pod_ip1"]
+    assert [device.rank_id for device in ranktable.server_list[0].device] == ["0", "1", "2", "3"]
+    assert ranktable.server_list[1].server_id == "192.168.1.9"
+    assert ranktable.server_list[1].container_ip == joiner_ip
+    assert captured["cmd"].extra_env == {"VLLM_ELASTIC_EP_SCALE_UP_LAUNCH": "1"}
+
+
+def test_replacement_start_command_skips_ranktable_when_a5_has_none(instance_assembler, test_config):
+    from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient
+
+    _enable_scale_up(instance_assembler)
+    capability = FtCapabilitySnapshot(enabled=True, scale_down_supported=True, external_lb=True)
+    _seed_scaled_down_instance(test_config, capability)
+    msg = create_register_msg(
+        "test_job",
+        test_config["pod_ip2"],
+        test_config,
+        ft_capability=capability.model_copy(),
+        ranktable=None,
+    )
+    captured = {}
+
+    def capture(_node_mgr, start_cmd):
+        captured["cmd"] = start_cmd
+        return True
+
+    with patch.object(NodeManagerApiClient, "send_start_command", side_effect=capture):
+        assert instance_assembler.register(msg) == 0
+
+    assert captured["cmd"].ranktable is None
+
+
 def test_register_already_assembled_instance(instance_assembler, test_config):
     """Test registering to an already assembled instance returns -1"""
     job_name = "test_job"
@@ -1202,6 +1510,7 @@ def test_update_config(instance_assembler):
     new_config.etcd_config.etcd_port = 2380
     new_config.etcd_config.etcd_timeout = 30.0
     new_config.etcd_config.enable_etcd_persistence = True
+    new_config.fault_tolerance_config.enable_dp_scale_up = True
 
     with patch('motor.controller.core.instance_assembler.EtcdClient') as mock_etcd_class:
         mock_client = MagicMock()
@@ -1218,6 +1527,7 @@ def test_update_config(instance_assembler):
         assert instance_assembler.etcd_config.etcd_host == "new-etcd-host"
         assert instance_assembler.etcd_config.etcd_port == 2380
         assert instance_assembler.etcd_config.etcd_timeout == 30.0
+        assert instance_assembler.enable_dp_scale_up is True
 
         # Verify ETCD client constructor was called with new config
         mock_etcd_class.assert_called_once_with(

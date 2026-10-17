@@ -21,6 +21,7 @@ from motor.common.http.engine_ft_client import (
     query_engine_ft_entry,
     query_engine_ft_status,
 )
+from motor.common.http.http_client import HttpStatusError
 from motor.common.resources.endpoint import Endpoint
 
 
@@ -77,6 +78,28 @@ def test_status_does_not_fall_back_when_versioned_path_fails(mock_client_cls):
     client.get.assert_called_once_with("/v1/fault_tolerance/status")
 
 
+@patch("motor.common.http.engine_ft_client.SafeHTTPSClient")
+def test_status_propagates_elastic_scaling_503(mock_client_cls):
+    client = mock_client_cls.return_value
+    client.__enter__.return_value = client
+    client.get.side_effect = HttpStatusError(
+        503, "http response error 503, The model is currently scaling. Please try again later."
+    )
+
+    with pytest.raises(HttpStatusError):
+        query_engine_ft_status(_endpoint())
+
+
+@patch("motor.common.http.engine_ft_client.SafeHTTPSClient")
+def test_status_keeps_other_503_as_http_error(mock_client_cls):
+    client = mock_client_cls.return_value
+    client.__enter__.return_value = client
+    client.get.side_effect = HttpStatusError(503, "http response error 503, overloaded")
+
+    with pytest.raises(HttpStatusError):
+        query_engine_ft_status(_endpoint())
+
+
 @pytest.mark.parametrize("instruction", ["restart"])
 def test_apply_rejects_non_scale_down_instruction(instruction):
     with pytest.raises(ValueError, match="unsupported"):
@@ -122,7 +145,7 @@ def test_query_entry_selects_matching_rank(mock_query):
 
 
 @patch("motor.common.http.engine_ft_client.query_engine_ft_status")
-def test_query_entry_rejects_single_mismatched_global_dp_rank(mock_query):
+def test_query_entry_rejects_single_engine_when_public_id_changes(mock_query):
     mock_query.return_value = {"engines": [{"id": 1, "status": "unhealthy"}]}
 
     with pytest.raises(ValueError, match="no matching rank"):
