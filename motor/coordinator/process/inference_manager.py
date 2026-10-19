@@ -36,6 +36,9 @@ from motor.coordinator.scheduler.policy.kv_cache_affinity import TokenizerManage
 
 logger = get_logger(__name__)
 
+# Shared-fd accept() is unfair; each worker bind()s its own socket into this group.
+_LISTEN_BACKLOG = 2048
+
 
 def _socket_host(host: str) -> str:
     if host.startswith("[") and host.endswith("]"):
@@ -125,7 +128,7 @@ async def run_inference_and_metaserver(
 
 def run_inference_worker_proc(
     listen_address: tuple[str, int],
-    sock: socket.socket,
+    sock: socket.socket | None,
     config: CoordinatorConfig,
     worker_index: int,
     **uvicorn_kwargs: Any,
@@ -134,7 +137,8 @@ def run_inference_worker_proc(
 
     Args:
         listen_address: Address to listen for client connections
-        sock: Socket for client connections (shared between processes)
+        sock: Legacy inherited listen fd; unused when this worker can bind its
+            own SO_REUSEPORT socket. Closed after the per-process bind succeeds.
         config: Coordinator configuration
         worker_index: Index of this worker process
         **uvicorn_kwargs: Additional uvicorn configuration
@@ -152,6 +156,30 @@ def run_inference_worker_proc(
         config.worker_metaserver_port = base_metaserver_port + worker_index
 
     logger.info("Inference worker process %s starting (PID: %s)", worker_index, os.getpid())
+    worker_sock = create_shared_socket(listen_address[0], listen_address[1])
+    if worker_sock is None:
+        if sock is None:
+            raise RuntimeError(
+                f"Inference worker {worker_index} failed to bind SO_REUSEPORT socket on "
+                f"{format_address(listen_address[0], listen_address[1])}"
+            )
+        logger.warning(
+            "Worker %s: per-process SO_REUSEPORT bind failed; falling back to inherited listen fd",
+            worker_index,
+        )
+        worker_sock = sock
+    else:
+        logger.info(
+            "Worker %s: listening on per-process SO_REUSEPORT socket %s",
+            worker_index,
+            format_address(listen_address[0], listen_address[1]),
+        )
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception as e:
+                logger.warning("Worker %s: ignored error closing inherited listen fd: %s", worker_index, e)
+            sock = None
 
     # Create RequestManager first, then InferenceServer (business plane only)
     request_manager = RequestManager(config)
@@ -248,7 +276,7 @@ def run_inference_worker_proc(
     async def _run_servers():
         await run_inference_and_metaserver(
             server,
-            [sock] if sock else None,
+            [worker_sock] if worker_sock else None,
             metaserver_server,
             config,
             worker_index,
@@ -256,10 +284,8 @@ def run_inference_worker_proc(
         )
 
     try:
-        # Run server with shared socket.
-        # Note: Multiple processes can share the same socket with SO_REUSEPORT
-        # The OS kernel will distribute connections among processes
-        # Each process will handle requests independently with its own engine clients
+        # Each worker bind()s its own SO_REUSEPORT socket. Sharing one listen
+        # fd makes accept() unfair: a worker whose loop is idle keeps winning.
         if uvloop is not None:
             uvloop.run(_run_servers())
         else:
@@ -312,9 +338,9 @@ def run_inference_worker_proc(
                 exc_info=True,
             )
 
-        if sock:
+        if worker_sock:
             try:
-                sock.close()
+                worker_sock.close()
             except Exception as e:
                 logger.warning("Ignored error closing socket in worker %s: %s", worker_index, e)
         logger.info(f"Inference worker process {worker_index} stopped")
@@ -334,13 +360,26 @@ class InferenceProcessManager(BaseProcessManager):
         self,
         config: CoordinatorConfig,
         listen_address: tuple[str, int],
-        sock: socket.socket,
+        sock: socket.socket | None,
         num_workers: int,
     ):
         super().__init__(config, process_name="InferenceWorkers")
-        self.listen_address = listen_address
+        host, port = listen_address
+        if sock is not None and port == 0:
+            port = int(sock.getsockname()[1])
+        self.listen_address = (host, port)
         self.sock = sock
         self.num_workers = num_workers
+
+    def start(self) -> bool:
+        started = super().start()
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except Exception as e:
+                logger.warning("Ignored error closing parent infer listen socket: %s", e)
+            self.sock = None
+        return started
 
     def wait_for_completion(self) -> None:
         """Wait for all processes to complete or detect if any fail"""
@@ -446,8 +485,8 @@ def create_shared_socket(host: str, port: int) -> socket.socket | None:
 
     try:
         sock.bind((bind_host, port))
-        sock.listen(128)  # Backlog
-        logger.info(f"Created shared socket on {format_address(host, port)}")
+        sock.listen(_LISTEN_BACKLOG)
+        logger.info("Created SO_REUSEPORT listen socket on %s", format_address(host, port))
         return sock
     except Exception as e:
         logger.error(f"Failed to bind socket on {format_address(host, port)}: {e}")

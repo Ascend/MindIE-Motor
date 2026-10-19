@@ -200,7 +200,7 @@ class VLLMRenderClient:
             )
             if update_circuit and response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
                 self._open_circuit()
-            raise error_type(f"{operation} returned HTTP {response.status_code}")
+            raise error_type(f"{operation} returned HTTP {response.status_code}: {response.text}")
 
         try:
             payload = response.json()

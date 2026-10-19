@@ -201,6 +201,21 @@ async def test_render_request_error_does_not_open_circuit(status_code, response_
     assert calls == 2
 
 
+async def test_render_http_error_includes_sidecar_body():
+    async def handler(request):
+        return httpx.Response(
+            400,
+            json={"detail": "The model `DeepSeek-V4-Flash` does not exist."},
+            request=request,
+        )
+
+    async with _client(handler) as render_client:
+        with pytest.raises(RenderRequestError, match="400") as exc_info:
+            await render_client.render(*RENDER_ARGS)
+        assert "DeepSeek-V4-Flash" in str(exc_info.value.detail)
+        assert "does not exist" in str(exc_info.value.detail)
+
+
 async def test_render_missing_endpoint_remains_unsupported():
     async def handler(request):
         return httpx.Response(404, json={"detail": "Not Found"}, request=request)

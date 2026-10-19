@@ -1046,7 +1046,7 @@ async def _client_with_shm(im: InstanceManager, name: str) -> tuple[AsyncSchedul
 
 
 class TestDpStatsSnapshot:
-    """Worker-0 periodic dp_stats dump. Does not need native SHM."""
+    """Per-worker periodic dp_stats dump. Does not need native SHM."""
 
     def test_snapshot_skips_invalid_slots_and_missing_reader(self):
         from motor.coordinator.scheduler.runtime.workload_shm.layout import FLAG_VALID
@@ -1094,7 +1094,7 @@ class TestDpStatsSnapshot:
         assert sleeps[0] == 60
         assert mock_log.call_count == 1
         first = mock_log.call_args_list[0].args
-        assert first[0] == "dp_stats instance=%s dp_rank=%s requests=%d active_tokens=%s"
+        assert first[0] == "dp_stats instance=%s dp_rank=%s requests=%d active_tokens=%s worker=%s"
         assert (first[1], first[2], first[3], first[4]) == ("1", "10", 2, 5.0)
 
     @pytest.mark.asyncio
@@ -1278,6 +1278,42 @@ class TestSelectAndAllocateCas:
             assert calls["n"] == 2
         finally:
             native.cas_add = orig
+            client._workload_reader.detach()
+            writer.release()
+
+    @pytest.mark.asyncio
+    async def test_select_and_allocate_load_balance_concurrent_burst_spreads(self, native_lib):
+        """Two equal-load endpoints must not both receive a concurrent allocate.
+
+        Fast-path used to CAS the same proposal with a live SHM expected, so the second
+        add succeeded on the winner. Decision-time expected + global re-pick sends the
+        CHANGED retry to the other endpoint.
+        """
+        del native_lib
+        config = CoordinatorConfig()
+        im = InstanceManager(config)
+        await im.refresh_instances(
+            EventType.ADD,
+            [_make_cas_instance(1, 10), _make_cas_instance(2, 20)],
+        )
+        name = _cas_shm_name("spr")
+        client, writer = await _client_with_shm(im, name)
+        try:
+            reqs = [
+                RequestInfo(
+                    req_id=f"req-spread-{index}",
+                    req_data={},
+                    req_len=4,
+                    api="completions",
+                    token_ids=[1, 2, 3, 4],
+                )
+                for index in range(2)
+            ]
+            results = await asyncio.gather(*(client.select_and_allocate(PDRole.ROLE_P, req) for req in reqs))
+            assert all(result is not None for result in results)
+            pairs = {(instance.id, endpoint.id) for instance, endpoint, _committed in results}
+            assert pairs == {(1, 10), (2, 20)}
+        finally:
             client._workload_reader.detach()
             writer.release()
 

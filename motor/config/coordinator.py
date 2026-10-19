@@ -410,7 +410,7 @@ class SchedulerConfig:
     dynamic_bucket_load_scale: float = 4.0
     dynamic_bucket_short_bucket_count: int = 0
     dynamic_bucket_long_bucket_count: int = 0
-    # Window (seconds) for worker-0 per-DP telemetry: one log line per DP
+    # Window (seconds) for per-worker per-DP telemetry: one log line per DP
     # with request count and SHM active_tokens (dp_stats). Independent of
     # kv_affinity hit telemetry. 0 disables emission.
     dp_stats_window: int = 60

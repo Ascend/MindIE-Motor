@@ -52,7 +52,7 @@ class TestDpStatsLogger(unittest.TestCase):
                 values = _values(mock_log, i)
                 by_key[(values[_IDX["instance"]], values[_IDX["dp_rank"]])] = values
             fmt = by_key[("1", "0")][0]
-            assert fmt == "dp_stats instance=%s dp_rank=%s requests=%d active_tokens=%s"
+            assert fmt == "dp_stats instance=%s dp_rank=%s requests=%d active_tokens=%s worker=%s"
             assert by_key[("1", "0")][_IDX["requests"]] == 2
             assert by_key[("1", "0")][_IDX["active_tokens"]] == 5.5
             assert ("1", "10") not in by_key
@@ -72,8 +72,8 @@ class TestDpStatsLogger(unittest.TestCase):
             logger.emit_window([(1, 0, 3.0)])
             assert mock_log.call_count == 2
 
-    def test_emit_window_skips_unchanged_snapshot(self):
-        """Reprint the same (requests, active_tokens) pair only when it changes."""
+    def test_emit_window_preserves_repeated_nonzero_windows(self):
+        """Repeated counts represent new requests; only idle snapshots can be skipped."""
         logger = DpStatsLogger(window_sec=60)
         with patch("motor.coordinator.scheduler.runtime.dp_stats.logger.info") as mock_log:
             logger.record(instance_id=1, dp_rank=0)
@@ -82,29 +82,29 @@ class TestDpStatsLogger(unittest.TestCase):
             logger.record(instance_id=1, dp_rank=0)
             logger.record(instance_id=1, dp_rank=0)
             logger.emit_window([(1, 0, 5.0)])
-            assert mock_log.call_count == 1
+            assert mock_log.call_count == 2
 
             logger.record(instance_id=1, dp_rank=0)
             logger.emit_window([(1, 0, 5.0)])
-            assert mock_log.call_count == 2
-            assert _values(mock_log, 1)[_IDX["requests"]] == 1
+            assert mock_log.call_count == 3
+            assert _values(mock_log)[_IDX["requests"]] == 1
 
             logger.emit_window([(1, 0, 8.0)])
-            assert mock_log.call_count == 3
-            assert _values(mock_log, 2)[_IDX["active_tokens"]] == 8.0
+            assert mock_log.call_count == 4
+            assert _values(mock_log)[_IDX["active_tokens"]] == 8.0
 
             logger.emit_window([(1, 0, 0.0)])
-            assert mock_log.call_count == 4
-            assert _values(mock_log, 3)[_IDX["requests"]] == 0
-            assert _values(mock_log, 3)[_IDX["active_tokens"]] == 0.0
+            assert mock_log.call_count == 5
+            assert _values(mock_log)[_IDX["requests"]] == 0
+            assert _values(mock_log)[_IDX["active_tokens"]] == 0.0
             logger.emit_window([(1, 0, 0.0)])
-            assert mock_log.call_count == 4
+            assert mock_log.call_count == 5
 
             logger.record(instance_id=1, dp_rank=0)
             logger.emit_window([(1, 0, 8.0)])
-            assert mock_log.call_count == 5
-            assert _values(mock_log, 4)[_IDX["requests"]] == 1
-            assert _values(mock_log, 4)[_IDX["active_tokens"]] == 8.0
+            assert mock_log.call_count == 6
+            assert _values(mock_log)[_IDX["requests"]] == 1
+            assert _values(mock_log)[_IDX["active_tokens"]] == 8.0
 
     def test_float_window_sec_uses_integer_buckets(self):
         """JSON 30.5 must not produce float buckets that miss other windows."""
