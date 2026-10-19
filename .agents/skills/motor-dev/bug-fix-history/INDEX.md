@@ -70,6 +70,7 @@
 | 2026-09-23 | controller | DP 缩容恢复竞态导致路由冻结、误缩容或跳过 ScaleP2D | [dp-scale-down-state-safety.md](controller/dp-scale-down-state-safety.md) | DP scale-down, ScaleP2D, node reboot, reconfiguration, INITIAL, WAITING_ENGINE_FAULT |
 | 2026-09-23 | node_manager | NodeManager FT 代理契约漂移导致请求失败、端口冲突或虚推未迁移 | [ft-proxy-contract-drift.md](node_manager/ft-proxy-contract-drift.md) | NodeManager, FT proxy, finalize empty list, DP master, EADDRINUSE, virtual inference migration |
 | 2026-09-09 | coordinator | PD 分离请求在 Decode 才因 Prefill 改写字段被拒绝 | [pd-stream-options-late-rejection.md](coordinator/pd-stream-options-late-rejection.md) | coordinator, PD separation, stream_options, min_tokens, Decode HTTP-400, KV cache expiry |
+| 2026-10-14 | observability | CCAE Reporter 非法日志级别静默回退 | [ccae-invalid-log-level.md](observability/ccae-invalid-log-level.md) | CCAE Reporter, CCAE_REPORTER_LOG_LEVEL, warning, identity, rotation |
 | 2026-09-17 | deployer | 容器快照部署进度条停在 90% | [snapshot-progress-wait2start.md](deployer/snapshot-progress-wait2start.md) | deployer, container snapshot, progress, WAIT2START, 90% |
 | 2026-09-18 | coordinator | Render HTTP 错误只留下状态码，400 原因不可见 | [render-http-error-body-dropped.md](coordinator/render-http-error-body-dropped.md) | render, HTTP 400, sidecar body, VLLMRenderClient, reason |
 | 2026-09-19 | coordinator | DP 统计遗漏非零 worker、相同窗口及退出尾部计数 | [dp-stats-worker-window-loss.md](coordinator/dp-stats-worker-window-loss.md) | dp_stats, worker-local Counter, repeated window, graceful disconnect |

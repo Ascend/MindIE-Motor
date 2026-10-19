@@ -33,6 +33,15 @@ CCAE Reporter 负责与 CCAE 对接，采集 Motor 的运行信息（告警、�
 
 > 说明：该配置支持动态修改，Motor 运行过程中可以直接对接 CCAE，无需重启 Motor 推理服务。
 
+## 环境变量
+
+| 环境变量 | 说明 |
+| --- | --- |
+| `CCAE_REPORTER_LOG_LEVEL` | Reporter 自身日志级别。可选 `DEBUG` / `INFO` / `WARN` / `ERROR` / `CRITICAL` / `NULL`（关闭文件日志）。未设置或为空时为 `INFO`。非法非空值会输出 warning 并回退到 `INFO`。`WARNING` 视为 `WARN`。 |
+| `MOTOR_LOG_PATH` | Reporter 自身日志目录与采集根目录。未设置时默认 `/root/ascend/log`。 |
+
+日志采集只监控 Controller / Coordinator 日志，文件名需匹配 `*-controller-*.log` / `*-coordinator-*.log`（对应默认开启 `logging_config.log_collector_enabled` 后的 `{HOSTNAME}.log`）。关闭 collector 后的 `{HOSTNAME}_{pid}.log` 不会被采集。
+
 修改完配置后，在 `examples/deployer` 目录下执行以下命令更新配置：
 
 ```bash

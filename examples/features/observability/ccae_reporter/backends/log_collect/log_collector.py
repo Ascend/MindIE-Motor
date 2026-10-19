@@ -23,8 +23,8 @@ from ccae_reporter.backends.log_collect.data_class import LogFile
 DEFAULT_COLLECT_PATH = os.getenv("MOTOR_LOG_PATH", "/root/ascend/log")
 
 MONITOR_INTERVAL_MILLION_SECONDS = 3
-# {pod_name}_{pid}.log
-LOG_PATTERNS = "^.*-(controller|coordinator)-[a-zA-Z0-9]+-[a-zA-Z0-9]+_[0-9]+\\.log$"
+# Combined Motor logs: {HOSTNAME}.log, e.g. <prefix>-controller-<replica>-<hash>.log
+LOG_PATTERNS = "^.*-(controller|coordinator)(-[a-zA-Z0-9]+)+\\.log$"
 
 
 class CollectHandler(FileSystemEventHandler):
@@ -83,7 +83,7 @@ class CollectHandler(FileSystemEventHandler):
         pattern = LOG_PATTERNS
         if self.identity:
             identity_escaped = re.escape(self.identity.lower())
-            pattern = f"^.*-({identity_escaped})-[a-zA-Z0-9]+-[a-zA-Z0-9]+_[0-9]+\\.log$"
+            pattern = f"^.*-({identity_escaped})(-[a-zA-Z0-9]+)+\\.log$"
 
         if not bool(re.match(pattern, filename, re.IGNORECASE)):
             return False

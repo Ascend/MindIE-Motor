@@ -114,12 +114,23 @@ def _create_log_file(log_file):
     os.chmod(log_file, mode)
 
 
+VALID_LOG_LEVELS = {'DEBUG', 'INFO', 'WARN', 'ERROR', 'CRITICAL', UNSET_LOGGER}
+
+
 def init_logger() -> LogParams:
     log_params = LogParams()
     # set log path; keep LogParams default when MOTOR_LOG_PATH is unset
     root_log_path = os.getenv("MOTOR_LOG_PATH")
     if root_log_path:
         log_params.path = root_log_path
+    # CCAE_REPORTER_LOG_LEVEL: DEBUG / INFO / WARN / ERROR / CRITICAL / NULL
+    log_level = os.getenv("CCAE_REPORTER_LOG_LEVEL", "").strip().upper()
+    if log_level == "WARNING":
+        log_level = "WARN"
+    if log_level in VALID_LOG_LEVELS:
+        log_params.level = log_level
+    elif log_level:
+        logging.getLogger(__name__).warning("Invalid CCAE_REPORTER_LOG_LEVEL %r; falling back to INFO", log_level)
     log_params.rotate_options = {FILE_SIZE: 20 * 1024 * 1024, FILE_COUNT: 10, FILE_PER_PROCESS: 10}
     return log_params
 

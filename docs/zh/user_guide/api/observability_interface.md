@@ -806,6 +806,13 @@ CCAE（Cluster Computing Autonomous Engine）是集群自智引擎系统。Motor
 | `north_config.ip` | CCAE 平台 IP。 |
 | `north_config.port` | CCAE 平台北向 HTTP 端口。 |
 
+Reporter 进程还读取下列环境变量（可写入 `env.json` 的 `motor_controller_env` / `motor_coordinator_env`，或直接 export）：
+
+| 环境变量 | 说明 |
+| --- | --- |
+| `CCAE_REPORTER_LOG_LEVEL` | Reporter 自身日志级别。可选 `DEBUG` / `INFO` / `WARN` / `ERROR` / `CRITICAL` / `NULL`（关闭文件日志）。未设置或为空时为 `INFO`。非法非空值会输出 warning 并回退到 `INFO`。`WARNING` 视为 `WARN`。 |
+| `MOTOR_LOG_PATH` | Reporter 自身日志目录与采集根目录。未设置时默认 `/root/ascend/log`。标准部署脚本会从 `MOTOR_LOG_ROOT_PATH` 推导并注入该变量。 |
+
 修改配置后，可在 `examples/deployer` 目录更新配置：
 
 ```bash
@@ -842,6 +849,8 @@ Reporter 的主要交互流程如下：
 | 实例清单 | `/observability/inventory` | `/rest/ccaeommgmt/v1/managers/mindie/inventory` |
 | 指标 | Coordinator `/metrics`（参见[指标接口](./metrics_interfaces.md#接口格式)） | 随实例清单以 Base64 编码写入 `metrics.metric` 字段 |
 | 精度控制 | `/controller/check_instance`、`/controller/terminate_instance` | `/rest/ccaeommgmt/v1/managers/mindie/precisioncontrol` |
-| 日志 | 本地日志采集 | CCAE 返回的 Kafka topic |
+| 日志 | 本地日志采集（见下文） | CCAE 返回的 Kafka topic |
+
+日志采集只监控 Controller / Coordinator 日志，文件名需匹配 `*-controller-*.log` / `*-coordinator-*.log`。默认开启 `logging_config.log_collector_enabled` 时，Motor 落盘为 `{HOSTNAME}.log`（例如 `<prefix>-controller-<replica>-<hash>.log`），Reporter 会采集这类文件。关闭 collector 后的 `{HOSTNAME}_{pid}.log` 不再匹配，不会上报。
 
 Controller 侧 CCAE Reporter 处理 precision control 时复用 `/controller/terminate_instance`。请求体除必填 `instance_id`、`reason` 外，可携带 `p_instance_id` 和 `precision_alarm_clear=true`：`instance_id` 对应告警中的 D 实例，`p_instance_id` 对应告警中的 P 实例；Controller 在终止 P/D 实例组后附加清除该实例组的精度告警。`precision_alarm_clear` 为可选字段，普通实例终止请求无需携带。
