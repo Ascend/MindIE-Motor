@@ -176,8 +176,8 @@ class TestSchedulerConnectionManager(unittest.TestCase):
         ):
             asyncio.run(scenario())
 
-    def test_from_config_logs_dp_stats_only_on_inference_worker_zero(self):
-        """Obs (worker_index None) and non-zero workers must not dump global SHM tokens."""
+    def test_from_config_logs_dp_stats_on_all_inference_workers(self):
+        """Every inference worker emits its counts; Obs remains disabled."""
         from motor.config.coordinator import CoordinatorConfig
 
         with patch(
@@ -192,9 +192,50 @@ class TestSchedulerConnectionManager(unittest.TestCase):
             mock_cls.reset_mock()
             config.worker_index = 1
             SchedulerConnectionManager.from_config(config)
-            self.assertFalse(mock_cls.call_args[0][0].log_dp_stats)
+            self.assertTrue(mock_cls.call_args[0][0].log_dp_stats)
 
             mock_cls.reset_mock()
             config.worker_index = None
             SchedulerConnectionManager.from_config(config)
             self.assertFalse(mock_cls.call_args[0][0].log_dp_stats)
+
+    def test_all_workers_emit_1200_allocations_including_final_window(self):
+        """Counts must survive repeated windows and graceful disconnect on every worker."""
+        from motor.config.coordinator import CoordinatorConfig
+
+        async def scenario():
+            clients = []
+            for worker_index in range(5):
+                config = CoordinatorConfig()
+                config.worker_index = worker_index
+                config.inference_workers_config.num_workers = 5
+                client = SchedulerConnectionManager.from_config(config)._client
+                client._transport = AsyncMock()
+                client._transport.connect.return_value = True
+                client._init_cache = AsyncMock()
+                client._push_subscriber = None
+                clients.append(client)
+                await client.connect()
+            try:
+                # Five identical windows; the last one is flushed by disconnect.
+                for window in range(5):
+                    for client in clients:
+                        for _ in range(48):
+                            client._dp_stats.record(1, 0)
+                        if window < 4:
+                            client._emit_dp_stats()
+            finally:
+                for client in clients:
+                    await client.disconnect()
+                    await client.disconnect()  # Must not emit the final requests twice.
+
+        with patch("motor.coordinator.scheduler.runtime.dp_stats.logger.info") as mock_log:
+            asyncio.run(scenario())
+        totals = {}
+        for call in mock_log.call_args_list:
+            if not call.args[0].startswith("dp_stats "):
+                continue
+            worker = call.args[5]
+            totals[worker] = totals.get(worker, 0) + call.args[3]
+        self.assertEqual(totals, dict.fromkeys(range(5), 240))
+        self.assertEqual(sum(totals.values()), 1200)

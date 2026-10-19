@@ -464,9 +464,23 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         matched_raw: object,
         block_size: int,
     ) -> tuple[int, int, int] | None:
-        """Return exclusive HBM (NPU), CPU, and Disk matched token counts from conductor blocks."""
+        """Return HBM/CPU/Disk hit tokens for the scheduled log.
+
+        Prefer absolute ``*_end`` coverage so a same-prefix CPU replica is visible
+        even when exclusive ``cpu_blocks`` is 0. Fall back to exclusive ``*_blocks``.
+        Scoring still uses exclusive blocks via ``_weighted_matched_tokens``.
+        """
         if not isinstance(matched_raw, dict) or block_size <= 0:
             return None
+        npu_end = matched_raw.get("npu_end")
+        cpu_end = matched_raw.get("cpu_end")
+        disk_end = matched_raw.get("disk_end")
+        if npu_end is not None or cpu_end is not None or disk_end is not None:
+            return (
+                int(npu_end or 0) * block_size,
+                int(cpu_end or 0) * block_size,
+                int(disk_end or 0) * block_size,
+            )
         npu = matched_raw.get("npu_blocks")
         cpu = matched_raw.get("cpu_blocks")
         disk = matched_raw.get("disk_blocks")

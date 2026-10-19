@@ -204,6 +204,22 @@ def test_build_multi_endpoints_slices_ranktable_devices_per_dp(instance_assemble
         ["14", "15"],
         ["6", "7"],
     ]
+    assert list(endpoints.keys()) == [endpoint.id for endpoint in endpoints.values()] == [0, 1]
+
+
+def test_build_multi_endpoints_keys_by_global_id(instance_assembler, test_config):
+    """Pod endpoint maps are keyed by global Endpoint.id, not the local 0..n-1 index."""
+    msg = create_register_msg(test_config.get("job_name", "decode"), test_config["pod_ip1"], test_config)
+    endpoints = instance_assembler._build_multi_endpoints(msg, 4)
+    assert list(endpoints.keys()) == [4, 5]
+    assert [ep.id for ep in endpoints.values()] == [4, 5]
+
+
+def test_build_single_endpoint_keys_by_global_id(instance_assembler, test_config):
+    msg = create_register_msg(test_config.get("job_name", "decode"), test_config["pod_ip1"], test_config)
+    endpoints = instance_assembler._build_single_endpoint(msg, 3)
+    assert list(endpoints.keys()) == [3]
+    assert endpoints[3].id == 3
 
 
 def register_instance_with_pods(assembler: InstanceAssembler, job_name: str, config: dict, pod_count: int = 2) -> bool:
@@ -2565,6 +2581,56 @@ def test_cross_node_pcp_no_headless_when_nnodes_is_one(instance_assembler):
     # No endpoints should be headless
     for ep in instance.get_all_endpoints():
         assert ep.headless is False
+
+
+def test_reregister_does_not_mark_headless_when_nnodes_is_one(instance_assembler):
+    """Multi-pod DP (nnodes=1) keeps endpoints routable even when node_rank is the pod index."""
+    endpoints_pod0 = [
+        Endpoint(id=0, ip="10.244.204.243", business_port="10000"),
+        Endpoint(id=1, ip="10.244.204.243", business_port="10002"),
+        Endpoint(id=2, ip="10.244.204.243", business_port="10004"),
+        Endpoint(id=3, ip="10.244.204.243", business_port="10006"),
+    ]
+    endpoints_pod1 = [
+        Endpoint(id=4, ip="10.244.66.149", business_port="10000"),
+        Endpoint(id=5, ip="10.244.66.149", business_port="10002"),
+        Endpoint(id=6, ip="10.244.66.149", business_port="10004"),
+        Endpoint(id=7, ip="10.244.66.149", business_port="10006"),
+    ]
+
+    msg0 = ReregisterMsg(
+        job_name="test_reregister_nnodes1_headless",
+        model_name="test_model",
+        instance_id=1,
+        role="decode",
+        pod_ip="10.244.204.243",
+        nm_port="8088",
+        parallel_config=ParallelConfig(dp_size=8, tp_size=2),
+        endpoints=endpoints_pod0,
+        nnodes=1,
+        node_rank=0,
+        enable_multi_endpoints=True,
+    )
+    msg1 = ReregisterMsg(
+        job_name="test_reregister_nnodes1_headless",
+        model_name="test_model",
+        instance_id=1,
+        role="decode",
+        pod_ip="10.244.66.149",
+        nm_port="8088",
+        parallel_config=ParallelConfig(dp_size=8, tp_size=2),
+        endpoints=endpoints_pod1,
+        nnodes=1,
+        node_rank=1,
+        enable_multi_endpoints=True,
+    )
+    assert instance_assembler.reregister(msg0) == 0
+    assert instance_assembler.reregister(msg1) == 0
+
+    instance = instance_assembler.instances["test_reregister_nnodes1_headless"].instance
+    all_eps = instance.get_all_endpoints()
+    assert {ep.id for ep in all_eps} == {0, 1, 2, 3, 4, 5, 6, 7}
+    assert all(ep.headless is False for ep in all_eps)
 
 
 def test_register_records_snapshot_dp_master_ip_when_is_master(instance_assembler, test_config):

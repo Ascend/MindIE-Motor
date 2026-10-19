@@ -630,10 +630,11 @@ class ConductorApiClient:
             query_data["tenant_id"] = TENANT_ID
 
         logger.debug(
-            "query_data : model=%s block_size=%s tokens=%d",
+            "conductor query tokens: model=%s block_size=%s n=%d head16=%s",
             query_data["model"],
             query_data["block_size"],
             len(encoded_ids),
+            encoded_ids[:16],
         )
 
         encoding = getattr(reg, "query_encoding", "msgpack")

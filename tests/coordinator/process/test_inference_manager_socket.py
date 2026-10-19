@@ -56,6 +56,20 @@ class TestCreateSharedSocket:
         finally:
             sock.close()
 
+    def test_two_processes_can_join_the_same_reuseport_group(self):
+        first = create_shared_socket("127.0.0.1", 0)
+        assert first is not None
+        try:
+            port = first.getsockname()[1]
+            second = create_shared_socket("127.0.0.1", port)
+            assert second is not None
+            try:
+                assert first.getsockname()[1] == second.getsockname()[1]
+            finally:
+                second.close()
+        finally:
+            first.close()
+
 
 def test_metaserver_bind_host_prefers_pod_ip(monkeypatch):
     monkeypatch.setenv("POD_IP", "10.0.0.8")

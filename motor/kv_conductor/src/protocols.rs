@@ -266,6 +266,12 @@ pub struct DpBlocks {
     pub cpu_blocks: u32,
     /// Exclusive Disk matched block count (beyond max(NPU, CPU) coverage).
     pub disk_blocks: u32,
+    /// Absolute HBM coverage end (blocks), before exclusive partition.
+    pub npu_end: u32,
+    /// Absolute CPU coverage end (blocks), before exclusive partition.
+    pub cpu_end: u32,
+    /// Absolute Disk coverage end (blocks), before exclusive partition.
+    pub disk_end: u32,
 }
 
 /// Per-instance match data returned in query response.
@@ -299,7 +305,8 @@ pub struct QueryResponse {
 //
 // ```text
 // { tenant_id: { instance_id: { longest_matched, DP:
-//   { rank: { matched_tokens, npu_blocks, cpu_blocks, disk_blocks } } } } }
+//   { rank: { matched_tokens, npu_blocks, cpu_blocks, disk_blocks,
+//             npu_end, cpu_end, disk_end } } } } } }
 // ```
 
 /// Content-Type values accepted as MessagePack on the query endpoints.
@@ -351,7 +358,7 @@ pub fn encode_query_response_msgpack(response: &QueryResponse, out: &mut Vec<u8>
                 .expect("write map len");
             for (rank, blocks) in &data.dp {
                 write_str(out, rank).expect("write rank");
-                write_map_len(out, 4).expect("blocks map len");
+                write_map_len(out, 7).expect("blocks map len");
                 write_str(out, "matched_tokens").expect("write key");
                 write_u32(out, blocks.matched_tokens).expect("write matched_tokens");
                 write_str(out, "npu_blocks").expect("write key");
@@ -360,6 +367,12 @@ pub fn encode_query_response_msgpack(response: &QueryResponse, out: &mut Vec<u8>
                 write_u32(out, blocks.cpu_blocks).expect("write cpu_blocks");
                 write_str(out, "disk_blocks").expect("write key");
                 write_u32(out, blocks.disk_blocks).expect("write disk_blocks");
+                write_str(out, "npu_end").expect("write key");
+                write_u32(out, blocks.npu_end).expect("write npu_end");
+                write_str(out, "cpu_end").expect("write key");
+                write_u32(out, blocks.cpu_end).expect("write cpu_end");
+                write_str(out, "disk_end").expect("write key");
+                write_u32(out, blocks.disk_end).expect("write disk_end");
             }
         }
     }
@@ -780,6 +793,9 @@ mod tests {
                 npu_blocks: 6,
                 cpu_blocks: 0,
                 disk_blocks: 0,
+                npu_end: 6,
+                cpu_end: 6,
+                disk_end: 0,
             },
         );
         imd.dp.insert(
@@ -789,6 +805,9 @@ mod tests {
                 npu_blocks: 0,
                 cpu_blocks: 4,
                 disk_blocks: 0,
+                npu_end: 0,
+                cpu_end: 4,
+                disk_end: 0,
             },
         );
 
@@ -802,8 +821,11 @@ mod tests {
         assert_eq!(parsed["DP"]["0"]["matched_tokens"], 768);
         assert_eq!(parsed["DP"]["0"]["npu_blocks"], 6);
         assert_eq!(parsed["DP"]["0"]["cpu_blocks"], 0);
+        assert_eq!(parsed["DP"]["0"]["npu_end"], 6);
+        assert_eq!(parsed["DP"]["0"]["cpu_end"], 6);
         assert_eq!(parsed["DP"]["1"]["matched_tokens"], 1024);
         assert_eq!(parsed["DP"]["1"]["cpu_blocks"], 4);
+        assert_eq!(parsed["DP"]["1"]["cpu_end"], 4);
     }
 
     // ── KvEventWirePayload normalization ────────────────────────────────
@@ -1027,6 +1049,9 @@ mod tests {
                 npu_blocks: 3,
                 cpu_blocks: 0,
                 disk_blocks: 0,
+                npu_end: 3,
+                cpu_end: 3,
+                disk_end: 0,
             },
         );
         dp.insert(
@@ -1036,6 +1061,9 @@ mod tests {
                 npu_blocks: 1,
                 cpu_blocks: 3,
                 disk_blocks: 0,
+                npu_end: 1,
+                cpu_end: 4,
+                disk_end: 0,
             },
         );
         instances.insert(
