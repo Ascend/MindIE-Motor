@@ -321,7 +321,7 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
        fi
 
        export PATH="$PATH:/usr/local/go/bin"
-       export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib64:/lib64:${LD_LIBRARY_PATH:-}"
+       export LD_LIBRARY_PATH="/usr/local/lib:/lib64:${LD_LIBRARY_PATH:-}"
        export ASCEND_LOCAL_COMM_RES_PATH="${ASCEND_LOCAL_COMM_RES_PATH:-/etc/hixlep}"
    }
    ```

@@ -323,7 +323,7 @@ set_a5_engine_env() {
     fi
 
     export PATH="$PATH:/usr/local/go/bin"
-    export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib64:/lib64:${LD_LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH="/usr/local/lib:/lib64:${LD_LIBRARY_PATH:-}"
     # UBOE uses ASCEND_GLOBAL_RESOURCE_CONFIG. UB uses ASCEND_LOCAL_COMM_RES.
     # Neither may fall through to hixlep. Legacy A5 that still uses hixlep keeps it.
     if [ -z "${ASCEND_LOCAL_COMM_RES_PATH:-}" ] && [ -z "${ASCEND_LOCAL_COMM_RES:-}" ]; then

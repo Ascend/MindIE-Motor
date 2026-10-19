@@ -36,7 +36,6 @@ HUAWEI_SCHEDULE_POLICY_ANNOTATION = "huawei.com/schedule_policy"
 A5_SCHEDULE_POLICY = "chip8-node8"
 # Align with ENTER_DOCKER_RUN_A5 host mounts (engine template already has driver / hccn.conf).
 A5_HOST_PATH_VOLUMES = [
-    {"name": "host-lib64", "path": "/usr/lib64"},
     {"name": "hixlep", "path": "/etc/hixlep"},
     {"name": "route-conf", "path": "/lib/route.conf"},
     {"name": "urma-admin", "path": "/usr/bin/urma_admin", "type": "File"},
@@ -545,7 +544,6 @@ ENTER_DOCKER_RUN_A5 = """docker run -it --name "$NAME" -u root \\
   -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \\
   -v /etc/hccn.conf:/etc/hccn.conf \\
   -v /etc/hccl_rootinfo.json:/etc/hccl_rootinfo.json \\
-  -v /usr/lib64:/usr/lib64 \\
   -v /etc/hixlep:/etc/hixlep \\
   -v /lib/route.conf:/lib/route.conf \\
   -v /usr/bin/urma_admin:/usr/bin/urma_admin \\
@@ -593,7 +591,6 @@ ENTER_DOCKER_RUN_A5_POD16 = """docker run -it --name "$NAME" -u root \\
   -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \\
   -v /etc/hccn.conf:/etc/hccn.conf \\
   -v /etc/hccl_rootinfo.json:/etc/hccl_rootinfo.json \\
-  -v /usr/lib64:/usr/lib64 \\
   -v /etc/hixlep:/etc/hixlep \\
   -v /lib/route.conf:/lib/route.conf \\
   -v /usr/bin/urma_admin:/usr/bin/urma_admin \\
