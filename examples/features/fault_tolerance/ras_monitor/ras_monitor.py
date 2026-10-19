@@ -29,6 +29,7 @@ MGMT_API_KEY_HEADER = "X-Motor-Management-Key"
 INSTANCE_STATUS_POLL_INTERVAL = 10
 INSTANCE_STATUS_UNHEALTHY_THRESHOLD = 2
 _DEPLOY_NOSTEP_SUPPORTED = None
+_DEPLOY_SKIP_CHECK_SUPPORTED = None
 
 
 def format_address(host, port):
@@ -102,10 +103,30 @@ def deploy_supports_nostep():
     return _DEPLOY_NOSTEP_SUPPORTED
 
 
+def deploy_supports_skip_check():
+    """Return True when local deploy.py accepts --skip-check (for backward compatibility)."""
+    global _DEPLOY_SKIP_CHECK_SUPPORTED
+    if _DEPLOY_SKIP_CHECK_SUPPORTED is not None:
+        return _DEPLOY_SKIP_CHECK_SUPPORTED
+    result = subprocess.run(
+        [shutil.which("python3"), "deploy.py", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    help_text = f"{result.stdout or ''}{result.stderr or ''}"
+    _DEPLOY_SKIP_CHECK_SUPPORTED = "--skip-check" in help_text
+    if _DEPLOY_SKIP_CHECK_SUPPORTED:
+        logging.info("deploy.py supports --skip-check; ras_monitor will bypass the deployment security pre-check")
+    return _DEPLOY_SKIP_CHECK_SUPPORTED
+
+
 def build_deploy_cmd(boot_args, *extra_args):
     cmd = ["python3", "deploy.py"] + list(boot_args) + list(extra_args)
     if deploy_supports_nostep() and "--nostep" not in cmd:
         cmd.append("--nostep")
+    if deploy_supports_skip_check() and "--skip-check" not in cmd:
+        cmd.append("--skip-check")
     return cmd
 
 
@@ -163,7 +184,7 @@ def fetch_ip_with_namespace_and_name(namespace: str, name: str) -> str:
             # Check if READY status is 1/1
             if 0 <= ready_idx < len(line):
                 ready_status = line[ready_idx:].split()[0].strip()
-                if ready_status == "1/1":
+                if ready_status in ("1/1", "2/2"):
                     return line[ip_idx:].split()[0].strip()
     return ""
 

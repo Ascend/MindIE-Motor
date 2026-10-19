@@ -98,3 +98,34 @@ def test_healthy_result_resets_consecutive_all_unhealthy_count():
 
     assert query.call_count == 4
     assert sleep.call_count == 3
+
+
+def test_build_deploy_cmd_appends_supported_no_step_and_skip_check():
+    with (
+        patch.object(ras_monitor, "deploy_supports_nostep", return_value=True),
+        patch.object(ras_monitor, "deploy_supports_skip_check", return_value=True),
+    ):
+        cmd = ras_monitor.build_deploy_cmd(["--config_dir", "config"], "--dry-run")
+
+    assert cmd == ["python3", "deploy.py", "--config_dir", "config", "--dry-run", "--nostep", "--skip-check"]
+
+
+def test_build_deploy_cmd_omits_flags_unsupported_by_older_deploy():
+    with (
+        patch.object(ras_monitor, "deploy_supports_nostep", return_value=False),
+        patch.object(ras_monitor, "deploy_supports_skip_check", return_value=False),
+    ):
+        cmd = ras_monitor.build_deploy_cmd(["--config_dir", "config"])
+
+    assert cmd == ["python3", "deploy.py", "--config_dir", "config"]
+
+
+def test_build_deploy_cmd_does_not_duplicate_user_provided_flags():
+    with (
+        patch.object(ras_monitor, "deploy_supports_nostep", return_value=True),
+        patch.object(ras_monitor, "deploy_supports_skip_check", return_value=True),
+    ):
+        cmd = ras_monitor.build_deploy_cmd(["--config_dir", "config", "--nostep", "--skip-check"])
+
+    assert cmd.count("--nostep") == 1
+    assert cmd.count("--skip-check") == 1
