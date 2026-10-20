@@ -12,7 +12,6 @@ import json
 import sys
 from pathlib import Path
 
-
 DEPLOYER_ROOT = Path(__file__).resolve().parents[3] / "examples" / "deployer"
 sys.path.insert(0, str(DEPLOYER_ROOT))
 
@@ -32,6 +31,7 @@ def test_shared_configmap_assets_have_unique_runtime_names():
     assert {
         "boot.sh",
         "common.sh",
+        "instance_config.py",
         "engine.sh",
         "kv_conductor.sh",
         "mf_store.sh",

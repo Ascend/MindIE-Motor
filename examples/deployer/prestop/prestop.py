@@ -65,8 +65,68 @@ CONFIG_SEARCH_PATHS = [
 ]
 
 
+# Set only after a per-instance marker and its runtime config have been validated.
+_INSTANCE_CONFIG_ROLE = None
+
+
+def load_instance_config():
+    """Use a validated runtime config so PreStop addresses this instance only."""
+    global _INSTANCE_CONFIG_ROLE
+    _INSTANCE_CONFIG_ROLE = None
+    config_dir = os.environ.get("CONFIG_PATH", "")
+    if not config_dir:
+        return False, None
+    marker_path = os.path.join(config_dir, "instance-ports.json")
+    if not os.path.lexists(marker_path):
+        return False, None
+    try:
+        role = os.environ.get("ROLE", "")
+        index = os.environ.get("INSTANCE_INDEX", "0")
+        if role not in ("prefill", "decode") or not re.fullmatch(r"[0-9]+", index):
+            raise ValueError("invalid instance role or index")
+        with open(marker_path, "r", encoding="utf-8") as f:
+            marker = json.load(f)
+        if not isinstance(marker, dict):
+            raise TypeError("instance marker must be an object")
+        if (
+            marker.get("role") != role
+            or not isinstance(marker.get("index"), int)
+            or isinstance(marker.get("index"), bool)
+            or marker["index"] != int(index)
+        ):
+            raise ValueError("instance marker role/index does not match this Pod")
+        expected = os.path.realpath(os.path.join(config_dir, "user_config.json"))
+        effective_path = marker.get("effective_config")
+        if (
+            not isinstance(effective_path, str)
+            or not os.path.isabs(effective_path)
+            or os.path.realpath(effective_path) != expected
+        ):
+            raise ValueError("instance marker config path does not match CONFIG_PATH")
+        with open(expected, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        if not isinstance(config, dict):
+            raise TypeError("instance runtime config must be an object")
+        nm_port = get_val_by_key_path(
+            config, f"motor_engine_{role}_config.motor_nodemanger_config.api_config.node_manager_port"
+        )
+        if isinstance(nm_port, bool) or not isinstance(nm_port, int) or not 1024 <= nm_port <= 65535:
+            raise ValueError("instance runtime config has no valid NodeManager port")
+        if not isinstance(marker.get("ports"), dict) or marker["ports"].get("node_manager_port") != nm_port:
+            raise ValueError("instance marker port does not match the runtime config")
+        _INSTANCE_CONFIG_ROLE = role
+        logger.info("Loaded instance %s/%s config from: %s", role, index, expected)
+        return True, config
+    except (OSError, ValueError, TypeError) as exc:
+        logger.error("Refusing PreStop with an invalid instance config: %s", exc)
+        return True, None
+
+
 def load_config():
     """Load user_config.json — tries configmap mount first, then CONFIG_PATH."""
+    has_instance_config, instance_config = load_instance_config()
+    if has_instance_config:
+        return instance_config
     for base_path in CONFIG_SEARCH_PATHS:
         if not base_path:
             continue
@@ -80,7 +140,7 @@ def load_config():
                 if isinstance(config, dict):
                     logger.info("Loaded config from: %s", user_config_path)
                     return config
-            except Exception as e:
+            except (OSError, ValueError, TypeError) as e:
                 logger.warning("Failed to load config from %s: %s", user_config_path, e)
                 continue
 
@@ -97,6 +157,11 @@ NM_PORT_PATHS = [
 
 def get_nm_port(config):
     """Read NodeManager port from config JSON, with default fallback."""
+    if _INSTANCE_CONFIG_ROLE is not None:
+        return get_val_by_key_path(
+            config,
+            f"motor_engine_{_INSTANCE_CONFIG_ROLE}_config.motor_nodemanger_config.api_config.node_manager_port",
+        )
     for path in NM_PORT_PATHS:
         port = get_val_by_key_path(config, path)
         if isinstance(port, int) and 1024 <= port <= 65535:
@@ -163,7 +228,7 @@ def _http_post_json(url, timeout=10):
         if len(lines) == 2:
             return int(lines[1]), lines[0]
         return None, output
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
         logger.error("curl POST failed: %s", e)
         return None, None
 
@@ -184,7 +249,7 @@ def _http_get_text(url, timeout=5, extra_args=None):
         if result.returncode == 0 and result.stdout:
             return result.stdout
         logger.debug("curl GET failed: returncode=%s, stderr=%s", result.returncode, result.stderr[:200])
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         logger.debug("curl GET failed: %s", e)
     return None
 

@@ -4,7 +4,7 @@ Ascend 950PR&950DT系列产品上用 host RoCE 做 HYBM 池化、Prefill 和 Dec
 
 下文的 IP、节点名、卡号、hugepage 大小、hixlep 路径都是一套现场例子（Prefill 在 `motor-master-109`，Decode 在 `motor-worker-104`，命名空间 `mindie-motor-dsv4-roce`）。换环境时换成自己的值。
 
-第 1～12 节是这套跨节点 host RoCE。同一台机器上 Prefill 和 Decode 一起跑、容器不开特权时，用第 13 节，不要套第 3、6、8 节。
+第 1～12 节是这套跨节点 host RoCE。同一台机器上 Prefill 和 Decode 一起跑、容器不开特权时，用第 13 节，不要套第 3、6、8 节；同机多个 P/D 实例的端口配置见第 14 节。
 
 `deploy.py` 和 `delete.sh` 不用改。
 
@@ -97,14 +97,41 @@ Prefill 读的是 `/home/.../hixlep`，不是 `/etc/hixlep`。没有 `hixlep-roc
 
 ## 5. 使用 host 网络
 
-host 网 RoCE 要看到宿主机网卡。在 `infer_service_template.yaml` 的 Prefill 和 Decode Pod 上加：
+host 网 RoCE 要看到宿主机网卡。在 `examples/deployer/yaml_template/infer_service_template.yaml` 中，分别给 Prefill 和 Decode 的 **Pod spec** 增加 `hostNetwork: true` 和 `dnsPolicy: ClusterFirstWithHostNet`。InferServiceSet 的层级如下，只增加这两个字段，保留原有角色定义、容器、调度及挂载配置：
 
 ```yaml
-hostNetwork: true
-dnsPolicy: ClusterFirstWithHostNet
+spec:
+  template:
+    roles:
+      - name: prefill
+        spec:
+          template:
+            spec:
+              hostNetwork: true
+              dnsPolicy: ClusterFirstWithHostNet
+      - name: decode
+        spec:
+          template:
+            spec:
+              hostNetwork: true
+              dnsPolicy: ClusterFirstWithHostNet
 ```
 
-hostNetwork 访问不了 kube-dns 的 ClusterIP（现场是 `10.96.0.10`）。Decode 曾因此起不来。在 `boot.sh` 的 engine 分支里，如果 `/etc/resolv.conf` 里还有这个 ClusterIP，就把它换成本集群 CoreDNS Pod 的 IP，并放在最前面。
+普通 Deployment/StatefulSet（包括 `multi_deployment` 的 `engine_template.yaml`）则放在 `spec.template.spec`：
+
+```yaml
+spec:
+  template:
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+```
+
+两种写法都是设置 PodSpec，不能把普通 Deployment 的层级直接套在 InferServiceSet 顶层。`dnsPolicy` 指定 host 网络 Pod 使用集群 DNS；它不会自动修复节点到 DNS 的路由。端口适配开关 `MOTOR_INSTANCE_PORTS_ENABLE` 也不会自动开启 host 网络。
+
+host网络下同一宿主机上运行多个 P/D 实例时，参见[同机多实例 P/D 的端口配置](#14-同机多实例-pd-的端口配置)。
+
+若现场 hostNetwork Pod 访问不了 kube-dns 的 ClusterIP（本例是 `10.96.0.10`），Decode 可能因此起不来。先核对集群 DNS 和路由；确需按本例规避时，在 `boot.sh` 的 engine 分支里，将 `/etc/resolv.conf` 中该 ClusterIP 换成本集群 CoreDNS Pod 的 IP，并放在最前面。
 
 先查出 CoreDNS Pod IP，不要照抄例子里的地址：
 
@@ -283,7 +310,7 @@ python3 deploy.py --config_dir <本次 user_config 目录>
 
 在部署副本的 `examples/deployer/yaml_template/infer_service_template.yaml` 里改 Prefill 和 Decode。角色如果拆在别的模板文件里，就改那几份，不要改完再合入主干。
 
-Pod 上保留：
+Prefill 和 Decode 的 Pod spec 均按第 5 节的资源层级设置并保留：
 
 ```yaml
 hostNetwork: true
@@ -387,3 +414,123 @@ Prefill 和 Decode 在同一台机器上时，RoCE 流量要从本机地址出�
 ### 13.5 不要和跨节点做法混用
 
 不要同时做第 3 节的一律特权、第 4 节的整棵 `/dev/infiniband`、第 6 节只给 Prefill 的 `416Gi` 大页、第 8 节的 `service.py` 物理卡补丁。那些是跨节点、容器能看见全部卡时的做法。这一节由调度器分卡，逻辑卡从 0 编号。
+
+## 14. 同机多实例 P/D 的端口配置
+
+同一节点上运行多个使用 `hostNetwork` 的 Prefill/Decode Pod 时，各实例共享宿主机端口空间。
+仅区分 Prefill 和 Decode 的基础端口，不能区分同一角色的 P0、P1。这里介绍按实例编号生成端口的可选部署能力。
+
+### 14.1 适用范围
+
+- Kubernetes InferServiceSet 部署，使用 MindCluster 注入的 `ROLE` 和 `INSTANCE_INDEX`。
+- 每个实例一个 Pod，P/D 的基础端口均显式配置。
+- 用户自行确认节点、实例放置、NPU、RoCE 设备、大页及网络条件满足部署要求。
+- 此功能只生成实例配置，继续使用 Motor 原生部署器及 NodeManager。
+
+默认不启用。多 Pod 组成一个实例、Docker、Slurm、encode 和 union 混部不属于本次端口适配的支持范围；这些角色不会进入 P/D 转换分支，仍走原流程。混部不能直接套用本例，应单独规划端口并验证。
+同一节点部署多个 InferServiceSet 时，还需要给不同服务规划不同的基础端口；实例编号只在各自服务内有意义。
+
+### 14.2 配置方法
+
+在 `env.json` 的 `motor_common_env` 中增加：
+
+```json
+{
+  "MOTOR_INSTANCE_PORTS_ENABLE": "1",
+  "MOTOR_INSTANCE_PORT_STRIDE": "100",
+  "MOTOR_INSTANCE_KV_PORT_STRIDE": "100",
+  "MOTOR_INSTANCE_ASCEND_PORT_STRIDE": "4000",
+  "MOTOR_INSTANCE_STORE_PORT_STRIDE": "200"
+}
+```
+
+四个 stride 分别作用于管理/API/DP RPC 端口、Connector KV 端口、Ascend 基础端口和 Store HIXL 端口。
+偏移规则为：`实例实际端口 = 当前角色基础端口 + INSTANCE_INDEX × stride`。
+默认 stride 与上例相同；端口或偏移非法时拒绝启动，不截断、不回绕。
+
+部署器自动把 `startup/instance_config.py` 分发到 ConfigMap。启用后使用这个仓内工具，无需共享挂载个人目录中的脚本。
+`MOTOR_INSTANCE_CONFIG_ADAPTER` 可显式指定兼容的部署适配脚本，属于运维配置，应只指向可信文件。
+
+在 `user_config.json` 的 P/D `motor_nodemanger_config` 中均设置：
+
+```json
+{
+  "api_config": {"node_manager_port": 11026},
+  "endpoint_config": {"base_port": 11000},
+  "port_allocator_config": {"enable": false}
+}
+```
+
+上例是 Prefill，Decode 需要自己的基础端口，例如 `12026` / `12000`。
+同时显式设置 P/D `engine_config.data_parallel_rpc_port` 和所用 Connector 的 `kv_port`。
+`motor_nodemanger_config` 是现有配置键的实际拼写。显式实例端口方案要求关闭端口分配器；未关闭时拒绝转换。
+
+P/D 各自的环境中还需要设置基础 `ASCEND_BASE_PORT` 和 `HIXL_LISTEN_PORT`。
+端口规划不仅要保证表中的起始值不同，还应预留引擎、底层通信实际使用的连续端口范围。
+
+### 14.3 单机 2P1D 示例
+
+在第 13 节非特权 RoCE 条件上，千问 Qwen3-8B 使用两个 P、一个 D，各实例一个 Pod、一个 NPU，TP=DP=PP=1。第 13 节的两份 RoCE 配额对应原 1P1D，本例三个实例需要至少三份。host 网络按第 5 节配置，开启后再设置下面的实例端口：
+
+| 参数 | P0 | P1 | D0 |
+| --- | ---: | ---: | ---: |
+| NodeManager 管理端口 | 11026 | 11126 | 12026 |
+| 引擎 API 起始端口 | 11000 | 11100 | 12000 |
+| DP RPC | 19000 | 19100 | 19001 |
+| `ASCEND_BASE_PORT` | 22000 | 26000 | 24000 |
+| `HIXL_LISTEN_PORT` | 26666 | 26866 | 26766 |
+| Connector `kv_port` | 30001 | 30101 | 30002 |
+
+配置只填写 P0/D0 的基础值。P1 的有效值由实例编号计算，不需要手工复制一份 Prefill 配置。
+
+### 14.4 配置同步、探针与退出
+
+1. `common.sh` 从 ConfigMap 原始 JSON 生成当前实例的有效配置。
+2. 配置写入 `$CONFIG_PATH/user_config.json`，并写入同目录的 `instance-ports.json`。
+3. 后台同步每次重新从原始 JSON 转换，保留新字段且不累计端口偏移。
+4. `engine.sh` 在角色环境初始化后设置实例通信端口，避免被角色基础值覆盖。
+5. 探针从 `CONFIG_PATH` 读取实例有效配置。
+6. PreStop 校验实例标记的角色、编号、路径、管理端口，随后只访问当前实例的 NodeManager。
+
+首次转换失败会阻止启动。后台转换失败保留上一份有效配置并停止该同步循环，错误写入日志，需修正配置并重新启动相应 Pod。
+PreStop 遇到损坏或不匹配的实例标记时拒绝访问共享配置中的其他端口。
+
+没有启用实例转换且没有实例标记时，保持原有配置同步和 PreStop 配置搜索顺序。
+`instance-ports.json` 是实例运行状态，不应作为 ConfigMap 输入，也不应跨实例复制。
+
+### 14.5 RoCE 与独立 Store 的配套条件
+
+端口修复不替代设备和网络配置。若 P0、P1、D0 各申请 `devic.es/roce: 1`，目标节点至少需要三份空闲可分配配额。
+设备插件公布的配额是共享设备资源计数，不代表新增物理网卡，也不代表带宽隔离。
+
+非特权 RoCE 还需按实际驱动/provider 配置设备访问、匹配的动态库、网络能力和内存锁定能力。
+使用独立 Store 大页时，Pod 需有匹配的 hugepage requests/limits；仅设置 `MC_STORE_USE_HUGEPAGE=1` 不会申请 Kubernetes 大页额度。
+同机 RoCE 回环是否可用应独立测试，宿主机策略路由和网关属于现场网络配置。
+
+某一 A5/B100 镜像的 Qwen3-8B 验证中，大批 dense KV 传输出现失败；保留 RoCE 和 standalone Store，
+在 P/D `ASCEND_GLOBAL_RESOURCE_CONFIG` 中合并下面参数后，约 900MiB 的独立写入、清零、读回和完整 SHA256 校验通过：
+
+```json
+{
+  "comm_resource_config.max_active_channels": 2,
+  "transfer_config.max_transfer_count_per_batch": 16
+}
+```
+
+这是已测组合的通信库配置规避，不是 Motor 修复底层通信库，也不是全局推荐默认值。
+应保留原有 JSON 中其他必要参数，并在所用 CANN/HIXL 版本上确认支持情况、功能和性能。
+
+### 14.6 验收
+
+先执行原生部署器 dry-run，核对生成 YAML 的资源、挂载及节点选择，再按正常部署流程提交。
+启动后确认三个实例实际配置中的端口符合规划，Coordinator `/readiness` 返回 `ready=true`。
+
+功能验收应同时检查：
+
+- 两个 P 都实际处理请求，D 返回正确内容；分别覆盖普通请求、流式请求和两个 P 同时工作的请求。
+- 重复长输入的外部 Store 写入及回读计数有增量，并对应到本轮请求日志。
+- 传输失败、超时和内部重试日志没有被 HTTP 200 掩盖。
+- Pod 没有意外重启，重新部署后结果可重复。
+
+为了区分本地 prefix cache 与外部 Store，可在功能验证配置中使用轮询调度并暂时关闭引擎本地 prefix caching。
+这些设置用于检查两个 P 和真实外部回读，不是生产调度或性能配置的统一要求。
