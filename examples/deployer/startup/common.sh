@@ -125,12 +125,7 @@ setup_ascend_cache_path() {
 }
 
 apply_patches() {
-    local patch_root="${MOTOR_PATCH_ROOT}"
-    if [ ! -f "${patch_root}/patch_apply.py" ] && [ -f "${SCRIPT_DIR}/../patch/patch_apply.py" ]; then
-        patch_root="$(cd "${SCRIPT_DIR}/../patch" && pwd)"
-        echo "Using patch tree: ${patch_root} (MOTOR_PATCH_ROOT=${MOTOR_PATCH_ROOT} missing)"
-    fi
-    local patch_script="${patch_root}/patch_apply.py"
+    local patch_script="${MOTOR_PATCH_ROOT}/patch_apply.py"
     if [ ! -f "$patch_script" ]; then
         echo "Warning: patch orchestrator not found: $patch_script"
         return 0

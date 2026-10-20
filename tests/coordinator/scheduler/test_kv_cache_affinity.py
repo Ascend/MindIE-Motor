@@ -550,24 +550,6 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
             (768, 128, 256),
         )
 
-    def test_tier_hit_tokens_prefers_absolute_ends(self):
-        """Same-prefix CPU replica is visible via cpu_end even when exclusive cpu_blocks is 0."""
-        self.assertEqual(
-            KvCacheAffinityPolicy._tier_hit_tokens(
-                {
-                    "npu_blocks": 16,
-                    "cpu_blocks": 0,
-                    "disk_blocks": 0,
-                    "npu_end": 16,
-                    "cpu_end": 16,
-                    "disk_end": 0,
-                    "matched_tokens": 65536,
-                },
-                block_size=4096,
-            ),
-            (65536, 65536, 0),
-        )
-
     def test_tier_hit_tokens_unavailable_without_blocks(self):
         """Legacy int / matched_tokens-only payloads omit tier breakdown."""
         self.assertIsNone(KvCacheAffinityPolicy._tier_hit_tokens(200, block_size=128))

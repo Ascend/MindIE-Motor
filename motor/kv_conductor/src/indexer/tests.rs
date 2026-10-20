@@ -350,8 +350,6 @@ fn test_cpu_replica_reported_when_hbm_hits_same_dp() {
     assert_eq!(dp0.npu_blocks, 1);
     // Same-prefix CPU replica is exclusive-attributed to NPU.
     assert_eq!(dp0.cpu_blocks, 0);
-    assert_eq!(dp0.npu_end, 1);
-    assert_eq!(dp0.cpu_end, 1);
     assert_eq!(dp0.matched_tokens, 4);
 }
 

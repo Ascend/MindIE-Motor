@@ -85,7 +85,7 @@ class SchedulerConnectionManager:
             dynamic_bucket_long_bucket_count=coordinator_config.scheduler_config.dynamic_bucket_long_bucket_count,
             kv_affinity=coordinator_config.scheduler_config.kv_affinity,
             dp_stats_window=coordinator_config.scheduler_config.dp_stats_window,
-            log_dp_stats=coordinator_config.worker_index is not None,
+            log_dp_stats=coordinator_config.worker_index == 0,
             tls_config=coordinator_config.infer_tls_config,
             on_instance_refreshed=on_instance_refreshed,
         )

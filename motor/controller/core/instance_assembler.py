@@ -452,13 +452,9 @@ class InstanceAssembler(ThreadSafeSingleton):
             self.ins_id_cnt = max(self.ins_id_cnt, msg.instance_id + 1)
 
         metadata.instance.add_node_mgr(msg.pod_ip, msg.nm_port, msg.device_num)
-        # Re-registration carries original node_rank. PCP slaves (stored nnodes > 1 and
-        # node_rank != 0) are headless. Multi-pod DP uses nnodes=1 and node_rank as the pod
-        # index, so those endpoints stay routable. Use the instance's stored nnodes rather
-        # than the message default.
-        nnodes = metadata.nnodes
-        if isinstance(nnodes, int) and nnodes > 1 and msg.node_rank != 0:
-            for endpoint in msg.endpoints:
+        # Re-registration carries original node_rank: mark slave endpoints as headless immediately
+        for endpoint in msg.endpoints:
+            if msg.node_rank != 0:
                 endpoint.headless = True
         metadata.instance.add_endpoints(msg.pod_ip, {endpoint.id: endpoint for endpoint in msg.endpoints})
         logger.info("Recovery instance assembler's info, current ins_id_idx is %d.", self.ins_id_cnt)
@@ -511,7 +507,7 @@ class InstanceAssembler(ThreadSafeSingleton):
 
         logger.info("Building single endpoint for pod %s, %d devices per endpoint", msg.pod_ip, devices_per_endpoint)
         return {
-            id_offset: Endpoint(
+            0: Endpoint(
                 id=id_offset,
                 ip=msg.pod_ip,
                 business_port=msg.business_port[0],
@@ -555,9 +551,8 @@ class InstanceAssembler(ThreadSafeSingleton):
                 break
 
             device_infos = self._build_device_infos(msg, start_idx, devices_per_endpoint, id_offset)
-            endpoint_id = id_offset + i
-            pod_endpoints[endpoint_id] = Endpoint(
-                id=endpoint_id,
+            pod_endpoints[i] = Endpoint(
+                id=id_offset + i,
                 ip=msg.pod_ip,
                 business_port=port,
                 bootstrap_port=msg.bootstrap_port,

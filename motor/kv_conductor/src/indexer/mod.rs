@@ -995,27 +995,16 @@ impl Indexer {
     ) -> Result<QueryResponse, KvConductorError> {
         let t0 = std::time::Instant::now();
 
-        let t_hash = std::time::Instant::now();
-        let block_hashes = compute_block_hash_for_seq(token_ids, block_size);
-        let hash_us = t_hash.elapsed().as_micros();
-        let head16: Vec<i64> = token_ids.iter().copied().take(16).collect();
-        let first_hash = block_hashes.first().map(|h| h.0);
-        tracing::debug!(
-            model = %model_name,
-            tenant = %tenant_id,
-            num_tokens = token_ids.len(),
-            block_size,
-            ?head16,
-            ?first_hash,
-            "conductor query tokens"
-        );
-
         let entry = self
             .get(model_name, tenant_id)
             .ok_or_else(|| KvConductorError::NoIndexer {
                 model_name: model_name.to_string(),
                 tenant_id: tenant_id.to_string(),
             })?;
+
+        let t_hash = std::time::Instant::now();
+        let block_hashes = compute_block_hash_for_seq(token_ids, block_size);
+        let hash_us = t_hash.elapsed().as_micros();
         let (overlap, medium_ends) = entry.find_matches_with_coverage(&block_hashes);
         tracing::debug!(
             num_tokens = token_ids.len(),
@@ -1103,9 +1092,6 @@ impl Indexer {
             dp_match.npu_blocks = npu;
             dp_match.cpu_blocks = cpu;
             dp_match.disk_blocks = disk;
-            dp_match.npu_end = ends.npu;
-            dp_match.cpu_end = ends.cpu;
-            dp_match.disk_end = ends.disk;
             dp_match.matched_tokens = covered.saturating_mul(block_size);
         }
 

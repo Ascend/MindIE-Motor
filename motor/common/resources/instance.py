@@ -485,8 +485,6 @@ class Instance(BaseModel):
         with self._lock:
             if ip in self.endpoints:
                 ignored_endpoint_ids = ignored_endpoint_ids or set()
-                # Heartbeat status is keyed by Endpoint.id (global DP rank). Pod maps
-                # may still be keyed by local index, so compare ids rather than dict keys.
                 expected_endpoints = {
                     endpoint.id: endpoint
                     for endpoint in self.endpoints[ip].values()

@@ -878,20 +878,6 @@ pub(crate) fn apply_vllm_event(
                     );
                 }
             } else {
-                if parent_block_hash.is_none() {
-                    let head16: Vec<i64> = token_ids.iter().copied().take(16).collect();
-                    let first_hash = computed_hashes.first().copied();
-                    tracing::debug!(
-                        model = %model_name,
-                        tenant = %tenant_id,
-                        num_tokens = token_ids.len(),
-                        block_size,
-                        num_blocks = num,
-                        ?head16,
-                        ?first_hash,
-                        "kv_event stored tokens"
-                    );
-                }
                 tracing::trace!(
                     model = %model_name, tenant = %tenant_id,
                     num_blocks = num,

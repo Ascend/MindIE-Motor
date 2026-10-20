@@ -205,16 +205,9 @@ class CoordinatorDaemon:
         port = self.config.api_config.coordinator_api_infer_port
         sock = create_shared_socket(host, port)
         if sock is not None:
-            bound_port = int(sock.getsockname()[1])
-            # Do not keep a parent listen fd in the SO_REUSEPORT group: it never
-            # accept()s, so a fraction of SYNs would sit in a dead queue.
-            try:
-                sock.close()
-            except Exception as e:
-                logger.warning("Ignored error closing parent infer probe socket: %s", e)
             num_workers = self.config.inference_workers_config.num_workers
             self._process_managers[PROCESS_KEY_INFERENCE] = InferenceProcessManager(
-                self.config, (host, bound_port), None, num_workers
+                self.config, (host, port), sock, num_workers
             )
         else:
             logger.warning("Shared socket not available, inference workers disabled")

@@ -260,17 +260,13 @@ Mooncake/Memcache central pool registration is not reconciled by that periodic p
 
 Worker-local successful SHM CAS allocations feed `DpStatsLogger` for every scheduling policy.
 `scheduler_config.dp_stats_window` is the emit interval (default 60 seconds; 0 disables).
-Every inference worker emits its local request counts, tagged with `worker=<index>`:
-`dp_stats instance=%s dp_rank=%s requests=%d active_tokens=%s worker=%s`.
-Sum `requests` across all worker logs and windows for each DP. These are successful
-allocation counts, not completed HTTP requests; PD stages/retries can allocate separately.
-`active_tokens` is a current shared-memory snapshot and must not be summed across workers.
-Nonzero request windows are always printed, including identical consecutive windows.
-Only unchanged idle snapshots are omitted (implicit baseline `(0, 0)`); drain-to-zero
-is logged once. Graceful disconnect flushes the final partial window before SHM detach;
-forced process termination can still lose unflushed counts.
-`record()` never logs by itself. Failed CAS attempts are not counted.
-Obs/standby (`worker_index is None`) do not dump. The implementation is
+Inference **worker 0** is the only printer: every tick it snapshots schema-4 SHM and logs one line per DP
+with this worker's request count and the current `active_tokens`
+(`dp_stats instance=%s dp_rank=%s requests=%d active_tokens=%s`).
+A DP whose `(requests, active_tokens)` pair is unchanged since the last printed line
+(implicit baseline `(0, 0)`) is omitted. Drain-to-zero is logged once.
+`record()` never logs by itself. Failed or retried CAS attempts are not counted.
+Obs and other workers do not dump (`worker_index == 0` only). The implementation is
 `scheduler/runtime/dp_stats.py`.
 
 ### Router Strategies (dynamic, by live topology)
@@ -362,7 +358,7 @@ Hot-reload is driven by a process-local `ConfigWatcher` in the **Inference Worke
 | `motor/coordinator/scheduler/policy/factory.py` | | `SchedulingPolicyFactory` registry |
 | `motor/coordinator/scheduler/runtime/scheduler_server.py` | | `AsyncSchedulerServer`: Mgmt control plane (ROUTER+PUB, CB, precision, SHM owner) |
 | `motor/coordinator/scheduler/runtime/scheduler_client.py` | | `AsyncSchedulerClient`: control-plane DEALER + instance cache + SHM CAS |
-| `motor/coordinator/scheduler/runtime/dp_stats.py` | | Per-worker timer: per-DP request counts + shared SHM `active_tokens`; preserve nonzero windows, skip unchanged idle snapshots, flush on disconnect |
+| `motor/coordinator/scheduler/runtime/dp_stats.py` | | Worker-0 timer: per-DP request counts + SHM `active_tokens` in one `dp_stats` line; skip unchanged snapshots (baseline `(0, 0)`) |
 | `motor/coordinator/scheduler/runtime/zmq_protocol.py` | | Request/response types, msgpack framing, topic constants |
 | `motor/coordinator/scheduler/allocate_arbitration.py` | | Shared LB/KVA/RR reselect (R4; no ZMQ) |
 | `motor/coordinator/scheduler/runtime/workload_shm/` | | schema-4 layout + Reader/Owner + `native.py` ctypes |

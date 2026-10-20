@@ -648,8 +648,8 @@ class SchedulerClientConfig:
     # kv_cache_affinity tunables (see SchedulerConfig.kv_affinity).
     kv_affinity: KvAffinityConfig | None = None
     dp_stats_window: int = 60
-    # Each inference worker dumps its request counts every dp_stats_window seconds.
-    # Obs/standby (worker_index is None) leave this off.
+    # Worker 0 dumps dp_stats every dp_stats_window seconds.
+    # Inference worker_index==0 sets this; Obs/standby (worker_index is None) leave it off.
     log_dp_stats: bool = False
     tls_config: Any | None = None
     on_instance_refreshed: OnInstanceRefreshedCallback | None = None
@@ -703,7 +703,7 @@ class AsyncSchedulerClient:
         self._kv_affinity_w_disk = max(0.0, float(affinity.w_disk))
         self._kv_affinity_hit_rate_threshold = min(1.0, max(0.0, float(affinity.hit_rate_threshold)))
 
-        self._dp_stats = DpStatsLogger(window_sec=config.dp_stats_window, worker_index=config.client_index)
+        self._dp_stats = DpStatsLogger(window_sec=config.dp_stats_window)
         self._log_dp_stats = bool(config.log_dp_stats)
         self._dp_stats_task: asyncio.Task | None = None
 
@@ -789,7 +789,7 @@ class AsyncSchedulerClient:
             await self._transport.disconnect()
 
     def _start_dp_stats_task(self) -> None:
-        """Start this worker's per-DP stats loop (requests + SHM tokens)."""
+        """Start the worker-0 per-DP stats loop (requests + SHM tokens)."""
         if not self._log_dp_stats or self._dp_stats._window_sec <= 0:
             return
         if self._dp_stats_task is not None and not self._dp_stats_task.done():
@@ -806,7 +806,6 @@ class AsyncSchedulerClient:
             await task
         except asyncio.CancelledError:
             pass
-        self._emit_dp_stats()
 
     async def _dp_stats_loop(self) -> None:
         """Sleep ``window_sec``, then log each DP's requests and SHM tokens."""
@@ -1201,12 +1200,7 @@ class AsyncSchedulerClient:
         }
         proposed = (proposed_instance.id, proposed_endpoint.id)
         excluded: set[tuple[int, int]] = set()
-        # Affinity-miss falls back to load_balance with top_k=1. Fast-path would then CAS the
-        # worker's stale proposal using a live SHM expected, so concurrent cold prefills pile
-        # onto the same endpoint. Re-pick the current global min and CAS against the load that
-        # decision saw; a concurrent add then CHANGED-retries onto the next emptiest pair.
-        # Pinned allocate must keep the pinned pair, so it stays on the validate-only path.
-        use_authoritative = candidate_policy == CANDIDATE_POLICY_LOAD_BALANCE and target_instance_id is None
+        use_authoritative = False
         native = self._workload_reader.native
         if native is None:
             return None
@@ -1274,7 +1268,6 @@ class AsyncSchedulerClient:
                 matched_tokens_map,
                 isl,
             )
-            decision_expected = float(out_endpoint.workload.active_tokens if out_endpoint.workload is not None else 0.0)
             meta = self._workload_reader.entry_meta(out_instance.id, out_endpoint.id)
             if meta is None or int(meta.get("flags", 0)) & FLAG_BLOCKED:
                 excluded.add(pair)
@@ -1284,7 +1277,7 @@ class AsyncSchedulerClient:
                 out_instance.id,
                 out_endpoint.id,
                 int(meta["generation"]),
-                decision_expected,
+                float(meta["active_tokens"]),
                 float(committed.active_tokens),
                 slot=meta.get("slot"),
             )
@@ -1313,7 +1306,7 @@ class AsyncSchedulerClient:
                 )
                 logger.info(
                     "scheduled role=%s req_id=%s input_tokens=%s instance=%s endpoint=%s policy=%s matched=%s "
-                    "npu(hbm)=%s cpu(dram)=%s disk=%s load=%s committed=%s score=%s fast_path=%s repicked=%s "
+                    "hbm=%s cpu=%s disk=%s load=%s committed=%s score=%s fast_path=%s repicked=%s "
                     "proposed=%s-%s hit_rate=%s",
                     role_str,
                     req_info.req_id,
