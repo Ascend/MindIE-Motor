@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -16,7 +14,7 @@ import threading
 from typing import Callable
 
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from watchdog.events import FileSystemEventHandler, FileSystemMovedEvent
 
 from motor.common.logger import get_logger
 
@@ -36,7 +34,7 @@ class ConfigFileHandler(FileSystemEventHandler):
         config_path: str,
         reload_callback: Callable[[], bool],
         config_update_callback: Callable[[], None] | None = None,
-        debounce_seconds: float = 1.0
+        debounce_seconds: float = 1.0,
     ) -> None:
         """
         Initialize the config file handler.
@@ -57,7 +55,15 @@ class ConfigFileHandler(FileSystemEventHandler):
 
     def on_modified(self, event):
         """Handle file modification events"""
-        if os.path.abspath(event.src_path) == self.config_path:
+        self._reload_if_matches(event.src_path)
+
+    def on_moved(self, event: FileSystemMovedEvent) -> None:
+        """Handle atomic replacements moved onto the configuration path."""
+        if not event.is_directory:
+            self._reload_if_matches(event.dest_path)
+
+    def _reload_if_matches(self, path: str) -> None:
+        if os.path.abspath(path) == self.config_path:
             current_time = time.time()
 
             with self._lock:
@@ -93,7 +99,7 @@ class ConfigWatcher:
         config_path: str,
         reload_callback: Callable[[], bool],
         config_update_callback: Callable[[], None] | None = None,
-        debounce_seconds: float = 1.0
+        debounce_seconds: float = 1.0,
     ) -> None:
         """
         Initialize the configuration watcher.
@@ -117,7 +123,7 @@ class ConfigWatcher:
     def _get_inotify_limit() -> int:
         """Get current inotify max_user_instances limit"""
         try:
-            with open(INOTIFY_MAX_USER_INSTANCES_PATH, 'r') as f:
+            with open(INOTIFY_MAX_USER_INSTANCES_PATH, 'r', encoding='utf-8') as f:
                 return int(f.read().strip())
         except (FileNotFoundError, ValueError):
             return -1
@@ -126,7 +132,7 @@ class ConfigWatcher:
     def _get_inotify_watch_limit() -> int:
         """Get current inotify max_user_watches limit"""
         try:
-            with open(INOTIFY_MAX_USER_WATCHES_PATH, 'r') as f:
+            with open(INOTIFY_MAX_USER_WATCHES_PATH, 'r', encoding='utf-8') as f:
                 return int(f.read().strip())
         except (FileNotFoundError, ValueError):
             return -1
@@ -142,7 +148,7 @@ class ConfigWatcher:
                 config_path=self.config_path,
                 reload_callback=self.reload_callback,
                 config_update_callback=self.config_update_callback,
-                debounce_seconds=self.debounce_seconds
+                debounce_seconds=self.debounce_seconds,
             )
 
             self.observer = Observer()
@@ -152,18 +158,26 @@ class ConfigWatcher:
             logger.info("Started watching configuration file: %s", self.config_path)
         except OSError as e:
             if "inotify instance limit reached" in str(e):
-                logger.error("Failed to start config watcher: inotify instance limit reached. "
-                             "Please increase fs.inotify.max_user_instances limit. "
-                             "Current limit: %s", self._get_inotify_limit())
-                logger.error("You can temporarily fix this by running: "
-                             "echo 1024 | sudo tee %s", INOTIFY_MAX_USER_INSTANCES_PATH)
+                logger.error(
+                    "Failed to start config watcher: inotify instance limit reached. "
+                    "Please increase fs.inotify.max_user_instances limit. "
+                    "Current limit: %s",
+                    self._get_inotify_limit(),
+                )
+                logger.error(
+                    "You can temporarily fix this by running: echo 1024 | sudo tee %s", INOTIFY_MAX_USER_INSTANCES_PATH
+                )
                 logger.error("For permanent fix, add 'fs.inotify.max_user_instances=1024' to /etc/sysctl.conf")
             elif "inotify watch limit reached" in str(e):
-                logger.error("Failed to start config watcher: inotify watch limit reached. "
-                             "Please increase fs.inotify.max_user_watches limit. "
-                             "Current limit: %s", self._get_inotify_watch_limit())
-                logger.error("You can temporarily fix this by running: "
-                             "echo 524288 | sudo tee %s", INOTIFY_MAX_USER_WATCHES_PATH)
+                logger.error(
+                    "Failed to start config watcher: inotify watch limit reached. "
+                    "Please increase fs.inotify.max_user_watches limit. "
+                    "Current limit: %s",
+                    self._get_inotify_watch_limit(),
+                )
+                logger.error(
+                    "You can temporarily fix this by running: echo 524288 | sudo tee %s", INOTIFY_MAX_USER_WATCHES_PATH
+                )
                 logger.error("For permanent fix, add 'fs.inotify.max_user_watches=524288' to /etc/sysctl.conf")
             else:
                 logger.error("Failed to start config watcher: %s", e)

@@ -162,16 +162,86 @@ USER_CONFIG_DST="$CONFIG_PATH/user_config.json"
 CONFIG_SYNC_INTERVAL="${CONFIG_SYNC_INTERVAL:-10}"
 CONFIG_SYNC_PID_FILE="$CONFIG_PATH/user_config_sync.pid"
 
+# Explicitly enabled for colocated CRD P/D instances; legacy configs keep their ports.
+case "${MOTOR_INSTANCE_PORTS_ENABLE:-0}" in
+    1|true|TRUE)
+        export MOTOR_INSTANCE_CONFIG_ADAPTER="${MOTOR_INSTANCE_CONFIG_ADAPTER:-$CONFIGMAP_PATH/instance_config.py}"
+        ;;
+    0|false|FALSE|'') ;;
+    *) echo "Error: invalid MOTOR_INSTANCE_PORTS_ENABLE" >&2; exit 1 ;;
+esac
+
+if [ -n "${MOTOR_INSTANCE_CONFIG_ADAPTER:-}" ] && \
+   { [ "$ROLE" = "prefill" ] || [ "$ROLE" = "decode" ]; }; then
+    case "${INSTANCE_INDEX:-}" in
+        ''|*[!0-9]*) echo "Error: instance ports require a numeric INSTANCE_INDEX" >&2; exit 1 ;;
+    esac
+fi
+
 sync_user_config() {
     if [ -f "$USER_CONFIG_FILE" ]; then
-        if [ ! -f "$USER_CONFIG_DST" ] || ! cmp -s "$USER_CONFIG_FILE" "$USER_CONFIG_DST"; then
+        if [ -n "${MOTOR_INSTANCE_CONFIG_ADAPTER:-}" ] && \
+           { [ "$ROLE" = "prefill" ] || [ "$ROLE" = "decode" ]; }; then
+            if ! python3 "$MOTOR_INSTANCE_CONFIG_ADAPTER" config \
+                --source "$USER_CONFIG_FILE" --dest "$USER_CONFIG_DST" \
+                --role "$ROLE" --index "${INSTANCE_INDEX:-0}"; then
+                echo "Error: per-instance config adaptation failed for $ROLE/${INSTANCE_INDEX:-0}" >&2
+                return 1
+            fi
+        elif [ ! -f "$USER_CONFIG_DST" ] || ! cmp -s "$USER_CONFIG_FILE" "$USER_CONFIG_DST"; then
             cp -f "$USER_CONFIG_FILE" "$USER_CONFIG_DST"
             chmod 640 "$USER_CONFIG_DST"
         fi
         export USER_CONFIG_PATH="$USER_CONFIG_DST"
     else
+        if [ -n "${MOTOR_INSTANCE_CONFIG_ADAPTER:-}" ] && \
+           { [ "$ROLE" = "prefill" ] || [ "$ROLE" = "decode" ]; }; then
+            echo "Error: per-instance source config is missing: $USER_CONFIG_FILE" >&2
+            return 1
+        fi
         export USER_CONFIG_PATH="$USER_CONFIG_FILE"
     fi
+}
+
+# Called after role-specific env is set; never evaluate helper output as shell code.
+apply_instance_port_env() {
+    if [ -z "${MOTOR_INSTANCE_CONFIG_ADAPTER:-}" ] || \
+       { [ "$ROLE" != "prefill" ] && [ "$ROLE" != "decode" ]; }; then
+        return 0
+    fi
+    local assignments name value ascend_port="" store_port=""
+    if ! assignments=$(python3 "$MOTOR_INSTANCE_CONFIG_ADAPTER" env \
+        --role "$ROLE" --index "${INSTANCE_INDEX:-0}"); then
+        echo "Error: per-instance env adaptation failed" >&2
+        return 1
+    fi
+    while IFS='=' read -r name value; do
+        case "$value" in
+            ''|*[!0-9]*) echo "Error: invalid per-instance port value" >&2; return 1 ;;
+        esac
+        if [ "${#value}" -gt 5 ] || (( 10#$value < 1 || 10#$value > 65535 )); then
+            echo "Error: per-instance port out of range" >&2
+            return 1
+        fi
+        case "$name" in
+            ASCEND_BASE_PORT)
+                [ -z "$ascend_port" ] || { echo "Error: duplicate ASCEND_BASE_PORT" >&2; return 1; }
+                ascend_port="$value"
+                ;;
+            HIXL_LISTEN_PORT)
+                [ -z "$store_port" ] || { echo "Error: duplicate HIXL_LISTEN_PORT" >&2; return 1; }
+                store_port="$value"
+                ;;
+            *) echo "Error: unexpected per-instance env name: $name" >&2; return 1 ;;
+        esac
+    done <<< "$assignments"
+    if [ -z "$ascend_port" ] || [ -z "$store_port" ]; then
+        echo "Error: incomplete per-instance port environment" >&2
+        return 1
+    fi
+    export ASCEND_BASE_PORT="$ascend_port"
+    export HIXL_LISTEN_PORT="$store_port"
+    echo "Instance $ROLE/${INSTANCE_INDEX:-0}: ASCEND_BASE_PORT=$ASCEND_BASE_PORT HIXL_LISTEN_PORT=$HIXL_LISTEN_PORT"
 }
 
 sync_mmc_local_config() {
@@ -241,7 +311,7 @@ sync_mmc_local_config() {
 }
 
 
-sync_user_config
+sync_user_config || exit 1
 if [ -f "$USER_CONFIG_FILE" ]; then
     if [ -f "$CONFIG_SYNC_PID_FILE" ] && kill -0 "$(cat "$CONFIG_SYNC_PID_FILE")" 2>/dev/null; then
         echo "Config sync loop already running (pid=$(cat "$CONFIG_SYNC_PID_FILE"))"
@@ -249,7 +319,10 @@ if [ -f "$USER_CONFIG_FILE" ]; then
         (
             while true; do
                 sleep "$CONFIG_SYNC_INTERVAL"
-                sync_user_config
+                if ! sync_user_config; then
+                    echo "Error: config sync stopped after adaptation failure; retaining the previous valid config" >&2
+                    exit 1
+                fi
             done
         ) &
         echo "$!" > "$CONFIG_SYNC_PID_FILE"

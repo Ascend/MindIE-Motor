@@ -102,7 +102,7 @@ def test_engine_applies_patches_before_starting_node_manager(patch_status):
     script = MOTOR_ROOT / "examples/deployer/startup/roles/engine.sh"
     helpers = (
         "setup_jemalloc gen_ranktable_config set_cann_env set_mf_store_env "
-        "setup_motor_log_path setup_ascend_work_path setup_ascend_cache_path set_prefill_env"
+        "setup_motor_log_path setup_ascend_work_path setup_ascend_cache_path set_prefill_env apply_instance_port_env"
     )
     stub = "\n".join(f"{name}() {{ :; }}" for name in helpers.split())
     stub += '\nis_a5_hardware() { return 1; }\nROLE=prefill\n'

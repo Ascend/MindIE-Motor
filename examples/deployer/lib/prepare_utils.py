@@ -12,15 +12,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 import importlib.util
-from pathlib import Path
 import shutil
-
+from collections.abc import Callable
+from pathlib import Path
 
 _STATIC_ASSETS = (
     ("startup/boot.sh", "boot.sh"),
     ("startup/common.sh", "common.sh"),
+    ("startup/instance_config.py", "instance_config.py"),
     ("startup/hccl_tools.py", "hccl_tools.py"),
     ("probe/probe.sh", "probe.sh"),
     ("probe/probe.py", "probe.py"),
