@@ -19,10 +19,13 @@ import os
 import re
 import socket
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
 import lib.constant as C
+from lib.bind_mount import bind_mount_destination as bind_mount_destination  # pylint: disable=useless-import-alias
+from lib.bind_mount import bind_mount_is_new as bind_mount_is_new  # pylint: disable=useless-import-alias
 from lib.prepare_utils import prepare_rendered_local_configmap
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -1484,6 +1487,145 @@ def _render_container_op(name: str, op: str) -> None:
     if status in (204, 304):
         return
     raise ValueError(f"docker {op} {name} failed: HTTP {status} {body[:200]!r}")
+
+
+def take_docker_log_frames(data: bytes) -> tuple[bytes, bytes]:
+    """Split a non-TTY Docker logs buffer into payload and an incomplete tail."""
+    out = bytearray()
+    index = 0
+    while index + 8 <= len(data):
+        size = int.from_bytes(data[index + 4 : index + 8], "big")
+        if size > 16 * 1024 * 1024:
+            raise ValueError("docker logs frame too large")
+        if index + 8 + size > len(data):
+            break
+        out += data[index + 8 : index + 8 + size]
+        index += 8 + size
+    return bytes(out), data[index:]
+
+
+def decode_docker_log_frames(data: bytes) -> bytes:
+    """Strip the 8-byte multiplex headers from a complete non-TTY Docker logs body."""
+    payload, _leftover = take_docker_log_frames(data)
+    return payload
+
+
+class RenderLogFollow:
+    """Copy one Render container's stdout/stderr into a file for this --start.
+
+    ``since`` is a UNIX timestamp taken before ``docker restart``, so the file
+    gets this run and not the container's older history. ``docker logs -f``
+    keeps running after the container stops, so ``stop`` closes it.
+    """
+
+    def __init__(self, container_name: str, log_path: str, since: str):
+        self.container_name = container_name
+        self.log_path = log_path
+        self.since = since
+        self._fh = None
+        self._proc: subprocess.Popen | None = None
+        self._thread: threading.Thread | None = None
+        self._conn: http.client.HTTPConnection | None = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._stopped = False
+
+    def start(self) -> None:
+        self._fh = open(self.log_path, "ab")  # noqa: SIM115  # pylint: disable=consider-using-with
+        if docker_available():
+            self._proc = subprocess.Popen(  # nosec B607  # pylint: disable=consider-using-with
+                ["docker", "logs", "-f", "--since", self.since, self.container_name],
+                stdout=self._fh,
+                stderr=subprocess.STDOUT,
+            )
+            return
+        if not os.path.exists(DOCKER_SOCK):
+            self._write(b"docker is not available; Render logs were not captured\n")
+            return
+        self._thread = threading.Thread(target=self._stream_unix, name="render-log-follow", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        with self._lock:
+            if self._stopped:
+                return
+            self._stopped = True
+        self._stop.set()
+        conn = self._conn
+        if conn is not None:
+            try:
+                conn.close()
+            except OSError:
+                pass
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=2)
+        proc = self._proc
+        self._proc = None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=1)
+        with self._lock:
+            handle = self._fh
+            self._fh = None
+        if handle is not None:
+            try:
+                handle.flush()
+                handle.close()
+            except OSError:
+                pass
+
+    def _write(self, data: bytes) -> None:
+        if not data:
+            return
+        with self._lock:
+            handle = self._fh
+            if handle is None:
+                return
+            handle.write(data)
+            handle.flush()
+
+    def _stream_unix(self) -> None:
+        conn = _UnixHTTPConnection(DOCKER_SOCK, timeout=None)
+        self._conn = conn
+        try:
+            name = quote(self.container_name, safe="")
+            path = f"{_DOCKER_API}/containers/{name}/logs?follow=1&stdout=1&stderr=1&since={quote(self.since, safe='')}"
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            if resp.status != 200:
+                err = resp.read(512)
+                self._write(f"docker logs failed: HTTP {resp.status} {err!r}\n".encode())
+                return
+            buf = b""
+            while not self._stop.is_set():
+                try:
+                    chunk = resp.read(4096)
+                except (OSError, http.client.HTTPException):
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                try:
+                    payload, buf = take_docker_log_frames(buf)
+                except ValueError as exc:
+                    self._write(f"{exc}\n".encode())
+                    return
+                self._write(payload)
+        except (OSError, http.client.HTTPException) as exc:
+            self._write(f"docker logs failed: {exc}\n".encode())
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
 
 
 def restart_docker_render_sidecar(main_container_name: str) -> str:
