@@ -111,8 +111,6 @@ class RequestInfo(BaseModel):
     _e_cancel_scope: anyio.CancelScope | None = PrivateAttr(default=None)
     # Bound UnifiedPD trigger attempt; looked up by the Worker metaserver callback.
     _trigger_attempt: object | None = PrivateAttr(default=None)
-    _trigger_batch_active: bool = PrivateAttr(default=False)
-    _trigger_batch_index: int | None = PrivateAttr(default=None)
     _token_obfuscation_service: object | None = PrivateAttr(default=None)
     prompt_tokens_details: dict = Field(default={}, description="prefill prompt_tokens_details")
     prompt_token_ids: list = Field(default=[], description="prefill prompt_token_ids")

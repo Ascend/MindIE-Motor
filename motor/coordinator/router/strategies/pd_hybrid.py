@@ -35,7 +35,6 @@ from motor.coordinator.router.token_only import (
     is_token_only_unsupported,
     merge_token_only_streams,
     token_only_request_id,
-    token_only_requests_for_attempt,
 )
 from motor.coordinator.router.adapters.pd_protocol import (
     EngineEndpointMetadata,
@@ -48,10 +47,12 @@ from motor.coordinator.router.adapters.pd_protocol import (
 )
 from motor.coordinator.router.strategies.base import BaseRouter, check_cancel_error
 from motor.coordinator.router.render_execution import (
+    RenderAttemptPlan,
     RenderExecutionMode,
+    build_render_attempt_plan,
+    can_fallback_to_native,
     merge_native_completion_responses,
     merge_native_completion_streams,
-    resolve_render_execution_mode,
 )
 from motor.coordinator.router.rescheduler.rescheduler import Rescheduler, RetryRequestPlan
 import motor.coordinator.router.adapters as adapters
@@ -87,6 +88,8 @@ class PDHybridRouter(BaseRouter):
         self._render_client: VLLMRenderClient | None = None
         self._streaming_render_session: StreamingRenderSession | None = None
         self._active_retry_plan: RetryRequestPlan | None = None
+        self._render_plan: RenderAttemptPlan | None = None
+        self._render_plan_key: tuple[str, int, int] | None = None
         self.rescheduler = Rescheduler(
             self.config.exception_config.reschedule_enabled,
             self.req_info,
@@ -114,11 +117,25 @@ class PDHybridRouter(BaseRouter):
         self._render_client = render_client
 
     def _render_execution_mode(self) -> RenderExecutionMode:
+        plan = self._render_attempt_plan()
+        return plan.mode if plan is not None else RenderExecutionMode.NATIVE_FULL
+
+    def _render_attempt_plan(self) -> RenderAttemptPlan | None:
         resource = self._scheduled_resource
         engine_type = ""
         if resource is not None and resource.instance is not None:
             engine_type = resource.instance.engine_type
-        return resolve_render_execution_mode(self.req_info, self.config, engine_type)
+        key = (str(engine_type).strip().lower(), self.rescheduler.retry_count, id(self._active_retry_plan))
+        if self._render_plan_key != key:
+            self._render_plan = build_render_attempt_plan(
+                self.req_info,
+                self.config,
+                engine_type,
+                attempt_seq=self.rescheduler.retry_count + 1,
+                retry_plan=self._active_retry_plan,
+            )
+            self._render_plan_key = key
+        return self._render_plan
 
     def _inject_render_tokens_into_native_request(
         self,
@@ -127,16 +144,13 @@ class PDHybridRouter(BaseRouter):
     ) -> bool:
         if self._render_execution_mode() is not RenderExecutionMode.RENDER_PREFILL_NATIVE_DECODE:
             return False
+        plan = self._render_attempt_plan()
+        if plan is None:
+            return False
         return VllmProtocolAdapter.inject_render_prompt_tokens(
             body,
             api,
-            token_only_requests_for_attempt(
-                self.req_info,
-                self._render_client,
-                allow_streaming=True,
-                retry_plan=self._active_retry_plan,
-                require_render_client=False,
-            ),
+            plan.tokenized_requests,
         )
 
     @contextlib.asynccontextmanager
@@ -595,18 +609,16 @@ class PDHybridRouter(BaseRouter):
         allow_streaming: bool = False,
     ) -> list[TokenizedRequest]:
         resource = self._scheduled_resource
-        if self._render_execution_mode() is RenderExecutionMode.NATIVE_FULL:
+        plan = self._render_attempt_plan()
+        if plan is None or self._render_client is None:
             return []
         if resource is None or str(getattr(resource.instance, "engine_type", "")).strip().lower() != "vllm":
             return []
-        requests = token_only_requests_for_attempt(
-            self.req_info,
-            self._render_client,
-            allow_streaming=allow_streaming,
-            retry_plan=self._active_retry_plan if allow_streaming else None,
-        )
+        if self.req_info.req_data.get("stream", False) and not allow_streaming:
+            return []
+        requests = plan.tokenized_requests
         if (
-            self._render_execution_mode() is RenderExecutionMode.RENDER_PREFILL_NATIVE_DECODE
+            plan.mode is RenderExecutionMode.RENDER_PREFILL_NATIVE_DECODE
             and self.req_info.effective_entry_api().strip("/") != "v1/completions"
         ):
             return []
@@ -742,7 +754,7 @@ class PDHybridRouter(BaseRouter):
                                 if (
                                     native_decode
                                     or not is_token_only_unsupported(error)
-                                    or self.req_info._token_obfuscation_service is not None
+                                    or not can_fallback_to_native(self._render_attempt_plan())
                                 ):
                                     raise
                                 self.logger.warning(

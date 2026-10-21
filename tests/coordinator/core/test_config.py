@@ -159,6 +159,7 @@ def test_default_config_initialization():
     assert config.rate_limit_config.enable_rate_limit is False
     assert config.api_config.coordinator_api_infer_port == 1025
     assert config.api_config.coordinator_api_mgmt_port == 1026
+    assert config.render_config.enable_token_only_decode is False
     assert config.token_obfuscation_config.enable is False
     assert config.token_obfuscation_config.vocab_size == 0
     assert config.token_obfuscation_config.seed_content == ""
@@ -169,6 +170,7 @@ def test_token_obfuscation_requires_vocab_size_or_model_dir() -> None:
     """Unset vocab_size is read from config.json; without a model directory it must be given."""
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
     config.token_obfuscation_config.token_white_list = [151643]
@@ -180,6 +182,7 @@ def test_token_obfuscation_requires_vocab_size_or_model_dir() -> None:
 def test_token_obfuscation_vocab_size_optional_with_model_dir() -> None:
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
     config.token_obfuscation_config.token_white_list = [151643]
@@ -191,6 +194,7 @@ def test_token_obfuscation_vocab_size_optional_with_model_dir() -> None:
 def test_token_obfuscation_vocab_size_rejects_multiple_model_dirs() -> None:
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
     config.token_obfuscation_config.token_white_list = [151643]
@@ -207,6 +211,7 @@ def test_token_obfuscation_requires_explicit_white_list() -> None:
     """The white list is model-specific, so it must not be preset in code."""
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
     config.token_obfuscation_config.vocab_size = 151936
@@ -221,6 +226,7 @@ def test_token_obfuscation_requires_explicit_white_list() -> None:
 def test_token_obfuscation_rejects_white_list_out_of_vocab() -> None:
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
     config.token_obfuscation_config.vocab_size = 100
@@ -234,15 +240,30 @@ def test_token_obfuscation_rejects_white_list_out_of_vocab() -> None:
 
 def test_token_obfuscation_requires_render() -> None:
     config = CoordinatorConfig()
+    config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.enable = True
 
     with pytest.raises(ValueError, match="requires render_config.enable=true"):
         config.validate_config()
 
 
+@pytest.mark.parametrize("image_obfuscation", [False, True])
+def test_obfuscation_requires_token_only_decode(image_obfuscation: bool) -> None:
+    config = CoordinatorConfig()
+    config.render_config.enable = True
+    if image_obfuscation:
+        config.token_obfuscation_config.image_config.enable = True
+    else:
+        config.token_obfuscation_config.enable = True
+
+    with pytest.raises(ValueError, match="requires render_config.enable_token_only_decode=true"):
+        config.validate_config()
+
+
 def test_token_obfuscation_requires_explicit_seed() -> None:
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.enable = True
 
     with pytest.raises(ValueError, match="seed_content must be explicitly configured"):
@@ -252,6 +273,7 @@ def test_token_obfuscation_requires_explicit_seed() -> None:
 def test_image_obfuscation_requires_render() -> None:
     """Image permutation runs on the Render payload, so Render must be enabled."""
     config = CoordinatorConfig()
+    config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.image_config.enable = True
 
     with pytest.raises(ValueError, match="image_config requires render_config.enable=true"):
@@ -262,6 +284,7 @@ def test_image_obfuscation_requires_explicit_seed() -> None:
     """Image client permutes the same seed, so an empty seed must be rejected too."""
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.image_config.enable = True
 
     with pytest.raises(ValueError, match="seed_content must be explicitly configured"):
@@ -272,6 +295,7 @@ def test_image_obfuscation_requires_geometry_or_model_dir() -> None:
     """Unset geometry is read from the served weights directory; without one it must be given."""
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.seed_content = "seed"
     config.token_obfuscation_config.image_config.enable = True
 
@@ -283,6 +307,7 @@ def test_image_obfuscation_geometry_optional_with_model_dir() -> None:
     """A served model directory makes the geometry optional (resolved from the model files)."""
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.seed_content = "seed"
     config.token_obfuscation_config.image_config.enable = True
     config.engine_model_paths = ["/data/weights/model-obf"]
@@ -293,6 +318,7 @@ def test_image_obfuscation_geometry_optional_with_model_dir() -> None:
 def test_image_obfuscation_model_path_makes_geometry_optional() -> None:
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.seed_content = "seed"
     config.token_obfuscation_config.image_config.enable = True
     config.token_obfuscation_config.image_config.model_path = "/data/weights/model-obf"
@@ -304,6 +330,7 @@ def test_image_obfuscation_explicit_geometry_wins_over_model_dir() -> None:
     """Explicitly configured fields stay untouched, so no model directory is required."""
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.seed_content = "seed"
     image_config = config.token_obfuscation_config.image_config
     image_config.enable = True
@@ -319,6 +346,7 @@ def test_image_obfuscation_explicit_geometry_wins_over_model_dir() -> None:
 def test_image_obfuscation_rejects_inverted_edge_range() -> None:
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.seed_content = "seed"
     image_config = config.token_obfuscation_config.image_config
     image_config.enable = True
@@ -1483,7 +1511,7 @@ def test_render_config_reuses_engine_model_metadata_without_kv_events(_temp_json
         "motor_coordinator_config": {
             "render_config": {
                 "enable": True,
-                "enable_streaming": True,
+                "enable_token_only_decode": True,
                 "endpoint": {"host": "127.0.0.1", "port": 8200},
                 "timeout_ms": 1500,
                 "image_name": "vllm-render-cpu:test",
@@ -1505,7 +1533,7 @@ def test_render_config_reuses_engine_model_metadata_without_kv_events(_temp_json
     config = CoordinatorConfig.from_json(_temp_json_file)
 
     assert config.render_config.enable is True
-    assert config.render_config.enable_streaming is True
+    assert config.render_config.enable_token_only_decode is True
     assert config.render_config.launch_args == {"renderer_num_workers": 7, "tool_call_parser": "hermes"}
     assert config.scheduler_config.kv_conductor_config.model_path == "/mnt/weight/qwen"
 
@@ -1515,6 +1543,14 @@ def test_invalid_render_timeout_is_rejected():
     config.render_config.timeout_ms = 0
 
     with pytest.raises(ValueError, match="render_config.timeout_ms"):
+        config.validate_config()
+
+
+def test_invalid_render_token_only_decode_is_rejected():
+    config = CoordinatorConfig()
+    config.render_config.enable_token_only_decode = "true"
+
+    with pytest.raises(ValueError, match="render_config.enable_token_only_decode must be a bool"):
         config.validate_config()
 
 

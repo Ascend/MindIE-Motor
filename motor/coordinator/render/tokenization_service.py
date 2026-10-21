@@ -93,12 +93,6 @@ class TokenizationService:
         """Prefer Render and fall back without making token metadata mandatory."""
         spec = get_render_api_spec(api)
         render_reason = ""
-        if request_data.get("stream", False) and not getattr(self._config, "enable_streaming", False):
-            if self._obfuscation_service is not None:
-                raise TokenObfuscationError("Streaming Render is required for token-obfuscated inference")
-            if self._image_obfuscation_service is not None:
-                raise ImageObfuscationError("Streaming Render is required for image-obfuscated inference")
-
         use_render = self._config.enable
         if use_render and spec is not None:
             start = time.perf_counter()

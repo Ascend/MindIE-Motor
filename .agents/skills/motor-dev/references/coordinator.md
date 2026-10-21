@@ -37,9 +37,22 @@ With `render_config.enable=true`, each inference worker tries the local vLLM Ren
 the normalized token IDs in `RequestInfo`. Render failures fall back to the local tokenizer; validation errors are
 returned directly, and Render health does not gate Coordinator startup.
 
-Normal text Chat/Completion requests use Render IDs for PD Prefill and native OpenAI Decode; Completion
-multi-prompt runs one Prefill and native Decode per prompt, then merges choices and usage. Union follows the same
-per-prompt rule. `render_config.enable_streaming=true` and data obfuscation retain token-only Decode plus Derender.
+Normal text Chat/Completion requests use Render token ids for PD Prefill. With
+`render_config.enable_token_only_decode=false`, streaming and non-streaming requests both use native OpenAI Decode;
+with the option set to `true`, both use token-only Decode plus Derender. Completion multi-prompt runs one Prefill and
+Decode per prompt, then merges choices and usage. Union follows the same per-prompt rule. Data obfuscation requires
+token-only Decode.
+Unified PD topologies and PDHybrid materialize these decisions in an attempt-scoped `RenderAttemptPlan`. The immutable
+plan owns the selected mode, ordered original/replay Render tokens, per-prompt engine IDs, and protected
+fallback flag; topology code owns only Handoff, Trigger, Bootstrap, or single-engine coordination timing. Native-full
+requests do not create a plan and stay on the existing native path.
+Trigger must keep its Prefill and Decode requests in the same vLLM API family because Mooncake layerwise transfer
+correlates completion signals by the complete vLLM external request ID. With token-only Decode disabled, both legs use
+the native OpenAI API and Prefill injects Render token IDs into that request; with it enabled, both legs use
+`/inference/v1/generate`. Mixing a token-only Prefill with native Decode produces different `generate-tokens-` and
+`chatcmpl-`/`cmpl-` prefixes and leaves Decode waiting for a completion signal it cannot match.
+Internal prompt IDs use `<root>#a<attempt>#g<generation>#p<prompt>` so retry attempts and whole-batch capability
+fallback generations cannot consume stale Trigger callbacks.
 Chat `echo=true`, non-text Chat, unsupported APIs/engines, and
 locally tokenized requests remain on the native path. Streaming Derender requires vLLM 0.27.0 or later.
 

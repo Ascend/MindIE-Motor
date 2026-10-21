@@ -50,7 +50,7 @@ flowchart LR
 | 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器等基于 vLLM Render 链路的机型理论上兼容，待验证。</li></ul> |
 | 部署场景 | 需要 **vLLM Render sidecar**（token-only 链路）与 PD 分离部署，且必须配置`render_config.enable=true` 。 |
 | 推理引擎 | 仅支持 **vLLM**（依赖其 Render token-only 接口）。 |
-| 特性互斥 | <ul><li>可与 KV Cache 亲和性调度、PD 分离、扩缩容、故障重调度等特性同时使用。</li><li>**流式请求**：设置 `render_config.enable_streaming=true` 后支持流式 Token In、token-only Generate 和 Derender；要求 vLLM >= 0.27.0，性能及 reasoning/tool call 等高级场景需按具体版本验证。</li><li>**仅支持 `/v1/chat/completions` 与 `/v1/completions`**：Render 没有为其他 API 登记契约，任一混淆开关开启时 `/v1/responses`、`/v1/messages` 等路径直接返回 HTTP 501，不会退回本地 tokenizer。把明文 prompt 发给混淆权重引擎。</li><li>**不回退**：Render 不可用时不会退回 Coordinator 本地 tokenizer（否则明文 token 会进入引擎），请求直接失败（任一混淆开关开启即生效）。</li></ul> |
+| 特性互斥 | <ul><li>可与 KV Cache 亲和性调度、PD 分离、扩缩容、故障重调度等特性同时使用。</li><li>必须设置 `render_config.enable_token_only_decode=true`，流式与非流式请求统一使用 Token In、token-only Generate 和 Derender；流式要求 vLLM >= 0.27.0，性能及 reasoning/tool call 等高级场景需按具体版本验证。</li><li>**仅支持 `/v1/chat/completions` 与 `/v1/completions`**：Render 没有为其他 API 登记契约，任一混淆开关开启时 `/v1/responses`、`/v1/messages` 等路径直接返回 HTTP 501，不会退回本地 tokenizer。把明文 prompt 发给混淆权重引擎。</li><li>**不回退**：Render 不可用时不会退回 Coordinator 本地 tokenizer（否则明文 token 会进入引擎），请求直接失败（任一混淆开关开启即生效）。</li></ul> |
 | 软件依赖 | <ul><li>ai-asset-obfuscate：MindIE Motor 官方镜像已内置该依赖（见[环境准备](#环境准备)），其版本须与离线生成混淆权重的 SDK 版本一致。</li><li>混淆权重必须由**同一版本 SDK、同一 seed、同一 `token_white_list`/`vocab_size`**、以及同一视觉几何（`patch_size`/`merge_size`/`temporal_patch_size`/`longest_edge`/`shortest_edge`）生成，否则结果错乱。</li></ul> |
 | 其他限制 | <ul><li>混淆相关参数均与模型/权重相关，代码不含内置默认值：`token_white_list`、`seed_content` 必须显式配置；`vocab_size` 与图像几何（`patch_size` 等 5 项）**可省略**，未配置时从被服务权重目录自动读取，显式配置始终优先（取值来源见[参数来源](#参数来源)）。</li><li>其中 `token_white_list` **无法从模型目录推导**（模型元数据里没有记录），只能由离线权重混淆方提供；漏配/多配不会报错，但会造成 token 错位。</li><li>自动读取的参数会在解析后再次校验：白名单 id 超过解析出的 `vocab_size`、或解析后的`longest_edge < shortest_edge`，都会直接拒绝启动，而不是带着不一致的参数运行。</li><li>`seed_content` 可还原词表置换，须与混淆权重同权限保管，通过受控配置注入，禁止进入代码仓库、日志与截图。</li><li>引擎对多模态张量按 `mm_hash` 缓存：**更换 SDK 版本或混淆实现后必须重启引擎（或更换图片）**，否则同 hash 图片会命中旧缓存。</li><li>混淆后的 token ID 属于「物理词表」，任何跨实例 Token 统计/对账都需要按物理 ID 解释。</li><li>开启混淆且 thinking 生效、客户端未显式传 `temperature` 时，Coordinator 会强制贪心解码（`temperature=0`）；需保留采样行为时请显式传参。</li></ul> |
 
@@ -155,7 +155,7 @@ EOF
      "motor_coordinator_config": {
        "render_config": {
          "enable": true,
-         "enable_streaming": true,
+         "enable_token_only_decode": true,
          "timeout_ms": 30000,
          "launch_args": {
            "renderer_num_workers": 4
@@ -181,7 +181,7 @@ EOF
    | 参数 | 说明 |
    |------|------|
    | `render_config.enable` | 必须为 `true`；本特性的 token 与图像置换都发生在 Render 返回的载荷上 |
-   | `render_config.enable_streaming` | 流式混淆请求必须为 `true`；关闭时流式请求 fail closed，不回退明文原生链路 |
+   | `render_config.enable_token_only_decode` | 必须为 `true`；流式与非流式混淆请求都通过 token-only Generate 与 Derender 返回，关闭时配置校验失败 |
    | `render_config.launch_args.renderer_num_workers` | Render 处理线程数，未配置时默认传 `4` |
    | `render_config.timeout_ms` | Render 处理超时。多模态首图需要加载图像处理器，实测冷启动约 22 s，建议不小于 30000 |
    | `token_obfuscation_config.enable` | 开启 token 置换；必须显式配置非空 `seed_content` |
@@ -320,20 +320,6 @@ EOF
 1. 重启 Prefill / Decode 实例（`kubectl delete pod <prefill/decode-pod> -n <namespace>`），或
 2. 换一张内容不同（hash 不同）的图片验证；
 3. 验证新链路时优先整体重建命名空间，确保引擎全新加载。
-
-### 请求返回 501 `Token-obfuscated inference currently supports non-streaming requests only`
-
-**问题描述**
-
-开启混淆后带 `stream=true` 的请求失败。
-
-**原因分析**
-
-当前版本的混淆链路只覆盖非流式请求（输出反混淆在整包响应上完成）。
-
-**解决步骤**
-
-客户端去掉 `stream` 参数或改为 `stream=false`。
 
 ### 请求返回 503 `ai-asset-obfuscate is unavailable` 或 `ai-asset-obfuscate vision API is unavailable: ObfException: Failed To Load Library.`
 

@@ -278,15 +278,15 @@ async def _run_vllm_handoff(
     d_client=None,
     render_client=None,
     sampling_manager=None,
-    enable_streaming=True,
-    force_token_only=False,
+    enable_token_only_decode=False,
+    image_obfuscation=False,
 ):
     config = _config()
-    if enable_streaming is None:
+    config.token_obfuscation_config.image_config.enable = image_obfuscation
+    if enable_token_only_decode is None:
         config.render_config = SimpleNamespace()
     else:
-        config.render_config.enable_streaming = enable_streaming
-    config.token_obfuscation_config.enable = force_token_only
+        config.render_config.enable_token_only_decode = enable_token_only_decode
     router = UnifiedPDRouter(
         req_info,
         config,
@@ -819,6 +819,7 @@ async def test_unified_pd_stream_render_uses_token_only_handoff_round_trip(monke
         p_client,
         d_client=d_client,
         render_client=render_client,
+        enable_token_only_decode=True,
     )
     chunks = [chunk async for chunk in response.body_iterator]
 
@@ -841,10 +842,10 @@ async def test_unified_pd_stream_render_uses_token_only_handoff_round_trip(monke
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("api", "enable_streaming"),
+    ("api", "enable_token_only_decode"),
     [("v1/chat/completions", None), ("v1/completions", False)],
 )
-async def test_unified_pd_stream_native_decode_reuses_render_prompt_tokens(monkeypatch, api, enable_streaming):
+async def test_unified_pd_stream_native_decode_reuses_render_prompt_tokens(monkeypatch, api, enable_token_only_decode):
     req_info = _render_info("root-native-stream", api=api, stream=True, prompts=[10, 20, 30])
     p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
     d_client = _StreamClient("decode")
@@ -856,7 +857,7 @@ async def test_unified_pd_stream_native_decode_reuses_render_prompt_tokens(monke
         p_client,
         d_client=d_client,
         render_client=render_client,
-        enable_streaming=enable_streaming,
+        enable_token_only_decode=enable_token_only_decode,
     )
     chunks = [chunk async for chunk in response.body_iterator]
 
@@ -880,7 +881,7 @@ async def test_unified_pd_native_decode_injection_replays_tokens_and_fails_close
         prompts=[10, 20],
     )
     config = _config()
-    config.render_config.enable_streaming = False
+    config.render_config.enable_token_only_decode = False
     router = UnifiedPDRouter(
         req_info,
         config,
@@ -926,6 +927,7 @@ async def test_unified_pd_render_execution_mode_uses_attempt_engine_type():
     attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
 
     assert router._render_execution_mode(attempt) is RenderExecutionMode.NATIVE_FULL
+    assert attempt.render_plan is None
 
 
 @pytest.mark.asyncio
@@ -937,7 +939,7 @@ async def test_unified_pd_stream_render_reschedule_stays_token_only_and_reuses_d
         prompts=[10, 20],
     )
     config = _config()
-    config.render_config.enable_streaming = True
+    config.render_config.enable_token_only_decode = True
     config.exception_config.transport_max_retry = 2
     config.exception_config.reschedule_enabled = True
     router = UnifiedPDRouter(
@@ -1031,7 +1033,7 @@ async def test_unified_pd_stream_completion_batch_uses_per_prompt_decode_timeout
         p_client,
         d_client=d_client,
         render_client=render_client,
-        enable_streaming=False,
+        enable_token_only_decode=False,
     )
     _ = [chunk async for chunk in response.body_iterator]
 
@@ -1083,7 +1085,7 @@ async def test_unified_pd_handoff_completion_batch_builds_matching_tickets(monke
         render_client=render_client,
     )
 
-    expected_ids = ["root-completion-batch#a1#p0", "root-completion-batch#a1#p1"]
+    expected_ids = ["root-completion-batch#a1#g0#p0", "root-completion-batch#a1#g0#p1"]
     assert response.status_code == 200
     assert_generate_requests(
         p_client.requests,
@@ -1095,6 +1097,38 @@ async def test_unified_pd_handoff_completion_batch_builds_matching_tickets(monke
     assert d_client.paths == ["/v1/completions"] * 2
     assert [request["prompt"] for request in d_client.requests] == [[10], [20, 21]]
     render_client.derender.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prompts", "unsupported_role"),
+    [([10, 20], PDRole.ROLE_P), ([10, 20], PDRole.ROLE_D), ([[10], [20, 21]], PDRole.ROLE_P)],
+    ids=["prefill", "decode", "batch-prefill"],
+)
+async def test_unified_pd_protected_handoff_rejects_native_fallback(monkeypatch, prompts, unsupported_role):
+    req_info = _render_info("root-protected", api="v1/completions", prompts=prompts)
+    p_client = TokenOnlyEngineClient(
+        PDRole.ROLE_P,
+        unsupported_status=404 if unsupported_role == PDRole.ROLE_P else None,
+    )
+    d_client = TokenOnlyEngineClient(
+        PDRole.ROLE_D,
+        unsupported_status=404 if unsupported_role == PDRole.ROLE_D else None,
+    )
+
+    with pytest.raises(UpstreamHTTPError) as exc_info:
+        await _run_vllm_handoff(
+            monkeypatch,
+            req_info,
+            p_client,
+            d_client=d_client,
+            render_client=make_render_client(completion_count=len(req_info.tokenized_requests)),
+            enable_token_only_decode=True,
+            image_obfuscation=True,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert all(path == "/inference/v1/generate" for path in p_client.paths + d_client.paths)
 
 
 class _RecordingSamplingManager:
@@ -1237,7 +1271,7 @@ async def test_unified_pd_derender_timeout_does_not_repeat_decode(monkeypatch):
             TokenOnlyEngineClient(PDRole.ROLE_P),
             d_client=d_client,
             render_client=render_client,
-            force_token_only=True,
+            enable_token_only_decode=True,
         )
 
     assert exc_info.value.status_code == 504

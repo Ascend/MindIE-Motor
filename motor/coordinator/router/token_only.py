@@ -228,13 +228,34 @@ def token_only_request_id(
     *,
     prompt_index: int | None = None,
     attempt_seq: int | None = None,
+    generation: int | None = None,
 ) -> str:
     """Build a stable per-prompt engine request ID."""
     if attempt_seq is not None:
         request_id = f"{request_id}#a{attempt_seq}"
+    if generation is not None:
+        request_id = f"{request_id}#g{generation}"
     if prompt_index is not None:
         request_id = f"{request_id}#p{prompt_index}"
     return request_id
+
+
+def parse_token_only_request_id(request_id: str) -> tuple[str, int | None, int | None, int | None]:
+    """Split the optional attempt, generation, and prompt suffixes from an engine request ID."""
+    remaining = request_id
+
+    def pop_suffix(marker: str) -> int | None:
+        nonlocal remaining
+        prefix, separator, suffix = remaining.rpartition(marker)
+        if separator and suffix.isdigit():
+            remaining = prefix
+            return int(suffix)
+        return None
+
+    prompt_index = pop_suffix("#p")
+    generation = pop_suffix("#g")
+    attempt_seq = pop_suffix("#a")
+    return remaining, attempt_seq, generation, prompt_index
 
 
 def build_token_only_batch(

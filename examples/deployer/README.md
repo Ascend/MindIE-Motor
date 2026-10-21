@@ -212,7 +212,7 @@ vLLM Render 通过 `user_config.json` 中的 `motor_coordinator_config.render_co
   "motor_coordinator_config": {
     "render_config": {
       "enable": true,
-      "enable_streaming": false,
+      "enable_token_only_decode": false,
       "endpoint": {
         "host": "127.0.0.1",
         "port": 8100
@@ -225,8 +225,8 @@ vLLM Render 通过 `user_config.json` 中的 `motor_coordinator_config.render_co
 ```
 
 Deployer 会将 Render Sidecar 添加到 Coordinator Pod，并从当前 vLLM Engine 配置读取模型信息。`image_name`
-指定独立 CPU 镜像；省略时复用服务镜像、只读挂载 Ascend 驱动库且不申请 NPU。`enable_streaming` 默认为
-`false`，此时 Render 仍负责分词，Decode 使用原生 OpenAI 响应；设置为 `true` 后 Decode 改用 token-only + Derender。`endpoint` 和 `timeout_ms`
+指定独立 CPU 镜像；省略时复用服务镜像、只读挂载 Ascend 驱动库且不申请 NPU。`enable_token_only_decode`
+默认为 `false`，此时 Render 仍负责分词，流式与非流式 Decode 均使用原生 OpenAI 响应；设置为 `true` 后两者均改用 token-only + Derender。`endpoint` 和 `timeout_ms`
 有默认值，无特殊需求无需配置。启用 `kv_cache_affinity` 调度时建议同时开启 Render，以复用同一份 prompt token ID。
 
 vLLM Render 支持配置 `launch_args`，如启用多个 render worker thread 以及 Hermes Tool Call parser 时：
@@ -248,8 +248,8 @@ Render 镜像具备匹配的 Derender 能力：非流式解析要求 vLLM >= 0.2
 使用限制：
 
 - vLLM 0.30+ 对 token-only Generate 新增了 `--enable-scale-out` 门禁；开启 Render 后 Motor 会在支持时为 P/D/Union 引擎自动开启，无需手动配置。
-- `enable_streaming` 是实验性开关，默认值为 `false`。关闭时 Render 仍参与路由前分词和 PD Prefill，普通流式 Decode 使用 vLLM 原生 OpenAI 响应；开启后 Decode 使用 token-only + Derender。流式 Derender 要求 vLLM >= 0.27.0。
-- 普通单 prompt 文本请求在流式和非流式场景下复用 Render token ID，并由 vLLM 原生 OpenAI 接口生成响应；数据混淆和 Completion multi-prompt 保留 token-only + Derender。
+- `enable_token_only_decode` 默认值为 `false`。关闭时 Render 仍参与路由前分词和 PD Prefill，流式与非流式 Decode 均使用 vLLM 原生 OpenAI 响应；开启后两者均使用 token-only + Derender。非流式 Derender 要求 vLLM >= 0.24.0，流式要求 vLLM >= 0.27.0。
+- 普通文本请求的流式和非流式链路由 `enable_token_only_decode` 统一选择；数据混淆要求开启 token-only Decode。
 - 单 prompt 重调度继续使用 token ID replay；多 prompt 已输出后的逐 prompt replay、Trigger 多 prompt、SGLang 和本地 tokenizer 沿用原有边界。
 - 请求级 Render 超时或接口不支持时回退本地 tokenizer；请求校验错误（400/422，以及带结构化错误响应的 404）和 Derender 失败直接返回客户端。Docker 场景下 Coordinator 与 Render 同生共死：Render 创建失败则不建主容器，主容器创建失败则删除 Render；`--start` 重启 Render 兄弟容器，Coordinator 退出则停止 Render；Render 首次就绪后若持续心跳失败，Coordinator 也退出。
 - 流式 Derender 按 chunk 无状态调用；长 prompt 或高并发场景需评估 Sidecar 的 CPU 与通信开销。

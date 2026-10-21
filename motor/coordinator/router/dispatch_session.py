@@ -8,17 +8,23 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+from __future__ import annotations
+
 import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from motor.common.http import HTTPClientPool
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import ScheduledResource
 
 from motor.common.logger import get_logger
+
+if TYPE_CHECKING:
+    from motor.coordinator.router.render_execution import RenderAttemptPlan
 
 logger = get_logger(__name__)
 
@@ -47,6 +53,26 @@ class AttemptReleaseFlags:
 
 
 @dataclass
+class TriggerPromptContext:
+    """Prefill callback state for one Trigger prompt inside an attempt."""
+
+    prefill_dispatched: bool = False
+    prefill_completed: bool = False
+    prefill_completed_at: float | None = None
+    prefill_completed_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    prefill_task: asyncio.Task | None = field(default=None, repr=False)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+
+    def mark_dispatched(self) -> None:
+        self.prefill_dispatched = True
+
+    def mark_completed(self) -> None:
+        self.prefill_completed = True
+        self.prefill_completed_at = time.perf_counter()
+        self.prefill_completed_event.set()
+
+
+@dataclass
 class AttemptContext:
     root_request_id: str
     attempt_seq: int
@@ -66,6 +92,10 @@ class AttemptContext:
     trigger_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     stop_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     config: CoordinatorConfig | None = None
+    render_plan: RenderAttemptPlan | None = None
+    render_plan_resolved: bool = False
+    trigger_batch_active: bool = False
+    trigger_prompts: dict[int | None, TriggerPromptContext] = field(default_factory=dict, repr=False)
 
     def transition(self, state: AttemptState) -> bool:
         if self.state == AttemptState.STOPPED:
@@ -108,8 +138,21 @@ class AttemptContext:
 
     def needs_abort(self, role: str) -> bool:
         if role == "prefill":
+            if self.trigger_prompts:
+                return any(
+                    prompt.prefill_dispatched and not prompt.prefill_completed
+                    for prompt in self.trigger_prompts.values()
+                )
             return self.prefill_dispatched and not self.prefill_completed
         return self.decode_dispatched and not self.decode_completed
+
+    def trigger_prompt(self, prompt_index: int | None) -> TriggerPromptContext:
+        """Return stable callback state for one Trigger prompt."""
+        return self.trigger_prompts.setdefault(prompt_index, TriggerPromptContext())
+
+    def reset_trigger_prompts(self) -> None:
+        """Drop callback state before starting a new whole-batch generation."""
+        self.trigger_prompts.clear()
 
     async def cancel(self, reason: str = ""):
         tasks = []
@@ -128,6 +171,18 @@ class AttemptContext:
             )
             self.prefill_task.cancel(msg=reason)
             tasks.append(self.prefill_task)
+        for prompt in self.trigger_prompts.values():
+            task = prompt.prefill_task
+            if task is None or task is current_task or task.done() or task.cancelled() or task in tasks:
+                continue
+            logger.info(
+                "Cancelling Trigger prompt prefill task: %s %s because %s",
+                self.prefill_resource.endpoint.ip if self.prefill_resource else "pending",
+                self.prefill_resource.instance.job_name if self.prefill_resource else "pending",
+                reason,
+            )
+            task.cancel(msg=reason)
+            tasks.append(task)
         if (
             self.decode_task
             and self.decode_task is not current_task
