@@ -395,7 +395,7 @@ class InferenceServer(BaseCoordinatorServer):
                     app.state.token_obfuscation_service = TokenObfuscationService(token_config)
                     logger.info("Token data obfuscation is enabled vocab_size_source=%s", vocab_source)
                 image_obfuscation_service = None
-                if obfuscation_config.image_config.enable:
+                if obfuscation_config.enable and obfuscation_config.image_config.enable:
                     image_config, geometry_source = resolve_image_obfuscation_config(
                         obfuscation_config.image_config,
                         self.coordinator_config.engine_model_paths,
