@@ -1,22 +1,36 @@
-# 基于Docker的单容器服务部署指导
+# 基于Docker的单容器服务部署
 
-本文档指导用户**基于Docker在单机上完成推理服务的部署**，一台服务器、一个容器内完成整个PD分离的部署，适用于小模型（权重小于100GB）场景，不依赖 K8s。大模型或多机部署可参见 [多容器部署指导](multi_container.md)。KV 池化需要单独的 kv_store 容器，请使用多容器部署并参见 [开启 KV 池化](multi_container.md#开启-kv-池化可选)。
+本文档指导用户基于Docker在单机上完成推理服务的部署，1台服务器、1个容器内完成整个PD分离的部署，适用于小模型（权重小于100GB）场景，该部署方式不依赖K8s。大模型或多机部署可参见[基于Docker的多容器服务部署](multi_container.md)。KV池化需要单独的kv_store容器，请使用多容器部署并参考[开启KV池化（可选）](./multi_container.md#开启kv池化可选)。
 
->[!NOTE]说明
-> 单容器部署中 Prefill 与 Decode 在同一个容器、同一台机器上，**不支持 Ascend950 PR / DT 异构部署**。PR + DT 混合组网请使用 [多容器部署指导](multi_container.md) 中的「PR / DT 异构部署」章节。
+>[!NOTE] 说明
+> 单容器部署中，Prefill与Decode在同1个容器、同1台机器上，不支持Ascend 950PR&DT系列产品异构部署。PR + DT混合组网请参考[PR/DT异构部署（可选）](./multi_container.md#prdt异构部署可选)。
 
 ## 部署流程示意图
 
 ![部署流程示意图](../../../imgs/docker_deploy_flow.png)
 
-## 镜像准备
+**首次部署**：
 
-通过以下方式获取镜像，并加载到本机：
+- 部署前需要准备部署脚本和配置文件；
+- 执行“容器创建命令”，系统会自动创建容器并进入容器内部；
+- 系统在容器内自动执行部署服务，随后等待服务部署完毕；
+- 若用户通过Ctrl+C终止服务，不会退出容器，而是回到可重新部署的状态。
 
- - **方式一**：下载官方完整的 MindIE Motor 镜像
-     进入 [昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，搜索 `motor`，按设备型号选择对应 MindIE Motor 镜像。
- - **方式二**：在已有镜像中安装 MindIE Motor
-     基础镜像已安装 CANN、vLLM、vLLM Ascend 等组件，可参考 [从 vLLM Ascend 构建 MindIE Motor 镜像](../../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor) 额外安装 MindIE Motor。
+**重复部署**：
+
+- 在容器已存在的前提下，用户可直接执行部署命令；
+- 系统再次等待服务部署完毕，完成新一轮部署。
+
+## 准备镜像
+
+通过以下方式获取镜像，并加载到部署服务器：
+
+- 方式一：下载官方完整的MindIE Motor镜像
+
+  进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框输入`motor`，单击“mindie-motor”卡片，在“镜像下载”页签根据设备型号下载对应的MindIE Motor镜像。
+- 方式二：在已有镜像中安装MindIE Motor
+
+  基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于vllm-ascend/sglang镜像安装MindIE Motor](../../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor) 额外安装MindIE Motor。
 
 获取镜像后，请使用以下命令将镜像加载至服务器：
 
@@ -30,32 +44,40 @@
    docker images
    ```
 
-## 准备服务启动脚本
+## 准备服务部署脚本
 
-   获取服务部署脚本`examples` 目录：
+获取服务部署脚本`examples` 目录：
 
-   - 方式一（使用**官方完整 MindIE Motor 镜像**）：镜像内路径为 `/tmp/motor/examples`，可执行以下命令：
+- 方式一：下载官方完整的MindIE Motor镜像
+
+     镜像内路径为`/tmp/motor/examples`，可执行以下命令获取：
 
      ```bash
+     # 自定义一个存镜像名或镜像ID的变量IMAGE
      IMAGE="<镜像名或镜像ID>"
+     # 创建一个未启动的临时容器，并记录容器ID
      cid=$(docker create "$IMAGE")
+     # 把容器中/tmp/motor/examples目录复制到宿主机的当前目录
      docker cp "$cid:/tmp/motor/examples" ./examples
+     # 删除以上创建的临时容器$cid，清理资源，避免残留无用容器
      docker rm "$cid"
      ```
 
-   - 方式二：（使用**手动安装 MindIE Motor 的镜像**）：`git clone` 代码仓后，启动脚本位于 `MindIE-Motor/examples` 目录。
+- 方式二：在已有镜像中安装MindIE Motor
+
+     git clone代码仓后，部署脚本位于`MindIE-Motor/examples`目录。
 
 ## 配置服务化参数
 
-1. **准备配置文件**
+1. 准备配置文件。
 
-   MindIE Motor已提供常用模型（deepseek_v4_flash、deepseek_v4_pro、GLM 5.1等）的[**PD分离配置示例**](../../../../../model_configs/vllm/models/README.md)，**用户修改少量配置后可直接使用**。
+    MindIE Motor已提供常用模型（deepseek_v4_flash、deepseek_v4_pro、GLM 5.1等）的[PD分离配置示例](../../../../../model_configs/vllm/models/README.md)，用户修改少量配置后可直接使用。
 
-   对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+    对于未提供典型配置的模型，请参考[MindIE Motor配置自动生成指导](../../../../../model_configs/vllm/models/README.md)，自动生成user_config.json与env.json配置文件。
 
-2. **配置端口与部署模式**
+2. 配置端口与部署模式。
 
-   单容器里管理面和推理进程共用 host 网络，需要改部署模式并错开端口，否则会冲突：
+   单容器里管理面和推理进程共用host网络，需要改部署模式并错开端口，否则会冲突，参数详细说明请参考[user_config.json配置文件全量参数说明](../../configuration/config_reference.md)：
 
    ```json
    {
@@ -86,21 +108,19 @@
    }
    ```
 
-   `deploy_mode` 必须为 `single_container`。
+   deploy_mode：必须为single_container。
 
-3. **同步启动脚本配置**
+3. 同步部署脚本配置。
 
-    将准备好的配置文件（user_config.json、env.json）存放于启动脚本的model_configs/vllm目录下。
+    将准备好的配置文件（user_config.json、env.json）存放于部署脚本的model_configs/vllm目录下。
 
-## 启用 Render 特性（可选）
+## 启用Render特性（可选）
 
-修改以下配置可以开启render特性。特性开启后，部署单容器服务时，`docker_deploy.py` 会在宿主机额外创建名为 `{NAME}-vllm-render` 的新容器（`{NAME}` 即 `--container-name`），并在其中运行 vLLM Render 服务。当用户终止服务时，请注意回收该容器。Render 创建失败则不再创建主容器；主容器创建失败会删掉本次拉起的 Render。Docker 场景下 Coordinator 与 Render 同生共死：容器内 `--start` 会 `docker restart` Render 兄弟容器；Coordinator 退出时 `docker stop` Render。Render 首次就绪后持续心跳，连续失败则 Coordinator 跟随退出。为此会把宿主机 `/var/run/docker.sock` 挂进单容器；已创建的旧容器需重建后才具备该挂载。
+修改以下配置可以开启Render特性。特性开启后，部署单容器服务时，`docker_deploy.py`会在宿主机额外创建名为`{NAME}-vllm-render`的新容器`{NAME}`（即`--container-name`），并在其中运行vLLM Render服务。当用户终止服务时，请注意回收该容器。Render创建失败则不再创建主容器；主容器创建失败会删掉本次启动的Render。
 
-若该容器已经存在，部署脚本不会覆盖它。进入容器后执行：
+Docker场景下Coordinator与Render同生共死：容器内`--start`会 `docker restart` Render兄弟容器；Coordinator退出时`docker stop` Render。Render首次就绪后持续心跳，连续失败则Coordinator 跟随退出。为此会把宿主机`/var/run/docker.sock`挂进单容器；已创建的旧容器需重建后才具备该挂载。
 
-```bash
-python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --start --role render
-```
+在user_config.json开启Rander特性，示例如下：
 
 ```json
 {
@@ -112,9 +132,15 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_
 }
 ```
 
+若该容器已经存在，部署脚本不会覆盖它。进入容器后执行以下命令：
+
+```bash
+python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --start --role render
+```
+
 ## 启动服务
 
-在本机 `examples/deployer` 目录下执行以下命令：
+在部署服务器`examples/deployer`目录下执行以下命令启动服务：
 
 ```bash
 python3 docker_deploy.py --config_dir ../../model_configs/vllm \
@@ -122,23 +148,17 @@ python3 docker_deploy.py --config_dir ../../model_configs/vllm \
   --pod-ip <本机 IP地址> --nic-name <本机主网卡名称>
 ```
 
-上述命令执行后，窗口将自动**创建容器**、**进入容器**以及**启动服务**，用户在**屏幕上可观察到日志打印**。`--devices` 需覆盖 Prefill 和 Decode 使用的卡。
+上述命令执行后，窗口将自动创建容器、进入容器以及启动服务，用户在屏幕上可观察到日志打印。`--devices`需覆盖Prefill和Decode使用的卡。
 
-**启动参数说明**
+**表 1** 启动参数说明
 
 | 参数 | 说明 |
 | :--- | :--- |
-| `--config_dir` | `user_config.json` 和 `env.json` 所在目录。 |
-| `--container-name` | 容器名，可自定义。 |
-| `--devices` | 本容器挂载的 NPU 卡号，如 `0,1`。如不填写，默认挂载服务器所有卡。 |
-| `--pod-ip` | **当前服务器**的 IP。 |
-| `--nic-name` | **当前服务器**对应 `--pod-ip` 的网卡名。 |
-
-执行以下命令可以查看网卡名和本机 IP。`dev` 后面是 `--nic-name`，`src` 后面是 `--pod-ip`。
-
-```bash
-ip -4 route get 1.1.1.1
-```
+| --config_dir | user_config.json和env.json配置文件所在目录。 |
+| --container-name | 容器名，可自定义。 |
+| --devices | 本容器挂载的NPU卡号，如`0,1`。如不填写，默认挂载服务器所有卡。 |
+| --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`src`字段后面是`--pod-ip`值。 |
+| --nic-name | 当前服务器对应`--pod-ip`的网卡名。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`dev`字段后面是`--nic-name`值。 |
 
 ## 推理验证
 
@@ -163,7 +183,7 @@ curl -X POST http://127.0.0.1:1025/v1/chat/completions \
 
 ## 终止服务与重复部署
 
-在终端执行 **Ctrl+C** 可终止服务，但不会退出容器。服务终止后会出现如下提示，便于用户重新部署。
+在终端执行**Ctrl+C**可终止服务，但不会退出容器。服务终止后会出现如下提示，便于用户重新部署。
 
 ```text
 容器内服务已终止，可执行以下命令重新部署服务。

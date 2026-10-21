@@ -45,7 +45,7 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
 
 ### 环境准备
 
-- 已完成 Infer Operator 的安装部署。安装步骤参见 [Infer Operator 安装指南](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/07_infer_operator.md)；弹性扩缩容策略配置可参考 [配置基于负载的弹性扩缩容](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/10_infer_operator_best_practice/05_configuring_elastic_scaling.md)。
+- 已完成 Infer Operator 的安装部署。安装步骤参见 [Infer Operator](https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/07_infer_operator.md)；弹性扩缩容策略配置可参考 [配置基于负载的弹性扩缩容](https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/04_usage/10_infer_operator_best_practice/05_configuring_elastic_scaling.md)。
 - 已准备 `infer_service_set` 模式的 PD 分离或 PD 混部部署配置，并具备调整实例所需的空闲 NPU 资源。已有服务启用扩缩容时，保持原命名空间、模型、挂载和端口配置。
 - 已部署指标接入组件（二选一，均用于将 MindIE Motor 指标转换为 Kubernetes External Metrics）：[External Metrics Adaptor](https://gitcode.com/Ascend/mindcluster-deploy/tree/master/infer-operator-metrics-adaptor)（mindcluster-deploy 提供了可直接部署的示例），或 Prometheus + Prometheus Adapter。
 

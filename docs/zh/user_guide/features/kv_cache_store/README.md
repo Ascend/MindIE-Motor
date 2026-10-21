@@ -49,17 +49,17 @@ MindIE Motor 使用 `MultiConnector` 组合 P/D 传输 Connector 与 Store Conne
 
 ### 环境准备
 
-- 已按照 [PD 分离服务部署](../../deployment/k8s/pd_disaggregation_deployment.md) 完成 P/D 分离推理服务部署，并且服务运行正常。KV 池化在该服务基础上开启，不会改变 Controller 和 Coordinator 的部署方式。
-- KV 池化的通用约束请参见 [vllm-ascend kv_pool](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_pool.html)。启用 UCM 功能时，还需满足 [UCM 部署文档](../../features/kv_cache_store/backend/ucm.md) 中的要求。
-- 开启前请先参考 [MindIE Motor 快速开始](../../quick_start.md)，确保基础 P/D 分离服务可以正常部署。
-- 后续所有操作只在 K8s 集群的管理节点（master 节点）执行。
+- 已按照[PD 分离服务部署](../../deployment/k8s/pd_disaggregation_deployment.md) 完成P/D分离推理服务部署，并且服务运行正常。KV池化在该服务基础上开启，不会改变Controller和Coordinator的部署方式。
+- KV池化的通用约束请参见[vllm-ascend kv_pool](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_cache_pool_ascend_store.html)。启用UCM功能时，还需满足[UCM 部署文档](../../features/kv_cache_store/backend/ucm.md) 中的要求。
+- 开启前请先参考[MindIE Motor 快速开始](../../quick_start.md)，确保基础P/D分离服务可以正常部署。
+- 后续所有操作只在K8s集群的管理节点（master节点）执行。
 
 ### 使用场景
 
-- 场景一：共享 KV Pool（使用 `AscendStoreConnector`）
-  P/D 实例均加载 `AscendStoreConnector`，通过 `backend` 选择 MemCache 或 Mooncake Store 作为共享 KV Cache 后端。适用于需要 P/D 实例共享 KV Cache 以降低传输开销的场景。
-- 场景二：UCM（使用 `UCMConnector`）
-  Prefill 通过 `UCMConnector` 接入 UCM Store Pipeline，保存和加载跨请求相同前缀的 KV Cache，减少重复 Prefill 计算。Decode 不加载 UCM，P/D 实时 KV 传输仍由 Mooncake 传输 Connector 完成。适用于请求之间存在大量相同前缀（如共享 Prompt 前缀）的场景。
+- 场景一：共享 KV Pool（使用AscendStoreConnector）
+  P/D实例均加载AscendStoreConnector，通过backend选择MemCache或Mooncake Store作为共享KV Cache后端。适用于需要P/D实例共享KV Cache以降低传输开销的场景。
+- 场景二：UCM（使用 UCMConnector）
+  Prefill通过UCMConnector接入UCM Store Pipeline，保存和加载跨请求相同前缀的KV Cache，减少重复Prefill计算。Decode不加载UCM，P/D实时KV传输仍由Mooncake传输Connector完成。适用于请求之间存在大量相同前缀（如共享Prompt前缀）的场景。
 
 ### 使用样例
 

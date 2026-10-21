@@ -419,18 +419,18 @@ MindIE Motor依赖Kubernetes提供的容器编排能力，包括Pod部署、服�
 
 集群管理组件依赖MindCluster中的Ascend Docker Runtime、Ascend Device Plugin、ClusterD、Volcano和Infer Operator组件。其中，**管理节点需要安装全部组件；计算节点仅需要构建Ascend Device Plugin（推荐安装26.0.0及之后的版本）和Ascend Docker Runtime的镜像**。
 
-1. 请参考《MindCluster 集群调度用户指南》的[安装前准备](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/01_preparing_for_installation.md)章节完成创建用户、创建日志目录、构建镜像和创建命名空间。
-2. 请参考《MindCluster 集群调度用户指南》的[Ascend Docker Runtime](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/02_ascend_docker_runtime.md)章节安装Ascend Docker Runtime。
-3. 请参考《MindCluster 集群调度用户指南》的[Ascend Device Plugin](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/04_ascend_device_plugin.md)章节安装Ascend Device Plugin，使用device-plugin-_xxx_-v\{version\}.yaml文件进行安装。
+1. 请参考《MindCluster 集群调度用户指南》的[安装前准备](https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/01_preparing_for_installation.md)章节完成创建用户、创建日志目录、构建镜像和创建命名空间。
+2. 请参考《MindCluster 集群调度用户指南》的[Ascend Docker Runtime](https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/02_ascend_docker_runtime.md)章节安装Ascend Docker Runtime。
+3. 请参考《MindCluster 集群调度用户指南》的[Ascend Device Plugin](https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/04_ascend_device_plugin.md)章节安装Ascend Device Plugin，使用device-plugin-_xxx_-v\{version\}.yaml文件进行安装。
     >[!NOTE] 说明
     >当Ascend Device Plugin启动时，_xxx_.yaml配置文件中"useAscendDocker"参数配置为"true"且用户已安装Ascend Docker Runtime并生效，会自动挂载在“/usr/local/Ascend”下的驱动相关目录。
-4. 请参考《MindCluster 集群调度用户指南》的[Volcano](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/05_volcano.md)章节安装Volcano。
+4. 请参考《MindCluster 集群调度用户指南》的[Volcano](https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/05_volcano.md)章节安装Volcano。
 
     >[!NOTE] 说明
-    >在单机场景下，参考《MindCluster 集群调度用户指南》的[Volcano](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/05_volcano.md)章节安装Volcano时，在执行“Volcano”章节中的步骤9前，需要修改Volcano解压后生成的volcano-v{version}目录下的volcano-v{version}.yaml文件，搜索"useClusterInfoManager"字段并将该值改为"false"，如下图所示，修改完成后，再执行“Volcano”章节中的步骤9。
+    >在单机场景下，参考《MindCluster 集群调度用户指南》的[Volcano](https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/05_volcano.md)章节安装Volcano时，在执行“Volcano”章节中的步骤9前，需要修改Volcano解压后生成的volcano-v{version}目录下的volcano-v{version}.yaml文件，搜索"useClusterInfoManager"字段并将该值改为"false"，如下图所示，修改完成后，再执行“Volcano”章节中的步骤9。
     >![](../imgs/volcano.png)
-5. 请参考《MindCluster 集群调度用户指南》的[Infer Operator](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/07_infer_operator.md)章节安装Infer Operator。
-6. 请参考《MindCluster 集群调度用户指南》的[ClusterD](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/06_clusterd.md)章节安装ClusterD。
+5. 请参考《MindCluster 集群调度用户指南》的[Infer Operator](https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/07_infer_operator.md)章节安装Infer Operator。
+6. 请参考《MindCluster 集群调度用户指南》的[ClusterD](https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/06_clusterd.md)章节安装ClusterD。
 
 ## 设置节点标签
 

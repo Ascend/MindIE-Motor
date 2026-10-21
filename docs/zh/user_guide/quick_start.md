@@ -61,6 +61,7 @@ chmod -R 755 /mnt/weight
      当前已提供的模型目录包括：deepseek_v3.1、deepseek_v4_flash、deepseek_v4_pro、glm_5、glm_5.1、qwen_235b。
 
    - **方式二：自动生成**
+
      将vLLM Ascend社区部署脚本一键转换为MindIE Motor配置。
 
      将vLLM Ascend社区脚本复制到`examples/deployer/config_tool/`目录下对应模板文件后，进入`examples/deployer/`目录执行以下命令（以PD分离服务部署、Atlas 800I A2推理服务器为例）：

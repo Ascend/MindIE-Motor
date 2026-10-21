@@ -255,7 +255,7 @@ and does not submit the same reconfiguration again.
 
 When modifying ConfigMap parsing logic in `motor/controller/fault_tolerance/k8s/configmap_parser.py`, consult:
 
-**Reference doc:** <https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/06_api/02_ascend_device_plugin.md>
+**Reference doc:** <https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/06_api/02_ascend_device_plugin.md>
 
 Key points (MindCluster 26.0.0):
 

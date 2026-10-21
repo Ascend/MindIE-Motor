@@ -317,7 +317,7 @@ flowchart TD
 
 ## 3. 参考文档
 
-- [配置基于负载的弹性扩缩容](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/10_infer_operator_best_practice/05_configuring_elastic_scaling.md) — Infer Operator 弹性扩缩容策略配置指南
+- [配置基于负载的弹性扩缩容](https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/04_usage/10_infer_operator_best_practice/05_configuring_elastic_scaling.md) — Infer Operator 弹性扩缩容策略配置指南
 - [Metrics 可观测性指标设计文档](./metrics.md) — MindIE Motor Metrics 子系统架构与指标说明
 - [指标接口](../user_guide/api/metrics_interfaces.md) — MindIE Motor `/metrics` 端点使用说明
 - [手动扩缩容用户手册](../user_guide/features/manual_scaling.md) — 手动扩缩容操作步骤与常见问题

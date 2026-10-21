@@ -74,7 +74,7 @@
 
       当命令输出的版本号为 `3.19` 时，表示安装成功。
 
-2. 在默认 K8s + MindCluster 部署模式下，确认集群使用 containerd，并已安装支持容器快照的 MindCluster 组件及相关 CRD。MindCluster 侧的环境要求、组件部署和使用流程请参见《[容器快照部署及使用](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/10_infer_operator_best_practice/06_container_snapshot_usage.md)》。
+2. 在默认 K8s + MindCluster 部署模式下，确认集群使用 containerd，并已安装支持容器快照的 MindCluster 组件及相关 CRD。MindCluster 侧的环境要求、组件部署和使用流程请参见[容器快照部署及使用](https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/04_usage/10_infer_operator_best_practice/06_container_snapshot_usage.md)。
 3. 准备保存容器 Host 快照镜像和运行时模型权重所需的宿主机存储目录。需要跨节点恢复时，请确保目标节点能够访问这些目录。
 4. 使用其他部署模式时，需由部署平台或用户准备 Host 侧 CRIU 工具，例如GRUS、快照元数据文件及相应的容器挂载。
 

@@ -2,14 +2,14 @@
 
 <table style="table-layout: fixed; width: 1000px">
   <colgroup>
-    <col style="width: 700px">
-    <col style="width: 600px">
-    <col style="width: 150px">
-    <col style="width: 700px">
     <col style="width: 200px">
-    <col style="width: 300px">
-    <col style="width: 700px">
-    <col style="width: 800px">
+    <col style="width: 250px">
+    <col style="width: 100px">
+    <col style="width: 200px">
+    <col style="width: 200px">
+    <col style="width: 200px">
+    <col style="width: 200px">
+    <col style="width: 200px">
   </colgroup>
   <thead>
     <tr>
@@ -144,7 +144,7 @@
       <td>🟢</td>
       <td>✅</td>
       <td>✅</td>
-      <td>❌</td>
+      <td>✅</td>
       <td>✅</td>
       <td>该特性默认生效</td>
     </tr>

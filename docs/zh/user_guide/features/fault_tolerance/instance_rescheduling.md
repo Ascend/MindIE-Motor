@@ -56,7 +56,7 @@ spec:
         fault-retry-times: "10000"
 ```
 
-参数说明如下。完整的版本化定义请参见MindCluster最新《[任务YAML配置说明](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/06_api/15_yaml_configuration.md)》。其中，Deployment及Infer Operator工作负载支持多个`fault-scheduling`取值：
+参数说明如下。完整的版本化定义请参见MindCluster最新[任务YAML配置说明](https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/06_api/15_yaml_configuration.md)。其中，Deployment及Infer Operator工作负载支持多个`fault-scheduling`取值：
 
 | 参数                  | 取值                          | 说明                                                                                                                                                                                                                                                     |
 | --------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
