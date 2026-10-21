@@ -251,10 +251,9 @@ def test_token_obfuscation_requires_render() -> None:
 def test_obfuscation_requires_token_only_decode(image_obfuscation: bool) -> None:
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.token_obfuscation_config.enable = True
     if image_obfuscation:
         config.token_obfuscation_config.image_config.enable = True
-    else:
-        config.token_obfuscation_config.enable = True
 
     with pytest.raises(ValueError, match="requires render_config.enable_token_only_decode=true"):
         config.validate_config()
@@ -270,9 +269,19 @@ def test_token_obfuscation_requires_explicit_seed() -> None:
         config.validate_config()
 
 
+def test_image_obfuscation_ignored_when_master_switch_off() -> None:
+    """image_config is nested under token_obfuscation_config; outer enable=false skips it."""
+    config = CoordinatorConfig()
+    config.token_obfuscation_config.enable = False
+    config.token_obfuscation_config.image_config.enable = True
+
+    config.validate_config()
+
+
 def test_image_obfuscation_requires_render() -> None:
     """Image permutation runs on the Render payload, so Render must be enabled."""
     config = CoordinatorConfig()
+    config.token_obfuscation_config.enable = True
     config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.image_config.enable = True
 
@@ -284,6 +293,7 @@ def test_image_obfuscation_requires_explicit_seed() -> None:
     """Image client permutes the same seed, so an empty seed must be rejected too."""
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.token_obfuscation_config.enable = True
     config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.image_config.enable = True
 
@@ -295,6 +305,7 @@ def test_image_obfuscation_requires_geometry_or_model_dir() -> None:
     """Unset geometry is read from the served weights directory; without one it must be given."""
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.token_obfuscation_config.enable = True
     config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.seed_content = "seed"
     config.token_obfuscation_config.image_config.enable = True
@@ -307,8 +318,11 @@ def test_image_obfuscation_geometry_optional_with_model_dir() -> None:
     """A served model directory makes the geometry optional (resolved from the model files)."""
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.token_obfuscation_config.enable = True
     config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.seed_content = "seed"
+    config.token_obfuscation_config.vocab_size = 151936
+    config.token_obfuscation_config.token_white_list = [151643]
     config.token_obfuscation_config.image_config.enable = True
     config.engine_model_paths = ["/data/weights/model-obf"]
 
@@ -318,8 +332,11 @@ def test_image_obfuscation_geometry_optional_with_model_dir() -> None:
 def test_image_obfuscation_model_path_makes_geometry_optional() -> None:
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.token_obfuscation_config.enable = True
     config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.seed_content = "seed"
+    config.token_obfuscation_config.vocab_size = 151936
+    config.token_obfuscation_config.token_white_list = [151643]
     config.token_obfuscation_config.image_config.enable = True
     config.token_obfuscation_config.image_config.model_path = "/data/weights/model-obf"
 
@@ -330,8 +347,11 @@ def test_image_obfuscation_explicit_geometry_wins_over_model_dir() -> None:
     """Explicitly configured fields stay untouched, so no model directory is required."""
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.token_obfuscation_config.enable = True
     config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.seed_content = "seed"
+    config.token_obfuscation_config.vocab_size = 151936
+    config.token_obfuscation_config.token_white_list = [151643]
     image_config = config.token_obfuscation_config.image_config
     image_config.enable = True
     image_config.patch_size = 16
@@ -346,8 +366,11 @@ def test_image_obfuscation_explicit_geometry_wins_over_model_dir() -> None:
 def test_image_obfuscation_rejects_inverted_edge_range() -> None:
     config = CoordinatorConfig()
     config.render_config.enable = True
+    config.token_obfuscation_config.enable = True
     config.render_config.enable_token_only_decode = True
     config.token_obfuscation_config.seed_content = "seed"
+    config.token_obfuscation_config.vocab_size = 151936
+    config.token_obfuscation_config.token_white_list = [151643]
     image_config = config.token_obfuscation_config.image_config
     image_config.enable = True
     image_config.patch_size = 16

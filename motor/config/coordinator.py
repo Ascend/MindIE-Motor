@@ -1164,47 +1164,48 @@ class CoordinatorConfig:
             )
         if not isinstance(obfuscation.seed_content, str):
             self._errors.append("token_obfuscation_config.seed_content must be a string")
-        elif (obfuscation.enable or obfuscation.image_config.enable) and not obfuscation.seed_content:
+        elif obfuscation.enable and not obfuscation.seed_content:
             self._errors.append(
                 "token_obfuscation_config.seed_content must be explicitly configured when obfuscation is enabled"
             )
 
-        image = obfuscation.image_config
-        if not isinstance(image.enable, bool):
-            self._errors.append("token_obfuscation_config.image_config.enable must be a bool")
-        if image.enable and not self.render_config.enable:
-            self._errors.append("token_obfuscation_config.image_config requires render_config.enable=true")
-        if image.enable and not self.render_config.enable_token_only_decode:
-            self._errors.append(
-                "token_obfuscation_config.image_config requires render_config.enable_token_only_decode=true"
-            )
-        unset_geometry = []
-        for field_name in IMAGE_OBFUSCATION_GEOMETRY_FIELDS:
-            value = getattr(image, field_name)
-            field_path = f"token_obfuscation_config.image_config.{field_name}"
-            if not isinstance(value, int) or isinstance(value, bool):
-                self._errors.append(f"{field_path} must be an integer")
-            elif value < 0:
-                self._errors.append(f"{field_path} must not be negative")
-            elif value == 0:
-                unset_geometry.append(field_name)
-        if image.enable and unset_geometry:
-            # Unset fields are read from the served weights directory; without one they must be given.
-            reason = self._obfuscation_model_path_issue(image.model_path)
-            if reason:
+        if obfuscation.enable:
+            image = obfuscation.image_config
+            if not isinstance(image.enable, bool):
+                self._errors.append("token_obfuscation_config.image_config.enable must be a bool")
+            if image.enable and not self.render_config.enable:
+                self._errors.append("token_obfuscation_config.image_config requires render_config.enable=true")
+            if image.enable and not self.render_config.enable_token_only_decode:
                 self._errors.append(
-                    "token_obfuscation_config.image_config requires explicit geometry "
-                    f"({', '.join(unset_geometry)}) or a readable served model directory: {reason}"
+                    "token_obfuscation_config.image_config requires render_config.enable_token_only_decode=true"
                 )
-        if (
-            image.enable
-            and image.longest_edge > 0
-            and image.shortest_edge > 0
-            and image.longest_edge < image.shortest_edge
-        ):
-            self._errors.append(
-                "token_obfuscation_config.image_config.longest_edge must be greater than or equal to shortest_edge"
-            )
+            unset_geometry = []
+            for field_name in IMAGE_OBFUSCATION_GEOMETRY_FIELDS:
+                value = getattr(image, field_name)
+                field_path = f"token_obfuscation_config.image_config.{field_name}"
+                if not isinstance(value, int) or isinstance(value, bool):
+                    self._errors.append(f"{field_path} must be an integer")
+                elif value < 0:
+                    self._errors.append(f"{field_path} must not be negative")
+                elif value == 0:
+                    unset_geometry.append(field_name)
+            if image.enable and unset_geometry:
+                # Unset fields are read from the served weights directory; without one they must be given.
+                reason = self._obfuscation_model_path_issue(image.model_path)
+                if reason:
+                    self._errors.append(
+                        "token_obfuscation_config.image_config requires explicit geometry "
+                        f"({', '.join(unset_geometry)}) or a readable served model directory: {reason}"
+                    )
+            if (
+                image.enable
+                and image.longest_edge > 0
+                and image.shortest_edge > 0
+                and image.longest_edge < image.shortest_edge
+            ):
+                self._errors.append(
+                    "token_obfuscation_config.image_config.longest_edge must be greater than or equal to shortest_edge"
+                )
 
         # Validate scheduler score configuration
         self._validate_positive_number(
