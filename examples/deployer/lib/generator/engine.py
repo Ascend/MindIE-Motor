@@ -28,7 +28,10 @@ from lib.container_ipc import apply_k8s_host_ipc, host_ipc_enabled
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import set_engine_base_name, modify_sp_block_num, apply_additional_labels_annotations
 from lib.generator.storage import apply_storage_volumes, apply_dshm_size
-from lib.a5_host_nic import env_file_requests_a5_host_nic_overlay
+from lib.a5_host_nic import (
+    env_file_requests_a5_host_nic_overlay,
+    env_file_requests_a5_ubg_host_network,
+)
 
 
 def _pop_ring_controller_atlas_from_labels(labels):
@@ -51,7 +54,7 @@ def _append_a5_host_path_volumes(pod_spec, container):
     existing_volume_names = {volume[C.NAME] for volume in pod_spec.get(C.VOLUMES, []) if C.NAME in volume}
     existing_mount_names = {mount[C.NAME] for mount in container.get(C.VOLUME_MOUNTS, []) if C.NAME in mount}
     volume_defs = list(C.A5_HOST_PATH_VOLUMES)
-    # Opt-in only: 1825/UBOE/UBG (AGRC protocol_desc). Default A5 path unchanged.
+    # Opt-in only: UBOE/UBG (AGRC protocol_desc). roce:device does not opt in.
     # UBOE/UB must not mount hixlep; that path builds endpoints for the wrong cards.
     if k8s_utils.g_a5_host_nic_overlay:
         volume_defs = [item for item in volume_defs if item.get(C.NAME) != "hixlep"]
@@ -80,12 +83,16 @@ def update_host_ipc_from_env(env_config_path: str | None) -> None:
 
 
 def update_a5_host_nic_overlay_from_env(env_config_path):
-    """Read env.json and set k8s_utils.g_a5_host_nic_overlay for YAML generation."""
+    """Read env.json and set overlay / UBG hostNetwork flags for YAML generation."""
     enabled = env_file_requests_a5_host_nic_overlay(env_config_path)
+    ubg = env_file_requests_a5_ubg_host_network(env_config_path)
     k8s_utils.g_a5_host_nic_overlay = enabled
+    # UBG needs hostNetwork (Docker --net=host). UBOE stays on CNI (!1050).
+    k8s_utils.g_a5_ubg_host_network = bool(enabled and ubg)
     logger.info(
-        "A5 host-nic overlay (AGRC protocol_desc uboe/roce/ub_rtp:device): %s",
+        "A5 host-nic overlay (AGRC protocol_desc uboe/ub_ctp/ub_rtp:device): %s, UBG hostNetwork (ub_rtp:device): %s",
         enabled,
+        k8s_utils.g_a5_ubg_host_network,
     )
     return enabled
 
@@ -108,9 +115,10 @@ def apply_a5_engine_pod_config(pod_spec, container, deploy_config):
     """Apply A5-specific pod network and hostPath settings to engine pods.
 
     Main path (default): base hostPath + dns ndots only — same as before.
-    Opt-in overlay when env.json AGRC protocol_desc is uboe/roce/ub_rtp:device:
-    extra mounts (inside _append via if) and privileged. Pods stay on the
-    cluster network and keep the CNI-assigned address, same as IPv4 UBOE.
+    Opt-in overlay when env.json AGRC protocol_desc is uboe/ub_ctp/ub_rtp:device:
+    extra mounts and privileged.
+    UBOE keeps the CNI address (!1050 / #682). Same-host UBG (ub_rtp:device)
+    additionally sets hostNetwork, matching verified Docker --net=host.
     """
     hardware_type = deploy_config.get(C.HARDWARE_TYPE) if deploy_config else None
     if hardware_type not in C.HARDWARE_TYPE_A5 and hardware_type not in C.HARDWARE_TYPE_A3:
@@ -122,9 +130,32 @@ def apply_a5_engine_pod_config(pod_spec, container, deploy_config):
             sec = container.setdefault(C.SECURITY_CONTEXT, {})
             sec[C.PRIVILEGED] = True
             sec["allowPrivilegeEscalation"] = True
+            if k8s_utils.g_a5_ubg_host_network:
+                # ub_rtp:device looks up physical cards in the host netns.
+                pod_spec[C.HOST_NETWORK] = True
+                pod_spec[C.DNS_POLICY] = C.DNS_POLICY_CLUSTER_FIRST_WITH_HOST_NET
+                _ensure_a5_ubg_host_nic_env(container)
+                logger.info("Applied A5 UBG hostNetwork (ub_rtp:device)")
             logger.info("Applied A5 host-nic overlay (AGRC protocol_desc)")
     apply_a5_dns_config(pod_spec, deploy_config)
     logger.info("Applied engine pod config for hardware_type=%s", hardware_type)
+
+
+def _ensure_a5_ubg_host_nic_env(container):
+    """Inject HCCL_IF_IP from hostIP for UBG hostNetwork. Keep IFNAME from env.json."""
+    env_list = container.setdefault(C.ENV, [])
+    by_name = {item.get(C.NAME): item for item in env_list if isinstance(item, dict)}
+
+    def upsert(name, field_path):
+        item = {C.NAME: name, "valueFrom": {"fieldRef": {"fieldPath": field_path}}}
+        if name in by_name:
+            idx = env_list.index(by_name[name])
+            env_list[idx] = item
+        else:
+            env_list.append(item)
+        by_name[name] = item
+
+    upsert("HCCL_IF_IP", field_path="status.hostIP")
 
 
 def apply_a5_workload(workload, deploy_config):

@@ -189,6 +189,16 @@ def test_docker_render_run_argv_uses_launch_args():
     assert argv[argv.index("--port") + 1] == "8110"
 
 
+def test_docker_render_skips_weight_bind_already_mounted():
+    config = _user_config()
+    config[C.MOTOR_DEPLOY_CONFIG][C.WEIGHT_MOUNT_PATH] = "/root/.cache"
+    argv = build_docker_render_run_argv("motor-cc-vllm-render", config)
+    assert argv is not None
+    binds = [argv[index + 1] for index, arg in enumerate(argv) if arg == "-v"]
+    assert binds.count("/root/.cache:/root/.cache") == 1
+    assert "/root/.cache:/root/.cache:ro" not in binds
+
+
 def test_docker_render_exec_argv_matches_run_command():
     config = _user_config()
     argv = build_docker_render_run_argv("motor-cc-vllm-render", config)

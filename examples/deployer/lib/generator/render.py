@@ -11,11 +11,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
 import lib.constant as C
+from lib.bind_mount import bind_mount_is_new
 from lib.generator.engine import is_hybrid_deploy, set_weight_mount
+
+logger = logging.getLogger(__name__)
 
 
 RENDER_CONTAINER_NAME = "vllm-render"
@@ -402,13 +406,19 @@ def build_docker_render_run_argv(container_name: str, user_config: dict[str, Any
         "VLLM_LOGGING_LEVEL=INFO",
         "-e",
         "OMP_NUM_THREADS=4",
-        "-v",
-        "/root/ascend/log:/root/ascend/log",
-        "-v",
-        "/root/.cache:/root/.cache",
     ]
+    seen_binds: set[str] = set()
+
+    def add_bind(spec: str) -> None:
+        if bind_mount_is_new(spec, seen_binds):
+            argv.extend(["-v", spec])
+            return
+        logger.info("Skipped duplicate Render bind mount %s", spec)
+
+    add_bind("/root/ascend/log:/root/ascend/log")
+    add_bind("/root/.cache:/root/.cache")
     if weight_mount_path:
-        argv.extend(["-v", f"{weight_mount_path}:{weight_mount_path}:ro"])
+        add_bind(f"{weight_mount_path}:{weight_mount_path}:ro")
     if not use_cpu_image:
         argv.extend(
             [
@@ -422,10 +432,9 @@ def build_docker_render_run_argv(container_name: str, user_config: dict[str, Any
                 f"TRITON_CACHE_DIR={RENDER_CACHE_ROOT}/triton",
                 "-e",
                 "LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver",
-                "-v",
-                f"{ASCEND_DRIVER_PATH}:{ASCEND_DRIVER_PATH}:ro",
             ]
         )
+        add_bind(f"{ASCEND_DRIVER_PATH}:{ASCEND_DRIVER_PATH}:ro")
     argv.append(image)
     argv.extend(command)
     argv.extend(args)

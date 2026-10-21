@@ -18,11 +18,16 @@ sys.path.insert(0, str(DEPLOYER_ROOT))
 
 import lib.constant as C  # noqa: E402
 from lib.a5_host_nic import (  # noqa: E402
+    agrc_requests_ubg_host_network,
     apply_a5_host_nic_privileged,
     env_requests_a5_host_nic_overlay,
+    env_requests_a5_ubg_host_network,
 )
 from lib.generator import k8s_utils  # noqa: E402
-from lib.generator.engine import apply_a5_engine_pod_config  # noqa: E402
+from lib.generator.engine import (  # noqa: E402
+    apply_a5_engine_pod_config,
+    update_a5_host_nic_overlay_from_env,
+)
 
 
 def test_env_requests_overlay_detects_protocol_desc_tokens():
@@ -33,7 +38,7 @@ def test_env_requests_overlay_detects_protocol_desc_tokens():
             }
         }
     )
-    assert env_requests_a5_host_nic_overlay(
+    assert not env_requests_a5_host_nic_overlay(
         {
             "motor_engine_decode_env": {
                 "ASCEND_GLOBAL_RESOURCE_CONFIG": '{"comm_resource_config.protocol_desc":"roce:device"}'
@@ -60,10 +65,32 @@ def test_env_requests_overlay_detects_protocol_desc_tokens():
         {"motor_engine_prefill_env": {"ASCEND_GLOBAL_RESOURCE_CONFIG": '{"comm_resource_config.listen_port": "26666"}'}}
     )
     assert not env_requests_a5_host_nic_overlay({})
+    assert env_requests_a5_ubg_host_network(
+        {
+            "motor_common_env": {
+                "ASCEND_GLOBAL_RESOURCE_CONFIG": {"comm_resource_config.protocol_desc": ["ub_rtp:device"]}
+            }
+        }
+    )
+    assert not env_requests_a5_ubg_host_network(
+        {
+            "motor_engine_prefill_env": {
+                "ASCEND_GLOBAL_RESOURCE_CONFIG": '{"comm_resource_config.protocol_desc":["uboe:device"]}'
+            }
+        }
+    )
+    assert not env_requests_a5_ubg_host_network(
+        {
+            "motor_engine_decode_env": {
+                "ASCEND_GLOBAL_RESOURCE_CONFIG": '{"comm_resource_config.protocol_desc":"roce:device"}'
+            }
+        }
+    )
 
 
 def test_apply_a5_engine_pod_config_default_path_no_host_network():
     k8s_utils.g_a5_host_nic_overlay = False
+    k8s_utils.g_a5_ubg_host_network = False
     pod_spec = {C.VOLUMES: []}
     container = {C.VOLUME_MOUNTS: [], C.ENV: []}
     deploy_config = {C.HARDWARE_TYPE: C.HARDWARE_TYPE_ASCEND950}
@@ -81,6 +108,7 @@ def test_apply_a5_engine_pod_config_default_path_no_host_network():
 
 def test_apply_a5_engine_pod_config_host_nic_overlay_when_enabled():
     k8s_utils.g_a5_host_nic_overlay = True
+    k8s_utils.g_a5_ubg_host_network = False
     pod_spec = {C.VOLUMES: []}
     container = {C.VOLUME_MOUNTS: [], C.ENV: []}
     deploy_config = {C.HARDWARE_TYPE: C.HARDWARE_TYPE_ASCEND950}
@@ -92,7 +120,7 @@ def test_apply_a5_engine_pod_config_host_nic_overlay_when_enabled():
     assert container[C.SECURITY_CONTEXT][C.PRIVILEGED] is True
     assert not any(item.get(C.NAME) == "HCCL_IF_IP" for item in container[C.ENV])
     mounted = {m[C.NAME] for m in container[C.VOLUME_MOUNTS]}
-    assert "npu-smi-bin" in mounted
+    assert "npu-smi-bin" not in mounted
     assert "hccl-rootinfo" in mounted
     assert "dcmi" in mounted
     assert "hixlep" not in mounted
@@ -105,8 +133,87 @@ def test_apply_a5_engine_pod_config_host_nic_overlay_when_enabled():
     assert not any(name.startswith("atlas-topo") for name in mounted)
 
 
+def test_apply_a5_engine_pod_config_ubg_enables_host_network():
+    k8s_utils.g_a5_host_nic_overlay = True
+    k8s_utils.g_a5_ubg_host_network = True
+    pod_spec = {C.VOLUMES: []}
+    container = {C.VOLUME_MOUNTS: [], C.ENV: []}
+    deploy_config = {C.HARDWARE_TYPE: C.HARDWARE_TYPE_ASCEND950_POD16}
+
+    apply_a5_engine_pod_config(pod_spec, container, deploy_config)
+
+    assert pod_spec[C.HOST_NETWORK] is True
+    assert pod_spec[C.DNS_POLICY] == C.DNS_POLICY_CLUSTER_FIRST_WITH_HOST_NET
+    assert container[C.SECURITY_CONTEXT][C.PRIVILEGED] is True
+    hccl = next(item for item in container[C.ENV] if item.get(C.NAME) == "HCCL_IF_IP")
+    assert hccl["valueFrom"]["fieldRef"]["fieldPath"] == "status.hostIP"
+    mounted = {m[C.NAME] for m in container[C.VOLUME_MOUNTS]}
+    assert "dev-ummu" in mounted
+    assert "dev-uburma" in mounted
+    assert "hixlep" not in mounted
+
+
+def test_ubg_host_network_ignores_token_outside_protocol_desc():
+    mentioned = {
+        "comm_resource_config.protocol_desc": ["uboe:device"],
+        "note": "do not set ub_rtp:device",
+    }
+    assert agrc_requests_ubg_host_network(mentioned) is False
+    assert agrc_requests_ubg_host_network(json.dumps(mentioned, ensure_ascii=False)) is False
+    assert agrc_requests_ubg_host_network({"comm_resource_config.protocol_desc": ["ub_rtp:device"]})
+    assert agrc_requests_ubg_host_network('{"comm_resource_config.protocol_desc":["ub_rtp:device"]}')
+
+
+def test_update_overlay_flags_ubg_vs_uboe(tmp_path):
+    ubg = tmp_path / "ubg.json"
+    ubg.write_text(
+        json.dumps(
+            {
+                "motor_engine_prefill_env": {
+                    "ASCEND_GLOBAL_RESOURCE_CONFIG": {"comm_resource_config.protocol_desc": ["ub_rtp:device"]}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    update_a5_host_nic_overlay_from_env(str(ubg))
+    assert k8s_utils.g_a5_host_nic_overlay is True
+    assert k8s_utils.g_a5_ubg_host_network is True
+
+    uboe = tmp_path / "uboe.json"
+    uboe.write_text(
+        json.dumps(
+            {
+                "motor_engine_prefill_env": {
+                    "ASCEND_GLOBAL_RESOURCE_CONFIG": {"comm_resource_config.protocol_desc": ["uboe:device"]}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    update_a5_host_nic_overlay_from_env(str(uboe))
+    assert k8s_utils.g_a5_host_nic_overlay is True
+    assert k8s_utils.g_a5_ubg_host_network is False
+
+    roce = tmp_path / "roce.json"
+    roce.write_text(
+        json.dumps(
+            {
+                "motor_engine_prefill_env": {
+                    "ASCEND_GLOBAL_RESOURCE_CONFIG": {"comm_resource_config.protocol_desc": ["roce:device"]}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    update_a5_host_nic_overlay_from_env(str(roce))
+    assert k8s_utils.g_a5_host_nic_overlay is False
+    assert k8s_utils.g_a5_ubg_host_network is False
+
+
 def test_apply_a5_engine_pod_config_skips_non_a5():
     k8s_utils.g_a5_host_nic_overlay = True
+    k8s_utils.g_a5_ubg_host_network = True
     pod_spec = {}
     container = {C.ENV: []}
     deploy_config = {C.HARDWARE_TYPE: C.HARDWARE_TYPE_800I_A2}
@@ -130,7 +237,7 @@ def _write_env(tmpdir: Path, protocol_desc) -> str:
     return str(path)
 
 
-def test_apply_a5_host_nic_privileged_uboe_and_roce():
+def test_apply_a5_host_nic_privileged_uboe_not_roce():
     base = C.ENTER_DOCKER_RUN_A5
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
@@ -142,7 +249,7 @@ def test_apply_a5_host_nic_privileged_uboe_and_roce():
         roce = apply_a5_host_nic_privileged(
             base, C.HARDWARE_TYPE_ASCEND950, _write_env(tmpdir, "roce:device"), attach_npu=True
         )
-        assert roce.startswith("docker run --privileged ")
+        assert roce == base
 
 
 def test_apply_a5_host_nic_privileged_skipped_without_agrc_or_non_a5():

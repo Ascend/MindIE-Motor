@@ -41,12 +41,12 @@ A5_HOST_PATH_VOLUMES = [
     {"name": "urma-admin", "path": "/usr/bin/urma_admin", "type": "File"},
     {"name": "hccl-rootinfo", "path": "/etc/hccl_rootinfo.json", "type": "File"},
 ]
-# Extra mounts for opt-in A5 hostNetwork path (UBOE / 1825 / UBG).
-# Align ENTER_DOCKER_RUN_A5 tooling mounts (dcmi / npu-smi / sbin).
+# Extra mounts for opt-in A5 host-nic path (UBOE / UBG). RoCE does not opt in.
+# Align ENTER_DOCKER_RUN_A5 tooling mounts (dcmi / sbin). npu-smi stays on the
+# engine template as volume name npu-smi; a second mount of the same path is rejected.
 # Topo comes from ascend-driver/.../topo/950 (or AGRC topo_file_path), not /etc/atlas_topo_*.
 A5_HOST_PATH_VOLUMES_HOST_NIC = [
     {"name": "host-sbin", "path": "/usr/local/sbin"},
-    {"name": "npu-smi-bin", "path": "/usr/local/bin/npu-smi", "type": "File"},
     {"name": "dcmi", "path": "/usr/local/dcmi"},
     {"name": "ascend-firmware", "path": "/usr/local/Ascend/firmware"},
     # UBOE/UB needs the URMA device directories. On A5 these paths are directories
@@ -57,15 +57,15 @@ A5_HOST_PATH_VOLUMES_HOST_NIC = [
 ]
 # Opt-in markers under motor_common_env / motor_engine_*_env:
 # ASCEND_GLOBAL_RESOURCE_CONFIG.comm_resource_config.protocol_desc selects the path.
-#   UBOE  → uboe:device
-#   1825  → roce:device  (HIXL kProtocolRoce; 1825 is the NIC, not a protocol name)
-#   UBG   → ub_rtp:device (optional; same hostNetwork needs as ScaleOut UB paths)
+#   UBOE  → uboe:device / ub_ctp:device  (privileged + hostPath; stay on CNI, !1050)
+#   UBG   → ub_rtp:device               (same overlay, plus K8s hostNetwork)
+# roce:device is intentionally absent: host RoCE must not select this overlay.
 A5_UBOE_RESOURCE_CONFIG_KEY = "ASCEND_GLOBAL_RESOURCE_CONFIG"
+A5_UBG_PROTOCOL_TOKEN = "ub_rtp:device"  # nosec B105 -- protocol label, not a credential
 A5_HOST_NIC_PROTOCOL_TOKENS = (
     "uboe:device",
     "ub_ctp:device",
-    "roce:device",
-    "ub_rtp:device",
+    A5_UBG_PROTOCOL_TOKEN,
 )
 A5_HOST_NIC_ENV_SECTIONS = (
     "motor_common_env",

@@ -348,6 +348,69 @@ class DockerRenderLifecycleTests(unittest.TestCase):
         paths = docker_deploy.extra_create_bind_paths(args, "/examples")
         self.assertNotIn(D.DOCKER_SOCK, paths)
 
+    def test_drop_duplicate_weight_mount_when_destination_exists(self):
+        template = '  -v /data:/data \\\n  -v "$WEIGHT:$WEIGHT:ro" \\\n  "$IMAGE" bash\n'
+        result = docker_deploy.drop_duplicate_bind_mounts(template, {"WEIGHT": "/data"})
+        self.assertEqual(result.count("-v "), 1)
+        self.assertIn("-v /data:/data", result)
+        self.assertNotIn("WEIGHT", result)
+
+    def test_keep_weight_mount_when_it_is_a_subdirectory(self):
+        template = '  -v /data:/data \\\n  -v "$WEIGHT:$WEIGHT:ro" \\\n'
+        result = docker_deploy.drop_duplicate_bind_mounts(template, {"WEIGHT": "/data/models"})
+        self.assertEqual(result.count("-v "), 2)
+        self.assertIn("$WEIGHT", result)
+
+    def test_drop_duplicate_mount_ignores_trailing_slash(self):
+        template = "  -v /data:/data \\\n  -v /data/:/data/:ro \\\n"
+        result = docker_deploy.drop_duplicate_bind_mounts(template, {})
+        self.assertEqual(result.count("-v "), 1)
+
+    def test_decode_docker_log_frames_strips_headers(self):
+        payload = b"hello\n"
+        frame = bytes([1, 0, 0, 0]) + len(payload).to_bytes(4, "big") + payload
+        self.assertEqual(D.decode_docker_log_frames(frame + frame), b"hello\nhello\n")
+        self.assertEqual(D.decode_docker_log_frames(frame[:6]), b"")
+
+    def test_render_log_follow_uses_docker_logs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "docker-render.log")
+            follow = D.RenderLogFollow("motor-cc-vllm-render", path, "1710000000")
+
+            class _Proc:
+                def poll(self):
+                    return 0
+
+                def wait(self, timeout=None):
+                    return 0
+
+            with (
+                patch.object(D, "docker_available", return_value=True),
+                patch.object(D.subprocess, "Popen", return_value=_Proc()) as popen,
+            ):
+                follow.start()
+                popen.assert_called_once()
+                self.assertEqual(
+                    popen.call_args.args[0],
+                    ["docker", "logs", "-f", "--since", "1710000000", "motor-cc-vllm-render"],
+                )
+                follow.stop()
+                follow.stop()
+            self.assertTrue(os.path.isfile(path))
+
+    def test_render_log_follow_records_missing_docker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "docker-render.log")
+            follow = D.RenderLogFollow("motor-cc-vllm-render", path, "1710000000")
+            with (
+                patch.object(D, "docker_available", return_value=False),
+                patch.object(os.path, "exists", return_value=False),
+            ):
+                follow.start()
+                follow.stop()
+            text = Path(path).read_text(encoding="utf-8")
+        self.assertIn("not available", text)
+
     def test_restart_docker_render_sidecar_uses_cli(self):
         with (
             patch.object(D, "docker_available", return_value=True),

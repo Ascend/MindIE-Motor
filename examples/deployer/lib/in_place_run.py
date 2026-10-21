@@ -223,6 +223,7 @@ def run_in_place(
     *,
     grace: float | None = None,
     on_stop: Callable[[], None] | None = None,
+    extra_lines: list[str] | None = None,
 ) -> int:
     grace_s = _grace_sec() if grace is None else max(0.1, float(grace))
     protected = {os.getpid(), os.getppid(), 1}
@@ -374,6 +375,8 @@ def run_in_place(
         print("\n容器内服务已终止，可执行以下命令重新部署服务。", flush=True)
         print(restart_cmd, flush=True)
         print(f"运行日志：{log_path}", flush=True)
+        for line in extra_lines or []:
+            print(line, flush=True)
         if interrupted:
             return 143
         return rc if rc >= 0 else 1

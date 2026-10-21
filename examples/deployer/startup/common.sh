@@ -365,7 +365,7 @@ is_a5_hardware() {
     local hw_type
     hw_type="$(_motor_deploy_hardware_type)"
     case "$hw_type" in
-        Ascend950)
+        Ascend950|Ascend950-Pod16)
             return 0
             ;;
         *)
@@ -401,7 +401,7 @@ set_a5_engine_env() {
     # Neither may fall through to hixlep. Legacy A5 that still uses hixlep keeps it.
     if [ -z "${ASCEND_LOCAL_COMM_RES_PATH:-}" ] && [ -z "${ASCEND_LOCAL_COMM_RES:-}" ]; then
         case "${ASCEND_GLOBAL_RESOURCE_CONFIG:-}" in
-            *uboe:device*|*ub_ctp:device*|*ub_rtp:device*|*roce:device*)
+            *uboe:device*|*ub_ctp:device*|*ub_rtp:device*)
                 ;;
             *)
                 ;;

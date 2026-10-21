@@ -18,7 +18,7 @@ import shlex
 import stat
 import sys
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 
 import lib.constant as C
 import lib.docker_utils as D
@@ -367,6 +367,30 @@ def _new_run_log_path(workspace: str, identity: D.DockerRuntimeIdentity | None =
         return path
 
 
+def _new_render_log_path(workspace: str) -> str | None:
+    log_dir = os.path.join(workspace, "log")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except OSError as exc:
+        logger.error("Failed to create log directory %s: %s", log_dir, exc)
+        return None
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    n = 0
+    while True:
+        name = f"docker-render-{stamp}.log" if n == 0 else f"docker-render-{stamp}-{n}.log"
+        path = os.path.join(log_dir, name)
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            n += 1
+            continue
+        except OSError as exc:
+            logger.error("Failed to create Render log file %s: %s", path, exc)
+            return None
+        os.close(fd)
+        return path
+
+
 def _docker_render_stop_hook(args) -> Callable[[], None] | None:
     from lib.generator.render import is_render_enabled, role_needs_docker_render
 
@@ -388,32 +412,51 @@ def _docker_render_stop_hook(args) -> Callable[[], None] | None:
     return stop
 
 
-def _restart_docker_render_with_coordinator(args) -> int:
+def _restart_docker_render_with_coordinator(args) -> tuple[int, str | None, str | None]:
+    """Restart Render. Returns ``(rc, since_unix, render_container_name)``."""
     from lib.generator.render import is_render_enabled, role_needs_docker_render
 
     if not role_needs_docker_render(getattr(args, "role", None)):
-        return 0
+        return 0, None, None
     user_config_path, _env_config_path = resolve_config_paths(
         args.config_dir, args.user_config_path, args.env_config_path
     )
     if not is_render_enabled(read_json(user_config_path)):
-        return 0
+        return 0, None, None
     main_name = _container_name_from_args_or_env(args)
     if not main_name:
         logger.error("Render is enabled but --container-name / NAME is empty")
-        return 1
+        return 1, None, None
+    since = str(int(datetime.now(timezone.utc).timestamp()))
     try:
-        D.restart_docker_render_sidecar(main_name)
+        render_name = D.restart_docker_render_sidecar(main_name)
     except ValueError as exc:
         logger.error("%s", exc)
-        return 1
-    return 0
+        return 1, None, None
+    return 0, since, render_name
+
+
+def _open_render_log_follow(workspace: str, render_name: str, since: str) -> D.RenderLogFollow | None:
+    log_path = _new_render_log_path(workspace)
+    if log_path is None:
+        return None
+    follow = D.RenderLogFollow(render_name, log_path, since)
+    try:
+        follow.start()
+    except OSError as exc:
+        logger.warning("Failed to follow Render logs: %s", exc)
+        follow.stop()
+        return None
+    print(f"Render 日志：{log_path}", flush=True)
+    logger.info("following Render logs for %s into %s since %s", render_name, log_path, since)
+    return follow
 
 
 def _start_in_place(
     workspace: str,
     identity: D.DockerRuntimeIdentity | None = None,
     on_stop: Callable[[], None] | None = None,
+    extra_lines: list[str] | None = None,
 ) -> int:
     start_motor_path = os.path.join(workspace, "start_motor.sh")
     if not os.path.isfile(start_motor_path):
@@ -423,7 +466,13 @@ def _start_in_place(
     if log_path is None:
         return 1
     logger.info("starting Motor in this environment via %s", start_motor_path)
-    return run_in_place(start_motor_path, log_path, format_restart_command(), on_stop=on_stop)
+    return run_in_place(
+        start_motor_path,
+        log_path,
+        format_restart_command(),
+        on_stop=on_stop,
+        extra_lines=extra_lines,
+    )
 
 
 def _print_in_place_banner(
@@ -449,9 +498,24 @@ def run(args, deployer_dir: str) -> int:
         return 1
     params, workspace, identity = _prepare_and_render(args, deployer_dir)
     _print_in_place_banner(workspace, identity, params)
-    if _restart_docker_render_with_coordinator(args) != 0:
+    restart_rc, since, render_name = _restart_docker_render_with_coordinator(args)
+    if restart_rc != 0:
         return 1
-    return _start_in_place(workspace, identity=identity, on_stop=_docker_render_stop_hook(args))
+    follow = _open_render_log_follow(workspace, render_name, since) if render_name and since else None
+
+    def on_stop() -> None:
+        stop_render = _docker_render_stop_hook(args)
+        if stop_render is not None:
+            stop_render()
+        if follow is not None:
+            follow.stop()
+
+    extra_lines = [f"Render 日志：{follow.log_path}"] if follow is not None else None
+    try:
+        return _start_in_place(workspace, identity=identity, on_stop=on_stop, extra_lines=extra_lines)
+    finally:
+        if follow is not None:
+            follow.stop()
 
 
 def _parse_role(value: str) -> str:
@@ -550,6 +614,34 @@ def apply_enter_weight(template: str, weight: str | None) -> str:
     return "".join(line for line in template.splitlines(keepends=True) if not _enter_line_is_weight(line))
 
 
+def drop_duplicate_bind_mounts(template: str, env: dict[str, str] | None = None) -> str:
+    """Drop a later ``-v`` whose container path is already mounted.
+
+    Docker rejects the create when two binds use the same destination, which
+    happens when ``weight_mount_path`` is ``/data`` (or another path the
+    template already mounts). The earlier mount still exposes that path.
+    """
+    seen: set[str] = set()
+    kept: list[str] = []
+    dropped: list[str] = []
+    for line in template.splitlines(keepends=True):
+        stripped = line.strip().rstrip("\\").strip()
+        if stripped.startswith("-v "):
+            spec = stripped[3:].strip()
+            if not D.bind_mount_is_new(spec, seen, env):
+                dest = D.bind_mount_destination(spec, env)
+                if dest:
+                    dropped.append(dest)
+                continue
+        kept.append(line)
+    if dropped:
+        logger.info(
+            "Skipped duplicate bind mount(s) already present in the docker run template: %s",
+            ", ".join(dropped),
+        )
+    return "".join(kept)
+
+
 def apply_enter_shm(template: str, dshm_size: str | None, *, ipc_host: bool = False) -> str:
     if not ipc_host and not (dshm_size or "").strip():
         return template
@@ -588,7 +680,7 @@ def enter_docker_run_template(role: str | None, hardware_type: str | None = None
         D.npu_docker_card_count(hardware_type)
         return C.ENTER_DOCKER_RUN_CTRL
     # Must check A5-Pod16 before the generic "16 cards => A3" branch.
-    # Ascend950-Pod16: same-host UBG (davinci0-15). UBOE/1825 use Ascend950 (8 cards).
+    # Ascend950-Pod16: same-host UBG (davinci0-15). UBOE uses Ascend950 (8 cards).
     if hardware_type in C.HARDWARE_TYPE_A5_POD16:
         return C.ENTER_DOCKER_RUN_A5_POD16
     if D.npu_docker_card_count(hardware_type) == 16:
@@ -924,7 +1016,7 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
             if command != before:
                 logger.info(
                     "A5 host-nic overlay: --privileged enabled "
-                    "(AGRC uboe/roce/ub_rtp; UBOE/1825=Ascend950, same-host UBG=Ascend950-Pod16)"
+                    "(AGRC uboe/ub_ctp/ub_rtp; UBOE=Ascend950, same-host UBG=Ascend950-Pod16)"
                 )
     except ValueError as exc:
         logger.error("%s", exc)
@@ -941,6 +1033,7 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
     except ValueError as exc:
         logger.error("%s", exc)
         return 1
+    command = drop_duplicate_bind_mounts(command, env)
     if start_service:
         try:
             command = attach_one_click_command(command, build_in_place_inner_command(args, deployer_dir))
@@ -1076,8 +1169,8 @@ def parse_arguments() -> argparse.Namespace:
         "ENTER_DOCKER_RUN_A2 (davinci0-7), ENTER_DOCKER_RUN_A3 (davinci0-15), "
         "ENTER_DOCKER_RUN_A5 (davinci0-7 plus A5 UB paths), or ENTER_DOCKER_RUN_A5_POD16 (davinci0-15) from hardware_type "
         "(every card in that template, or only --devices if passed). "
-        "UBOE/1825: hardware_type=Ascend950 and env.json AGRC uboe:device or roce:device "
-        "(adds --privileged; pass --nic-name on --start). "
+        "UBOE: hardware_type=Ascend950 and env.json AGRC uboe:device or ub_ctp:device "
+        "(adds --privileged; pass --nic-name on --start). roce:device does not. "
         "Same-host UBG: Ascend950-Pod16 and ub_rtp:device. "
         "Does not write EXAMPLES or CONFIG_DIR into the container; "
         "--start must pass --config_dir again. "

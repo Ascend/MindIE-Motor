@@ -46,8 +46,10 @@ g_user_config_path = None
 g_mf_store_service = "mf_store"
 g_mf_store_enabled = False
 g_engine_type = "vllm"
-# Opt-in: env.json AGRC protocol_desc uboe/roce/ub_rtp:device → A5 hostNetwork overlay.
+# Opt-in: env.json AGRC protocol_desc uboe/ub_ctp/ub_rtp:device. roce:device does not.
 g_a5_host_nic_overlay = False
+# Same-host UBG only (ub_rtp:device). UBOE overlay stays on CNI (!1050 / #682).
+g_a5_ubg_host_network = False
 g_host_ipc_enabled = False
 _DEPLOYER_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
