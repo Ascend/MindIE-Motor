@@ -244,7 +244,7 @@ NodeManager 负责原生引擎的就绪探测、进程监管和虚推健康探�
 
 ### PD 异构（PR / DT）调度
 
-Ascend 950PR&DT系列产品分为 PR、DT 两类：PR 使用白鹭内存，DT 使用 HBM。HBM 带宽更大、性能更好，更适合 Decode；Prefill 可部署在 PR 上。因此 **PR + DT 组网** 时，需要把 P 实例调度到 PR 节点、D 实例调度到 DT 节点。
+Ascend 950PR&DT系列产品分为PR、DT两类，两者的内存存在差异，DT的内存宽带更大、性能更好，更适合部署Decode；Prefill可部署在PR上。因此**PR + DT 组网**时，需要把P实例调度到PR节点，D实例调度到DT节点。
 
 - **原理**：在 PD 分离的 Prefill / Decode Pod 上追加 `huawei.com/npu.chip.name` 到 `nodeSelector`，与节点上已有的芯片标签匹配。
 - **开启**：在 Prefill / Decode 各自配置中填写对应字段；不填则不加该条 `nodeSelector`。

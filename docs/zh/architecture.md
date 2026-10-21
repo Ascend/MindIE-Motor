@@ -3,10 +3,10 @@
 
 ## MindIE Motor简介
 
-**MindIE Motor** 是面向大语言模型（LLM）分布式推理，如**PD分离推理**（Prefill 与 Decode 阶段分离）的请求调度框架。它通过开放、可扩展的推理服务化平台架构，对接 [vLLM-Ascend](https://github.com/vllm-project/vllm-ascend) 和 SGLang 原生运行时，旨在满足大语言模型的高性能推理需求。
+**MindIE Motor**是面向大语言模型（LLM）分布式推理，如**PD分离推理**（Prefill与Decode阶段分离）的请求调度框架。它通过开放、可扩展的推理服务化平台架构，对接[vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)和[SGLang](https://github.com/sgl-project/sglang)原生运行时，旨在满足大语言模型的高性能推理需求。
 
 >[!NOTE]说明
->原 MindIE PyMotor 代码仓自 3.1.0 版本起更名为 MindIE Motor，后续版本将沿用该命名。其软件定位与基本功能保持不变，当前以 vLLM-Ascend 为主，并支持 SGLang 原生引擎接入。
+>原MindIE PyMotor代码仓自3.1.0版本起更名为MindIE Motor，后续版本将沿用该命名。其软件定位与基本功能保持不变，当前以vLLM-Ascend为主，并支持SGLang原生引擎接入。
 
 ### 核心能力
 

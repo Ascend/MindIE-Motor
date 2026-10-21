@@ -55,4 +55,5 @@
   - [Node Manager](../developer_guide/components/node_manager.md)
 - [错误码参考]()
   - [使用说明](./error_code/usage_instruction.md)
-  - [MindIE Motor错误码参考](./error_code/error_code_reference.md)
+  - [错误码参考](./error_code/error_code_reference.md)
+- [通信矩阵](./communication_matrix_motor.md)
