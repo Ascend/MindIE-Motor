@@ -17,10 +17,13 @@ from motor.coordinator.render.models import TokenizedRequest, TokenizerSource
 from motor.coordinator.router.adapters.stream import parse_stream_chunk_json
 from motor.coordinator.router.render_execution import (
     RenderExecutionMode,
+    build_render_attempt_plan,
+    can_fallback_to_native,
     merge_native_completion_responses,
     merge_native_completion_streams,
     resolve_render_execution_mode,
 )
+from motor.coordinator.router.rescheduler.rescheduler import RetryRequestPlan
 
 
 NATIVE = RenderExecutionMode.NATIVE_FULL
@@ -34,13 +37,13 @@ def _case(
     expected,
     *,
     api="v1/completions",
-    enable_streaming=False,
+    enable_token_only_decode=False,
     image_obfuscation=False,
     engine_type="vllm",
 ):
     render_config = SimpleNamespace()
-    if enable_streaming is not None:
-        render_config.enable_streaming = enable_streaming
+    if enable_token_only_decode is not None:
+        render_config.enable_token_only_decode = enable_token_only_decode
     prompt = data.get("prompt")
     req_info = RequestInfo(
         req_id="request-1",
@@ -70,16 +73,25 @@ def _case(
             {"messages": [{"role": "user", "content": "hi"}], "stream": True},
             RENDER_NATIVE,
             api=CHAT_API,
-            enable_streaming=None,
+            enable_token_only_decode=None,
         ),
         _case(
             {"messages": [{"role": "user", "content": "hi"}], "stream": True},
             TOKEN_ONLY,
             api=CHAT_API,
-            enable_streaming=True,
+            enable_token_only_decode=True,
         ),
+        _case(
+            {"messages": [{"role": "user", "content": "hi"}]}, TOKEN_ONLY, api=CHAT_API, enable_token_only_decode=True
+        ),
+        _case({"prompt": "hi"}, TOKEN_ONLY, enable_token_only_decode=True),
         _case({"prompt": ["a", "b"]}, RENDER_NATIVE),
-        _case({"messages": [{"role": "user", "content": "hi"}], "echo": True}, NATIVE, api=CHAT_API),
+        _case(
+            {"messages": [{"role": "user", "content": "hi"}], "echo": True},
+            NATIVE,
+            api=CHAT_API,
+            enable_token_only_decode=True,
+        ),
         _case(
             {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": "x"}]}]},
             NATIVE,
@@ -91,6 +103,48 @@ def _case(
 )
 def test_resolve_render_execution_mode(req_info, config, engine_type, expected) -> None:
     assert resolve_render_execution_mode(req_info, config, engine_type) is expected
+
+
+@pytest.mark.parametrize(
+    ("image_obfuscation", "expected_mode", "protected"),
+    [(False, RENDER_NATIVE, False), (True, TOKEN_ONLY, True)],
+)
+def test_build_render_attempt_plan_materializes_retry_tokens_and_prompt_identity(
+    image_obfuscation: bool,
+    expected_mode: RenderExecutionMode,
+    protected: bool,
+) -> None:
+    req_info, config, engine_type, _ = _case(
+        {"prompt": "hi", "stream": True},
+        expected_mode,
+        image_obfuscation=image_obfuscation,
+    )
+    plan = build_render_attempt_plan(
+        req_info,
+        config,
+        engine_type,
+        attempt_seq=2,
+        retry_plan=RetryRequestPlan(
+            prompt_token_ids=(7, 8, 9),
+            api="v1/completions",
+            remove_chat_fields=False,
+            cached_output_tokens=1,
+        ),
+    )
+
+    assert plan is not None
+    assert plan.mode is expected_mode
+    assert plan.protected is protected
+    assert can_fallback_to_native(plan) is not protected
+    assert plan.prompts[0].engine_request_id == "request-1#a2#g0#p0"
+    assert plan.tokenized_requests[0].prompt_token_ids == [7, 8, 9]
+
+
+def test_build_render_attempt_plan_bypasses_native_full() -> None:
+    req_info, config, engine_type, _ = _case({"prompt": "hi"}, NATIVE, engine_type="sglang")
+
+    assert build_render_attempt_plan(req_info, config, engine_type, attempt_seq=1) is None
+    assert can_fallback_to_native(None)
 
 
 def test_merge_native_completion_responses_owns_batch_semantics():

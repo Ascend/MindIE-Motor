@@ -754,7 +754,7 @@ class RenderConfig:
     """Coordinator frontend tokenization through a vLLM Render sidecar."""
 
     enable: bool = False
-    enable_streaming: bool = False
+    enable_token_only_decode: bool = False
     endpoint: RenderEndpointConfig = field(default_factory=RenderEndpointConfig)
     timeout_ms: int = 5000
     image_name: str = ""
@@ -1121,6 +1121,8 @@ class CoordinatorConfig:
         self._validate_ip_or_hostname(self.render_config.endpoint.host, "render_config.endpoint.host")
         self._validate_port_range(self.render_config.endpoint.port, "render_config.endpoint.port")
         self._validate_positive_number(self.render_config.timeout_ms, "render_config.timeout_ms")
+        if not isinstance(self.render_config.enable_token_only_decode, bool):
+            self._errors.append("render_config.enable_token_only_decode must be a bool")
         if not isinstance(self.render_config.image_name, str):
             self._errors.append("render_config.image_name must be a string")
         elif self.render_config.image_name and not self.render_config.image_name.strip():
@@ -1133,6 +1135,8 @@ class CoordinatorConfig:
             self._errors.append("token_obfuscation_config.enable must be a bool")
         if obfuscation.enable and not self.render_config.enable:
             self._errors.append("token_obfuscation_config requires render_config.enable=true")
+        if obfuscation.enable and not self.render_config.enable_token_only_decode:
+            self._errors.append("token_obfuscation_config requires render_config.enable_token_only_decode=true")
         if not isinstance(obfuscation.vocab_size, int) or isinstance(obfuscation.vocab_size, bool):
             self._errors.append("token_obfuscation_config.vocab_size must be an integer")
         elif obfuscation.vocab_size < 0:
@@ -1170,6 +1174,10 @@ class CoordinatorConfig:
             self._errors.append("token_obfuscation_config.image_config.enable must be a bool")
         if image.enable and not self.render_config.enable:
             self._errors.append("token_obfuscation_config.image_config requires render_config.enable=true")
+        if image.enable and not self.render_config.enable_token_only_decode:
+            self._errors.append(
+                "token_obfuscation_config.image_config requires render_config.enable_token_only_decode=true"
+            )
         unset_geometry = []
         for field_name in IMAGE_OBFUSCATION_GEOMETRY_FIELDS:
             value = getattr(image, field_name)

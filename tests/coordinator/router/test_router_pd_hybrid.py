@@ -589,7 +589,7 @@ class TestRouterPDHybrid:
         router = self._render_router(req_info, render_client)
         # setup_pd_hybrid replaces CoordinatorConfig with a MagicMock; pin the three
         # mode flags so this test exercises the production default.
-        router.config.render_config.enable_streaming = False
+        router.config.render_config.enable_token_only_decode = False
         router.config.token_obfuscation_config.enable = False
         router.config.token_obfuscation_config.image_config.enable = False
         response = await router.handle_request()
@@ -599,6 +599,37 @@ class TestRouterPDHybrid:
         assert requests[0][1]["kv_transfer_params"]["prompt_token_ids"] == [10, 20]
         render_client.derender.assert_not_awaited()
         assert payload["choices"][0]["message"]["content"] == "native"
+
+    @pytest.mark.asyncio
+    async def test_pd_hybrid_protected_token_only_rejects_native_fallback(
+        self,
+        monkeypatch: MonkeyPatch,
+        setup_pd_hybrid,
+    ):
+        requests = []
+
+        async def mock_forward(self, api, req_data, client, timeout):
+            del self, client, timeout
+            requests.append(api)
+            if api == "inference/v1/generate":
+                raise UpstreamHTTPError(404, b"unsupported", {}, "non-stream")
+            response = MagicMock()
+            response.json.return_value = {"choices": [{"index": 0, "text": "native"}]}
+            return response
+
+        monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
+        req_data = {"model": "test-model", "prompt": "secret", "stream": False, "max_tokens": 8}
+        req_info = make_render_request_info("rid-protected-hybrid", req_data, "v1/completions", [10, 20], req_len=99)
+        router = self._render_router(req_info, make_render_client())
+        router.config.render_config.enable_token_only_decode = True
+        router.config.token_obfuscation_config.enable = False
+        router.config.token_obfuscation_config.image_config.enable = True
+
+        with pytest.raises(UpstreamHTTPError) as exc_info:
+            await router.handle_request()
+
+        assert exc_info.value.status_code == 404
+        assert requests == ["inference/v1/generate"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("use_fallback", [False, True], ids=["direct", "pd-fallback"])
@@ -636,7 +667,7 @@ class TestRouterPDHybrid:
         router = self._render_router(req_info, render_client)
         # setup_pd_hybrid replaces CoordinatorConfig with a MagicMock; pin the
         # mode flags so this test exercises the production default.
-        router.config.render_config.enable_streaming = False
+        router.config.render_config.enable_token_only_decode = False
         router.config.token_obfuscation_config.enable = False
         router.config.token_obfuscation_config.image_config.enable = False
         if use_fallback:
@@ -1244,7 +1275,7 @@ class TestPDHybridCancelReschedule:
         hybrid_pool,
     ):
         config = _make_cancel_test_config(monkeypatch, transport_max_retry=2, reschedule_enabled=True)
-        config.render_config.enable_streaming = True
+        config.render_config.enable_token_only_decode = True
         calls: list[tuple[str, dict]] = []
 
         async def mock_forward(self, api, req_data, client, timeout, *, on_response_ready=None):

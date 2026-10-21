@@ -46,6 +46,7 @@ from motor.coordinator.domain.agent_hint import (
 )
 from motor.coordinator.router.adapters.pd_protocol import trim_vllm_engine_request_id
 from motor.coordinator.router.dispatch_session import AttemptContext
+from motor.coordinator.router.token_only import parse_token_only_request_id
 from motor.coordinator.router.strategies.base import BaseRouter
 from motor.coordinator.domain.scheduling import has_decode_colocation_candidate
 from motor.coordinator.router.strategies.pd_hybrid import PDHybridRouter
@@ -463,12 +464,8 @@ async def handle_metaserver_request(
     if not isinstance(body, dict) or not body:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty request json")
 
-    request_id = trim_vllm_engine_request_id(str(body.get("request_id") or ""))
-    batch_index = None
-    batch_marker = request_id.rpartition("#p")
-    if batch_marker[0] and batch_marker[2].isdigit():
-        request_id = batch_marker[0]
-        batch_index = int(batch_marker[2])
+    engine_request_id = trim_vllm_engine_request_id(str(body.get("request_id") or ""))
+    request_id, id_attempt_seq, generation, prompt_index = parse_token_only_request_id(engine_request_id)
     if not request_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing request_id")
     req_info = await request_manager.get_req_info(request_id)
@@ -484,8 +481,19 @@ async def handle_metaserver_request(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trigger attempt not found")
     if attempt.attempt_seq != attempt_seq:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Stale trigger attempt callback")
-    if batch_index != req_info._trigger_batch_index:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Stale trigger batch callback")
+    if id_attempt_seq is not None and id_attempt_seq != attempt_seq:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Stale trigger attempt callback")
+    plan = attempt.render_plan
+    if generation is not None and (plan is None or generation != plan.generation):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Stale trigger generation callback")
+    if plan is None:
+        if prompt_index is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invalid trigger prompt callback")
+    else:
+        if prompt_index is None or not 0 <= prompt_index < len(plan.prompts):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invalid trigger prompt callback")
+        if engine_request_id != plan.prompts[prompt_index].engine_request_id:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invalid trigger prompt callback")
 
     if scheduler is None:
         raise HTTPException(
@@ -500,7 +508,7 @@ async def handle_metaserver_request(
         request_manager=request_manager,
     )
     try:
-        return await router_impl.handle_metaserver_request(body)
+        return await router_impl.handle_metaserver_request(body, prompt_index=prompt_index)
     except HTTPException:
         raise
     except Exception as e:

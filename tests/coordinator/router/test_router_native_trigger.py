@@ -24,9 +24,12 @@ from motor.coordinator.domain import InstanceReadiness
 from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import ReqState
+from motor.coordinator.render.models import DerenderedStreamChunk
 from motor.coordinator.router.dispatch import handle_metaserver_request
 from motor.coordinator.router.dispatch_session import AttemptState, AttemptStopReason, PDDispatchSession
+from motor.coordinator.router.render_execution import RenderExecutionMode
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
+from motor.coordinator.router.upstream_error import UpstreamHTTPError
 from motor.coordinator.scheduler.scheduler import Scheduler
 from tests.coordinator.router.mock_openai_request import create_mock_request_info
 from tests.coordinator.router.token_only_support import (
@@ -191,8 +194,9 @@ class TestRouterNativeTrigger:
         assert ReqState.P_ALLOCATED not in req_info.status
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("enable_token_only_decode", [False, True])
     @pytest.mark.parametrize(
-        ("api", "req_data", "response_data", "expected_path", "expected_request_id", "request_field"),
+        ("api", "req_data", "response_data", "request_field"),
         [
             (
                 "v1/chat/completions",
@@ -203,16 +207,12 @@ class TestRouterNativeTrigger:
                     "max_tokens": 8,
                 },
                 {"choices": [{"message": {"role": "assistant", "content": "token response"}}]},
-                "/v1/chat/completions",
-                "test-id",
-                None,
+                "chat_request",
             ),
             (
                 "/v1/completions",
                 {"model": "test-model", "prompt": "first", "stream": False, "max_tokens": 8},
                 {"choices": [{"index": 0, "text": "token response"}]},
-                "/inference/v1/generate",
-                "test-id#p0",
                 "completion_request",
             ),
         ],
@@ -224,8 +224,7 @@ class TestRouterNativeTrigger:
         api,
         req_data,
         response_data,
-        expected_path,
-        expected_request_id,
+        enable_token_only_decode,
         request_field,
     ):
         del trigger_pair
@@ -234,39 +233,120 @@ class TestRouterNativeTrigger:
         req_info = make_render_request_info("test-id", req_data, api, [10, 20])
         render_client = AsyncMock()
         render_client.derender.return_value = response_data
-        router = self._make_router(req_info, monkeypatch, p_client, d_client)
+        config = self._make_config()
+        config.render_config.enable_token_only_decode = enable_token_only_decode
+        router = self._make_router(req_info, monkeypatch, p_client, d_client, config=config)
         router.set_render_client(render_client)
+        batch_runner = AsyncMock(wraps=router._run_trigger_completion_batch)
+        monkeypatch.setattr(router, "_run_trigger_completion_batch", batch_runner)
 
         response = await router.handle_request()
 
         assert response.status_code == 200
+        batch_runner.assert_not_awaited()
+        expected_path = "/inference/v1/generate" if enable_token_only_decode else f"/{api.strip('/')}"
         assert d_client.paths == [expected_path]
-        assert (d_client.requests[0]["request_id"], p_client.requests) == (expected_request_id, [])
-        if request_field is None:
-            render_client.derender.assert_not_awaited()
-        else:
+        assert (d_client.requests[0]["request_id"], p_client.requests) == ("test-id#a1#g0#p0", [])
+        if enable_token_only_decode:
             derender_request = render_client.derender.await_args.args[1]
             assert derender_request[request_field] == req_data
+        else:
+            render_client.derender.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_nonstream_trigger_completion_batch_uses_unique_generate_ids(self, monkeypatch, trigger_pair):
+    @pytest.mark.parametrize("enable_token_only_decode", [False, True])
+    async def test_nonstream_trigger_completion_batch_follows_attempt_decode_mode(
+        self, monkeypatch, trigger_pair, enable_token_only_decode
+    ):
         del trigger_pair
         p_client = _UnifiedPDPrefillClient()
         d_client = TokenOnlyEngineClient(PDRole.ROLE_D)
         req_data = {"model": "test-model", "prompt": ["first", "second"], "stream": False, "max_tokens": 8}
         req_info = make_render_request_info("test-id", req_data, "/v1/completions", [[10], [20, 21]])
         render_client = make_render_client(completion_count=2)
-        router = self._make_router(req_info, monkeypatch, p_client, d_client)
+        config = self._make_config()
+        config.render_config.enable_token_only_decode = enable_token_only_decode
+        router = self._make_router(req_info, monkeypatch, p_client, d_client, config=config)
         router.set_render_client(render_client)
+        response = await router.handle_request()
+        body = json.loads(response.body)
+
+        assert response.status_code == 200
+        assert [choice["index"] for choice in body["choices"]] == [0, 1]
+        assert [request["request_id"] for request in d_client.requests] == [
+            f"{req_info.req_id}#a1#g0#p{i}" for i in range(2)
+        ]
+        if enable_token_only_decode:
+            assert d_client.paths == ["/inference/v1/generate"] * 2
+            assert_generate_requests(
+                d_client.requests,
+                request_ids=[f"{req_info.req_id}#a1#g0#p{i}" for i in range(2)],
+                prompt_token_ids=[[10], [20, 21]],
+            )
+            assert_completion_derender(
+                render_client,
+                prompt_lengths=[1, 2],
+                response_count=2,
+                original_request=req_data,
+            )
+        else:
+            assert d_client.paths == ["/v1/completions"] * 2
+            assert [request["prompt"] for request in d_client.requests] == [[10], [20, 21]]
+            render_client.derender.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_trigger_completion_batch_falls_back_as_one_native_generation(
+        self, monkeypatch, trigger_pair, stream
+    ):
+        del trigger_pair
+        req_data = {"model": "test-model", "prompt": ["first", "second"], "stream": stream, "max_tokens": 8}
+        req_info = make_render_request_info("test-id", req_data, "/v1/completions", [[10], [20, 21]])
+        config = self._make_config()
+        config.render_config.enable_token_only_decode = True
+        d_client = TokenOnlyEngineClient(PDRole.ROLE_D, unsupported_status=404)
+        router = self._make_router(
+            req_info,
+            monkeypatch,
+            _UnifiedPDPrefillClient(),
+            d_client,
+            config=config,
+        )
+        router.set_render_client(make_render_client(completion_count=2))
+        generations = []
+
+        if stream:
+
+            async def run_completion_stream(attempt, tokenized_requests):
+                del tokenized_requests
+                generations.append((attempt.render_plan.generation, attempt.render_plan.mode))
+                if attempt.render_plan.generation == 0:
+                    raise UpstreamHTTPError(404, b"unsupported", {}, "stream")
+                router._stream_commit_controller.mark_ready("decode", attempt.attempt_seq)
+                yield b"data: [DONE]\n\n"
+
+            monkeypatch.setattr(router, "_run_trigger_completion_stream", run_completion_stream)
+
         response = await router.handle_request()
 
         assert response.status_code == 200
-        assert_generate_requests(
-            d_client.requests,
-            request_ids=[f"{req_info.req_id}#p{i}" for i in range(2)],
-            prompt_token_ids=[[10], [20, 21]],
-        )
-        assert_completion_derender(render_client, prompt_lengths=[1, 2], response_count=2, original_request=req_data)
+        if stream:
+            _ = [chunk async for chunk in response.body_iterator]
+            assert generations == [
+                (0, RenderExecutionMode.TOKEN_ONLY_DERENDER),
+                (1, RenderExecutionMode.RENDER_PREFILL_NATIVE_DECODE),
+            ]
+        else:
+            assert d_client.paths == [
+                "/inference/v1/generate",
+                "/v1/completions",
+                "/v1/completions",
+            ]
+            assert [request["request_id"] for request in d_client.requests] == [
+                "test-id#a1#g0#p0",
+                "test-id#a1#g1#p0",
+                "test-id#a1#g1#p1",
+            ]
 
     @pytest.mark.asyncio
     async def test_nonstream_trigger_completion_batch_sampling_claims_and_injects_bodies(
@@ -296,6 +376,7 @@ class TestRouterNativeTrigger:
         req_info = make_render_request_info("test-batch-sampling", req_data, "/v1/completions", [[10], [20, 21]])
         render_client = make_render_client(completion_count=2)
         config = self._make_config()
+        config.render_config.enable_token_only_decode = True
         config.precision_detection_config.precision_check_enabled = True
         config.precision_detection_config.interval_seconds = 0.0
         config.precision_detection_config.logprobs_count = 3
@@ -327,6 +408,84 @@ class TestRouterNativeTrigger:
         assert all("logprobs" not in choice for choice in body["choices"])
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("enable_token_only_decode", [False, True])
+    async def test_stream_trigger_completion_batch_follows_attempt_decode_mode(
+        self, monkeypatch, trigger_pair, enable_token_only_decode
+    ):
+        del trigger_pair
+
+        p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
+        req_data = {"model": "test-model", "prompt": ["first", "second"], "stream": True, "max_tokens": 8}
+        req_info = make_render_request_info("test-id", req_data, "/v1/completions", [[10], [20, 21]])
+        config = self._make_config()
+        config.render_config.enable_token_only_decode = enable_token_only_decode
+        render_client = AsyncMock()
+
+        render_client.derender_stream_chunk.return_value = DerenderedStreamChunk(
+            chunk={"choices": [{"index": 0, "text": "token", "finish_reason": "stop"}]},
+            stream_state={"done": True},
+        )
+        router = self._make_router(req_info, monkeypatch, p_client, _UnifiedPDDecodeClient(), config=config)
+        router.set_render_client(render_client)
+        decode_paths = []
+        decode_requests = []
+
+        async def forward_trigger_stream(api, body, client, timeout, *, on_response_ready=None):
+            del client, timeout
+            prompt_index = int(body["request_id"].rpartition("#p")[2])
+            await router.handle_metaserver_request(
+                {
+                    "request_id": body["request_id"],
+                    "do_remote_decode": True,
+                    "remote_block_ids": [prompt_index],
+                    "remote_host": "10.0.0.8",
+                    "remote_port": 15555,
+                },
+                prompt_index=prompt_index,
+            )
+            decode_paths.append(api)
+            decode_requests.append(body)
+            if on_response_ready is not None:
+                on_response_ready()
+            if enable_token_only_decode:
+                choice = {
+                    "index": 0,
+                    "token_ids": [30 + prompt_index],
+                    "finish_reason": "stop",
+                }
+            else:
+                choice = {
+                    "index": 0,
+                    "text": f"native-{prompt_index}",
+                    "finish_reason": "stop",
+                }
+            yield b"data: " + json.dumps({"choices": [choice]}).encode() + b"\n\n"
+            yield b"data: [DONE]\n\n"
+
+        monkeypatch.setattr(router, "forward_stream_request", forward_trigger_stream)
+        response = await router.handle_request()
+        _ = [chunk async for chunk in response.body_iterator]
+        prefill_prompt_field = "token_ids" if enable_token_only_decode else "prompt"
+        assert sorted(request[prefill_prompt_field] for request in p_client.requests) == [
+            [10],
+            [20, 21],
+        ]
+        if enable_token_only_decode:
+            assert decode_paths == ["inference/v1/generate"] * 2
+            assert sorted(request["token_ids"] for request in decode_requests) == [
+                [10],
+                [20, 21],
+            ]
+            assert render_client.derender_stream_chunk.await_count == 2
+        else:
+            assert decode_paths == ["v1/completions"] * 2
+            assert sorted(request["prompt"] for request in decode_requests) == [
+                [10],
+                [20, 21],
+            ]
+            render_client.derender_stream_chunk.assert_not_awaited()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("api", "request_field", "request_value"),
         [
@@ -334,12 +493,20 @@ class TestRouterNativeTrigger:
             ("v1/completions", "prompt", "Hello"),
         ],
     )
-    async def test_stream_metaserver_uses_token_only_prefill(
-        self, monkeypatch, trigger_pair, api, request_field, request_value
+    @pytest.mark.parametrize("enable_token_only_decode", [False, True])
+    async def test_stream_metaserver_prefill_follows_decode_mode(
+        self,
+        monkeypatch,
+        trigger_pair,
+        api,
+        request_field,
+        request_value,
+        enable_token_only_decode,
     ):
         del trigger_pair
         p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
         config = self._make_config()
+        config.render_config.enable_token_only_decode = enable_token_only_decode
         request_data = {"model": "test-model", request_field: request_value, "stream": True, "max_tokens": 8}
         req_info = make_render_request_info("test-id", request_data, api, [10, 20, 30])
         request_manager = RequestManager(config)
@@ -364,6 +531,54 @@ class TestRouterNativeTrigger:
 
         await router.handle_metaserver_request(kv_params)
 
+        expected_path = "/inference/v1/generate" if enable_token_only_decode else f"/{api.lstrip('/')}"
+        assert p_client.paths == [expected_path]
+        if enable_token_only_decode:
+            assert p_client.requests[0]["token_ids"] == [10, 20, 30]
+        elif api == "v1/chat/completions":
+            assert p_client.requests[0]["kv_transfer_params"]["prompt_token_ids"] == [10, 20, 30]
+        else:
+            assert p_client.requests[0]["prompt"] == [10, 20, 30]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("protection", ["token", "image"])
+    async def test_metaserver_protected_prefill_rejects_native_fallback(self, monkeypatch, trigger_pair, protection):
+        del trigger_pair
+        p_client = TokenOnlyEngineClient(PDRole.ROLE_P, unsupported_status=404)
+        config = self._make_config()
+        if protection == "token":
+            config.token_obfuscation_config.enable = True
+        else:
+            config.token_obfuscation_config.image_config.enable = True
+        req_info = make_render_request_info(
+            "test-protected",
+            {"model": "test-model", "prompt": "secret", "stream": True, "max_tokens": 8},
+            "v1/completions",
+            [10, 20, 30],
+        )
+        router = self._make_router(
+            req_info,
+            monkeypatch,
+            p_client,
+            _UnifiedPDDecodeClient(),
+            config=config,
+        )
+        router.set_render_client(AsyncMock())
+        attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+        router._bind_trigger_attempt(attempt)
+
+        with pytest.raises(UpstreamHTTPError) as exc_info:
+            await router.handle_metaserver_request(
+                {
+                    "request_id": req_info.req_id,
+                    "do_remote_decode": True,
+                    "remote_block_ids": [9, 8],
+                    "remote_host": "10.0.0.8",
+                    "remote_port": 15555,
+                }
+            )
+
+        assert exc_info.value.status_code == 404
         assert p_client.paths == ["/inference/v1/generate"]
 
     @pytest.mark.asyncio
@@ -674,6 +889,35 @@ class TestRouterNativeTrigger:
         router._bind_trigger_attempt(attempt)
 
         raw_request = _metaserver_raw_request({"request_id": f"generate-tokens-{req_info.req_id}"}, "99")
+        with pytest.raises(HTTPException) as exc_info:
+            await handle_metaserver_request(
+                raw_request,
+                config,
+                scheduler=router._scheduler,
+                request_manager=request_manager,
+            )
+        assert exc_info.value.status_code == status.HTTP_409_CONFLICT
+
+    @pytest.mark.asyncio
+    async def test_metaserver_stale_render_generation_returns_409(self, monkeypatch, trigger_pair):
+        del trigger_pair
+        config = self._make_config()
+        req_data = {"model": "test-model", "prompt": "first", "stream": False, "max_tokens": 8}
+        req_info = make_render_request_info("test-id", req_data, "/v1/completions", [10, 20])
+        request_manager = RequestManager(config)
+        await request_manager.add_req_info(req_info)
+        router = UnifiedPDRouter(
+            req_info,
+            config,
+            scheduler=Scheduler(instance_provider=InstanceManager(config), config=config),
+            request_manager=request_manager,
+        )
+        _patch_unified_pd_clients(monkeypatch, router, _UnifiedPDPrefillClient(), _UnifiedPDDecodeClient())
+        attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+        router._render_attempt_plan(attempt)
+        router._bind_trigger_attempt(attempt)
+
+        raw_request = _metaserver_raw_request({"request_id": "generate-tokens-test-id#a1#g1#p0"}, "1")
         with pytest.raises(HTTPException) as exc_info:
             await handle_metaserver_request(
                 raw_request,

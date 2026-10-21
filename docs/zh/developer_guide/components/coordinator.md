@@ -34,7 +34,7 @@ Mgmt 与 Obs 在主备两侧都运行。并可配合共享内存 `RoleShmHolder`
 
 设置 `render_config.enable=true` 后，Coordinator 在路由前优先使用本 Pod 的 vLLM Render Sidecar 处理 Chat Completions 和 Completions，并将 token ID 复用于 context budget、KV Cache 亲和调度和 P/D 路由。启用 `kv_cache_affinity` 调度时建议同时开启 Render。即使同时启用 context budget，本地 tokenizer 也延迟到 Render fallback 时加载；Render 不可用或响应无效时自动回退，不影响 Coordinator 启动。
 
-普通文本请求在流式和非流式场景下均复用 Render token ID：PD 的 Prefill 使用 token-only 接口，Decode 使用 vLLM 原生 OpenAI 响应；Union 将 token ID 注入原生 OpenAI 请求。Completion multi-prompt 会逐 prompt 执行 Prefill 和原生 Decode，再合并 choices 与 usage。`enable_streaming=true` 仅将普通流式 Decode 切换为 token-only + Derender；数据混淆仍使用 token-only 链路。流式 Derender 要求 vLLM >= 0.27.0。
+普通文本请求在流式和非流式场景下均复用 Render token ID。`enable_token_only_decode=false` 时，PD 的 Prefill 使用 token-only 接口，Decode 使用 vLLM 原生 OpenAI 响应；Union 将 token ID 注入原生 OpenAI 请求。设置为 `true` 后，流式与非流式 Decode 均切换为 token-only + Derender。数据混淆要求开启 token-only Decode。流式 Derender 要求 vLLM >= 0.27.0。
 
 `context_budget_mode=on` 时，最终输出预算会同步到 Render 参数。配置与边界说明见
 [配置参考](../../user_guide/configuration/config_reference.md)、

@@ -204,7 +204,7 @@
     },
     "render_config": {
       "enable": false,
-      "enable_streaming": false,
+      "enable_token_only_decode": false,
       "endpoint": {
         "host": "127.0.0.1",
         "port": 8100
