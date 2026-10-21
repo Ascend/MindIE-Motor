@@ -70,8 +70,7 @@ MindIE Motor依赖Kubernetes提供的容器编排能力，包括Pod部署、服�
     ],
     "registry-mirrors": [
     "https://ascendhub.huawei.cn",
-    "https://quay.io",
-    "https://cr.rnd.huawei.com"
+    "https://quay.io"
     ]
     }
     ```

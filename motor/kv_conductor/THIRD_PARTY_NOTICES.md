@@ -15,7 +15,7 @@ remains subject to its original license.
 
 ### Derivative source files
 
-| Local file | Upstream path | Summary of Huawei modifications |
+| Local file | Upstream path | Summary modifications |
 |------------|---------------|----------------------------------|
 | `src/lower_tier.rs` | `lib/kv-router/src/indexer/lower_tier.rs` | `RwLock` + `FxHashMap` instead of `DashMap`; embedded `worker_blocks` reverse index; `ContiguousHit` API; `WorkerKey` / medium integration |
 | `src/concurrent_tree.rs` | `lib/kv-router/src/indexer/concurrent_radix_tree.rs` | `WorkerKey` + `Arc<FxHashSet>` COW workers; lookup owned by `Indexer`; `find_matches_detailed` / `PrefixMatch`; `sweep_stale_nodes`; no `CleanupState` / metrics / `early_exit` |
@@ -26,11 +26,11 @@ remains subject to its original license.
 
 | Local location | Upstream path | Notes |
 |----------------|---------------|--------|
-| `src/events/vllm.rs` — `is_main_attention_kind` | `lib/kv-router/src/zmq_wire/filter.rs` | Allow/deny attention-kind names aligned with Dynamo; local string-normalize implementation. Unknown kinds are kept (forward-compat); msgspec/JSON visitor is Huawei original. |
+| `src/events/vllm.rs` — `is_main_attention_kind` | `lib/kv-router/src/zmq_wire/filter.rs` | Allow/deny attention-kind names aligned with Dynamo; local string-normalize implementation. Unknown kinds are kept (forward-compat). |
 
 ### Compliance notes
 
-Huawei modifications are also offered under Mulan PSL v2. Redistribution of
+Modifications are also offered under Mulan PSL v2. Redistribution of
 Dynamo-derived source must still comply with Apache License 2.0: retain
 copyright and license notices, and provide the Apache-2.0 license text to
 recipients (`licenses/Apache-2.0.txt`).
