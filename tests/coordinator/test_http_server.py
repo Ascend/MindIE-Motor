@@ -35,6 +35,7 @@ from motor.coordinator.domain.probe import RoleHeartbeatResult
 from motor.coordinator.api_server.inference_server import (
     InferenceServer,
     _validate_anthropic_request,
+    _validate_message_array,
     _validate_openai_request,
     _validate_positive_int_field,
 )
@@ -633,6 +634,68 @@ class TestCoordinatorServer:
             assert "input_data" in data["data"], "Response data missing input_data"
             assert "is_stream" in data["data"], "Response data missing is_stream"
             assert "request_type" in data["data"], "Response data missing request_type"
+
+    def test_assistant_tool_call_without_content_is_forwarded_as_null(self):
+        """A WorkBuddy-style tool call should be normalized before forwarding."""
+        response = self.openai_client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [
+                    {"role": "user", "content": "Look up the current weather."},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "call_weather",
+                                "type": "function",
+                                "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"},
+                            }
+                        ],
+                    },
+                ],
+            },
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+
+        assert response.status_code == 200
+        forwarded_messages = json.loads(response.json()["data"]["input_data"])
+        assert forwarded_messages[1]["content"] is None
+
+    def test_explicit_null_content_is_forwarded_unchanged(self):
+        """Explicit null content is forwarded as provided for backend validation."""
+        response = self.openai_client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": None}],
+            },
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+
+        assert response.status_code == 200
+        forwarded_messages = json.loads(response.json()["data"]["input_data"])
+        assert forwarded_messages == [{"role": "user", "content": None}]
+
+    @pytest.mark.parametrize(
+        "assistant_fields",
+        [
+            {"function_call": {}},
+            {"tool_calls": "invalid"},
+        ],
+    )
+    def test_invalid_assistant_tool_call_fields_are_rejected(self, assistant_fields):
+        """Legacy or malformed tool-call fields must not reach the engine."""
+        response = self.openai_client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "assistant", **assistant_fields}],
+            },
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+
+        assert response.status_code == 400
 
     def test_openai_responses_api(self):
         """Test OpenAI Responses API — standard /v1/responses path.
@@ -2667,6 +2730,40 @@ class TestValidateOpenaiPositiveIntField:
         _validate_openai_request(body, RequestType.OPENAI)
         assert body["max_tokens"] == 128
         assert body["max_completion_tokens"] == 64
+
+
+class TestValidateOpenaiMessageArray:
+    """Validation for OpenAI tool-call messages with omitted content."""
+
+    def test_assistant_tool_calls_may_omit_content(self):
+        message = {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+        }
+        _validate_message_array([message], OpenAIField.MESSAGES)
+        assert message["content"] is None
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            {"role": "assistant"},
+            {"role": "assistant", "tool_calls": []},
+            {"role": "assistant", "tool_calls": "invalid"},
+            {"role": "assistant", "function_call": {}},
+            {"role": "user", "tool_calls": [{"id": "call_1"}]},
+            {"content": "missing role"},
+        ],
+    )
+    def test_rejects_messages_without_content_unless_assistant_has_tool_call(self, message):
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_message_array([message], OpenAIField.MESSAGES)
+        assert exc_info.value.status_code == 400
 
 
 class TestValidateOpenaiStreamOptions:

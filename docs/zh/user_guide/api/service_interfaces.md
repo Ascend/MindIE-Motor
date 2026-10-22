@@ -26,7 +26,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 | 参数名 | 类型 | 说明 |
 |---|---|---|
 | role | string | 必选；角色如下：<ul><li>`system`：系统/规则提示；</li><li>`user`：用户输入；</li><li>`assistant`：助手输出。</li></ul>对话中通常以 `system` 作为最高优先级约束，`user` 为问题内容，`assistant` 为历史回答。 |
-| content | string | 必选；消息内容。 |
+| content | string/array/null | 通常必选；消息内容。仅当 `role` 为 `assistant` 且 `tool_calls` 为非空数组时可省略，Coordinator 会在转发前将其补为 `null`。显式传入 `null` 时，Coordinator 对任意角色均按原样转发，不校验其有效性；是否支持取决于后端引擎。 |
 
 其余OpenAI兼容字段（如`max_tokens`、`temperature`等）将透传给后端推理引擎。常用参数说明如下：
 

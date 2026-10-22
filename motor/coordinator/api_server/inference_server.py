@@ -109,8 +109,17 @@ def _validate_anthropic_request(body_json: dict[str, Any], *, require_max_tokens
             )
 
 
+def _is_assistant_tool_call_message(message: dict[str, Any]) -> bool:
+    """Return whether an assistant message has a non-empty OpenAI tool_calls list."""
+    tool_calls = message.get(OpenAIField.TOOLS_CALLS)
+    return message.get(OpenAIField.ROLE) == "assistant" and isinstance(tool_calls, list) and bool(tool_calls)
+
+
 def _validate_message_array(messages: list[Any], field_name: str) -> None:
-    """Validate a Chat Completions message array. Raises HTTPException on invalid."""
+    """Validate and normalize messages in place, adding content=None for eligible assistant tool calls.
+
+    Raises HTTPException when a message is invalid.
+    """
     if len(messages) == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -122,20 +131,29 @@ def _validate_message_array(messages: list[Any], field_name: str) -> None:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid message format at index {i}: must be an object",
             )
-        if OpenAIField.ROLE not in message or OpenAIField.CONTENT not in message:
+        if OpenAIField.ROLE not in message:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(f"Invalid message at index {i}: missing {OpenAIField.ROLE} or {OpenAIField.CONTENT}"),
+                detail=f"Invalid message at index {i}: missing {OpenAIField.ROLE}",
             )
-        if message[OpenAIField.ROLE] not in ["system", "developer", "user", "assistant", "tool"]:
+        role = message[OpenAIField.ROLE]
+        if role not in ["system", "developer", "user", "assistant", "tool"]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
                     f"Invalid {OpenAIField.ROLE} "
-                    f"'{message[OpenAIField.ROLE]}' at index {i}: must be system, "
+                    f"'{role}' at index {i}: must be system, "
                     "developer, user, assistant, or tool"
                 ),
             )
+        if OpenAIField.CONTENT not in message:
+            if _is_assistant_tool_call_message(message):
+                message[OpenAIField.CONTENT] = None
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid message at index {i}: missing {OpenAIField.CONTENT}",
+                )
 
 
 def _validate_responses_input_items(input_items: list[Any]) -> None:
