@@ -21,22 +21,21 @@ import time
 from multiprocessing import shared_memory
 from typing import Awaitable, Callable
 
-import zmq.asyncio
 import msgspec
+import zmq.asyncio
 
+from motor.common.logger import get_logger
 from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.http_msg_spec import EventType
-from motor.common.resources.instance import PDRole, Instance
-from motor.common.logger import get_logger
+from motor.common.resources.instance import Instance, PDRole
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain.circuit_breaker import (
     CircuitBreakerManager,
 )
-from motor.coordinator.models.constants import DEFAULT_REQUEST_ID, REQUEST_ID_KEY
 from motor.coordinator.domain.instance_manager import InstanceManager
-from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
 from motor.coordinator.domain.instance_status import build_instance_status_response
-from motor.coordinator.scheduler.scheduler import Scheduler
+from motor.coordinator.models.constants import DEFAULT_REQUEST_ID, REQUEST_ID_KEY
+from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
 from motor.coordinator.scheduler.runtime.kv_usage import (
     DEFAULT_KV_USAGE_SHM_MAX_ENTRIES,
     KvUsageShmReader,
@@ -57,15 +56,17 @@ from motor.coordinator.scheduler.runtime.workload_shm.layout import (
     DEFAULT_WORKLOAD_SHM_MAX_ENTRIES,
 )
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
-    SchedulerRequest,
-    SchedulerResponse,
-    SchedulerRequestType,
-    SchedulerResponseType,
-    INSTANCE_CHANGE_TOPIC,
+    AGENT_STATUS_TOPIC,
     CIRCUIT_BREAKER_TOPIC,
+    INSTANCE_CHANGE_TOPIC,
+    SchedulerRequest,
+    SchedulerRequestType,
+    SchedulerResponse,
+    SchedulerResponseType,
     pack_send_frames,
     unpack_recv_payload,
 )
+from motor.coordinator.scheduler.scheduler import Scheduler
 
 logger = get_logger(__name__)
 
@@ -196,6 +197,7 @@ class _SchedulerRequestDispatcher:
             SchedulerRequestType.FINISH_PRECISION_ACTION.value: self._handle_finish_precision_action,
             SchedulerRequestType.DISMISS_PRECISION_ALARM_STATE.value: self._handle_dismiss_precision_alarm_state,
             SchedulerRequestType.CIRCUIT_BREAKER_REPORT.value: self._handle_circuit_breaker_report,
+            SchedulerRequestType.AGENT_STATUS_NOTIFY.value: self._handle_agent_status_notify,
         }
         handler = handlers.get(request.request_type)
         if handler:
@@ -548,6 +550,41 @@ class _SchedulerRequestDispatcher:
             data={},
         )
 
+    async def _handle_agent_status_notify(self, request: SchedulerRequest) -> SchedulerResponse:
+        """Relay an out-of-band agent_status fan-out to PUB (Phase 4).
+
+        Only ``finalize`` fans out (pin release fleet-wide); any other state
+        is observability only (no PUB). Lenient by contract: an invalid or
+        missing field answers SUCCESS with ``relayed=false`` — a lost event
+        only leaves pins for the stale/epoch/LRU fallback (T-A4 never fails
+        a request).
+        """
+        session_id = request.data.get("session_id")
+        state = request.data.get("state")
+        if not isinstance(session_id, str) or not session_id or not isinstance(state, str) or not state:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.SUCCESS,
+                request_id=request.request_id,
+                data={"relayed": False, "reason": "invalid"},
+            )
+        if state != "finalize":
+            logger.debug(
+                "agent status notify (observability only): session_id=%s state=%s",
+                session_id,
+                state,
+            )
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.SUCCESS,
+                request_id=request.request_id,
+                data={"relayed": False, "reason": "observability_only"},
+            )
+        await self._publish_agent_status(session_id, state)
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request.request_id,
+            data={"relayed": True},
+        )
+
     # ------------------------------------------------------------------
     # Circuit breaker helpers
     # ------------------------------------------------------------------
@@ -685,6 +722,29 @@ class _SchedulerRequestDispatcher:
             logger.warning(
                 "Failed to publish circuit breaker change: instance_id=%d error=%s",
                 instance_id,
+                e,
+            )
+
+    async def _publish_agent_status(self, session_id: str, state: str) -> None:
+        """Publish an out-of-band agent_status fan-out to all workers (Phase 4).
+
+        PUB does not queue: a worker that is not subscribed yet misses the
+        event, and its pin survives until the normal stale/epoch/LRU
+        fallback releases it (T-A4 must never fail a request).
+        """
+        if not self._pub_socket:
+            return
+        payload = {
+            "session_id": session_id,
+            "state": state,
+        }
+        try:
+            await self._pub_socket.send_multipart([AGENT_STATUS_TOPIC, msgspec.msgpack.encode(payload)])
+        except Exception as e:
+            logger.warning(
+                "Failed to publish agent status fan-out: session_id=%s state=%s error=%s",
+                session_id,
+                state,
                 e,
             )
 

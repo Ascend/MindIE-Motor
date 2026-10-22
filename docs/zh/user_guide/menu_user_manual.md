@@ -24,6 +24,7 @@
   - [PD分离](./features/pd_disaggregation.md)
   - [动态分桶调度](./features/dynamic_bucket.md)
   - [KV Cache亲和性调度能力部署](./features/kvcache_affinity.md)
+  - [Agent Hint 会话亲和与调度](./features/agent_hint.md)
   - [KV池化能力部署](./features/kv_cache_store/README.md)
   - [max_tokens自适应](./features/max_tokens_adaptation.md)
   - [自动弹性扩缩容](./features/auto_scaling.md)

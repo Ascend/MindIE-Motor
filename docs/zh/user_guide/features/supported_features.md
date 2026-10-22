@@ -29,7 +29,7 @@
   </thead>
   <tbody>
     <tr>
-      <td rowspan="6">推理与调度</td>
+      <td rowspan="7">推理与调度</td>
       <td>PD分离</td>
       <td>🟢</td>
       <td>✅</td>
@@ -64,6 +64,15 @@
       <td>✅</td>
       <td>✅</td>
       <td><a href="./kvcache_affinity.md">链接</a></td>
+    </tr>
+    <tr>
+      <td>Agent Hint 会话亲和与调度</td>
+      <td>🟢</td>
+      <td>✅</td>
+      <td>✅</td>
+      <td>✅</td>
+      <td>✅</td>
+      <td><a href="./agent_hint.md">链接</a></td>
     </tr>
     <tr>
       <td>KV池化能力部署</td>

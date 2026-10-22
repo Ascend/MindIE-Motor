@@ -1703,3 +1703,39 @@ def test_from_json_decode_kv_cache_affinity_is_ignored_for_decode(_temp_json_fil
     assert config.scheduler_config.decode_scheduler_type.value == "kv_cache_affinity"
     assert config.scheduler_config.uses_kv_cache_affinity() is False
     assert "decode_scheduler_type=kv_cache_affinity" in caplog.text
+
+
+def test_agent_status_config_defaults_off() -> None:
+    """Phase 4 channel is disabled by default: zero baseline behavior change."""
+    config = CoordinatorConfig()
+    assert config.agent_status_config.enabled is False
+    assert config.agent_status_config.session_ttl_s == 3600
+    assert config.agent_status_config.max_sessions == 65536
+    assert "/agent-status" in config.api_key_config.skip_paths
+    assert "/agent-status" in config.rate_limit_config.skip_paths
+
+
+def test_agent_status_config_rejects_non_positive_limits() -> None:
+    config = CoordinatorConfig()
+    config.agent_status_config.session_ttl_s = 0
+    with pytest.raises(ValueError, match="agent_status_config.session_ttl_s must be positive"):
+        config.validate_config()
+
+    config = CoordinatorConfig()
+    config.agent_status_config.max_sessions = -1
+    with pytest.raises(ValueError, match="agent_status_config.max_sessions must be positive"):
+        config.validate_config()
+
+
+def test_agent_status_require_infer_auth_removes_skip_paths():
+    """Review 194528088: hardened posture — when require_infer_auth is set,
+    /agent-status must inherit the inference API-key and rate-limit gates.
+    """
+    config = CoordinatorConfig()
+    assert "/agent-status" in config.api_key_config.skip_paths
+    assert "/agent-status" in config.rate_limit_config.skip_paths
+
+    config.agent_status_config.require_infer_auth = True
+    config.validate_config()
+    assert "/agent-status" not in config.api_key_config.skip_paths
+    assert "/agent-status" not in config.rate_limit_config.skip_paths

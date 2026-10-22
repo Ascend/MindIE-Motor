@@ -33,6 +33,7 @@ def filter_sensitive_headers(headers) -> dict:
         'x-auth-token',
         'proxy-authorization',
         'x-forwarded-authorization',
+        'x-strict-priority-token',
     }
     filtered = {}
     if hasattr(headers, 'items'):

@@ -8,27 +8,30 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-import os
+import ipaddress
 import json
 import math
+import os
 import re
-import ipaddress
 import tempfile
-from pathlib import Path
-from typing import Optional, Any
+from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
-from dataclasses import dataclass, field, asdict, is_dataclass
+from pathlib import Path
+from typing import Any, Optional
 
+from motor.common.http.key_encryption import set_default_key_encryption_by_name
 from motor.common.logger import get_logger
 from motor.common.utils.env import Env
-from motor.common.http.key_encryption import set_default_key_encryption_by_name
-from motor.config.etcd import EtcdConfig
-from motor.config.log_config import LoggingConfig
-from motor.config.standby import StandbyConfig
-from motor.config.tls_config import TLSConfig
 from motor.config.config_utils import (
-    ConfigKey,
+    ETCD_TLS_CONFIG,
+    INFER_TLS_CONFIG,
+    MGMT_TLS_CONFIG,
     MOTOR_ENGINE_UNION_CONFIG,
+    ConfigKey,
+    _redirect_prefill_kv_event_config,
+    _update_instances_num,
+    _update_prefill_kv_event_config,
+    _update_tls_config,
     apply_config_path_metadata,
     apply_standby_persistence_rule,
     finalize_json_config_load,
@@ -38,16 +41,13 @@ from motor.config.config_utils import (
     resolve_config_json_path,
     resolve_engine_model_paths,
     save_instance_config_to_json,
-    _update_tls_config,
-    _update_instances_num,
-    _update_prefill_kv_event_config,
-    _redirect_prefill_kv_event_config,
-    MGMT_TLS_CONFIG,
-    INFER_TLS_CONFIG,
-    ETCD_TLS_CONFIG,
 )
-from motor.config.resolver import ConfigResolver, normalize_keys
+from motor.config.etcd import EtcdConfig
+from motor.config.log_config import LoggingConfig
 from motor.config.port_allocator_config import PortAllocatorConfig
+from motor.config.resolver import ConfigResolver, normalize_keys
+from motor.config.standby import StandbyConfig
+from motor.config.tls_config import TLSConfig
 
 FILE_ENCODING = "utf-8"
 
@@ -146,6 +146,7 @@ def _default_skip_paths() -> set[str]:
         "/liveness",
         "/metrics",
         "/instances/refresh",
+        "/agent-status",
         "/docs",
         "/redoc",
         "/openapi.json",
@@ -159,6 +160,7 @@ def default_rate_limit_skip_paths() -> list[str]:
         "/liveness",
         "/readiness",
         "/metrics",
+        "/agent-status",
         "/docs",
         "/redoc",
         "/openapi.json",
@@ -414,6 +416,15 @@ class SchedulerConfig:
     # with request count and SHM active_tokens (dp_stats). Independent of
     # kv_affinity hit telemetry. 0 disables emission.
     dp_stats_window: int = 60
+    # Soft-priority admission (Agent Hint `priority`), Phase 3. Both default off.
+    # priority_load_threshold: endpoint workload score (active tokens) above which an
+    # endpoint is considered overloaded for NORMAL-priority requests; 0 disables the
+    # gate. The gate never fails a request (falls back to the unfiltered pool).
+    priority_load_threshold: int = 0
+    # priority_admission_level: hint priority >= this value bypasses the soft-load
+    # gate and consumes the rate limiter's priority reserve. Single source shared by
+    # the scheduler gate and the rate limiter.
+    priority_admission_level: int = 3
     # kv_cache_affinity tunables (affinity + load + per-medium weights).
     kv_affinity: KvAffinityConfig = field(default_factory=KvAffinityConfig)
     # KV event registration config for kv-conductor.
@@ -663,6 +674,42 @@ DEFAULT_SCHEDULER_PROCESS_CONFIG = SchedulerProcessConfig()
 
 
 @dataclass
+class AgentStatusConfig:
+    """Out-of-band agent_status event channel (Agent Hint spec §2.2, Phase 4).
+
+    ``enabled`` gates the ``POST/GET /agent-status`` inference-plane routes and
+    the session state machine; it is read at process start (route registration
+    is not hot-reloaded). ``session_ttl_s`` / ``max_sessions`` hot-reload via
+    the coordinator config watcher.
+    """
+
+    enabled: bool = False
+    session_ttl_s: int = 3600
+    max_sessions: int = 65536
+    # When True, /agent-status inherits the inference-plane API-key and rate-limit
+    # gates (removed from their skip sets). Default False keeps the wire contract
+    # with agent harnesses that send no auth header; enabling auth is the hardened
+    # posture for deployments where the inference port is reachable beyond a
+    # trusted network (finalize can mutate affinity for known sessions).
+    require_infer_auth: bool = False
+
+
+@dataclass
+class StrictPriorityConfig:
+    """Agent Hint `strict_priority` trust bootstrap (WP-E2).
+
+    ``enabled`` gates every strict_priority consumption path (default off —
+    zero behavior change). ``tokens`` lists the control-plane credentials
+    accepted in the ``X-Strict-Priority-Token`` header; a request whose token
+    does not match has its strict_priority stripped at the entry (anti-forgery:
+    consuming an untrusted claim would equal trusting arbitrary clients).
+    """
+
+    enabled: bool = False
+    tokens: list[str] = field(default_factory=list)
+
+
+@dataclass
 class RateLimitConfig:
     """Rate limiting configuration class"""
 
@@ -677,6 +724,11 @@ class RateLimitConfig:
     error_status_code: int = 429
     # Maximum request body size, in MB (1 MB = 1024*1024 bytes), supports decimal values (e.g., 0.5 means 0.5 MB); <= 0 means no limit.
     max_request_body_size: float = 0
+    # Fraction of the token-bucket capacity reserved for high-priority requests
+    # (Agent Hint `priority` >= scheduler_config.priority_admission_level). Normal
+    # requests stop consuming at the reserve floor; high-priority requests may dip
+    # into it. 0 disables the reserve (default, plain global bucket).
+    priority_reserve_ratio: float = 0.0
 
     olc_config_path: str = ""
 
@@ -831,6 +883,8 @@ class CoordinatorConfig:
     api_key_config: APIKeyConfig = field(default_factory=APIKeyConfig)
     mgmt_api_key_config: MgmtAPIKeyConfig = field(default_factory=MgmtAPIKeyConfig)
     rate_limit_config: RateLimitConfig = field(default_factory=RateLimitConfig)
+    agent_status_config: AgentStatusConfig = field(default_factory=AgentStatusConfig)
+    strict_priority_config: StrictPriorityConfig = field(default_factory=StrictPriorityConfig)
     standby_config: StandbyConfig = field(default_factory=StandbyConfig)
 
     etcd_config: EtcdConfig = field(default_factory=EtcdConfig)
@@ -966,6 +1020,8 @@ class CoordinatorConfig:
                 ("api_key_config", config.api_key_config, None),
                 ("mgmt_api_key_config", config.mgmt_api_key_config, None),
                 ("rate_limit_config", config.rate_limit_config, None),
+                ("agent_status_config", config.agent_status_config, None),
+                ("strict_priority_config", config.strict_priority_config, None),
                 ("standby_config", config.standby_config, None),
                 ("etcd_config", config.etcd_config, None),
                 ("infer_tls_config", config.infer_tls_config, None),
@@ -1044,6 +1100,14 @@ class CoordinatorConfig:
     def validate_config(self) -> None:
         """Validate the validity of configuration values"""
         self._errors = []
+
+        # agent_status auth posture: when the out-of-band channel must inherit
+        # the inference-plane gates, drop /agent-status from both skip sets so
+        # the middleware enforces API key and rate limit on it.
+        if self.agent_status_config.require_infer_auth:
+            self.api_key_config.skip_paths.discard("/agent-status")
+            if "/agent-status" in self.rate_limit_config.skip_paths:
+                self.rate_limit_config.skip_paths.remove("/agent-status")
 
         # Validate logging configuration
         valid_log_levels = ["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -1303,6 +1367,26 @@ class CoordinatorConfig:
         self._validate_positive_number(self.rate_limit_config.window_size, "window_size")
         if self.rate_limit_config.max_request_body_size < 0:
             self._errors.append("max_request_body_size cannot be negative")
+        if not 0 <= self.rate_limit_config.priority_reserve_ratio <= 0.9:
+            self._errors.append("rate_limit_config.priority_reserve_ratio must be in range [0, 0.9]")
+
+        # Validate soft-priority admission configuration (Agent Hint Phase 3)
+        if self.scheduler_config.priority_load_threshold < 0:
+            self._errors.append("scheduler_config.priority_load_threshold cannot be negative")
+        if self.scheduler_config.priority_admission_level < 0:
+            self._errors.append("scheduler_config.priority_admission_level cannot be negative")
+
+        # Validate agent_status out-of-band channel (Agent Hint Phase 4)
+        if self.agent_status_config.session_ttl_s <= 0:
+            self._errors.append("agent_status_config.session_ttl_s must be positive")
+        if self.agent_status_config.max_sessions <= 0:
+            self._errors.append("agent_status_config.max_sessions must be positive")
+        # WP-E2: a strict channel enabled without credentials is a misconfig
+        # (every strict_priority would be stripped at the entry gate).
+        if self.strict_priority_config.enabled and not [
+            t for t in self.strict_priority_config.tokens if isinstance(t, str) and t.strip()
+        ]:
+            self._errors.append("strict_priority_config.tokens must contain at least one non-empty token when enabled")
 
         if not (100 <= self.rate_limit_config.error_status_code <= 599):
             self._errors.append("error_status_code must be in range 100-599")

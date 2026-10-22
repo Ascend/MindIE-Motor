@@ -429,3 +429,470 @@ def test_parse_agent_hint_resolves_lowercase_headers_from_real_request():
 def test_parse_manage_request_accepts_bool_int_and_string(value, expected):
     """JSON bool / 0-1 int / case-insensitive 'true'/'false' parse to bool; everything else falls back to False."""
     assert parse_manage_request(value) is expected
+
+
+# (Phase 1 spec-form tests live in the header_hint section appended below.)
+
+# ---------------------------------------------------------------------------
+# Phase 1: spec-form blocks arrive ONLY via the X-Agent-Hint header payload
+# (parse_agent_hint(header_hint=...)); the body agent_hint block stays legacy.
+# ---------------------------------------------------------------------------
+
+FULL_SPEC_SESSION = {
+    "session_id": "s-child",
+    "parent_session_id": "s-parent",
+    "derivation": {"relation": "spawn", "join": "sync"},
+    "agent_type": "researcher",
+    "call_index": 2,
+    "epoch": 0,
+}
+
+
+def test_header_hint_full_spec_session_block():
+    """The nested spec session block lands in session_hint and drives the flat IDs."""
+    hint = parse_agent_hint({}, header_hint={"session": FULL_SPEC_SESSION})
+
+    assert hint.session_id == "s-child"
+    assert hint.parent_session_id == "s-parent"
+    assert hint.session_hint is not None
+    assert hint.session_hint.agent_type == "researcher"
+    assert hint.session_hint.call_index == 2
+    assert hint.session_hint.epoch == 0
+    assert hint.session_hint.derivation is not None
+    assert hint.session_hint.derivation.relation == "spawn"
+    assert hint.session_hint.derivation.join == "sync"
+    assert hint.session_hint.derivation.fork_point is None
+
+
+def test_header_hint_nested_ids_lose_to_body_flat_ids():
+    """Body flat ids beat the header nested session{} (same body-wins rule as the wire)."""
+    hint = parse_agent_hint(
+        {"agent_hint": {"session_id": "flat-session"}},
+        header_hint={"session": {**FULL_SPEC_SESSION, "session_id": "nested-session"}},
+    )
+
+    assert hint.session_id == "flat-session"
+    assert hint.parent_session_id == "s-parent"
+    assert hint.session_hint is not None
+    assert hint.session_hint.agent_type == "researcher"
+
+
+def test_header_hint_partial_nested_session_falls_back_to_flat():
+    """A nested block without IDs (status-event shape) falls back to flat fields."""
+    hint = parse_agent_hint(
+        {"agent_hint": {"session_id": "flat-session"}},
+        header_hint={"session": {"agent_type": "researcher", "call_index": 3}},
+    )
+
+    assert hint.session_id == "flat-session"
+    assert hint.session_hint is not None
+    assert hint.session_hint.agent_type == "researcher"
+    assert hint.session_hint.call_index == 3
+
+
+def test_header_hint_nested_session_header_fallback():
+    """x-session-id headers still apply when neither nested nor flat carries an ID."""
+    hint = parse_agent_hint(
+        {},
+        headers={"x-session-id": "header-session"},
+        header_hint={"session": {"agent_type": "researcher"}},
+    )
+
+    assert hint.session_id == "header-session"
+    assert hint.parent_session_id == "header-session"
+
+
+def test_header_hint_derivation_defaults_and_fork_point():
+    """join defaults to sync; fork_point passes through for fork relations."""
+    hint = parse_agent_hint(
+        {},
+        header_hint={
+            "session": {
+                "session_id": "s",
+                "derivation": {"relation": "fork", "fork_point": 5},
+            }
+        },
+    )
+
+    assert hint.session_hint is not None
+    derivation = hint.session_hint.derivation
+    assert derivation is not None
+    assert derivation.relation == "fork"
+    assert derivation.join == "sync"
+    assert derivation.fork_point == 5
+
+
+def test_header_hint_drops_invalid_derivation_but_keeps_session():
+    """An unsupported relation drops only the derivation, not the whole session hint."""
+    hint = parse_agent_hint(
+        {},
+        header_hint={
+            "session": {
+                "session_id": "s",
+                "agent_type": "researcher",
+                "derivation": {"relation": "clone"},
+            }
+        },
+    )
+
+    assert hint.session_hint is not None
+    assert hint.session_hint.agent_type == "researcher"
+    assert hint.session_hint.derivation is None
+
+
+def test_header_hint_normalizes_dirty_session_numbers():
+    """Negative / non-numeric call_index, epoch and fork_point are unset, not rejected."""
+    hint = parse_agent_hint(
+        {},
+        header_hint={
+            "session": {
+                "session_id": "s",
+                "call_index": 0,
+                "epoch": "x",
+                "derivation": {"relation": "fork", "fork_point": -1},
+            }
+        },
+    )
+
+    assert hint.session_hint is not None
+    assert hint.session_hint.call_index is None
+    assert hint.session_hint.epoch is None
+    assert hint.session_hint.derivation is not None
+    assert hint.session_hint.derivation.fork_point is None
+
+
+def test_header_hint_agent_status_full_and_invalid_state():
+    """agent_status parses tools; an unknown state drops the whole block."""
+    hint = parse_agent_hint(
+        {},
+        header_hint={
+            "agent_status": {
+                "state": "tool",
+                "state_since_ms": 1790000000000,
+                "reason": "await_tool",
+                "tools": [{"name": "web_search", "call_id": "call-1", "child_session_id": "s-child"}],
+            }
+        },
+    )
+
+    assert hint.agent_status is not None
+    assert hint.agent_status.state == "tool"
+    assert hint.agent_status.reason == "await_tool"
+    assert hint.agent_status.tools[0].name == "web_search"
+    assert hint.agent_status.tools[0].child_session_id == "s-child"
+
+    invalid = parse_agent_hint({}, header_hint={"agent_status": {"state": "waiting"}})
+    assert invalid.agent_status is None
+
+
+def test_header_hint_prediction_fields_and_bounds():
+    """prediction parses numeric estimates; negative values and bad prob are unset."""
+    hint = parse_agent_hint(
+        {},
+        header_hint={
+            "prediction": {
+                "remaining_calls": 3,
+                "output_tokens": 420,
+                "interval_ms": 11800,
+                "latency_ms": -5,
+                "next_action": {
+                    "state": "tool",
+                    "tools": [{"name": "web_search", "expected_duration_s": 8}],
+                    "prob": 1.5,
+                },
+            }
+        },
+    )
+
+    assert hint.prediction is not None
+    assert hint.prediction.remaining_calls == 3
+    assert hint.prediction.output_tokens == 420
+    assert hint.prediction.interval_ms == 11800
+    assert hint.prediction.latency_ms is None
+    assert hint.prediction.next_action is not None
+    assert hint.prediction.next_action.state == "tool"
+    assert hint.prediction.next_action.prob is None
+    assert hint.prediction.next_action.tools[0].expected_duration_s == 8
+
+    empty = parse_agent_hint({}, header_hint={"prediction": {"output_tokens": "NaN"}})
+    assert empty.prediction is None
+
+
+def test_header_hint_strict_priority_is_stored_not_consumed():
+    """strict_priority parses into PriorityHint; no scheduling consumer exists (Phase 3 deferred)."""
+    hint = parse_agent_hint(
+        {},
+        header_hint={"strict_priority": {"level": 3, "reason": "critical_path"}},
+    )
+
+    assert hint.strict_priority is not None
+    assert hint.strict_priority.level == 3
+    assert hint.strict_priority.reason == "critical_path"
+
+    malformed = parse_agent_hint({}, header_hint={"strict_priority": {"level": "high"}})
+    assert malformed.strict_priority is None
+
+
+def test_body_spec_blocks_are_unknown_passthrough():
+    """Without a header payload, spec-form keys in the body land in raw_extra untouched."""
+    hint = parse_agent_hint(
+        {
+            "agent_hint": {
+                "session": FULL_SPEC_SESSION,
+                "agent_status": {"state": "running"},
+                "prediction": {"output_tokens": 1},
+                "strict_priority": {"level": 1},
+                "priority": {"level": 1},
+            }
+        }
+    )
+
+    assert hint.session_hint is None
+    assert hint.agent_status is None
+    assert hint.prediction is None
+    assert hint.strict_priority is None
+    assert hint.raw_extra == {
+        "session": FULL_SPEC_SESSION,
+        "agent_status": {"state": "running"},
+        "prediction": {"output_tokens": 1},
+        "strict_priority": {"level": 1},
+        "priority": {"level": 1},
+    }
+
+
+def test_header_hint_spec_cache_control_pin_with_message_range():
+    """pin + range{end=1} maps to msg_offset=1 via the header path."""
+    hint = parse_agent_hint(
+        {"messages": [{"role": "system"}, {"role": "user"}]},
+        header_hint={"cache_control": {"type": "pin", "range": {"end": 1}}},
+    )
+
+    assert hint.cache_control is not None
+    assert hint.cache_control.type == "pin"
+    assert hint.cache_control.msg_offset == 1
+    assert hint.cache_control.range_unit == "message"
+
+
+def test_header_hint_spec_cache_control_ttl_s_and_list_form():
+    """ttl_s wins over ttl; a list uses the first entry."""
+    hint = parse_agent_hint(
+        {},
+        header_hint={
+            "cache_control": [
+                {"type": "ephemeral", "ttl_s": 600},
+                {"type": "pin"},
+            ]
+        },
+    )
+
+    assert hint.cache_control is not None
+    assert hint.cache_control.type == "ephemeral"
+    assert hint.cache_control.ttl == 600
+
+
+def test_header_hint_spec_cache_control_unknown_unit_drops_range():
+    """``message`` is the only range.unit the protocol defines; any other unit drops the range.
+
+    Regression guard: ``token`` used to be a whitelisted unit whose range was stored
+    half-translated, which let an unset msg_offset be defaulted to len(messages) and hand a
+    wrong (conversation-tail) effect point to the block-coordinate chain.
+    """
+    without_messages = parse_agent_hint(
+        {},
+        header_hint={"cache_control": {"type": "ephemeral", "range": {"unit": "token", "start": 0, "end": 512}}},
+    )
+    assert without_messages.cache_control is not None
+    assert without_messages.cache_control.type == "ephemeral"
+    assert without_messages.cache_control.range_unit is None
+    assert without_messages.cache_control.range_start is None
+    assert without_messages.cache_control.range_end is None
+    assert without_messages.cache_control.msg_offset is None
+
+    with_messages = parse_agent_hint(
+        {"messages": [{"role": "user", "content": "hi"} for _ in range(3)]},
+        header_hint={"cache_control": {"type": "pin", "range": {"unit": "token", "end": 512}}},
+    )
+    assert with_messages.cache_control is not None
+    assert with_messages.cache_control.type == "pin"
+    assert with_messages.cache_control.range_unit is None
+    assert with_messages.cache_control.msg_offset == 3  # no-range default = whole conversation
+
+
+def test_spec_cache_control_ttl_explicit_distinguishes_asked_from_defaulted():
+    """``ttl`` defaults to 300, so only ``ttl_explicit`` separates "asked" from "defaulted"."""
+    implied = parse_agent_hint({}, header_hint={"cache_control": {"type": "pin"}})
+    assert implied.cache_control is not None
+    assert implied.cache_control.ttl == 300
+    assert implied.cache_control.ttl_explicit is False
+
+    via_alias = parse_agent_hint({}, header_hint={"cache_control": {"type": "ephemeral", "ttl_s": 60}})
+    assert via_alias.cache_control is not None
+    assert via_alias.cache_control.ttl == 60
+    assert via_alias.cache_control.ttl_explicit is True
+
+    via_legacy_name = parse_agent_hint({}, header_hint={"cache_control": {"type": "pin", "ttl": 600}})
+    assert via_legacy_name.cache_control is not None
+    assert via_legacy_name.cache_control.ttl == 600
+    assert via_legacy_name.cache_control.ttl_explicit is True
+
+    explicit_default_value = parse_agent_hint({}, header_hint={"cache_control": {"type": "pin", "ttl_s": 300}})
+    assert explicit_default_value.cache_control is not None
+    assert explicit_default_value.cache_control.ttl_explicit is True
+
+
+def test_body_cache_control_ttl_explicit_tracks_client_intent():
+    """The legacy body channel derives the same flag from its own ``ttl`` key."""
+    absent = parse_agent_hint({"agent_hint": {"cache_control": {"type": "ephemeral"}}})
+    assert absent.cache_control is not None
+    assert absent.cache_control.ttl_explicit is False
+
+    present = parse_agent_hint({"agent_hint": {"cache_control": {"type": "ephemeral", "ttl": 120}}})
+    assert present.cache_control is not None
+    assert present.cache_control.ttl == 120
+    assert present.cache_control.ttl_explicit is True
+
+
+def test_ttl_explicit_is_derived_only_and_never_serialized():
+    """The flag is server-side bookkeeping; it must not leak into the engine payload."""
+    hint = parse_agent_hint({}, header_hint={"cache_control": {"type": "pin", "ttl_s": 60}})
+
+    assert hint.cache_control is not None
+    assert hint.cache_control.ttl_explicit is True
+    assert "ttl_explicit" not in hint.cache_control.model_dump()
+
+
+def test_header_hint_spec_cache_control_range_with_start_dropped():
+    """unit=message with start>0 is unsupported: the range is dropped, not the hint."""
+    hint = parse_agent_hint(
+        {},
+        header_hint={"cache_control": {"type": "pin", "range": {"start": 2, "end": 5}}},
+    )
+
+    assert hint.cache_control is not None
+    assert hint.cache_control.type == "pin"
+    assert hint.cache_control.range_unit is None
+    assert hint.cache_control.msg_offset is None
+
+
+def test_header_hint_spec_cache_control_without_range_still_defaults_msg_offset():
+    """No behaviour change on the message path: an unset msg_offset still defaults to len(messages)."""
+    messages = [{"role": "user", "content": "hi"} for _ in range(3)]
+    hint = parse_agent_hint({"messages": messages}, header_hint={"cache_control": {"type": "pin"}})
+
+    assert hint.cache_control is not None
+    assert hint.cache_control.range_unit is None
+    assert hint.cache_control.msg_offset == 3
+
+
+def test_body_cache_control_stays_legacy_strict():
+    """Body cache_control rejects pin and ignores spec keys (header-only protocol)."""
+    pin_body = parse_agent_hint({"agent_hint": {"cache_control": {"type": "pin", "range": {"end": 1}}}})
+    assert pin_body.cache_control is None
+
+    spec_keys = parse_agent_hint({"agent_hint": {"cache_control": {"ttl": 120, "ttl_s": 600, "range": {"end": 1}}}})
+    assert spec_keys.cache_control is not None
+    assert spec_keys.cache_control.ttl == 120
+    assert spec_keys.cache_control.msg_offset is None
+    assert spec_keys.cache_control.range_unit is None
+
+
+def test_body_cache_control_wins_over_header_spec_cache_control():
+    """A legacy body cache_control is authoritative; the header spec one is dropped."""
+    hint = parse_agent_hint(
+        {
+            "messages": [{"role": "user"} for _ in range(4)],
+            "agent_hint": {"cache_control": {"ttl": 120}},
+        },
+        header_hint={"cache_control": {"type": "pin", "range": {"end": 1}}},
+    )
+
+    assert hint.cache_control is not None
+    assert hint.cache_control.type == "ephemeral"
+    assert hint.cache_control.ttl == 120
+    assert hint.cache_control.msg_offset == 4
+
+
+def test_header_spec_cache_control_used_when_body_absent():
+    """A header-only client still gets cache_control through the spec path (ttl_s clamps like ttl)."""
+    hint = parse_agent_hint(
+        {},
+        header_hint={"cache_control": {"type": "ephemeral", "ttl_s": 12, "range": {"end": 2}}},
+    )
+
+    assert hint.cache_control is not None
+    assert hint.cache_control.ttl == 60
+    assert hint.cache_control.msg_offset == 2
+
+
+def test_server_only_fields_stripped_on_both_cache_control_paths():
+    """The anti-forgery strip covers the header spec path too."""
+    hint = parse_agent_hint(
+        {},
+        header_hint={"cache_control": {"type": "pin", "block_offset": 99, "range": {"end": 1}}},
+    )
+
+    assert hint.cache_control is not None
+    assert hint.cache_control.block_offset is None
+    assert hint.cache_control.msg_offset == 1
+
+
+def test_apply_strict_priority_trust_strips_untrusted():
+    """WP-E2: without a valid token the strict claim is removed entirely."""
+    from motor.coordinator.domain.agent_hint import AgentHintInfo, PriorityHint, apply_strict_priority_trust
+
+    info = AgentHintInfo(strict_priority=PriorityHint(level=3, reason="critical_path"))
+    applied = apply_strict_priority_trust(info, {}, None)
+    assert applied is False
+    assert info.strict_priority is None
+    assert info.strict_priority_trusted is False
+
+
+def test_apply_strict_priority_trust_keeps_trusted():
+    """WP-E2: enabled + matching token keeps and marks the strict claim."""
+    from motor.config.coordinator import StrictPriorityConfig
+    from motor.coordinator.domain.agent_hint import AgentHintInfo, PriorityHint, apply_strict_priority_trust
+
+    info = AgentHintInfo(strict_priority=PriorityHint(level=3, reason="critical_path"))
+    cfg = StrictPriorityConfig(enabled=True, tokens=["tok-1"])
+    applied = apply_strict_priority_trust(info, {"x-strict-priority-token": "tok-1"}, cfg)
+    assert applied is True
+    assert info.strict_priority is not None
+    assert info.strict_priority_trusted is True
+
+
+def test_malformed_prediction_tool_entry_never_raises():
+    """Review 194526933: a non-string tool name inside an optional hint must
+    degrade to WARN + drop, never escape parse_agent_hint (a 500 on the
+    inference path would violate the malformed-hint contract).
+    """
+    hint = parse_agent_hint(
+        {},
+        header_hint={"prediction": {"next_action": {"state": "tool", "tools": [{"name": 1}, {"name": "ok"}]}}},
+    )
+    assert hint.prediction is not None
+    names = [tool.name for tool in hint.prediction.next_action.tools]
+    assert names == ["ok"]
+
+
+@pytest.mark.parametrize(
+    "header_hint",
+    [
+        {"priority": {"level": 1e999}},
+        {"strict_priority": {"level": 1e999}},
+        {"cache_control": {"type": "pin", "range": {"unit": "message", "end": 1e999}}},
+        {"prediction": {"remaining_calls": 1e999}},
+        {"prediction": {"next_action": {"state": "tool", "tools": [{"name": "t", "expected_duration_s": 1e999}]}}},
+        {"agent_status": {"state": "tool", "state_since_ms": 1e999}},
+        {"session": {"session_id": "s", "call_index": 1e999}},
+        {"session": {"session_id": "s", "epoch": 1e999}},
+        {"session": {"session_id": "s", "derivation": {"fork_point": 1e999}}},
+        {"context_management": {"edits": [{"type": "offload", "start": 1e999}]}},
+    ],
+)
+def test_non_finite_numbers_never_raise(header_hint):
+    """Review 194527501: json ``1e999`` decodes to ``inf``; ``int(inf)`` raises
+    OverflowError which is not in the tolerated exception set. Every numeric
+    entry point must reject non-finite values via WARN + unset.
+    """
+    hint = parse_agent_hint({}, header_hint=header_hint)
+    assert hint is not None

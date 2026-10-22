@@ -44,6 +44,8 @@ from motor.coordinator.domain.agent_hint import (
     parse_agent_hint,
     ensure_minimum_messages_for_session_edits,
 )
+from motor.coordinator.domain.agent_hint import apply_strict_priority_trust
+from motor.coordinator.domain.agent_hint_wire import apply_agent_hint_header
 from motor.coordinator.router.adapters.pd_protocol import trim_vllm_engine_request_id
 from motor.coordinator.router.dispatch_session import AttemptContext
 from motor.coordinator.router.token_only import parse_token_only_request_id
@@ -332,7 +334,7 @@ async def handle_request(
         HTTPException: If request body is empty or request fail
     """
 
-    req_info = await __create_request_info(raw_request, request_manager, request_json=request_json)
+    req_info = await __create_request_info(raw_request, request_manager, request_json=request_json, config=config)
 
     if TracerManager().contains_trace_headers(raw_request.headers):
         req_info.trace_obj.parent_context = TracerManager().extract_trace_context(raw_request.headers)
@@ -521,6 +523,7 @@ async def __create_request_info(
     raw_request: Request,
     request_manager: RequestManager,
     request_json: dict | None = None,
+    config: CoordinatorConfig | None = None,
 ) -> RequestInfo:
     request_body = await raw_request.body()
     if not request_body:
@@ -545,11 +548,24 @@ async def __create_request_info(
     req_data = request_json.copy()
     client_expects_token_ids = bool(request_json.get("return_token_ids", False))
 
+    # Merge the X-Agent-Hint legacy-representable fields into the body hint and
+    # keep the decoded header payload for parse_agent_hint, so spec-form blocks
+    # (session{}, agent_status, prediction, strict_priority, spec cache_control)
+    # come from the header only and never enter the request body.
+    header_hint = apply_agent_hint_header(request_json, dict(raw_request.headers))
     apply_session_control_autofill(request_json)
     ensure_minimum_messages_for_session_edits(request_json, req_data)
     agent_hint_info = parse_agent_hint(
         request_json,
         headers=dict(raw_request.headers),
+        header_hint=header_hint,
+    )
+    # WP-E2: entry trust gate — strip untrusted strict_priority before any
+    # consumer can see it (anti-forgery; enabled-off means always stripped).
+    apply_strict_priority_trust(
+        agent_hint_info,
+        dict(raw_request.headers),
+        getattr(config, "strict_priority_config", None),
     )
     req_info = RequestInfo(
         req_id=req_id,

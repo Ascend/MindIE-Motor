@@ -19,3 +19,5 @@
 如果你需要查看组件类图、数据流、内部实现细节，请查看 [开发者指南](../developer_guide/README.md)。
 
 Coordinator 调度热路径（Rust POSIX SHM 多进程原子记账、无独立 Scheduler 进程）见 [Coordinator 调度热路径 Rust 重构](coordinator_scheduler_rust.md)。
+
+Agent Hint 推理侧支持（会话亲和、优先级准入、agent_status 带外通道与 cache_control 声明生命周期）见 [Agent Hint 推理侧支持：会话亲和与调度控制链路](agent_hint.md)，验证记录见 [Agent Hint 验证记录](agent_hint_verification.md)。

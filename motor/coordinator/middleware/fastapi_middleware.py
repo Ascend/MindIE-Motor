@@ -16,6 +16,11 @@ from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from motor.common.logger import get_logger
+from motor.coordinator.domain.agent_hint_wire import (
+    extract_priority_from_hint_headers,
+    extract_strict_priority_from_hint_headers,
+    strict_priority_trusted,
+)
 from motor.config.coordinator import default_rate_limit_skip_paths
 
 from .rate_limiter import SimpleRateLimiter
@@ -33,6 +38,8 @@ class RateLimitConfigHolder:
     """
 
     skip_paths: list = field(default_factory=default_rate_limit_skip_paths)
+    strict_priority_enabled: bool = False
+    strict_priority_tokens: list = field(default_factory=list)
     error_message: str = "Request too frequent, please try again later"
     error_status_code: int = 429
     enabled: bool = True
@@ -55,6 +62,8 @@ class SimpleRateLimitMiddleware:
         error_status_code: int = 429,
         max_request_body_size: float = 0,
         config_holder: "RateLimitConfigHolder | None" = None,
+        strict_priority_enabled: bool = False,
+        strict_priority_tokens: list | None = None,
     ):
         """
         Initialize the rate limiting middleware.
@@ -82,6 +91,15 @@ class SimpleRateLimitMiddleware:
                 error_status_code=error_status_code,
                 max_request_body_size=max_request_body_size,
             )
+        # WP-E2 strict trust inputs: explicit params win; fall back to the holder
+        # so hot-reload paths can refresh them via the same object.
+        self.config_holder = config_holder
+        self.strict_priority_enabled = bool(
+            strict_priority_enabled or getattr(config_holder, "strict_priority_enabled", False)
+        )
+        self.strict_priority_tokens = list(
+            strict_priority_tokens or getattr(config_holder, "strict_priority_tokens", None) or []
+        )
 
         self.stats = {
             "total_requests": 0,
@@ -91,10 +109,41 @@ class SimpleRateLimitMiddleware:
             "start_time": time.time(),
         }
 
-    @staticmethod
-    def _extract_request_data(scope: Scope) -> dict[str, Any]:
-        """Extract basic request info (path, method, timestamp) from the ASGI scope."""
-        return {"endpoint": scope.get("path", ""), "method": scope.get("method", ""), "timestamp": time.time()}
+    def _extract_request_data(self, scope: Scope) -> dict[str, Any]:
+        """Extract basic request info (path, method, timestamp, hint priority) from the ASGI scope.
+
+        Priority comes from the X-Agent-Hint header only (spec protocol is
+        header-only); the body is never read here — the receive channel must be
+        forwarded to the downstream app untouched. ``strict_priority`` is the
+        hard-priority level and is only exposed when the request passes the
+        WP-E2 trust rule (enabled + matching X-Strict-Priority-Token);
+        untrusted claims never reach the limiter.
+        """
+        headers = {}
+        for name, value in scope.get("headers", []):
+            key = name.decode("latin-1").lower()
+            if key in ("x-agent-hint", "x-strict-priority-token"):
+                headers[key] = value.decode("latin-1")
+        strict_level = None
+        # Live-read the holder so config hot-reload (disable / token rotation)
+        # takes effect immediately; the constructor snapshot is only a fallback
+        # for middlewares built without a holder.
+        strict_enabled = bool(getattr(self.config_holder, "strict_priority_enabled", self.strict_priority_enabled))
+        strict_tokens = getattr(self.config_holder, "strict_priority_tokens", None) or self.strict_priority_tokens
+        if strict_priority_trusted(
+            headers,
+            enabled=strict_enabled,
+            tokens=strict_tokens,
+        ):
+            strict = extract_strict_priority_from_hint_headers(headers)
+            strict_level = strict[0] if strict else None
+        return {
+            "endpoint": scope.get("path", ""),
+            "method": scope.get("method", ""),
+            "timestamp": time.time(),
+            "priority": extract_priority_from_hint_headers(headers),
+            "strict_priority": strict_level,
+        }
 
     @staticmethod
     def _get_content_length(scope: Scope) -> int:

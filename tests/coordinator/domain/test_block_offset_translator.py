@@ -149,6 +149,16 @@ def test_compute_edit_block_offset_returns_none_for_session_target():
     )
 
 
+def test_compute_block_offset_returns_none_for_unset_msg_offset():
+    """An unset msg_offset means "no effect point available", not "the conversation tail".
+
+    Regression guard: the arithmetic below used to run unconditionally and would raise
+    TypeError on None, so any future path that leaves msg_offset unset must instead get
+    "no coordinate" back.
+    """
+    assert compute_block_offset([{}], None, None, 8, None, [5]) is None
+
+
 def test_attach_block_offsets_populates_model_and_request_coordinates():
     """Attached coordinates are written to both parsed models and the outbound request."""
     edit = ContextEdit(type="offload", start=1, end=2, target="messages")

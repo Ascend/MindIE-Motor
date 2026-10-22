@@ -24,34 +24,46 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from pydantic import TypeAdapter, ValidationError
 
-from motor.common.resources.instance import PDRole
-from motor.common.logger import get_logger
+from motor.common.http.http_client import HTTPClientPool
 from motor.common.http.key_encryption import verify_api_key_against_valid_keys
+from motor.common.logger import get_logger
+from motor.common.resources.instance import PDRole
 from motor.config.coordinator import CoordinatorConfig, RateLimitConfig
+from motor.coordinator.api_server.app_builder import AppBuilder
 from motor.coordinator.api_server.base_server import BaseCoordinatorServer
+from motor.coordinator.domain.agent_hint import (
+    AgentStatusHint,
+    agent_hint_implies_manage_request,
+)
+from motor.coordinator.domain.agent_session_status import (
+    AgentSessionStateMachine,
+)
+from motor.coordinator.domain.request_manager import RequestManager
+from motor.coordinator.domain.scheduling import (
+    InstanceReadiness,
+    has_decode_colocation_candidate,
+)
 from motor.coordinator.middleware.fastapi_middleware import (
-    SimpleRateLimitMiddleware,
     RateLimitConfigHolder,
+    SimpleRateLimitMiddleware,
 )
 from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
-from motor.coordinator.scheduler.runtime import SchedulerConnectionManager
-from motor.coordinator.api_server.app_builder import AppBuilder
-from motor.common.http.http_client import HTTPClientPool
 from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestType
-from motor.coordinator.domain.request_manager import RequestManager
-from motor.coordinator.domain.scheduling import InstanceReadiness, has_decode_colocation_candidate
-from motor.coordinator.router.dispatch import handle_metaserver_request, handle_request
-from motor.coordinator.render.image_obfuscation_service import ImageObfuscationService, resolve_image_obfuscation_config
-from motor.coordinator.render.tokenization_service import TokenizationService
+from motor.coordinator.render.image_obfuscation_service import (
+    ImageObfuscationService,
+    resolve_image_obfuscation_config,
+)
 from motor.coordinator.render.token_obfuscation_service import (
     TokenObfuscationService,
     resolve_token_obfuscation_config,
 )
+from motor.coordinator.render.tokenization_service import TokenizationService
 from motor.coordinator.render.vllm_render_client import VLLMRenderClient
+from motor.coordinator.router.dispatch import handle_metaserver_request, handle_request
 from motor.coordinator.scheduler.policy.kv_cache_affinity import TokenizerManager
+from motor.coordinator.scheduler.runtime import SchedulerConnectionManager
 from motor.coordinator.tracer.tracing import TracerManager
-from motor.coordinator.domain.agent_hint import agent_hint_implies_manage_request
 
 logger = get_logger(__name__)
 
@@ -325,6 +337,16 @@ class InferenceServer(BaseCoordinatorServer):
             on_instance_refreshed=self._make_on_instance_refreshed(),
         )
         self._rate_limit_config: RateLimitConfigHolder | None = None
+        self._agent_status_listener_wired = False
+        status_cfg = self.coordinator_config.agent_status_config
+        self._agent_status_machine = (
+            AgentSessionStateMachine(
+                session_ttl_s=status_cfg.session_ttl_s,
+                max_sessions=status_cfg.max_sessions,
+            )
+            if status_cfg.enabled
+            else None
+        )
         self._register_routes()
 
     @property
@@ -352,11 +374,11 @@ class InferenceServer(BaseCoordinatorServer):
         logger.info("Inference server is starting...")
         app.state.request_manager = self._request_manager
         # Precision check: inject logprobs + token-id sampling only when precision_check_enabled
-        from motor.coordinator.fault_tolerance.precision.sample_controller import (
-            SampleController,
-        )
         from motor.coordinator.fault_tolerance.precision import (
             build_precision_reporter,
+        )
+        from motor.coordinator.fault_tolerance.precision.sample_controller import (
+            SampleController,
         )
 
         sampling_cfg = self.coordinator_config.precision_detection_config
@@ -489,7 +511,7 @@ class InferenceServer(BaseCoordinatorServer):
             try:
                 path = rate_limit_config.olc_config_path
                 os.environ['OLC_CONFIG_PATH'] = path
-                from olc.adapters.fastapi import OlcFastAPIAdapter, OlcAdapterConfig
+                from olc.adapters.fastapi import OlcAdapterConfig, OlcFastAPIAdapter
 
                 adapter_config = OlcAdapterConfig(tag_extractor=self._extract_tags_from_request)
                 self._inference_app.add_middleware(OlcFastAPIAdapter, adapter_config)
@@ -507,11 +529,15 @@ class InferenceServer(BaseCoordinatorServer):
                 error_message=rate_limit_config.error_message,
                 error_status_code=rate_limit_config.error_status_code,
                 max_request_body_size=rate_limit_config.max_request_body_size,
+                strict_priority_enabled=self.coordinator_config.strict_priority_config.enabled,
+                strict_priority_tokens=list(self.coordinator_config.strict_priority_config.tokens),
             )
 
             rate_limiter = SimpleRateLimiter(
                 max_requests=rate_limit_config.max_requests,
                 window_size=rate_limit_config.window_size,
+                priority_reserve_ratio=rate_limit_config.priority_reserve_ratio,
+                priority_admission_level=self.coordinator_config.scheduler_config.priority_admission_level,
             )
 
             self._inference_app.add_middleware(
@@ -572,9 +598,193 @@ class InferenceServer(BaseCoordinatorServer):
 
         return _callback
 
+    def _register_agent_status_routes(self) -> None:
+        """Register the out-of-band agent_status routes (Phase 4, start-time).
+
+        Wire contract (DSH emit seam, agent-hints plugin ``statusAuto``):
+        ``POST <origin>/agent-status`` with ``{"session": {"session_id"},
+        "agent_status": {...}}``; DSH sends no auth header and treats any
+        non-2xx as retry-then-drop, so: no API-key check by default (and
+        ``/agent-status`` is in the api-key + rate-limit default skip sets;
+        ``agent_status_config.require_infer_auth`` inherits both gates for
+        hardened deployments), structural errors answer 400 (client-visible),
+        field-level malformations answer 200 with ``applied=false`` + WARN
+        (never fails the sender).
+
+        The scheduler client's PUB fan-out listener is wired to the local
+        state machine here: POST finalize + PUB finalize must land on every
+        worker, or a session could re-enter ``running`` on a worker that never
+        saw the POST (review 194528015).
+        """
+        logger.info("agent_status out-of-band channel enabled (Phase 4)")
+
+        @self._inference_app.post("/agent-status")
+        @self.timeout_handler()
+        async def agent_status_report(request: Request):
+            return await self._handle_agent_status_report(request)
+
+        @self._inference_app.get("/agent-status")
+        @self.timeout_handler()
+        async def agent_status_query(request: Request):
+            return await self._handle_agent_status_query(request)
+
+    def _wire_agent_status_listener(self) -> None:
+        """Attach the local state machine to the scheduler PUB fan-out (best-effort)."""
+        if self._agent_status_machine is None or getattr(self, "_agent_status_listener_wired", False):
+            return
+        try:
+            client = self._get_scheduler_client()
+        except RuntimeError:
+            return
+        machine = self._agent_status_machine
+
+        def _apply_state_event(session_id: str, state: str) -> None:
+            machine.apply(
+                session_id,
+                state=state,
+            )
+
+        client.agent_status_state_listener = _apply_state_event
+        self._agent_status_listener_wired = True
+
+    async def _handle_agent_status_report(self, request: Request) -> dict[str, Any]:
+        """Apply one out-of-band status event; never 5xx (spec Phase 4 §2.2)."""
+        if self._agent_status_machine is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="agent status channel is not enabled",
+            )
+        # Lazy wiring: the scheduler client connects asynchronously at startup;
+        # once wired, PUB fan-out drives the local state machine too (review 194528015).
+        self._wire_agent_status_listener()
+        try:
+            raw = await request.body()
+            if not raw:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request body cannot be empty")
+            body = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            # A non-UTF-8 body raises UnicodeDecodeError before json.loads ever
+            # runs; it is a client-visible structural error (400), not a 500
+            # (PR #1196 review).
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid JSON format: {str(e)}",
+            ) from e
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request body must be a JSON object")
+        session = body.get("session")
+        status_data = body.get("agent_status")
+        if not isinstance(session, dict) or not isinstance(status_data, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Both 'session' and 'agent_status' must be JSON objects",
+            )
+        session_id = session.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="session.session_id is required",
+            )
+        try:
+            agent_status = AgentStatusHint.model_validate(status_data)
+        except ValidationError as e:
+            logger.warning(
+                "agent_status event rejected (field-level invalid, WARN not 4xx): session_id=%s error=%s",
+                session_id,
+                e,
+            )
+            return {
+                "status": "ok",
+                "applied": False,
+                "reason": "invalid_agent_status",
+            }
+        state = agent_status.state
+        transition = self._agent_status_machine.apply(
+            session_id,
+            state,
+            reason=agent_status.reason,
+            tools=[tool.model_dump(exclude_none=True) for tool in agent_status.tools],
+            state_since_ms=agent_status.state_since_ms,
+        )
+        logger.info(
+            "agent_status event session_id=%s state=%s applied=%s reason=%s previous=%s",
+            session_id,
+            state,
+            transition.applied,
+            transition.reason,
+            transition.previous_state,
+        )
+        if transition.applied and state == "finalize":
+            await self._release_session_pins(session_id)
+            logger.warning(
+                "agent_status finalize needs engine KV action (offload); "
+                "engine consumption capability unconfirmed (B1) — degraded to "
+                "state tracking + pin release only: session_id=%s",
+                session_id,
+            )
+        return {
+            "status": "ok",
+            "applied": transition.applied,
+            "reason": transition.reason,
+            "state": transition.state,
+            "previous_state": transition.previous_state,
+        }
+
+    async def _handle_agent_status_query(self, request: Request) -> dict[str, Any]:
+        """Serve the current lifecycle record for one session (observability)."""
+        if self._agent_status_machine is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="agent status channel is not enabled",
+            )
+        session_id = request.query_params.get("session_id")
+        if not session_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="session_id query parameter is required",
+            )
+        record = self._agent_status_machine.get(session_id)
+        if record is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No agent status record for session_id={session_id}",
+            )
+        return record.to_dict()
+
+    async def _release_session_pins(self, session_id: str) -> None:
+        """Release every role pin for session_id (local + fleet-wide PUB).
+
+        Local drop first (the endpoint worker owns its own affinity table),
+        then fan out via SchedulerServer PUB so every worker forgets the
+        session (multi-worker pins). PUB is lossy by design (ZMQ does not
+        queue): a missed event only leaves the pin for the normal
+        stale/epoch/LRU fallback — affinity never fails a request.
+        """
+        client = self._scheduler_connection.get_client()
+        if client is None:
+            logger.warning(
+                "agent_status finalize: scheduler client unavailable, pins kept: session_id=%s",
+                session_id,
+            )
+            return
+        dropped = client.drop_session_pins(session_id)
+        logger.info(
+            "agent_status finalize released session pins: session_id=%s dropped=%d",
+            session_id,
+            dropped,
+        )
+        await client.report_agent_status(session_id, "finalize")
+
     def _apply_config_changes(self, new_config: CoordinatorConfig) -> None:
         """Apply Infer-specific config changes."""
         self._api_key_config = new_config.api_key_config
+        # agent_status enabled gates the route at process start (route
+        # registration is not hot-reloaded); TTL / capacity hot-reload here.
+        if self._agent_status_machine is not None:
+            self._agent_status_machine.update_limits(
+                session_ttl_s=new_config.agent_status_config.session_ttl_s,
+                max_sessions=new_config.agent_status_config.max_sessions,
+            )
         self._infer_ssl_config = new_config.infer_tls_config
         rlc = new_config.rate_limit_config
         if self._rate_limit_config is not None:
@@ -584,10 +794,16 @@ class InferenceServer(BaseCoordinatorServer):
             holder.error_status_code = rlc.error_status_code
             holder.enabled = rlc.enable_rate_limit
             holder.max_request_body_size = rlc.max_request_body_size
+            # strict trust gate must follow hot-reloaded config: a rotated or
+            # disabled token set must take effect immediately (middleware
+            # live-reads the holder).
+            holder.strict_priority_enabled = new_config.strict_priority_config.enabled
+            holder.strict_priority_tokens = list(new_config.strict_priority_config.tokens)
             if holder.rate_limiter is not None:
                 holder.rate_limiter.update_config(
                     max_requests=rlc.max_requests,
                     window_size=rlc.window_size,
+                    priority_reserve_ratio=rlc.priority_reserve_ratio,
                 )
 
     def _get_scheduler_client(self):
@@ -665,6 +881,9 @@ class InferenceServer(BaseCoordinatorServer):
                 request_manager,
                 require_max_tokens=False,
             )
+
+        if self.coordinator_config.agent_status_config.enabled:
+            self._register_agent_status_routes()
 
         @self._inference_app.get("/v1/models")
         async def list_models():

@@ -37,6 +37,9 @@ class SchedulerRequestType(str, Enum):
     FINISH_PRECISION_ACTION = "finish_precision_action"  # clear probing after probe/alarm
     DISMISS_PRECISION_ALARM_STATE = "dismiss_precision_alarm_state"  # external recovery cleared alarm
     CIRCUIT_BREAKER_REPORT = "circuit_breaker_report"  # worker reports instance failure/success
+    AGENT_STATUS_NOTIFY = (
+        "agent_status_notify"  # worker relays out-of-band agent_status to PUB (finalize releases pins)
+    )
 
 
 class SchedulerResponseType(str, Enum):
@@ -92,6 +95,10 @@ INSTANCE_CHANGE_TOPIC = b"instances_changed"
 
 # PUB/SUB topic for circuit breaker state change (multipart: [topic, msgpack_payload])
 CIRCUIT_BREAKER_TOPIC = b"circuit_breaker"
+
+# PUB/SUB topic for out-of-band agent_status events (multipart: [topic, msgpack_payload]);
+# finalize fans out to every worker so session-affinity pins are released fleet-wide (Phase 4).
+AGENT_STATUS_TOPIC = b"agent_status"
 
 
 def _enc_hook(obj: Any) -> Any:

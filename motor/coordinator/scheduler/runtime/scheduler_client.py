@@ -20,68 +20,83 @@ from typing import Any, Awaitable, Callable
 import msgspec
 import zmq
 
-from motor.common.resources.instance import Instance, PDRole
-from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction
-from motor.coordinator.domain import (
-    InstanceReadiness,
-    UpdateWorkloadParams,
-    readiness_from_instances,
-)
-from motor.coordinator.scheduler.runtime.zmq_protocol import (
-    SchedulerRequest,
-    SchedulerResponse,
-    SchedulerRequestType,
-    SchedulerResponseType,
-    INSTANCE_CHANGE_TOPIC,
-    CIRCUIT_BREAKER_TOPIC,
-    CANDIDATE_POLICY_LOAD_BALANCE,
-    CANDIDATE_POLICY_ROUND_ROBIN,
-    CANDIDATE_POLICY_KV_CACHE_AFFINITY,
-    CANDIDATE_POLICY_DYNAMIC_BUCKET,
-    pack_send_frames,
-    unpack_recv_payload,
-    ZMQMessageSerializer,
-)
-from motor.coordinator.scheduler.runtime.dp_stats import DpStatsLogger
 from motor.common.logger import get_logger
+from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction
+from motor.common.resources.instance import Instance, PDRole
 from motor.config.coordinator import (
     KV_AFFINITY_MODE_UNIFIED,
     KV_AFFINITY_MODES,
     KvAffinityConfig,
 )
-from motor.coordinator.fault_tolerance.precision.streak_result import (
-    PrecisionStreakResult,
+from motor.coordinator.domain import (
+    InstanceReadiness,
+    UpdateWorkloadParams,
+    readiness_from_instances,
 )
-from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
-from motor.coordinator.scheduler.policy.round_robin import RoundRobinPolicy
-from motor.coordinator.scheduler.policy.kv_cache_affinity import KvCacheAffinityPolicy
-from motor.coordinator.scheduler.policy.dynamic_bucket import (
-    DynamicBucketPolicy,
-    DynamicBucketSelector,
-    get_request_token_length,
-    make_dynamic_bucket_allocation_workload,
+from motor.coordinator.domain.cache_declaration import (
+    CacheDeclarationTable,
+    cache_lifecycle_sweep_interval_s,
+    create_cache_declaration_table_from_env,
 )
-from motor.coordinator.scheduler.runtime.kv_usage import (
-    KvUsageShmReader,
-    get_endpoint_kv_cache_usage,
-    set_kv_usage_reader,
-    update_kv_usage_cache,
+from motor.coordinator.domain.scheduling_pin import (
+    resolve_pinned_instance,
+    select_endpoint_for_instance,
 )
 from motor.coordinator.domain.workload_calculator import (
     calculate_committed_workload,
     calculate_demand_workload,
 )
+from motor.coordinator.fault_tolerance.precision.streak_result import (
+    PrecisionStreakResult,
+)
+from motor.coordinator.models.request import RequestInfo
 from motor.coordinator.scheduler.allocate_arbitration import (
     ArbitrationContext,
     log_load_balance_all_candidates,
     select_authoritative_allocate_candidate,
     select_valid_candidate,
 )
-from motor.coordinator.domain.scheduling_pin import (
-    resolve_pinned_instance,
-    select_endpoint_for_instance,
+from motor.coordinator.scheduler.policy.dynamic_bucket import (
+    DynamicBucketPolicy,
+    DynamicBucketSelector,
+    get_request_token_length,
+    make_dynamic_bucket_allocation_workload,
 )
-from motor.coordinator.models.request import RequestInfo
+from motor.coordinator.scheduler.policy.kv_cache_affinity import KvCacheAffinityPolicy
+from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
+from motor.coordinator.scheduler.policy.round_robin import RoundRobinPolicy
+from motor.coordinator.scheduler.runtime.dp_stats import DpStatsLogger
+from motor.coordinator.scheduler.runtime.kv_usage import (
+    KvUsageShmReader,
+    get_endpoint_kv_cache_usage,
+    set_kv_usage_reader,
+    update_kv_usage_cache,
+)
+from motor.coordinator.scheduler.runtime.session_affinity import (
+    NEW_PIN_OUTCOMES,
+    PLACEMENT_BALANCED,
+    SessionAffinityTable,
+    create_session_affinity_from_env,
+    resolve_session_pin,
+    select_balanced_instance,
+    session_affinity_placement_mode,
+)
+from motor.coordinator.scheduler.runtime.zmq_protocol import (
+    AGENT_STATUS_TOPIC,
+    CANDIDATE_POLICY_DYNAMIC_BUCKET,
+    CANDIDATE_POLICY_KV_CACHE_AFFINITY,
+    CANDIDATE_POLICY_LOAD_BALANCE,
+    CANDIDATE_POLICY_ROUND_ROBIN,
+    CIRCUIT_BREAKER_TOPIC,
+    INSTANCE_CHANGE_TOPIC,
+    SchedulerRequest,
+    SchedulerRequestType,
+    SchedulerResponse,
+    SchedulerResponseType,
+    ZMQMessageSerializer,
+    pack_send_frames,
+    unpack_recv_payload,
+)
 
 logger = get_logger(__name__)
 
@@ -92,6 +107,9 @@ OnInstanceRefreshedCallback = Callable[[list[tuple[str, str]]], Awaitable[None]]
 # re-picks among them by its authoritative workload ledger, spreading bursts across the top few.
 _AFFINITY_CANDIDATE_TOPK = 3
 _MAX_CAS_ALLOCATE_ATTEMPTS = 64
+# Upper bound on declarations released per keeper tick: a burst of simultaneous
+# expiries releases in batches instead of one long event-loop stall.
+_SWEEP_RELEASE_BATCH = 64
 
 
 class SchedulerRequestFailureReason(str, Enum):
@@ -497,6 +515,10 @@ class _SchedulerTransport:
 # incremental delta ({"event": "add"|"del", "instances": [...]}) or None for version-only messages.
 OnInstanceChangeNotify = Callable[[int | None, dict | None], Awaitable[None]]
 
+# Callback when an out-of-band agent_status event is received from Scheduler PUB
+# (multipart: [topic, msgpack_payload]); args: session_id, state.
+OnAgentStatusEventNotify = Callable[[str, str], Awaitable[None]]
+
 # Callback when circuit breaker state change is received from Scheduler PUB
 OnCircuitBreakerChangeNotify = Callable[[int, str], Awaitable[None]]
 # args: instance_id, state ("open"|"closed")
@@ -520,10 +542,12 @@ class _InstancePushSubscriber:
         sub_address: str,
         on_instance_change: OnInstanceChangeNotify,
         on_circuit_breaker_change: OnCircuitBreakerChangeNotify | None = None,
+        on_agent_status_event: OnAgentStatusEventNotify | None = None,
     ) -> None:
         self._sub_address = sub_address
         self._on_instance_change = on_instance_change
         self._on_circuit_breaker_change = on_circuit_breaker_change
+        self._on_agent_status_event = on_agent_status_event
         self._context: zmq.asyncio.Context | None = None
         self._socket: zmq.asyncio.Socket | None = None
         self._stop_event = asyncio.Event()
@@ -589,6 +613,13 @@ class _InstancePushSubscriber:
                                 int(payload.get("instance_id", 0)),
                                 str(payload.get("state", "")),
                             )
+                    elif topic == AGENT_STATUS_TOPIC and self._on_agent_status_event:
+                        payload = self._parse_msgpack_frame(frames, 1)
+                        if payload and isinstance(payload, dict):
+                            await self._on_agent_status_event(
+                                str(payload.get("session_id", "")),
+                                str(payload.get("state", "")),
+                            )
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
@@ -647,6 +678,12 @@ class SchedulerClientConfig:
     dynamic_bucket_long_bucket_count: int = 0
     # kv_cache_affinity tunables (see SchedulerConfig.kv_affinity).
     kv_affinity: KvAffinityConfig | None = None
+    # Soft-priority admission (Agent Hint `priority`, Phase 3): endpoints whose
+    # workload score reaches priority_load_threshold are excluded for NORMAL
+    # requests (priority < priority_admission_level); high-priority requests bypass
+    # the gate. The gate never empties the pool (availability first); 0 disables.
+    priority_load_threshold: int = 0
+    priority_admission_level: int = 3
     dp_stats_window: int = 60
     # Each inference worker dumps its request counts every dp_stats_window seconds.
     # Obs/standby (worker_index is None) leave this off.
@@ -660,6 +697,12 @@ class AsyncSchedulerClient:
     Fully async Scheduler client (works with AsyncSchedulerServer).
     Implements SchedulingFacade (select_and_allocate, update_workload) for BaseRouter injection.
     """
+
+    # Declared at class scope so instances built without ``__init__`` (tests construct
+    # clients with ``__new__`` plus fake attributes) resolve the keeper as disabled
+    # instead of raising AttributeError.
+    _cache_declarations: CacheDeclarationTable | None = None
+    _cache_lifecycle_task: asyncio.Task | None = None
 
     def __init__(self, config: SchedulerClientConfig):
         self.scheduler_address = config.scheduler_address
@@ -706,6 +749,8 @@ class AsyncSchedulerClient:
         self._dp_stats = DpStatsLogger(window_sec=config.dp_stats_window, worker_index=config.client_index)
         self._log_dp_stats = bool(config.log_dp_stats)
         self._dp_stats_task: asyncio.Task | None = None
+        # cache_control lifecycle keeper (design 20261015-03); None keeps it inert.
+        self._cache_lifecycle_task: asyncio.Task | None = None
 
         self._serializer = ZMQMessageSerializer()
         self._transport = _SchedulerTransport(config.scheduler_address, config.timeout, self._serializer)
@@ -732,10 +777,29 @@ class AsyncSchedulerClient:
                 instance_pub,
                 self._on_instance_change_notify,
                 self._on_circuit_breaker_change,
+                self._on_agent_status_event,
             )
             if instance_pub
             else None
         )
+
+        # Session affinity (env-gated; None keeps baseline scheduling untouched)
+        self._session_affinity: SessionAffinityTable | None = create_session_affinity_from_env()
+        # Optional hook for the worker's agent-session state machine: PUB fan-out
+        # events drive it so finalize's terminal semantics hold fleet-wide, not
+        # only on the worker that received the POST (review 194528015).
+        self.agent_status_state_listener: Callable[[str, str], None] | None = None
+        # Monotonic counter feeding the balanced-placement tie-break (per worker process).
+        self._affinity_placement_seq = 0
+
+        # cache_control declarations (env-gated; None keeps the request path inert).
+        # Only an explicit TTL is recorded, so a deployment whose clients never send one
+        # behaves exactly as before (design 20261015-03 §1.4.2 / §7 D1).
+        self._cache_declarations: CacheDeclarationTable | None = create_cache_declaration_table_from_env()
+
+        # Soft-priority admission gate (Agent Hint `priority`); 0 disables the gate.
+        self._priority_load_threshold = max(0, int(config.priority_load_threshold))
+        self._priority_admission_level = max(0, int(config.priority_admission_level))
 
     @property
     def connected(self) -> bool:
@@ -767,11 +831,13 @@ class AsyncSchedulerClient:
                 logger.debug("Instance push SUB disabled; cache will refresh on next request/shm")
         if success:
             self._start_dp_stats_task()
+            self._start_cache_lifecycle_task()
             logger.info("Async scheduler client connected to %s", self.scheduler_address)
         return success
 
     async def disconnect(self) -> None:
         await self._stop_dp_stats_task()
+        await self._stop_cache_lifecycle_task()
         try:
             if self._kv_usage_reader is not None:
                 try:
@@ -807,6 +873,178 @@ class AsyncSchedulerClient:
         except asyncio.CancelledError:
             pass
         self._emit_dp_stats()
+
+    def _record_cache_declaration(self, hint_info: object, session_id: str | None, role: str | None = None) -> None:
+        """Record an explicit ``cache_control`` retention (design 20261015-03, step ①).
+
+        Only an explicit TTL enters the lifecycle: ``CacheControl.ttl`` defaults to 300, so
+        a bare ``cache_control`` would otherwise look like "keep it 5 minutes" and change
+        behaviour for traffic that never asked for retention. Never raises — a bad
+        declaration must not fail a request.
+
+        ``role`` is stored with the declaration so the keeper's protection pass can refresh
+        that binding (step ②) through the affinity table's existing read path.
+        """
+        if self._cache_declarations is None or not session_id:
+            return
+        cache_control = getattr(hint_info, "cache_control", None)
+        if cache_control is None or not getattr(cache_control, "ttl_explicit", False):
+            return
+        declaration = self._cache_declarations.declare(
+            session_id,
+            getattr(cache_control, "type", ""),
+            getattr(cache_control, "ttl", 0),
+            msg_offset=getattr(cache_control, "msg_offset", None),
+            role=role,
+        )
+        if declaration is not None:
+            # Publish the promise on the shared pin slot (max-merged): the keeper
+            # compares the slot's promise against its own declaration so a longer
+            # declaration made by another worker defers the release (review 194528478).
+            if hasattr(self._session_affinity, "declare_retention") and role:
+                try:
+                    self._session_affinity.declare_retention(session_id, role, time.time() + declaration.ttl_s)
+                except Exception as e:
+                    logger.warning("declare_retention failed: session_id=%s err=%s", session_id, e)
+            logger.info(
+                "cache_control declared: session_id=%s type=%s ttl_s=%d",
+                session_id,
+                declaration.decl_type,
+                declaration.ttl_s,
+            )
+
+    def _start_cache_lifecycle_task(self) -> None:
+        """Start the cache_control declaration keeper (env-gated; no-op when disabled)."""
+        if self._cache_declarations is None:
+            return
+        if self._cache_lifecycle_task is not None and not self._cache_lifecycle_task.done():
+            return
+        self._cache_lifecycle_task = asyncio.create_task(self._cache_lifecycle_loop())
+
+    async def _stop_cache_lifecycle_task(self) -> None:
+        task = self._cache_lifecycle_task
+        self._cache_lifecycle_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _cache_lifecycle_loop(self) -> None:
+        """Release affinity pins whose declared retention elapsed (design §2.2, step ①).
+
+        The keeper only ever relaxes bindings the client itself asked to relax; it never
+        touches undeclared sessions. A keeper fault is swallowed so it can never affect
+        the request path.
+        """
+        interval = cache_lifecycle_sweep_interval_s()
+        logger.info("cache_control lifecycle keeper started: sweep_interval_s=%d", interval)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                self._sweep_cache_declarations()
+                self._touch_cache_declarations()
+            except Exception as e:  # CancelledError is BaseException: cancellation propagates
+                logger.warning("cache_control lifecycle pass failed: %s", e)
+
+    def _sweep_cache_declarations(self) -> None:
+        """Release the affinity pins of every elapsed declaration.
+
+        Bounded per tick: each sweep releases at most
+        :data:`_SWEEP_RELEASE_BATCH` declarations so a burst of simultaneous
+        expiries cannot stall the event loop for the whole batch in one go
+        (the rest wait for the next tick). Cross-worker renewals are honored:
+        a pin whose ``renewed_at`` is newer than this worker's declaration was
+        re-recorded by another worker after we recorded ours, and that worker's
+        (longer) declaration governs — we skip the release instead of tearing
+        down a binding that is still declared elsewhere.
+        """
+        declarations = self._cache_declarations
+        if declarations is None:
+            return
+        released = 0
+        for declaration in declarations.sweep():
+            if released >= _SWEEP_RELEASE_BATCH:
+                declarations.requeue(declaration)
+                continue
+            if self._release_expired_declaration(declaration):
+                released += 1
+                logger.info(
+                    "cache_control retention elapsed; released session pin: session_id=%s type=%s ttl_s=%d dropped=%d",
+                    declaration.session_id,
+                    declaration.decl_type,
+                    declaration.ttl_s,
+                    declaration.dropped,
+                )
+            else:
+                # Deferred (renewed by another worker): hand the follow-up over
+                # to that worker's keeper — requeuing here would loop forever.
+                logger.info(
+                    "cache_control retention elapsed but pin renewed later elsewhere; "
+                    "deferring release to the renewing worker: session_id=%s type=%s",
+                    declaration.session_id,
+                    declaration.decl_type,
+                )
+
+    def _release_expired_declaration(self, declaration) -> bool:
+        """Conditionally release one expired declaration; True when released.
+
+        The declaration ledger is worker-local while the affinity table may be
+        shared machine-wide: another worker can declare a longer retention for
+        the same session after this worker recorded its (shorter) one. Each
+        declaration publishes its wall expiry onto the shared pin slot
+        (max-merged), so we defer when the slot holds a promise that outlives
+        our own — the worker that made it owns the release. When the slot
+        holds no longer promise, this worker's expired declaration governs and
+        the release proceeds.
+        """
+        affinity = self._session_affinity
+        if affinity is None:
+            declaration.dropped = 0
+            return True
+        roles = declaration.roles or (None,)
+        own_expiry = declaration.wall_created_s + declaration.ttl_s
+        for role in roles:
+            if not role:
+                continue
+            if hasattr(affinity, "peek_retention_expires"):
+                promise = affinity.peek_retention_expires(declaration.session_id, role)
+                if promise > own_expiry + 1.0:
+                    return False
+            if hasattr(affinity, "peek_renewal"):
+                renewal = affinity.peek_renewal(declaration.session_id, role)
+                if renewal is not None and renewal > own_expiry + 1.0:
+                    # Re-recorded after our promise expired: someone else owns it now.
+                    return False
+        declaration.dropped = affinity.drop_all_roles(declaration.session_id)
+        return True
+
+    def _touch_cache_declarations(self) -> int:
+        """Refresh the affinities of still-active declarations (design §2.2, step ②).
+
+        Protection without touching the eviction algorithm: both affinity tables refresh
+        recency on a ``get`` hit, so reading the declared bindings each pass keeps them off
+        the LRU eviction end. Only sessions that explicitly declared a retention are
+        touched, so undeclared traffic keeps today's behaviour. Returns the hit count for
+        diagnostics.
+
+        Cost: one ``get`` per (declaration, role); the shared table takes its file lock per
+        call, so this is bounded by ``max_declarations`` and runs off the request path.
+        """
+        declarations = self._cache_declarations
+        affinity = self._session_affinity
+        if declarations is None or affinity is None:
+            return 0
+        touched = 0
+        for declaration in declarations.active():
+            for role in declaration.roles:
+                if affinity.get(declaration.session_id, role) is not None:
+                    touched += 1
+        if touched:
+            logger.debug("cache_control protection refreshed %d declared bindings", touched)
+        return touched
 
     async def _dp_stats_loop(self) -> None:
         """Sleep ``window_sec``, then log each DP's requests and SHM tokens."""
@@ -844,6 +1082,43 @@ class AsyncSchedulerClient:
                 )
             )
         return snapshots
+
+    def _instance_active_tokens(self) -> dict[int, float]:
+        """Sum SHM ``active_tokens`` per instance (balanced placement secondary key)."""
+        tokens: dict[int, float] = {}
+        for instance_id, _endpoint_id, active_tokens in self._snapshot_dp_stats():
+            tokens[instance_id] = tokens.get(instance_id, 0.0) + active_tokens
+        return tokens
+
+    async def _select_balanced_affinity_instance(
+        self,
+        role: "PDRole",
+        normalized_engine_type: str,
+        normalized_dispatch_capability: str,
+    ) -> int | None:
+        """Balanced new-pin placement: min (pinned sessions, active tokens, seq).
+
+        Candidates carry the same engine-type/dispatch-capability/breaker
+        filters the pinned path applies afterwards, so a chosen instance can
+        never fail the subsequent pinned resolution. ``None`` (no eligible
+        candidate) falls back to the normal policy path.
+        """
+        pool = await self.get_available_instances(role)
+        filtered = self._filter_instances(
+            list(pool.values()),
+            normalized_engine_type or None,
+            normalized_dispatch_capability or None,
+        )
+        eligible = {c.id for c in filtered if not self.is_instance_blocked(c.id)}
+        chosen = select_balanced_instance(
+            eligible,
+            self._session_affinity.count_pins_by_instance(getattr(role, "value", "")),
+            self._instance_active_tokens(),
+            self._affinity_placement_seq,
+        )
+        if chosen is not None:
+            self._affinity_placement_seq += 1
+        return chosen
 
     async def _send_request_result(self, request: SchedulerRequest) -> SchedulerRequestResult:
         if hasattr(type(self._transport), "send_request_result"):
@@ -886,6 +1161,8 @@ class AsyncSchedulerClient:
             self._cache.get_instances(cache_role), required_engine_type, required_dispatch_capability
         )
         if cached_instances:
+            cached_instances = self._apply_priority_load_gate(cached_instances, req_info, cache_role)
+        if cached_instances:
             # Cache stores instances sorted by id (see replace_all call sites); use as-is for RR
             candidates, candidate_policy = self._select_endpoint_candidates_from_list_with_policy(
                 cached_instances, cache_role, req_info, top_k=top_k
@@ -906,6 +1183,9 @@ class AsyncSchedulerClient:
         instance_list = self._filter_instances(
             sorted(instances.values(), key=lambda i: i.id), required_engine_type, required_dispatch_capability
         )
+        instance_list = self._apply_priority_load_gate(instance_list, req_info, cache_role)
+        if not instance_list:
+            return [], self._scheduler_type_for_role(cache_role)
         candidates, candidate_policy = self._select_endpoint_candidates_from_list_with_policy(
             instance_list, cache_role, req_info, top_k=top_k
         )
@@ -934,6 +1214,89 @@ class AsyncSchedulerClient:
                 or required_dispatch_capability in (getattr(instance, "dispatch_capabilities", None) or [])
             )
         ]
+
+    def _affinity_eligible_instance_ids(
+        self,
+        pool: dict[int, Instance],
+        required_engine_type: str | None,
+        required_dispatch_capability: str | None,
+    ) -> set[int]:
+        """Instance ids an affinity pin may resolve to for this request.
+
+        Applies the same engine/dispatch filter as the pinned path and the
+        balanced placement, plus circuit-breaker exclusion. An existing pin on
+        an instance that no longer passes the filter (e.g. engine type switched)
+        then resolves as ``stale`` and the request falls back to policy, instead
+        of the pinned path returning None / 503 (review 194976698 — the default
+        affinity path previously omitted this filter).
+        """
+        return {
+            candidate.id
+            for candidate in self._filter_instances(
+                list(pool.values()), required_engine_type, required_dispatch_capability
+            )
+            if not self.is_instance_blocked(candidate.id)
+        }
+
+    def _request_priority(self, req_info: RequestInfo) -> int | None:
+        """Hint priority level of the request (Agent Hint `priority`), or None."""
+        hint_info = getattr(req_info, "agent_hint_info", None)
+        priority = getattr(getattr(hint_info, "priority_control", None), "priority", None)
+        return priority if isinstance(priority, int) else None
+
+    def _apply_priority_load_gate(
+        self, instances: list[Instance], req_info: RequestInfo, role: PDRole
+    ) -> list[Instance]:
+        """Exclude overloaded endpoints for normal-priority requests (soft-load gate).
+
+        An instance is overloaded when EVERY endpoint's workload score reaches
+        ``priority_load_threshold``. High-priority requests (hint priority >=
+        ``priority_admission_level``) bypass the gate; so do disabled gates and
+        empty results — the gate must never fail a request (availability first).
+        """
+        if self._priority_load_threshold <= 0 or not instances:
+            return instances
+        # WP-E2 hard priority: strict_priority non-None implies it survived the
+        # entry trust gate (untrusted claims are stripped there) — bypass fully.
+        strict_level = getattr(
+            getattr(getattr(req_info, "agent_hint_info", None), "strict_priority", None), "level", None
+        )
+        if strict_level is not None:
+            return instances
+        priority = self._request_priority(req_info)
+        if priority is not None and priority >= self._priority_admission_level:
+            return instances
+
+        def _overloaded(instance: Instance) -> bool:
+            endpoints = instance.get_all_endpoints()
+            if not endpoints:
+                return False
+            return all(
+                endpoint.workload.calculate_workload_score() >= self._priority_load_threshold for endpoint in endpoints
+            )
+
+        kept = [instance for instance in instances if not _overloaded(instance)]
+        if len(kept) == len(instances):
+            return instances
+        if not kept:
+            # All candidates are over the gate: availability wins over priority.
+            logger.warning(
+                "priority load gate kept all instances overloaded req_id=%s role=%s threshold=%s",
+                getattr(req_info, "req_id", None),
+                getattr(role, "value", role),
+                self._priority_load_threshold,
+            )
+            return instances
+        filtered_out = [instance.id for instance in instances if instance not in kept]
+        logger.info(
+            "priority load gate filtered instances=%s req_id=%s role=%s threshold=%s priority=%s",
+            filtered_out,
+            getattr(req_info, "req_id", None),
+            getattr(role, "value", role),
+            self._priority_load_threshold,
+            priority,
+        )
+        return kept
 
     async def _refresh_cache_from_workload_reader(self, role: PDRole | None = None) -> None:
         """Patch live workload into the local cache and pull a fresh instance list on
@@ -1076,6 +1439,105 @@ class AsyncSchedulerClient:
         proposed_endpoint: Endpoint
         normalized_dispatch_capability = str(required_dispatch_capability or "").strip()
 
+        # Session affinity (Phase 2): own-session pin → parent-session pin, with
+        # per-role scoping and epoch invalidation. A dropped pin falls back to
+        # the normal policy — affinity must never fail a request.
+        affinity_session_id: str | None = None
+        affinity_parent_session_id: str | None = None
+        affinity_epoch: int | None = None
+        affinity_outcome = "-"
+        target_endpoint_id: int | None = None
+        if self._session_affinity is not None:
+            hint_info = getattr(req_info, "agent_hint_info", None)
+            affinity_session_id = getattr(hint_info, "session_id", None)
+            affinity_parent_session_id = getattr(hint_info, "parent_session_id", None)
+            affinity_epoch = getattr(getattr(hint_info, "session_hint", None), "epoch", None)
+
+        if (
+            target_instance_id is None
+            and self._session_affinity is not None
+            and (affinity_session_id or affinity_parent_session_id)
+        ):
+            pool = await self.get_available_instances(role)
+            eligible = self._affinity_eligible_instance_ids(
+                pool, normalized_engine_type or None, normalized_dispatch_capability or None
+            )
+            decision = resolve_session_pin(
+                self._session_affinity,
+                affinity_session_id,
+                affinity_parent_session_id,
+                affinity_epoch,
+                getattr(role, "value", ""),
+                eligible,
+            )
+            affinity_outcome = decision.outcome
+            if decision.instance_id is not None:
+                target_instance_id = decision.instance_id
+                target_endpoint_id = decision.endpoint_id
+                logger.info(
+                    "session affinity %s session_id=%s parent_session_id=%s instance_id=%s req_id=%s",
+                    decision.outcome,
+                    affinity_session_id,
+                    affinity_parent_session_id,
+                    decision.instance_id,
+                    req_info.req_id,
+                )
+            elif decision.outcome in NEW_PIN_OUTCOMES and (session_affinity_placement_mode() == PLACEMENT_BALANCED):
+                # Atomic select-and-commit: count-read, selection and pin write
+                # happen under one shared-table critical section, so two workers
+                # in a fresh burst cannot read the same stale counts and double
+                # commit onto one instance (review 194528732).
+                pool_balanced = await self.get_available_instances(role)
+                eligible_balanced = self._affinity_eligible_instance_ids(
+                    pool_balanced, normalized_engine_type or None, normalized_dispatch_capability or None
+                )
+                if hasattr(self._session_affinity, "record_balanced"):
+                    chosen = self._session_affinity.record_balanced(
+                        affinity_session_id,
+                        eligible_balanced,
+                        getattr(role, "value", ""),
+                        affinity_epoch,
+                        self._instance_active_tokens,
+                        self._affinity_placement_seq,
+                    )
+                    self._affinity_placement_seq += 1
+                else:
+                    chosen = await self._select_balanced_affinity_instance(
+                        role, normalized_engine_type, normalized_dispatch_capability
+                    )
+                    if chosen is not None:
+                        self._session_affinity.record(
+                            affinity_session_id,
+                            chosen,
+                            getattr(role, "value", ""),
+                            epoch=affinity_epoch,
+                        )
+                if chosen is not None:
+                    target_instance_id = chosen
+                    logger.info(
+                        "session affinity %s session_id=%s parent_session_id=%s instance_id=%s "
+                        "req_id=%s placement=balanced",
+                        decision.outcome,
+                        affinity_session_id,
+                        affinity_parent_session_id,
+                        chosen,
+                        req_info.req_id,
+                    )
+                else:
+                    logger.info(
+                        "session affinity %s session_id=%s req_id=%s; no balanced candidate; fallback to policy",
+                        decision.outcome,
+                        affinity_session_id,
+                        req_info.req_id,
+                    )
+            elif decision.outcome in ("stale", "epoch"):
+                logger.info(
+                    "session affinity %s session_id=%s req_id=%s; fallback to policy",
+                    decision.outcome,
+                    affinity_session_id,
+                    req_info.req_id,
+                )
+
         if target_instance_id is not None:
             instances = await self.get_available_instances(role)
             instances = {
@@ -1095,12 +1557,32 @@ class AsyncSchedulerClient:
                     req_info.req_id,
                 )
                 return None
-            endpoint = select_endpoint_for_instance(
-                instance,
-                scheduler_type=self._scheduler_type_for_role(role),
-                endpoint_rr_counters=self._endpoint_rr_counters,
-                is_blocked=self.is_instance_blocked,
-            )
+            endpoint = None
+            # Review 194528817: multi-endpoint (DP) instances cache per endpoint,
+            # so a hit must return to the endpoint that owns the pinned KV —
+            # re-picking by load would silently switch DPs and miss. Fall back to
+            # the load-based pick only when the recorded endpoint is gone.
+            pinned_endpoint_id = target_endpoint_id
+            if pinned_endpoint_id is not None:
+                pinned_candidate = next(
+                    (ep for ep in instance.get_all_endpoints(include_headless=True) if ep.id == pinned_endpoint_id),
+                    None,
+                )
+                if pinned_candidate is not None:
+                    endpoint = pinned_candidate
+                else:
+                    logger.info(
+                        "pinned endpoint_id=%s no longer available on instance=%s; re-picking by load",
+                        pinned_endpoint_id,
+                        instance.id,
+                    )
+            if endpoint is None:
+                endpoint = select_endpoint_for_instance(
+                    instance,
+                    scheduler_type=self._scheduler_type_for_role(role),
+                    endpoint_rr_counters=self._endpoint_rr_counters,
+                    is_blocked=self.is_instance_blocked,
+                )
             if endpoint is None:
                 logger.warning(
                     "No endpoint on pinned instance_id=%s role=%s req_id=%s",
@@ -1311,10 +1793,14 @@ class AsyncSchedulerClient:
                     if (matched is not None and isinstance(token_ids, list) and token_ids)
                     else None
                 )
+                hint_info = getattr(req_info, "agent_hint_info", None)
+                hint_priority = getattr(hint_info, "priority_control", None)
+                prio = getattr(hint_priority, "priority", None)
+                prio_reason = getattr(hint_priority, "reason", None)
                 logger.info(
                     "scheduled role=%s req_id=%s input_tokens=%s instance=%s endpoint=%s policy=%s matched=%s "
                     "npu(hbm)=%s cpu(dram)=%s disk=%s load=%s committed=%s score=%s fast_path=%s repicked=%s "
-                    "proposed=%s-%s hit_rate=%s",
+                    "proposed=%s-%s hit_rate=%s prio=%s aff=%s reason=%s sp=%s",
                     role_str,
                     req_info.req_id,
                     int(isl),
@@ -1333,7 +1819,23 @@ class AsyncSchedulerClient:
                     proposed_instance.id,
                     proposed_endpoint.id,
                     hit_rate,
+                    prio,
+                    affinity_outcome,
+                    prio_reason,
+                    getattr(getattr(hint_info, "strict_priority", None), "level", None),
                 )
+                if self._session_affinity is not None and affinity_session_id:
+                    self._session_affinity.record(
+                        affinity_session_id,
+                        out_instance.id,
+                        getattr(role, "value", ""),
+                        epoch=affinity_epoch,
+                        endpoint_id=out_endpoint.id,
+                    )
+                    # Retention is recorded on the same request that establishes the
+                    # binding — after the pin exists, so the promise can be written
+                    # onto the shared slot (design §2.1; review 194528478).
+                    self._record_cache_declaration(hint_info, affinity_session_id, getattr(role, "value", ""))
                 return (out_instance, out_endpoint, committed)
             if status == STATUS_CHANGED:
                 use_authoritative = True
@@ -1845,6 +2347,49 @@ class AsyncSchedulerClient:
                 instance_id,
             )
 
+    async def _on_agent_status_event(self, session_id: str, state: str) -> None:
+        """Apply an out-of-band agent_status fan-out from Scheduler PUB (Phase 4).
+
+        The fan-out drives two things: the worker's local session state machine
+        (via ``agent_status_state_listener``, so finalize's terminal semantics —
+        idempotent finalize, no re-entry into running — hold on every worker,
+        not only the one that received the POST), and the affinity/declaration
+        release for ``finalize``. Other states are informational (T-A2/A5
+        engine KV actions are gated on the engine capability conclusion and are
+        not wired here). Never fails scheduling: a lost PUB event only leaves
+        the pin for the normal stale/epoch/LRU fallback to clean up.
+        """
+        if not session_id or not state:
+            return
+        listener = getattr(self, "agent_status_state_listener", None)
+        if listener is not None:
+            try:
+                listener(session_id, state)
+            except Exception as e:
+                logger.warning(
+                    "agent status state listener failed: session_id=%s state=%s err=%s", session_id, state, e
+                )
+        if state != "finalize":
+            logger.debug(
+                "agent status event (observability only): session_id=%s state=%s",
+                session_id,
+                state,
+            )
+            return
+        # finalize releases the retention immediately, so the keeper must not act on it
+        # again later (design 20261015-03 §2.3).
+        if self._cache_declarations is not None:
+            self._cache_declarations.drop(session_id)
+        if self._session_affinity is None:
+            return
+        dropped = self._session_affinity.drop_all_roles(session_id)
+        if dropped:
+            logger.info(
+                "agent status finalize released session pins: session_id=%s dropped=%d",
+                session_id,
+                dropped,
+            )
+
     def is_instance_blocked(self, instance_id: int) -> bool:
         """Check whether a specific instance is currently blocked by circuit breaker.
 
@@ -1903,6 +2448,60 @@ class AsyncSchedulerClient:
 
         task = asyncio.create_task(self._transport.send_request(request))
         task.add_done_callback(_on_cb_send_done)
+
+    def drop_session_pins(self, session_id: str) -> int:
+        """Release every role pin for session_id in THIS worker's table (Phase 4).
+
+        Local half of the finalize cleanup; the fleet-wide half goes through
+        SchedulerServer PUB (``report_agent_status``). Returns the number of
+        entries removed (0 when affinity is disabled or the session has no
+        pin here) so the caller can log the release.
+        """
+        if self._cache_declarations is not None:
+            self._cache_declarations.drop(session_id)
+        if self._session_affinity is None:
+            return 0
+        return self._session_affinity.drop_all_roles(session_id)
+
+    async def report_agent_status(self, session_id: str, state: str) -> None:
+        """Relay an out-of-band agent_status event to SchedulerServer (Phase 4).
+
+        Fire-and-forget like ``report_cb_event``: the finalize fan-out releases
+        session pins fleet-wide (WP-A T-A4); delivery is best-effort (a lost
+        event only leaves the pin for the normal stale/epoch/LRU fallback —
+        affinity never fails a request).
+        """
+        if not self._transport.connected:
+            logger.warning(
+                "agent status relay dropped (transport disconnected): session_id=%s state=%s",
+                session_id,
+                state,
+            )
+            return
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.AGENT_STATUS_NOTIFY,
+            request_id=str(uuid.uuid4()),
+            data={
+                "session_id": session_id,
+                "state": state,
+            },
+        )
+
+        def _on_agent_status_send_done(fut):
+            if fut.cancelled():
+                return
+            try:
+                fut.result()
+            except Exception as err:  # pylint: disable=broad-exception-caught
+                logger.warning(
+                    "agent status notify send failed: session_id=%s state=%s error=%s",
+                    session_id,
+                    state,
+                    err,
+                )
+
+        task = asyncio.create_task(self._transport.send_request(request))
+        task.add_done_callback(_on_agent_status_send_done)
 
     def _select_endpoint_candidates_from_list_with_policy(
         self,

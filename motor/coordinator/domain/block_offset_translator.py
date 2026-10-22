@@ -908,6 +908,12 @@ def compute_block_offset(
         # already logged a WARNING upstream; just return None here.
         return None
 
+    if msg_offset is None:
+        # No message-level effect point was derived (e.g. a unit=token range, which
+        # has no translation yet): produce no coordinate instead of crashing on the
+        # arithmetic below.
+        return None
+
     effective = msg_offset - 1  # msg_offset range [1, n]; TTL protects messages[0, msg_offset).
     if effective < 0 or effective >= len(messages_table):
         return None

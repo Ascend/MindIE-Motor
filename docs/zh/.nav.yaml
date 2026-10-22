@@ -36,6 +36,7 @@ nav:
           - PD 分离: user_guide/features/pd_disaggregation.md
           - 动态分桶调度: user_guide/features/dynamic_bucket.md
           - KV Cache 亲和: user_guide/features/kvcache_affinity.md
+          - Agent Hint 会话亲和与调度: user_guide/features/agent_hint.md
           - KV Cache Store:
               - 概述: user_guide/features/kv_cache_store/README.md
               - MemCache 后端: user_guide/features/kv_cache_store/backend/memcache.md
@@ -71,6 +72,7 @@ nav:
           - MindIE Motor错误码参考: user_guide/error_code/error_code_reference.md
   - 设计文档:
       - 概述: design/README.md
+      - Agent Hint 会话亲和与调度: design/agent_hint.md
       - PD 分离: design/pd_disaggregation.md
       - 可靠性:
           - 能力总览: design/fault_tolerance/overview.md

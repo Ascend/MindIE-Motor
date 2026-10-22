@@ -47,11 +47,14 @@ class TokenBucket:
         self.last_refill = time.time()
         self._lock = threading.Lock()
 
-    def try_consume(self, tokens: int = 1) -> bool:
+    def try_consume(self, tokens: int = 1, floor: int = 0) -> bool:
         """
 
         Args:
             tokens: Number of tokens to consume
+            floor: Minimum token level that must remain after consumption. Normal
+                requests pass their reserve floor here; high-priority requests
+                pass 0 so they may dip into the reserve.
 
         Returns:
             bool: Whether successfully consumed tokens
@@ -63,8 +66,8 @@ class TokenBucket:
             self.tokens = min(self.capacity, self.tokens + tokens_to_add)
             self.last_refill = now
 
-            # Check if there are enough tokens
-            if self.tokens >= tokens:
+            # Check if there are enough tokens while honoring the floor
+            if self.tokens - tokens >= floor:
                 self.tokens -= tokens
                 return True
             return False
@@ -123,15 +126,27 @@ class TokenBucket:
 
 
 class SimpleRateLimiter:
-    def __init__(self, max_requests: int = 100, window_size: int = 60):
+    def __init__(
+        self,
+        max_requests: int = 100,
+        window_size: int = 60,
+        priority_reserve_ratio: float = 0.0,
+        priority_admission_level: int = 3,
+    ):
         """
 
         Args:
             max_requests: Maximum number of requests in time window
             window_size: Time window size (seconds)
+            priority_reserve_ratio: Fraction of capacity reserved for high-priority
+                requests (Agent Hint `priority` >= priority_admission_level); normal
+                requests stop consuming at the reserve floor. 0 disables the reserve.
+            priority_admission_level: Hint priority at/above which a request is
+                high-priority (shared with the scheduler soft-load gate).
         """
         self.max_requests = max_requests
         self.window_size = window_size
+        self.priority_admission_level = priority_admission_level
 
         # Calculate token bucket parameters
         self.capacity = max_requests  # Bucket capacity equals maximum requests
@@ -139,28 +154,81 @@ class SimpleRateLimiter:
         self._congestion_alarm_sent = False
         self._congestion_alarm_retry_at = 0.0
 
+        self.priority_reserve_ratio = priority_reserve_ratio
+        self._reserve = self._compute_reserve()
+
         # Use single global token bucket
         self._bucket = TokenBucket(capacity=self.capacity, refill_rate=self.refill_rate)
 
-        logger.info(f"Initialized global rate limiter: max_requests={max_requests}, window_size={window_size}s")
+        logger.info(
+            "Initialized global rate limiter: max_requests=%s, window_size=%ss, priority_reserve=%s",
+            max_requests,
+            window_size,
+            self._reserve,
+        )
+
+    def _compute_reserve(self) -> int:
+        """Reserve token count from the ratio; clamped so normal requests keep a slice."""
+        if self.max_requests <= 0:
+            return 0
+        return min(int(self.max_requests * self.priority_reserve_ratio), self.max_requests - 1)
+
+    @staticmethod
+    def _extract_priority(request_data: dict[str, Any] | None) -> int | None:
+        """Priority level carried by the middleware's request data, or None."""
+        if not isinstance(request_data, dict):
+            return None
+        priority = request_data.get("priority")
+        return priority if isinstance(priority, int) else None
 
     def is_allowed(self, request_data: dict[str, Any] | None = None) -> tuple[bool, dict[str, Any]]:
         """
 
         Args:
-            request_data: Request data (optional)
+            request_data: Request data (optional); may carry "priority" (int hint level)
 
         Returns:
             tuple: (whether allowed, rate limiting info)
         """
         try:
+            # WP-E2 hard priority: a trusted strict_priority bypasses the global
+            # token bucket entirely (never 429 here); it is not consumed so
+            # strict traffic does not deplete normal capacity. Capacity governance
+            # for strict traffic stays with the scheduler layer.
+            strict_level = request_data.get("strict_priority") if isinstance(request_data, dict) else None
+            if strict_level is not None:
+                logger.info("Strict-priority request bypasses rate limit: level=%s", strict_level)
+                return True, {
+                    "allowed": True,
+                    "available": self._bucket.get_available_tokens(),
+                    "limit": self.max_requests,
+                    "window_size": self.window_size,
+                    "scope": "global",
+                    "priority": self._extract_priority(request_data),
+                    "reserve": self._reserve,
+                    "strict": True,
+                    "timestamp": time.time(),
+                }
+            priority = self._extract_priority(request_data)
+            high_priority = priority is not None and priority >= self.priority_admission_level
+            # High-priority requests may dip into the reserve (floor 0); normal
+            # requests stop at the reserve floor (0 when the reserve is disabled).
+            floor = 0 if high_priority else self._reserve
             # Try to consume one token
-            allowed = self._bucket.try_consume()
+            allowed = self._bucket.try_consume(floor=floor)
             available = self._bucket.get_available_tokens()
             # Remaining tokens are high when the bucket is idle. Congestion follows used capacity.
             used = self.max_requests - available
 
             self._sync_congestion_alarm(used)
+
+            if allowed and high_priority and available < self._reserve + 1:
+                logger.info(
+                    "Priority request admitted from reserve: priority=%s available=%s/%s",
+                    priority,
+                    available,
+                    self.max_requests,
+                )
 
             # Build rate limiting info
             limit_info = {
@@ -169,6 +237,8 @@ class SimpleRateLimiter:
                 "limit": self.max_requests,
                 "window_size": self.window_size,
                 "scope": "global",
+                "priority": priority,
+                "reserve": self._reserve,
                 "timestamp": time.time(),
             }
 
@@ -182,22 +252,32 @@ class SimpleRateLimiter:
             # Allow request by default when error occurs
             return True, {"error": str(e), "allowed": True, "timestamp": time.time()}
 
-    def update_config(self, max_requests: int | None = None, window_size: int | None = None) -> None:
+    def update_config(
+        self,
+        max_requests: int | None = None,
+        window_size: int | None = None,
+        priority_reserve_ratio: float | None = None,
+    ) -> None:
         """Update rate limiting parameters at runtime (for hot reload).
 
-        Update max_requests and/or window_size, and sync the TokenBucket's
-        capacity and refill_rate accordingly.
+        Update max_requests, window_size and/or priority_reserve_ratio, and sync
+        the TokenBucket's capacity and refill_rate accordingly. Passing
+        priority_reserve_ratio (not just max_requests/window_size) is required:
+        the reserve is derived from the ratio, so a config change to the ratio
+        would otherwise never take effect on hot reload (PR #1196 review).
 
         Invalid values are rejected: max_requests must be >= 0, window_size must be > 0
-        (a zero window_size would cause a division by zero when computing refill_rate).
+        (a zero window_size would cause a division by zero when computing refill_rate),
+        priority_reserve_ratio must be in [0, 0.9] (the config-validation range).
         On invalid input the current parameters are kept unchanged and a warning is logged.
 
         Args:
             max_requests: New maximum number of requests; None means no change.
             window_size: New time window in seconds; None means no change.
+            priority_reserve_ratio: New reserve fraction; None means no change.
         """
-        if max_requests is None and window_size is None:
-            logger.info("Skip rate limiter update: both max_requests and window_size are None")
+        if max_requests is None and window_size is None and priority_reserve_ratio is None:
+            logger.info("Skip rate limiter update: no parameter provided")
             return
 
         if max_requests is not None and max_requests < 0:
@@ -218,21 +298,33 @@ class SimpleRateLimiter:
                 self.window_size,
             )
             return
+        if priority_reserve_ratio is not None and not 0 <= priority_reserve_ratio <= 0.9:
+            logger.warning(
+                "Reject rate limiter update due to invalid priority_reserve_ratio=%s (expected in [0, 0.9]); "
+                "keep current priority_reserve_ratio=%s",
+                priority_reserve_ratio,
+                self.priority_reserve_ratio,
+            )
+            return
 
         if max_requests is not None:
             self.max_requests = max_requests
         if window_size is not None:
             self.window_size = window_size
+        if priority_reserve_ratio is not None:
+            self.priority_reserve_ratio = priority_reserve_ratio
 
         # Recalculate and update TokenBucket parameters
         new_capacity = self.max_requests
         new_refill_rate = self.max_requests / self.window_size
+        self._reserve = self._compute_reserve()
         self._bucket.update_params(capacity=new_capacity, refill_rate=new_refill_rate)
 
         logger.info(
-            "Updated rate limiter: max_requests=%s, window_size=%ss",
+            "Updated rate limiter: max_requests=%s, window_size=%ss, priority_reserve=%s",
             self.max_requests,
             self.window_size,
+            self._reserve,
         )
 
     def _sync_congestion_alarm(self, used: int) -> None:

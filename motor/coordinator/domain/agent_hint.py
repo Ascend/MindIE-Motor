@@ -18,6 +18,7 @@ coordinates consumed by the scheduler.
 """
 
 from enum import Enum, auto
+import math
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -40,11 +41,18 @@ _AGENT_HINT_KNOWN_FIELDS = frozenset(
         "priority_control",
     }
 )
-_CACHE_TYPE_ALLOWED = "ephemeral"
+_CACHE_TYPE_ALLOWED = frozenset({"ephemeral", "pin"})
+_CACHE_TYPE_DEFAULT = "ephemeral"
 _CACHE_TTL_DEFAULT = 300
 _CACHE_TTL_MIN = 60
 _CACHE_TTL_MAX = 3600
 _CACHE_MSG_OFFSET_DEFAULT = None
+_CACHE_RANGE_UNITS_ALLOWED = frozenset({"message"})
+_CACHE_RANGE_UNIT_DEFAULT = "message"
+_SESSION_RELATIONS_ALLOWED = frozenset({"fork", "spawn", "handoff"})
+_SESSION_JOINS_ALLOWED = frozenset({"sync", "async"})
+_SESSION_JOIN_DEFAULT = "sync"
+_AGENT_STATES_ALLOWED = frozenset({"running", "tool", "pause", "suspend", "finalize"})
 _EDIT_TYPES_ALLOWED = frozenset({"offload", "prefetch", "evict"})
 _EDIT_TARGETS_ALLOWED = frozenset({"session", "messages", "tools"})
 _EDIT_TARGET_DEFAULT = "session"
@@ -69,15 +77,46 @@ _EDIT_SERVER_ONLY_FIELDS = frozenset(
 
 
 class CacheControl(BaseModel):
-    """KV cache control."""
+    """KV cache control.
 
-    type: str = Field(default="ephemeral", description="Cache type; only 'ephemeral' is supported.")
+    Shared model for two sources with different strictness (see
+    ``_parse_cache_control`` / ``_parse_spec_cache_control``): the legacy body
+    interface only ever produces ``type='ephemeral'`` with ``ttl`` /
+    ``msg_offset``, while the spec header (X-Agent-Hint) additionally carries
+    ``type='pin'``, ``ttl_s`` and ``range`` (``range_*`` fields; ``unit=message``
+    maps onto ``msg_offset``). ``message`` is the only ``range.unit`` the protocol
+    defines, so any other unit drops the range (see ``_normalize_spec_range``).
+    """
+
+    type: str = Field(default=_CACHE_TYPE_DEFAULT, description="Cache type; 'ephemeral' or 'pin'.")
     ttl: int = Field(default=_CACHE_TTL_DEFAULT, description="Cache TTL in seconds; clamped to [60, 3600].")
     msg_offset: int | None = Field(
         default=_CACHE_MSG_OFFSET_DEFAULT,
         description=(
-            "1-based message index at which cache_control takes effect; None means apply to the whole conversation."
+            "1-based message index at which cache_control takes effect; None means no effect point is "
+            "available (e.g. the request carried no messages), so no block coordinate is produced."
         ),
+    )
+    range_start: int | None = Field(
+        default=None,
+        description="Effective range start (inclusive); from spec range.start, default 0.",
+    )
+    range_end: int | None = Field(
+        default=None,
+        description="Effective range end (exclusive); from spec range.end. For unit=message drives msg_offset.",
+    )
+    range_unit: str | None = Field(
+        default=None,
+        description="Effective range unit; 'message' is the only protocol value. None when no range was supplied.",
+    )
+    # Server-side derived flag (never serialized into the engine payload): ``ttl`` has a
+    # spec default of 300, so only this flag distinguishes "the client asked for a
+    # retention" from "the client said nothing and we filled the default". The cache
+    # lifecycle only acts on explicit retention (design 20261015-03 §7 D1).
+    ttl_explicit: bool = Field(
+        default=False,
+        exclude=True,
+        description="True when the client explicitly supplied ttl/ttl_s; derived at parse time.",
     )
     block_offset: int | None = Field(
         default=None,
@@ -96,13 +135,13 @@ class CacheControl(BaseModel):
     @classmethod
     def _validate_type(cls, value: Any) -> str:
         if value is None or (isinstance(value, str) and value == ""):
-            return _CACHE_TYPE_ALLOWED
+            return _CACHE_TYPE_DEFAULT
         value = str(value)
-        if value != _CACHE_TYPE_ALLOWED:
+        if value not in _CACHE_TYPE_ALLOWED:
             logger.warning(
-                "Invalid cache_control.type=%r; dropping cache_control (only %r is supported).",
+                "Invalid cache_control.type=%r; dropping cache_control (allowed: %s).",
                 value,
-                _CACHE_TYPE_ALLOWED,
+                sorted(_CACHE_TYPE_ALLOWED),
             )
             raise ValueError(f"unsupported cache_control.type: {value!r}")
         return value
@@ -110,9 +149,8 @@ class CacheControl(BaseModel):
     @field_validator("ttl", mode="before")
     @classmethod
     def _validate_ttl(cls, value: Any) -> int:
-        try:
-            value = int(value)
-        except (TypeError, ValueError):
+        value = _finite_int(value, "cache_control.ttl", default=None)
+        if value is None:
             logger.warning(
                 "Invalid cache_control.ttl=%s; using default %s",
                 value,
@@ -200,11 +238,10 @@ class ContextEdit(BaseModel):
     @field_validator("start", mode="before")
     @classmethod
     def _validate_start(cls, value: Any) -> int | None:
-        try:
-            if value is None:
-                return None
-            value = int(value)
-        except (TypeError, ValueError):
+        if value is None:
+            return None
+        value = _finite_int(value, "context_edit.start")
+        if value is None:
             logger.warning("Invalid context_edit.start=%s; using default %s", value, None)
             return None
         if value < 0:
@@ -214,11 +251,10 @@ class ContextEdit(BaseModel):
     @field_validator("end", mode="before")
     @classmethod
     def _validate_end(cls, value: Any) -> int | None:
-        try:
-            if value is None:
-                return None
-            value = int(value)
-        except (TypeError, ValueError):
+        if value is None:
+            return None
+        value = _finite_int(value, "context_edit.end")
+        if value is None:
             logger.warning("Invalid context_edit.end=%s; using default %s", value, None)
             return None
         if value < 0:
@@ -314,7 +350,252 @@ class PriorityControl(BaseModel):
     """Priority hint (design-only)."""
 
     priority: int | None = Field(default=None, description="Priority hint; higher value means higher priority.")
+    reason: str | None = Field(
+        default=None, description="Why the level was set, e.g. 'user_waiting' (E3: retained for audit)."
+    )
     # More fields may be added in future versions.
+
+
+class PriorityHint(BaseModel):
+    """Spec-form priority hint (``priority`` / ``strict_priority``).
+
+    Stored for forward compatibility only. In particular ``strict_priority``
+    carries an unresolved trust boundary (who may inject it) and must not
+    drive any scheduling decision until that is settled (Phase 3 decision:
+    trust mechanism deferred).
+    """
+
+    level: int | None = Field(default=None, description="Priority level; higher value means higher priority.")
+    reason: str | None = Field(default=None, description="Reason the level was set, e.g. 'critical_path'.")
+
+
+class DerivationHint(BaseModel):
+    """How a session was derived from its parent (spec ``session.derivation``)."""
+
+    relation: str = Field(..., description="One of 'fork' / 'spawn' / 'handoff'.")
+    join: str = Field(
+        default=_SESSION_JOIN_DEFAULT,
+        description="'sync' (parent waits for the child) or 'async'; default 'sync'.",
+    )
+    fork_point: int | None = Field(
+        default=None,
+        description="For 'fork': child inherits parent messages [0, fork_point); None = not applicable.",
+    )
+
+    @field_validator("relation", mode="before")
+    @classmethod
+    def _validate_relation(cls, value: Any) -> str:
+        value = str(value)
+        if value not in _SESSION_RELATIONS_ALLOWED:
+            logger.warning(
+                "Invalid session.derivation.relation=%r; expected one of %s. Dropping derivation.",
+                value,
+                sorted(_SESSION_RELATIONS_ALLOWED),
+            )
+            raise ValueError(f"unsupported derivation.relation: {value!r}")
+        return value
+
+    @field_validator("join", mode="before")
+    @classmethod
+    def _validate_join(cls, value: Any) -> str:
+        if value is None or (isinstance(value, str) and value == ""):
+            return _SESSION_JOIN_DEFAULT
+        value = str(value)
+        if value not in _SESSION_JOINS_ALLOWED:
+            logger.warning(
+                "Invalid session.derivation.join=%r; expected one of %s. Using default %r.",
+                value,
+                sorted(_SESSION_JOINS_ALLOWED),
+                _SESSION_JOIN_DEFAULT,
+            )
+            return _SESSION_JOIN_DEFAULT
+        return value
+
+    @field_validator("fork_point", mode="before")
+    @classmethod
+    def _validate_fork_point(cls, value: Any) -> int | None:
+        if value is None:
+            return None
+        value = _finite_int(value, "session.derivation.fork_point")
+        if value is None:
+            logger.warning("Invalid session.derivation.fork_point=%s; treating as unset (None).", value)
+            return None
+        if value < 0:
+            logger.warning("session.derivation.fork_point=%s less than 0; treating as unset (None).", value)
+            return None
+        return value
+
+
+class SessionHint(BaseModel):
+    """Spec-form nested ``session`` block.
+
+    session_id / parent_session_id participate in the per-field resolution
+    priority (nested > body flat > header fallback); the remaining fields are
+    stored for the scheduler (Phase 2 consumes derivation / epoch / call_index).
+    """
+
+    session_id: str | None = Field(default=None, description="Session ID; stable within one context.")
+    parent_session_id: str | None = Field(default=None, description="Parent session ID; None for a root session.")
+    derivation: DerivationHint | None = Field(default=None, description="Derivation relation to the parent session.")
+    agent_type: str | None = Field(default=None, description="Agent type identifier.")
+    call_index: int | None = Field(default=None, description="Call ordinal within the session, starting at 1.")
+    epoch: int | None = Field(
+        default=None,
+        description="Context version; incremented after context rewrite/compaction.",
+    )
+
+    @field_validator("call_index", mode="before")
+    @classmethod
+    def _validate_call_index(cls, value: Any) -> int | None:
+        if value is None:
+            return None
+        value = _finite_int(value, "session.call_index")
+        if value is None:
+            logger.warning("Invalid session.call_index=%s; treating as unset (None).", value)
+            return None
+        if value < 1:
+            logger.warning("session.call_index=%s less than 1; treating as unset (None).", value)
+            return None
+        return value
+
+    @field_validator("epoch", mode="before")
+    @classmethod
+    def _validate_epoch(cls, value: Any) -> int | None:
+        if value is None:
+            return None
+        value = _finite_int(value, "session.epoch")
+        if value is None:
+            logger.warning("Invalid session.epoch=%s; treating as unset (None).", value)
+            return None
+        if value < 0:
+            logger.warning("session.epoch=%s less than 0; treating as unset (None).", value)
+            return None
+        return value
+
+
+class AgentStatusTool(BaseModel):
+    """Tool a ``tool``-state agent is waiting on (spec ``agent_status.tools[]``)."""
+
+    name: str | None = Field(default=None, description="Tool name; 'agent:<agent_type>' when waiting on a child agent.")
+    call_id: str | None = Field(default=None, description="Tool call ID.")
+    child_session_id: str | None = Field(default=None, description="Child session ID when waiting on a child agent.")
+
+
+class AgentStatusHint(BaseModel):
+    """Agent lifecycle status (spec ``agent_status``); out-of-band event support lands in Phase 4."""
+
+    state: str = Field(..., description="One of 'running' / 'tool' / 'pause' / 'suspend' / 'finalize'.")
+    state_since_ms: int | None = Field(default=None, description="Unix ms timestamp when the state was entered.")
+    reason: str | None = Field(default=None, description="State reason, e.g. 'await_tool', 'human_approval'.")
+    tools: list[AgentStatusTool] = Field(default_factory=list, description="Tools awaited in 'tool' state.")
+
+    @field_validator("state_since_ms", mode="before")
+    @classmethod
+    def _validate_state_since_ms(cls, value: Any) -> int | None:
+        return _finite_int(value, "agent_status.state_since_ms")
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def _validate_state(cls, value: Any) -> str:
+        value = str(value)
+        if value not in _AGENT_STATES_ALLOWED:
+            logger.warning(
+                "Invalid agent_status.state=%r; expected one of %s. Dropping agent_status.",
+                value,
+                sorted(_AGENT_STATES_ALLOWED),
+            )
+            raise ValueError(f"unsupported agent_status.state: {value!r}")
+        return value
+
+
+class PredictionTool(BaseModel):
+    """Predicted tool invocation (spec ``prediction.next_action.tools[]``)."""
+
+    name: str | None = Field(default=None, description="Predicted tool name.")
+    expected_duration_s: int | None = Field(default=None, description="Expected tool duration in seconds.")
+
+
+class PredictionNextAction(BaseModel):
+    """Predicted next action (spec ``prediction.next_action``)."""
+
+    state: str | None = Field(default=None, description="Predicted next state; see agent_status states.")
+    tools: list[PredictionTool] = Field(default_factory=list, description="Predicted tools with expected durations.")
+    prob: float | None = Field(default=None, description="Probability of the next action, in [0, 1].")
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def _validate_state(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        value = str(value)
+        if value not in _AGENT_STATES_ALLOWED:
+            logger.warning(
+                "Invalid prediction.next_action.state=%r; expected one of %s. Dropping next_action.state.",
+                value,
+                sorted(_AGENT_STATES_ALLOWED),
+            )
+            return None
+        return value
+
+    @field_validator("prob", mode="before")
+    @classmethod
+    def _validate_prob(cls, value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            logger.warning("Invalid prediction.next_action.prob=%s; treating as unset (None).", value)
+            return None
+        if not 0.0 <= value <= 1.0:
+            logger.warning("prediction.next_action.prob=%s out of [0, 1]; treating as unset (None).", value)
+            return None
+        return value
+
+
+class PredictionHint(BaseModel):
+    """Statistical prediction of the remaining agent workload (spec ``prediction``).
+
+    Stored for forward compatibility; Phase 5 consumes output_tokens /
+    remaining_calls (demand estimation) and interval_ms / next_action
+    (predictive warm-up). ``latency_ms`` additionally keeps its existing
+    latency_control mapping (wire layer).
+    """
+
+    remaining_calls: int | None = Field(default=None, description="Estimated remaining calls after this one.")
+    output_tokens: int | None = Field(default=None, description="Estimated output tokens for this call.")
+    interval_ms: int | None = Field(
+        default=None, description="Estimated gap between this call's end and the next start."
+    )
+    latency_ms: int | None = Field(default=None, description="Estimated duration of this call.")
+    remaining_time_ms: int | None = Field(default=None, description="Estimated remaining time until the session ends.")
+    expected_resume_s: int | None = Field(
+        default=None,
+        description="Estimated seconds until resume after 'pause' / 'suspend'.",
+    )
+    next_action: PredictionNextAction | None = Field(default=None, description="Predicted next action.")
+
+    @field_validator(
+        "remaining_calls",
+        "output_tokens",
+        "interval_ms",
+        "latency_ms",
+        "remaining_time_ms",
+        "expected_resume_s",
+        mode="before",
+    )
+    @classmethod
+    def _validate_non_negative_int(cls, value: Any) -> int | None:
+        if value is None:
+            return None
+        value = _finite_int(value, "prediction value")
+        if value is None:
+            logger.warning("Invalid prediction value=%s; treating as unset (None).", value)
+            return None
+        if value < 0:
+            logger.warning("prediction value=%s less than 0; treating as unset (None).", value)
+            return None
+        return value
 
 
 class AgentHintInfo(BaseModel):
@@ -331,6 +612,10 @@ class AgentHintInfo(BaseModel):
     parent_session_id: str | None = Field(
         default=None, description="Parent session ID; usually the main agent's session."
     )
+    session_hint: SessionHint | None = Field(
+        default=None,
+        description="Nested spec-form session block (derivation / agent_type / call_index / epoch); Phase 2 consumes.",
+    )
     cache_control: CacheControl | None = Field(default=None, description="KV cache control hint.")
     context_management: ContextManagement | None = Field(
         default=None, description="Context management hint (design-only)."
@@ -346,24 +631,107 @@ class AgentHintInfo(BaseModel):
     )
     latency_control: LatencyControl | None = Field(default=None, description="Latency control hint (design-only).")
     priority_control: PriorityControl | None = Field(default=None, description="Priority control hint (design-only).")
+    agent_status: AgentStatusHint | None = Field(
+        default=None,
+        description="Agent lifecycle status from the request; parsed and stored (Phase 4 adds the event channel).",
+    )
+    prediction: PredictionHint | None = Field(
+        default=None,
+        description="Workload prediction; parsed and stored (Phase 5 consumes).",
+    )
+    strict_priority_trusted: bool = Field(
+        default=False,
+        description="WP-E2: True only when strict_priority survived the entry trust gate.",
+    )
+    strict_priority: PriorityHint | None = Field(
+        default=None,
+        description=(
+            "Hard priority from a (future) trusted control plane; trust boundary "
+            "unresolved — parsed and stored, never consumed."
+        ),
+    )
     raw_extra: dict | None = Field(
         default_factory=dict, description="Pass-through dict for unrecognized extension fields in agent_hint."
     )
 
 
-def _parse_cache_control(
-    data: Any,
-    messages: list | None = None,
-) -> CacheControl | None:
-    if not isinstance(data, dict):
-        return None
-    data = {k: v for k, v in data.items() if k not in _CACHE_SERVER_ONLY_FIELDS}
-    try:
-        cache_control = CacheControl(**data)
-    except Exception as e:
-        logger.warning("Failed to parse cache_control: %s", e)
-        return None
+def _normalize_spec_range(
+    data: dict,
+    msg_offset: int | None,
+) -> tuple[int | None, int | None, str | None, int | None]:
+    """Map spec ``cache_control.range`` onto range_* fields and (maybe) msg_offset.
 
+    Returns ``(range_start, range_end, range_unit, derived_msg_offset)``:
+
+    - ``unit=message`` with ``start`` absent/0: ``range.end`` (exclusive end of
+      messages [0, end)) maps to ``msg_offset=end`` (1-based effective start) so
+      the existing block-coordinate translation chain applies unchanged.
+    - ``start > 0`` is not supported yet: the range is dropped with a WARNING.
+    - Any other ``unit`` is rejected (``message`` is the only value the protocol
+      defines): the range is dropped with a WARNING, so no effect point is derived
+      from it and the declaration falls back to the no-range default.
+
+    An explicit legacy ``msg_offset`` always wins over the derived value.
+    """
+    if not isinstance(data, dict):
+        return None, None, None, None
+    unit_raw = data.get("unit")
+    unit = _CACHE_RANGE_UNIT_DEFAULT if unit_raw is None else str(unit_raw)
+    if unit not in _CACHE_RANGE_UNITS_ALLOWED:
+        logger.warning(
+            "Invalid cache_control.range.unit=%r; expected one of %s. Dropping range.",
+            unit_raw,
+            sorted(_CACHE_RANGE_UNITS_ALLOWED),
+        )
+        return None, None, None, None
+
+    def _to_int(key: str) -> int | None:
+        value = data.get(key)
+        if value is None:
+            return None
+        value = _finite_int(value, f"cache_control.range.{key}")
+        if value is None:
+            logger.warning("Invalid cache_control.range.%s=%s; treating as unset.", key, data.get(key))
+            return None
+        if value < 0:
+            logger.warning("cache_control.range.%s=%s less than 0; treating as unset.", key, value)
+            return None
+        return value
+
+    range_start = _to_int("start")
+    range_end = _to_int("end")
+    derived_msg_offset = None
+    # Only "message" passes the whitelist check above.
+    if range_start not in (None, 0):
+        logger.warning(
+            "cache_control.range.start=%s with unit=message is not supported yet; dropping range.",
+            range_start,
+        )
+        return None, None, None, None
+    if range_end is not None:
+        # [0, end) messages == effective from 1-based message `end`.
+        derived_msg_offset = range_end
+    if msg_offset is not None and derived_msg_offset is not None and msg_offset != derived_msg_offset:
+        logger.info(
+            "cache_control has both msg_offset=%s and range(message) end=%s; legacy msg_offset wins.",
+            msg_offset,
+            derived_msg_offset,
+        )
+        derived_msg_offset = None
+    return range_start, range_end, unit, derived_msg_offset
+
+
+def _finalize_cache_control(
+    cache_control: CacheControl,
+    messages: list | None,
+) -> CacheControl | None:
+    """Shared msg_offset defaulting and bounds check for both cache_control sources.
+
+    An unset ``msg_offset`` means no range narrowed the declaration, so it defaults to the
+    whole conversation (``len(messages)``), matching the legacy contract. Ranges that cannot
+    be interpreted are dropped upstream by ``_normalize_spec_range``, which therefore also
+    falls back to this same whole-conversation default.
+    """
     n = len(messages) if isinstance(messages, list) else None
     msg_offset = cache_control.msg_offset
     if msg_offset is None:
@@ -385,6 +753,92 @@ def _parse_cache_control(
             )
             return None
     return cache_control
+
+
+def _parse_cache_control(
+    data: Any,
+    messages: list | None = None,
+) -> CacheControl | None:
+    """Parse the legacy body ``cache_control`` (strictly ephemeral/ttl/msg_offset).
+
+    The Agent-Hint spec fields (``pin`` type, ``ttl_s``, ``range``) are
+    header-only protocol (X-Agent-Hint); their presence in the body is warned
+    about and ignored so the body schema stays a pure legacy interface.
+    """
+    if not isinstance(data, dict):
+        return None
+    for spec_key in ("ttl_s", "range"):
+        if spec_key in data:
+            logger.warning(
+                "cache_control.%s is a spec field and header-only (X-Agent-Hint); ignoring it in the body.",
+                spec_key,
+            )
+    ttl_explicit = "ttl" in data
+    data = {k: v for k, v in data.items() if k not in _CACHE_SERVER_ONLY_FIELDS}
+    try:
+        cache_control = CacheControl(**data)
+    except Exception as e:
+        logger.warning("Failed to parse cache_control: %s", e)
+        return None
+    cache_control.ttl_explicit = ttl_explicit
+    if cache_control.type != _CACHE_TYPE_DEFAULT:
+        logger.warning(
+            "cache_control.type=%r in the request body is not supported (body is legacy ephemeral-only); "
+            "dropping cache_control. Use the X-Agent-Hint header for spec cache_control.",
+            cache_control.type,
+        )
+        return None
+    return _finalize_cache_control(cache_control, messages)
+
+
+def _parse_spec_cache_control(
+    data: Any,
+    messages: list | None = None,
+) -> CacheControl | None:
+    """Parse the spec-form ``cache_control`` carried by X-Agent-Hint.
+
+    Accepts ``type`` pin/ephemeral, ``ttl_s`` (preferred over ``ttl``) and
+    ``range{start,end,unit}`` (``unit=message``, the only protocol value, maps onto
+    the legacy ``msg_offset`` translation; any other unit drops the range).
+    """
+    if isinstance(data, list):
+        if not data:
+            return None
+        if len(data) > 1:
+            logger.warning(
+                "X-Agent-Hint carries %d cache_control entries; using the first (multi-entry not supported yet).",
+                len(data),
+            )
+        data = data[0]
+    if not isinstance(data, dict):
+        logger.warning(
+            "X-Agent-Hint cache_control is not a dict (got %s); ignoring.",
+            type(data).__name__,
+        )
+        return None
+    data = {k: v for k, v in data.items() if k not in _CACHE_SERVER_ONLY_FIELDS}
+    ttl_s = data.pop("ttl_s", None)
+    # Explicit retention means the client sent either alias; a bare ``type`` keeps the
+    # default TTL but stays out of the lifecycle.
+    ttl_explicit = ttl_s is not None or "ttl" in data
+    if ttl_s is not None:
+        # Spec-preferred alias wins over a coexisting legacy `ttl`.
+        data["ttl"] = ttl_s
+    range_data = data.pop("range", None)
+    try:
+        cache_control = CacheControl(**data)
+    except Exception as e:
+        logger.warning("Failed to parse cache_control: %s", e)
+        return None
+    cache_control.ttl_explicit = ttl_explicit
+
+    range_start, range_end, range_unit, derived_msg_offset = _normalize_spec_range(range_data, cache_control.msg_offset)
+    cache_control.range_start = range_start
+    cache_control.range_end = range_end
+    cache_control.range_unit = range_unit
+    if derived_msg_offset is not None:
+        cache_control.msg_offset = derived_msg_offset
+    return _finalize_cache_control(cache_control, messages)
 
 
 def _validate_edit_indices(
@@ -726,10 +1180,214 @@ def _parse_priority_control(data: dict) -> PriorityControl | None:
     priority_control = None
     if isinstance(data, dict):
         try:
-            priority_control = PriorityControl(priority=data.get("priority"))
+            reason = data.get("reason")
+            priority_control = PriorityControl(
+                priority=data.get("priority"),
+                reason=reason if isinstance(reason, str) else None,
+            )
         except Exception as e:
             logger.warning("Failed to parse priority_control: %s", e)
     return priority_control
+
+
+def apply_strict_priority_trust(
+    agent_hint_info: "AgentHintInfo",
+    headers: dict | None,
+    strict_config: Any,
+) -> bool:
+    """Entry trust gate for Agent Hint `strict_priority` (WP-E2).
+
+    A trusted claim (strict channel enabled + matching
+    ``X-Strict-Priority-Token``) is kept and marked; anything else is
+    STRIPPED (set to None) with a WARNING so no consumer can act on an
+    untrusted client declaration. Returns True when a trusted strict
+    priority is present after the gate.
+
+    ``strict_config`` is the coordinator ``StrictPriorityConfig`` (duck-typed:
+    ``enabled: bool``, ``tokens: list[str]``); None/absent disables the channel.
+    """
+    if agent_hint_info is None or agent_hint_info.strict_priority is None:
+        return False
+    from motor.coordinator.domain.agent_hint_wire import strict_priority_trusted
+
+    enabled = bool(getattr(strict_config, "enabled", False))
+    tokens = list(getattr(strict_config, "tokens", None) or [])
+    if not strict_priority_trusted(headers, enabled=enabled, tokens=tokens):
+        logger.warning(
+            "strict_priority dropped (untrusted source): level=%s reason=%s",
+            agent_hint_info.strict_priority.level,
+            agent_hint_info.strict_priority.reason,
+        )
+        agent_hint_info.strict_priority = None
+        agent_hint_info.strict_priority_trusted = False
+        return False
+    agent_hint_info.strict_priority_trusted = True
+    return True
+
+
+def _finite_int(value: Any, field: str, default: Any = None) -> Any:
+    """Convert ``value`` to int defensively.
+
+    Rejects non-finite floats (json ``1e999`` decodes to ``inf``; ``int(inf)``
+    raises ``OverflowError``, which is not a ``ValueError``) and any conversion
+    failure, warning and returning ``default`` instead — a malformed optional
+    hint must never break request parsing.
+    """
+    if value is None:
+        return default
+    try:
+        if isinstance(value, float) and not math.isfinite(value):
+            logger.warning("Invalid %s=%r (non-finite); treating as unset.", field, value)
+            return default
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        logger.warning("Invalid %s=%r; treating as unset.", field, value)
+        return default
+
+
+def _parse_priority_hint(data: Any) -> PriorityHint | None:
+    """Parse spec-form ``{level, reason}``; None for absent/malformed input."""
+    if not isinstance(data, dict):
+        return None
+    level = data.get("level")
+    if level is not None:
+        level = _finite_int(level, "priority.level")
+    reason = data.get("reason")
+    if reason is not None and not isinstance(reason, str):
+        logger.warning("Invalid priority reason=%r; treating as unset.", reason)
+        reason = None
+    if level is None and reason is None:
+        return None
+    return PriorityHint(level=level, reason=reason)
+
+
+def _parse_session_hint(data: Any) -> SessionHint | None:
+    """Parse the nested spec ``session{}`` block; None for absent/invalid input."""
+    if not isinstance(data, dict):
+        return None
+    if not data:
+        return None
+    derivation = None
+    derivation_data = data.get("derivation")
+    if isinstance(derivation_data, dict) and derivation_data:
+        try:
+            derivation = DerivationHint(**derivation_data)
+        except Exception as e:
+            logger.warning("Failed to parse session.derivation: %s", e)
+    elif derivation_data is not None:
+        logger.warning("session.derivation=%r is not a dict; dropping derivation.", derivation_data)
+
+    def _optional_str(key: str) -> str | None:
+        value = data.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value:
+            logger.warning("Invalid session.%s=%r; treating as unset.", key, value)
+            return None
+        return value
+
+    try:
+        return SessionHint(
+            session_id=_optional_str("session_id"),
+            parent_session_id=_optional_str("parent_session_id"),
+            derivation=derivation,
+            agent_type=_optional_str("agent_type"),
+            call_index=data.get("call_index"),
+            epoch=data.get("epoch"),
+        )
+    except Exception as e:
+        logger.warning("Failed to parse session hint: %s", e)
+        return None
+
+
+def _parse_agent_status(data: Any) -> AgentStatusHint | None:
+    """Parse spec ``agent_status``; None for absent/invalid input (never raises)."""
+    if not isinstance(data, dict) or not data:
+        return None
+    tools_data = data.get("tools")
+    tools: list[AgentStatusTool] = []
+    if isinstance(tools_data, list):
+        for entry in tools_data:
+            if not isinstance(entry, dict):
+                logger.warning("Ignoring non-dict agent_status.tools entry: %r", entry)
+                continue
+            try:
+                tools.append(
+                    AgentStatusTool(
+                        name=entry.get("name"),
+                        call_id=entry.get("call_id"),
+                        child_session_id=entry.get("child_session_id"),
+                    )
+                )
+            except Exception as e:
+                logger.warning("Failed to parse agent_status.tools entry: %s", e)
+    elif tools_data is not None:
+        logger.warning("agent_status.tools=%r is not a list; dropping tools.", tools_data)
+    try:
+        return AgentStatusHint(
+            state=data.get("state"),
+            state_since_ms=data.get("state_since_ms"),
+            reason=data.get("reason"),
+            tools=tools,
+        )
+    except Exception as e:
+        logger.warning("Failed to parse agent_status: %s", e)
+        return None
+
+
+def _parse_prediction(data: Any) -> PredictionHint | None:
+    """Parse spec ``prediction``; None for absent/invalid input (never raises)."""
+    if not isinstance(data, dict) or not data:
+        return None
+    next_action = None
+    next_action_data = data.get("next_action")
+    if isinstance(next_action_data, dict):
+        tools: list[PredictionTool] = []
+        tools_data = next_action_data.get("tools")
+        if isinstance(tools_data, list):
+            for entry in tools_data:
+                if not isinstance(entry, dict):
+                    logger.warning("Ignoring non-dict prediction.next_action.tools entry: %r", entry)
+                    continue
+                expected_duration_s = entry.get("expected_duration_s")
+                if expected_duration_s is not None:
+                    expected_duration_s = max(
+                        0, _finite_int(expected_duration_s, "prediction.next_action.tools[].expected_duration_s") or 0
+                    )
+                try:
+                    tools.append(PredictionTool(name=entry.get("name"), expected_duration_s=expected_duration_s))
+                except ValidationError as exc:
+                    logger.warning("Invalid prediction.next_action.tools entry %r; dropping the entry: %s", entry, exc)
+        elif tools_data is not None:
+            logger.warning("prediction.next_action.tools=%r is not a list; dropping tools.", tools_data)
+        try:
+            next_action = PredictionNextAction(
+                state=next_action_data.get("state"),
+                prob=next_action_data.get("prob"),
+                tools=tools,
+            )
+        except Exception as e:
+            logger.warning("Failed to parse prediction.next_action: %s", e)
+    elif next_action_data is not None:
+        logger.warning("prediction.next_action=%r is not a dict; dropping next_action.", next_action_data)
+    try:
+        prediction = PredictionHint(
+            remaining_calls=data.get("remaining_calls"),
+            output_tokens=data.get("output_tokens"),
+            interval_ms=data.get("interval_ms"),
+            latency_ms=data.get("latency_ms"),
+            remaining_time_ms=data.get("remaining_time_ms"),
+            expected_resume_s=data.get("expected_resume_s"),
+            next_action=next_action,
+        )
+    except Exception as e:
+        logger.warning("Failed to parse prediction: %s", e)
+        return None
+    if prediction.model_dump(exclude_none=True) == {}:
+        # Every supplied value was invalid/unset: collapse to None instead of
+        # keeping an empty shell the scheduler would have to reason about.
+        return None
+    return prediction
 
 
 def _is_valid_session_id(value: Any) -> bool:
@@ -740,14 +1398,19 @@ def _is_valid_session_id(value: Any) -> bool:
 def _resolve_session_ids(
     agent_hint_data: Any,
     headers: dict | None = None,
+    nested: "SessionHint | None" = None,
 ) -> tuple[str | None, str | None]:
     """
     Resolve and normalize session_id / parent_session_id.
 
     Per-field priority:
-      1. The field in agent_hint (request body).
-      2. Otherwise fall back to x-session-id / x-parent-session-id header
+      1. The flat field in agent_hint (request body).
+      2. The nested spec ``session{}`` block (X-Agent-Hint only).
+      3. Otherwise fall back to x-session-id / x-parent-session-id header
          (Starlette normalizes header keys to lowercase).
+
+    The body-first order matches the wire merge (body wins): a body session id
+    must not be overridden by the header payload of the same request.
 
     Complement rule (single-agent clients typically send only one):
       - Only session_id valid         -> parent_session_id := session_id.
@@ -756,8 +1419,9 @@ def _resolve_session_ids(
                                          the client's decision).
       - Both invalid                  -> normalize to None; do not generate IDs.
                                          If the client attempted to send them
-                                         (body key present or headers present),
-                                         emit a WARNING.
+                                         (body key present, nested session
+                                         present or headers present), emit a
+                                         WARNING.
 
     Returns:
         (session_id, parent_session_id): both non-empty strings, or both None.
@@ -766,19 +1430,41 @@ def _resolve_session_ids(
     if not isinstance(agent_hint_data, dict):
         agent_hint_data = {}
 
+    nested_session_id = nested.session_id if nested is not None else None
+    nested_parent_session_id = nested.parent_session_id if nested is not None else None
     session_id = agent_hint_data.get("session_id")
     parent_session_id = agent_hint_data.get("parent_session_id")
     # Distinguish "client didn't send" from "client sent but invalid"; only the
     # latter (or present headers) should warn — avoids log spam on plain
     # requests without agent_hint.
-    body_has_any_session_id = "session_id" in agent_hint_data or "parent_session_id" in agent_hint_data
+    body_has_any_session_id = (
+        "session_id" in agent_hint_data
+        or "parent_session_id" in agent_hint_data
+        or (nested is not None and (nested.session_id is not None or nested.parent_session_id is not None))
+    )
 
-    # Fall back to headers when a field's body value is invalid.
-    if headers:
-        if not _is_valid_session_id(session_id):
+    # Fall back through the nested header block then x-session-id headers when
+    # the body's value is invalid. The body flat value (when valid) always wins
+    # over the nested header block — same body-wins rule as the wire merge.
+    if not _is_valid_session_id(session_id):
+        if nested_session_id is not None:
+            session_id = nested_session_id
+        elif headers:
             session_id = headers.get(HEADER_SESSION_ID)
-        if not _is_valid_session_id(parent_session_id):
+            if not _is_valid_session_id(session_id):
+                session_id = None
+        else:
+            session_id = None
+
+    if not _is_valid_session_id(parent_session_id):
+        if nested_parent_session_id is not None:
+            parent_session_id = nested_parent_session_id
+        elif headers:
             parent_session_id = headers.get(HEADER_PARENT_SESSION_ID)
+            if not _is_valid_session_id(parent_session_id):
+                parent_session_id = None
+        else:
+            parent_session_id = None
 
     # Apply complement rule to fill in any missing field.
     session_valid = _is_valid_session_id(session_id)
@@ -805,7 +1491,23 @@ def _resolve_session_ids(
 def parse_agent_hint(
     request_json: dict,
     headers: dict | None = None,
+    header_hint: dict | None = None,
 ) -> AgentHintInfo:
+    """Parse the request's agent hint into :class:`AgentHintInfo`.
+
+    Two input channels exist with a strict protocol boundary:
+
+    - ``header_hint`` — the decoded ``X-Agent-Hint`` payload (spec protocol,
+      produced by :func:`apply_agent_hint_header`). Spec-form blocks (nested
+      ``session``, ``agent_status``, ``prediction``, ``strict_priority``,
+      spec ``cache_control``) are read from here ONLY.
+    - ``request_json["agent_hint"]`` — the legacy body block; its schema is
+      frozen (flat session ids, ephemeral cache_control, context/session
+      control, latency/priority control).
+
+    Per-field session-id priority: header nested ``session{}`` > body flat
+    fields > ``x-session-id`` style headers.
+    """
     agent_hint_data = request_json.get("agent_hint", {}) if isinstance(request_json, dict) else {}
     if not isinstance(agent_hint_data, dict):
         # agent_hint exists but is not a mapping (e.g. str/list) — treat as empty.
@@ -815,15 +1517,34 @@ def parse_agent_hint(
         )
         agent_hint_data = {}
 
-    session_id, parent_session_id = _resolve_session_ids(agent_hint_data, headers)
-
     messages = request_json.get("messages") if isinstance(request_json, dict) else None
     tools = request_json.get("tools") if isinstance(request_json, dict) else None
+
+    strict_priority = None
+    agent_status = None
+    prediction = None
+    spec_cache_control = None
+    nested_session = None
+    if header_hint is not None:
+        # Spec-form blocks travel ONLY in the X-Agent-Hint header (the body
+        # agent_hint block stays a pure legacy interface).
+        nested_session = _parse_session_hint(header_hint.get("session"))
+        agent_status = _parse_agent_status(header_hint.get("agent_status"))
+        prediction = _parse_prediction(header_hint.get("prediction"))
+        strict_priority = _parse_priority_hint(header_hint.get("strict_priority"))
+        spec_cache_control = _parse_spec_cache_control(
+            header_hint.get("cache_control"),
+            messages=messages,
+        )
+
+    session_id, parent_session_id = _resolve_session_ids(agent_hint_data, headers, nested_session)
 
     cache_control = _parse_cache_control(
         agent_hint_data.get("cache_control"),
         messages=messages,
     )
+    if cache_control is None and spec_cache_control is not None:
+        cache_control = spec_cache_control
 
     context_management = _parse_context_management(
         agent_hint_data.get("context_management"),
@@ -851,11 +1572,15 @@ def parse_agent_hint(
     return AgentHintInfo(
         session_id=session_id,
         parent_session_id=parent_session_id,
+        session_hint=nested_session,
         cache_control=cache_control,
         context_management=context_management,
         session_control=session_control,
         latency_control=latency_control,
         priority_control=priority_control,
+        strict_priority=strict_priority,
+        agent_status=agent_status,
+        prediction=prediction,
         raw_extra=raw_extra,
     )
 

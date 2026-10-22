@@ -157,10 +157,11 @@ def test_standalone_membership_events_inference_and_restart_replay(tmp_path):
         # Coordinator 刚启动且尚未纳管完整 P+D 拓扑，本场景会进入未就绪分支。
         _wait_for_readiness(readiness_url, False)
 
-        # SET 只纳管 Prefill 实例，本场景仍缺少 Decode 实例，因此保持未就绪。
+        # SET 只纳管 Prefill 实例：P-only 拓扑可服务（InstanceReadiness.is_run 含
+        # ONLY_PREFILL），readiness 应进入就绪分支。
         prefill_only = {**topology, "instances": [topology["instances"][0]]}
         assert _json_request(refresh_url, prefill_only)[0] == 200
-        _wait_for_readiness(readiness_url, False)
+        _wait_for_readiness(readiness_url, True)
 
         # ADD 仅把已在线的 Decode 实例加入 Coordinator 纳管，本场景不会启动 Decode 进程。
         add_decode = {**topology, "event": "add", "instances": [topology["instances"][1]]}

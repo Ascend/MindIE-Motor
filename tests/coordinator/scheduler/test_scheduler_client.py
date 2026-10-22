@@ -24,6 +24,7 @@ from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import InstanceReadiness
 from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.domain.scheduling import UpdateWorkloadParams
+from motor.coordinator.domain.agent_hint import PriorityControl, PriorityHint
 from motor.coordinator.models.request import RequestInfo
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
     CANDIDATE_POLICY_LOAD_BALANCE,
@@ -1438,3 +1439,200 @@ class TestSelectAndAllocateCas:
         finally:
             client._workload_reader.detach()
             writer.release()
+
+
+# ========================================================================
+# Phase 3: soft-priority load gate (Agent Hint `priority`)
+# ========================================================================
+
+
+class TestPriorityLoadGate:
+    """Tests for AsyncSchedulerClient._apply_priority_load_gate."""
+
+    # pylint: disable=attribute-defined-outside-init
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        patcher_transport = patch(
+            "motor.coordinator.scheduler.runtime.scheduler_client._SchedulerTransport",
+        )
+        self.mock_transport_cls = patcher_transport.start()
+        patcher_cache = patch(
+            "motor.coordinator.scheduler.runtime.scheduler_client._SchedulerInstanceCache",
+        )
+        self.mock_cache_cls = patcher_cache.start()
+        yield
+        patcher_transport.stop()
+        patcher_cache.stop()
+
+    def _make_client(self, threshold: int, admission_level: int = 3) -> AsyncSchedulerClient:
+        return AsyncSchedulerClient(
+            SchedulerClientConfig(
+                priority_load_threshold=threshold,
+                priority_admission_level=admission_level,
+            )
+        )
+
+    @staticmethod
+    def _make_req_info(priority: int | None) -> RequestInfo:
+        req_info = RequestInfo(req_id="req-1", req_data={}, api="/v1/chat/completions", req_len=10)
+        if priority is not None:
+            req_info.agent_hint_info.priority_control = PriorityControl(priority=priority)
+        return req_info
+
+    @staticmethod
+    def _instance(instance_id: int, active_tokens: float) -> Instance:
+        endpoint = _make_endpoint(endpoint_id=1, active_tokens=active_tokens)
+        return Instance(
+            job_name="job",
+            model_name="m",
+            id=instance_id,
+            role="union",
+            endpoints={"pod1": {1: endpoint}},
+        )
+
+    def test_gate_disabled_returns_instances_unchanged(self):
+        client = self._make_client(threshold=0)
+        instances = [self._instance(1, 10**9)]
+        assert client._apply_priority_load_gate(instances, self._make_req_info(None), PDRole.ROLE_U) is instances
+
+    def test_gate_filters_overloaded_instances_for_normal_requests(self):
+        client = self._make_client(threshold=1000)
+        light = self._instance(1, 100)
+        heavy = self._instance(2, 5000)
+        kept = client._apply_priority_load_gate([light, heavy], self._make_req_info(None), PDRole.ROLE_U)
+        assert [inst.id for inst in kept] == [1]
+
+    def test_gate_bypassed_for_high_priority_requests(self):
+        client = self._make_client(threshold=1000, admission_level=3)
+        heavy = self._instance(2, 5000)
+        assert client._apply_priority_load_gate([heavy], self._make_req_info(3), PDRole.ROLE_U) == [heavy]
+        # boundary: exactly the admission level also bypasses
+        assert client._apply_priority_load_gate([heavy], self._make_req_info(3), PDRole.ROLE_U) == [heavy]
+
+    def test_gate_keeps_instance_with_any_under_threshold_endpoint(self):
+        """DP instances with mixed endpoints stay eligible when one endpoint is light."""
+        client = self._make_client(threshold=1000)
+        endpoint_light = _make_endpoint(endpoint_id=1, active_tokens=10)
+        endpoint_heavy = _make_endpoint(endpoint_id=2, active_tokens=5000)
+        mixed = Instance(
+            job_name="job",
+            model_name="m",
+            id=3,
+            role="union",
+            endpoints={"pod1": {1: endpoint_light, 2: endpoint_heavy}},
+        )
+        kept = client._apply_priority_load_gate([mixed], self._make_req_info(None), PDRole.ROLE_U)
+        assert [inst.id for inst in kept] == [3]
+
+    def test_gate_never_empties_pool(self):
+        """When every instance is overloaded the unfiltered pool is returned (availability first)."""
+        client = self._make_client(threshold=1000)
+        heavy1 = self._instance(1, 5000)
+        heavy2 = self._instance(2, 9000)
+        kept = client._apply_priority_load_gate([heavy1, heavy2], self._make_req_info(None), PDRole.ROLE_U)
+        assert [inst.id for inst in kept] == [1, 2]
+
+    def test_gate_without_priority_hint_treated_as_normal(self):
+        client = self._make_client(threshold=1000)
+        light = self._instance(1, 10)
+        heavy = self._instance(2, 5000)
+        kept = client._apply_priority_load_gate([light, heavy], self._make_req_info(None), PDRole.ROLE_U)
+        assert [inst.id for inst in kept] == [1]
+
+
+class TestPriorityLoadGateStrictBypass:
+    """WP-E2: trusted strict_priority bypasses the soft-load gate entirely."""
+
+    # pylint: disable=attribute-defined-outside-init
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        patcher_transport = patch(
+            "motor.coordinator.scheduler.runtime.scheduler_client._SchedulerTransport",
+        )
+        self.mock_transport_cls = patcher_transport.start()
+        patcher_cache = patch(
+            "motor.coordinator.scheduler.runtime.scheduler_client._SchedulerInstanceCache",
+        )
+        self.mock_cache_cls = patcher_cache.start()
+        yield
+        patcher_transport.stop()
+        patcher_cache.stop()
+
+    def _make_req_info(self, strict_level):
+        req_info = RequestInfo(req_id="req-strict", req_data={}, api="/v1/chat/completions", req_len=10)
+        if strict_level is not None:
+            req_info.agent_hint_info.strict_priority = PriorityHint(level=strict_level, reason="critical_path")
+            req_info.agent_hint_info.strict_priority_trusted = True
+        return req_info
+
+    @staticmethod
+    def _instance(instance_id: int, active_tokens: float) -> Instance:
+        endpoint = _make_endpoint(endpoint_id=1, active_tokens=active_tokens)
+        return Instance(
+            job_name="job",
+            model_name="m",
+            id=instance_id,
+            role="union",
+            endpoints={"pod1": {1: endpoint}},
+        )
+
+    def test_strict_bypasses_gate(self):
+        """A trusted strict request keeps overloaded instances (gate bypass)."""
+        client = AsyncSchedulerClient(SchedulerClientConfig(priority_load_threshold=1, priority_admission_level=3))
+        light = self._instance(1, 0)
+        heavy = self._instance(2, 10**9)
+        kept = client._apply_priority_load_gate([light, heavy], self._make_req_info(3), PDRole.ROLE_U)
+        assert kept == [light, heavy]
+
+    def test_untrusted_strict_does_not_bypass(self):
+        """strict stripped at entry (None) -> normal gating filters the overloaded one."""
+        client = AsyncSchedulerClient(SchedulerClientConfig(priority_load_threshold=1, priority_admission_level=3))
+        light = self._instance(1, 0)
+        heavy = self._instance(2, 10**9)
+        kept = client._apply_priority_load_gate([light, heavy], self._make_req_info(None), PDRole.ROLE_U)
+        assert kept == [light]
+
+
+# ========================================================================
+# Phase 2 review 194976698: default affinity path eligible set must apply the
+# same engine/dispatch filter as the pinned path and the balanced placement.
+# ========================================================================
+
+
+class TestAffinityEligibleInstanceIds:
+    """AsyncSchedulerClient._affinity_eligible_instance_ids."""
+
+    @staticmethod
+    def _client() -> AsyncSchedulerClient:
+        return AsyncSchedulerClient(SchedulerClientConfig())
+
+    def test_applies_engine_and_dispatch_filters(self):
+        client = self._client()
+        compatible = _make_instance(
+            instance_id=1,
+            role="union",
+            engine_type="vllm",
+            dispatch_capabilities=["decode_colocation"],
+        )
+        wrong_engine = _make_instance(instance_id=2, role="union", engine_type="sglang")
+        missing_capability = _make_instance(instance_id=3, role="union", engine_type="vllm")
+        pool = {1: compatible, 2: wrong_engine, 3: missing_capability}
+
+        # An old-engine pin must not stay eligible (it would 503 on the pinned path).
+        assert client._affinity_eligible_instance_ids(pool, "vllm", "decode_colocation") == {1}
+
+    def test_excludes_circuit_broken_instances(self):
+        client = self._client()
+        first = _make_instance(instance_id=1, role="union", engine_type="vllm")
+        second = _make_instance(instance_id=2, role="union", engine_type="vllm")
+        client._cb_blocked_instances = {1}
+
+        assert client._affinity_eligible_instance_ids({1: first, 2: second}, "vllm", None) == {2}
+
+    def test_no_filters_keeps_whole_pool(self):
+        client = self._client()
+        pool = {
+            1: _make_instance(instance_id=1, role="union", engine_type="vllm"),
+            2: _make_instance(instance_id=2, role="union", engine_type="sglang"),
+        }
+        assert client._affinity_eligible_instance_ids(pool, None, None) == {1, 2}
