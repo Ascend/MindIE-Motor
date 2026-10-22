@@ -21,6 +21,27 @@ from lib.utils import load_yaml
 DEPLOYER_ROOT = Path(__file__).resolve().parents[3] / "examples" / "deployer"
 
 
+@pytest.mark.parametrize("snapshot_enabled", [False, True])
+@pytest.mark.parametrize("hybrid", [False, True])
+def test_render_does_not_mount_host_driver_install_info(tmp_path, snapshot_enabled, hybrid):
+    user_config = _snapshot_user_config()
+    if not snapshot_enabled:
+        user_config.pop(C.MOTOR_CONTAINER_SNAPSHOT_CONFIG)
+    if hybrid:
+        user_config[C.MOTOR_DEPLOY_CONFIG][C.HYBRID_INSTANCES_NUM] = 1
+    output = tmp_path / "infer_service.yaml"
+    generate_yaml_infer_service_set(
+        str(DEPLOYER_ROOT / "yaml_template" / "infer_service_template.yaml"), str(output), user_config
+    )
+    infer_doc = _find_infer_service_set_doc(load_yaml(str(output), False))
+    for role_name in ("encode", C.ROLE_PREFILL, C.ROLE_DECODE, C.ROLE_UNION):
+        _, mounts, volumes = _role_snapshot_values(infer_doc, role_name)
+        assert "ascend-install-info" not in mounts
+        assert "ascend-install-info" not in volumes
+        assert all(item[C.MOUNT_PATH] != "/etc/ascend_install.info" for item in mounts.values())
+        assert all(item.get(C.HOST_PATH, {}).get(C.PATH) != "/etc/ascend_install.info" for item in volumes.values())
+
+
 def _snapshot_user_config(hardware_type=C.HARDWARE_TYPE_800I_A3):
     return {
         C.MOTOR_DEPLOY_CONFIG: {
