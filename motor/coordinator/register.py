@@ -68,6 +68,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="One decode instance per flag; same grouping rule as --prefill.",
     )
     parser.add_argument(
+        "--kv-events-port",
+        action="append",
+        type=int,
+        default=[],
+        metavar="PORT",
+        help=(
+            "KV-events base port for one prefill instance group. Repeat once per --prefill group, "
+            "in --prefill order; group DPs use PORT + endpoint id."
+        ),
+    )
+    parser.add_argument(
         "--id",
         action="append",
         type=int,
@@ -109,16 +120,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     has_groups = bool(args.prefill or args.decode)
     if args.action == "list":
-        if has_groups or args.ids:
-            parser.error("list does not take --prefill / --decode / --id")
+        if has_groups or args.ids or args.kv_events_port:
+            parser.error("list does not take --prefill / --decode / --id / --kv-events-port")
         return args
     if args.action == "del":
+        if args.kv_events_port:
+            parser.error("--kv-events-port is only valid with set/add")
         if not has_groups and not args.ids:
             parser.error("del requires --prefill/--decode and/or --id")
     elif not has_groups:
         parser.error("at least one --prefill or --decode endpoint is required")
     elif args.ids:
         parser.error("--id is only valid with del")
+    if args.kv_events_port and len(args.kv_events_port) != len(args.prefill):
+        parser.error("repeat --kv-events-port exactly once per --prefill instance group")
+    if any(port < 1 or port > 65535 for port in args.kv_events_port):
+        parser.error("--kv-events-port must be in range 1-65535")
     return args
 
 
@@ -243,31 +260,51 @@ def probe_endpoint(ip: str, port: str, model_name: str) -> bool:
     return True
 
 
-def build_endpoints(group: str, model_name: str | None, probe: bool) -> dict[str, dict[int, dict]]:
+def build_endpoints(
+    group: str,
+    model_name: str | None,
+    probe: bool,
+    kv_events_base_port: int | None = None,
+) -> dict[str, dict[int, dict]]:
     by_ip: dict[str, dict[int, dict]] = {}
-    for ep_id, (ip, port) in enumerate(parse_endpoint_group(group)):
+    parsed_endpoints = parse_endpoint_group(group)
+    if kv_events_base_port is not None and kv_events_base_port + len(parsed_endpoints) - 1 > 65535:
+        sys.exit(
+            f"ERROR: KV-events port range for group '{group}' exceeds 65535: "
+            f"{kv_events_base_port}+{len(parsed_endpoints) - 1}"
+        )
+    for ep_id, (ip, port) in enumerate(parsed_endpoints):
         if probe and model_name is not None and not probe_endpoint(ip, port, model_name):
             sys.exit(
                 f"ERROR: probe failed for {ip}:{port} in group '{group}'; "
                 "refusing incomplete instance. Pass --no-health-check to skip probes."
             )
-        by_ip.setdefault(ip, {})[ep_id] = {
+        endpoint = {
             "id": ep_id,
             "ip": ip,
             "business_port": port,
             "status": "normal",
             "headless": False,
         }
+        if kv_events_base_port is not None:
+            endpoint["kv_events_port"] = kv_events_base_port + ep_id
+        by_ip.setdefault(ip, {})[ep_id] = endpoint
     return by_ip
 
 
 def build_instances(args: argparse.Namespace, model_name: str | None) -> list[dict]:
     instances: list[dict] = []
     probe = args.action != "del" and not args.no_health_check
+    kv_events_ports = getattr(args, "kv_events_port", [])
+    if kv_events_ports and len(kv_events_ports) != len(args.prefill):
+        sys.exit("ERROR: repeat --kv-events-port exactly once per --prefill instance group")
     for role, groups in (("prefill", args.prefill), ("decode", args.decode)):
-        for group in groups:
+        for group_index, group in enumerate(groups):
+            kv_events_base_port = kv_events_ports[group_index] if kv_events_ports and role == "prefill" else None
+            if kv_events_base_port is not None and not 1 <= kv_events_base_port <= 65535:
+                sys.exit("ERROR: --kv-events-port must be in range 1-65535")
             ip, port = first_endpoint(group)
-            by_ip = build_endpoints(group, model_name, probe)
+            by_ip = build_endpoints(group, model_name, probe, kv_events_base_port)
             if not by_ip:
                 print(
                     f"WARN: no endpoint in group '{group}' ({role}); instance skipped",

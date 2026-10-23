@@ -271,6 +271,18 @@ curl http://127.0.0.1:1025/v1/completions \
 
 `npu_endpoint` 与 P 引擎 `--kv-events-config` 一致；`block_size` 与引擎 `--block-size` 一致（默认 128），否则命中率恒为 0。
 
+默认按 `npu_endpoint` 的端口加 DP rank 订阅 KV events。
+同一台机器部署多个 Prefill 实例且各实例的 DP rank 都从 0 开始时，可为每个实例显式指定不同的起始端口；
+参数顺序为`--prefill` 组的顺序，组内各 DP 使用起始端口加 endpoint id：
+
+```bash
+python3 -m motor.coordinator.register add \
+    --prefill "10.10.0.11:8000" \
+    --prefill "10.10.0.11:9000" \
+    --kv-events-port 5557 \
+    --kv-events-port 6557
+```
+
 ```bash
 source /opt/motor-coord/venv/bin/activate
 python3 -c "from motor.kv_conductor import get_binary_path; p=get_binary_path(); print(p); assert p and p.is_file()"

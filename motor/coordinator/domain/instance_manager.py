@@ -32,7 +32,7 @@ class InstanceIdConflictError(ValueError):
     """Raised when an instance ID is already owned by a different instance identity."""
 
 
-def _endpoint_identity(instance: Instance) -> tuple[tuple[str, int, str, str, int | None, bool], ...]:
+def _endpoint_identity(instance: Instance) -> tuple[tuple[str, int, str, str, int | None, int | None, bool], ...]:
     """Return stable endpoint structural fields, excluding runtime health and workload state."""
     return tuple(
         sorted(
@@ -42,6 +42,7 @@ def _endpoint_identity(instance: Instance) -> tuple[tuple[str, int, str, str, in
                 endpoint.ip,
                 str(endpoint.business_port),
                 endpoint.bootstrap_port,
+                endpoint.kv_events_port,
                 endpoint.headless,
             )
             for pod_ip, pod_endpoints in (instance.endpoints or {}).items()
@@ -649,13 +650,13 @@ class InstanceManager:
         if existing_nms != new_nms:
             return True
 
-        # Compare endpoints structurally: (pod_ip, endpoint_id, ip, business_port).
+        # Compare endpoints structurally: (pod_ip, endpoint_id, ip, business_port, kv_events_port).
         # Runtime fields (workload, hb_timestamp, status) are ignored.
         def _ep_sig(eps: dict[str, dict[int, object]] | None) -> set[tuple]:
             if not eps:
                 return set()
             return {
-                (pod_ip, ep.id, ep.ip, ep.business_port)
+                (pod_ip, ep.id, ep.ip, ep.business_port, ep.kv_events_port)
                 for pod_ip, pod_eps in eps.items()
                 for ep in (pod_eps or {}).values()
             }

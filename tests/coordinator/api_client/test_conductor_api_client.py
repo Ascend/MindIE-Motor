@@ -31,11 +31,13 @@ def _make_endpoint(
     ep_id: int = 0,
     ip: str = "127.0.0.1",
     business_port: str = "8000",
+    kv_events_port: int | None = None,
 ) -> Endpoint:
     return Endpoint(
         id=ep_id,
         ip=ip,
         business_port=business_port,
+        kv_events_port=kv_events_port,
     )
 
 
@@ -196,6 +198,28 @@ class TestBuildRegisterPayload:
 
         assert payload["dp_rank"] == 5
         assert payload["medium_endpoints"]["npu"] == "tcp://10.0.0.3:5562"
+
+    def test_explicit_kv_events_port_overrides_global_base_and_preserves_expanded_dp_offset(self):
+        cfg = _mock_config(npu_endpoint="tcp://*:5557")
+        inst = _make_instance(inst_id=3, role=PDRole.ROLE_P)
+        ep = _make_endpoint(ep_id=0, ip="10.0.0.3", kv_events_port=6557)
+
+        with patch.object(ConductorApiClient, "coordinator_config", cfg):
+            rank_zero = ConductorApiClient._build_register_payload(inst, ep)
+            rank_one = ConductorApiClient._build_register_payload(inst, ep, dp_rank=1)
+
+        assert rank_zero["medium_endpoints"]["npu"] == "tcp://10.0.0.3:6557"
+        assert rank_one["medium_endpoints"]["npu"] == "tcp://10.0.0.3:6558"
+
+    def test_invalid_expanded_kv_events_port_skips_payload_instead_of_raising(self):
+        cfg = _mock_config(npu_endpoint="tcp://*:5557")
+        inst = _make_instance(inst_id=3, role=PDRole.ROLE_P)
+        ep = _make_endpoint(ep_id=0, ip="10.0.0.3", kv_events_port=65535)
+
+        with patch.object(ConductorApiClient, "coordinator_config", cfg):
+            payload = ConductorApiClient._build_register_payload(inst, ep, dp_rank=1)
+
+        assert payload == {}
 
     def test_payload_with_fallback_endpoint(self):
         """Legacy 'endpoint' fallback pattern used when npu_endpoint empty."""

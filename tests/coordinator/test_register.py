@@ -30,6 +30,7 @@ def _args(**kwargs) -> Namespace:
         "model_name": None,
         "engine_type": "vllm",
         "no_health_check": True,
+        "kv_events_port": [],
     }
     values.update(kwargs)
     return Namespace(**values)
@@ -43,6 +44,52 @@ def test_parse_args_defaults_to_set():
     args = register.parse_args(["--prefill", "10.0.0.1:8000"])
     assert args.action == "set"
     assert args.prefill == ["10.0.0.1:8000"]
+
+
+def test_parse_args_accepts_one_kv_events_port_per_instance_group():
+    args = register.parse_args(
+        [
+            "--prefill",
+            "10.0.0.1:8000",
+            "--prefill",
+            "10.0.0.1:8001",
+            "--kv-events-port",
+            "5557",
+            "--kv-events-port",
+            "6557",
+        ]
+    )
+
+    assert args.kv_events_port == [5557, 6557]
+
+
+def test_parse_args_rejects_kv_events_port_count_mismatch():
+    with pytest.raises(SystemExit):
+        register.parse_args(
+            [
+                "--prefill",
+                "10.0.0.1:8000",
+                "--prefill",
+                "10.0.0.1:8001",
+                "--kv-events-port",
+                "5557",
+            ]
+        )
+
+
+def test_parse_args_does_not_require_kv_events_port_for_decode_group():
+    args = register.parse_args(
+        [
+            "--prefill",
+            "10.0.0.1:8000",
+            "--decode",
+            "10.0.0.2:8000",
+            "--kv-events-port",
+            "5557",
+        ]
+    )
+
+    assert args.kv_events_port == [5557]
 
 
 def test_parse_args_del_requires_target():
@@ -138,6 +185,23 @@ def test_build_instances_keeps_all_dp_endpoints_when_probe_passes():
         instances = register.build_instances(args, "Qwen3-8B")
     assert len(instances) == 1
     assert list(instances[0]["endpoints"]["10.0.0.1"]) == [0, 1]
+
+
+def test_build_instances_assigns_explicit_kv_events_ports_per_instance_and_dp():
+    args = _args(
+        prefill=["10.0.0.1:8000,10.0.0.1:8001", "10.0.0.1:9000"],
+        decode=["10.0.0.2:8000"],
+        kv_events_port=[5557, 6557],
+    )
+
+    instances = register.build_instances(args, "Qwen3-8B")
+
+    first_endpoints = instances[0]["endpoints"]["10.0.0.1"]
+    second_endpoints = instances[1]["endpoints"]["10.0.0.1"]
+    assert first_endpoints[0]["kv_events_port"] == 5557
+    assert first_endpoints[1]["kv_events_port"] == 5558
+    assert second_endpoints[0]["kv_events_port"] == 6557
+    assert "kv_events_port" not in instances[2]["endpoints"]["10.0.0.2"][0]
 
 
 def test_build_instances_refuses_partial_dp_group_when_probe_fails():
