@@ -8,6 +8,8 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+from __future__ import annotations
+
 import lib.constant as C
 from lib.utils import (
     apply_node_selector_override,
