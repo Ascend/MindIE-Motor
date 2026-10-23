@@ -1,4 +1,4 @@
-# SGLang PD 分离服务部署指导
+# PD分离服务部署（基于SGLang推理引擎）
 
 本文档指导基于 MindIE Motor 的 **SGLang** 引擎完成 K8s **PD 分离**部署，并说明与 vLLM 的关键差异。
 

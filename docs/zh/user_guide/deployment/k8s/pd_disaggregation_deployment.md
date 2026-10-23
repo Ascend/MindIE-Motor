@@ -1,4 +1,4 @@
-# PD分离服务部署指导
+# PD分离服务部署（基于vLLM推理引擎）
 
 本文档通过**完整详细**的部署案例，指导开发者体验基于 Motor 的 PD 分离服务部署，并指导生产环境配置优化实践。若底层引擎为 **SGLang**，请优先参阅 [SGLang PD 分离服务部署指导](./pd_disaggregation_sglang.md)。
 
