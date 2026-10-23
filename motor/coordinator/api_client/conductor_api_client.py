@@ -219,10 +219,14 @@ class ConductorApiClient:
         """Register a single DP's NPU/HBM endpoint (all backends)."""
         rank = endpoint.id if dp_rank is None else dp_rank
         instance_id = conductor_instance_id(instance)
+        valid_port, kv_events_port = cls._try_endpoint_kv_events_port(instance, endpoint, rank)
+        if not valid_port:
+            return
         npu_url = cls._resolve_endpoint_url(
             reg.npu_endpoint or reg.xpu_endpoint or reg.endpoint,
             endpoint.ip,
             rank,
+            kv_events_port,
         )
 
         replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, rank)
@@ -442,7 +446,12 @@ class ConductorApiClient:
         return [(ep, ep.id) for ep in endpoints]
 
     @staticmethod
-    def _resolve_endpoint_url(pattern: str, ip: str, dp_rank: int) -> str | None:
+    def _resolve_endpoint_url(
+        pattern: str,
+        ip: str,
+        dp_rank: int,
+        explicit_port: int | None = None,
+    ) -> str | None:
         """Resolve an endpoint pattern like 'tcp://*:5557' with the given IP and dp_rank offset."""
         if not pattern:
             return None
@@ -450,10 +459,51 @@ class ConductorApiClient:
         if len(parts) != 2:
             logger.debug("endpoint pattern malformed: %s", pattern)
             return None
-        return f"{parts[0]}{format_host(ip)}:{int(parts[1]) + dp_rank}"
+        port = explicit_port if explicit_port is not None else int(parts[1]) + dp_rank
+        return f"{parts[0]}{format_host(ip)}:{port}"
+
+    @staticmethod
+    def _endpoint_kv_events_port(endpoint: "Endpoint", dp_rank: int) -> int | None:
+        """Resolve an endpoint override, preserving base+rank for expanded single-HTTP DPs."""
+        port = getattr(endpoint, "kv_events_port", None)
+        if isinstance(port, bool) or not isinstance(port, int):
+            return None
+        endpoint_id = getattr(endpoint, "id", dp_rank)
+        if isinstance(endpoint_id, bool) or not isinstance(endpoint_id, int):
+            endpoint_id = dp_rank
+        resolved = port + dp_rank - endpoint_id
+        if not 1 <= resolved <= 65535:
+            raise ValueError(f"KV-events port out of range for dp_rank={dp_rank}: {resolved}")
+        return resolved
 
     @classmethod
-    def _build_medium_endpoints(cls, config, ip: str, dp_rank: int) -> dict[str, str]:
+    def _try_endpoint_kv_events_port(
+        cls,
+        instance: "Instance",
+        endpoint: "Endpoint",
+        dp_rank: int,
+    ) -> tuple[bool, int | None]:
+        """Resolve an override without letting one invalid target abort batch registration."""
+        try:
+            return True, cls._endpoint_kv_events_port(endpoint, dp_rank)
+        except ValueError as exc:
+            logger.error(
+                "KV-events port resolution failed: instance_id=%s endpoint_id=%s dp_rank=%s: %s",
+                instance.id,
+                endpoint.id,
+                dp_rank,
+                exc,
+            )
+            return False, None
+
+    @classmethod
+    def _build_medium_endpoints(
+        cls,
+        config,
+        ip: str,
+        dp_rank: int,
+        kv_events_port: int | None = None,
+    ) -> dict[str, str]:
         """Build the medium_endpoints map from per-medium endpoint patterns.
 
         The generic ``endpoint`` / ``npu_endpoint`` pattern is the engine ZMQ
@@ -461,10 +511,15 @@ class ConductorApiClient:
         treat the stream as a pool source and drop engine BlockStored events.
         CPU/Disk are included only when those patterns are set explicitly.
         """
-        npu_url = cls._resolve_endpoint_url(config.npu_endpoint or config.xpu_endpoint, ip, dp_rank)
+        npu_url = cls._resolve_endpoint_url(
+            config.npu_endpoint or config.xpu_endpoint,
+            ip,
+            dp_rank,
+            kv_events_port,
+        )
         cpu_url = cls._resolve_endpoint_url(config.cpu_endpoint, ip, dp_rank)
         disk_url = cls._resolve_endpoint_url(config.disk_endpoint, ip, dp_rank)
-        fallback = cls._resolve_endpoint_url(config.endpoint, ip, dp_rank)
+        fallback = cls._resolve_endpoint_url(config.endpoint, ip, dp_rank, kv_events_port)
         endpoints: dict[str, str] = {}
         if npu_url or fallback:
             endpoints["npu"] = npu_url or fallback or ""
@@ -487,7 +542,10 @@ class ConductorApiClient:
             cls._register_yuanrong_node(reg, sb, instance, endpoint, rank)
             return
 
-        medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, rank)
+        valid_port, kv_events_port = cls._try_endpoint_kv_events_port(instance, endpoint, rank)
+        if not valid_port:
+            return
+        medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, rank, kv_events_port)
         if all(v == "" for v in medium_endpoints.values()):
             logger.debug("no endpoint configured for kv events, skipping registration")
             return
@@ -686,7 +744,10 @@ class ConductorApiClient:
         instance_id = conductor_instance_id(instance)
         sb = cls._resolve_store_backend()
 
-        medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, rank)
+        valid_port, kv_events_port = cls._try_endpoint_kv_events_port(instance, endpoint, rank)
+        if not valid_port:
+            return {}
+        medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, rank, kv_events_port)
         # Keep only non-empty endpoints. YuanRong CPU/Disk are per-node, not per-DP.
         filtered = {k: v for k, v in medium_endpoints.items() if v}
         if cls._resolve_backend_mode() == "per_node":
