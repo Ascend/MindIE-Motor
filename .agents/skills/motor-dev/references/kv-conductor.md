@@ -381,6 +381,10 @@ when `cpu` and `disk` point to the same port, only one ZMQ SUB connection is cre
 
 Events arrive via ZMQ PUB as 3-part messages: `[topic] [seq: u64 BE] [msgpack payload]`.
 
+The subscriber uses blocking multipart receive with a 500 ms timeout. Idle subscriptions
+sleep instead of polling; incoming events wake immediately, and cancellation is checked
+after each receive or timeout.
+
 `process_payload()` dispatches by registration `EventSource` and payload shape:
 
 | Source / shape | Format | Parser |
