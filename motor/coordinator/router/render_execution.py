@@ -92,9 +92,7 @@ def can_fallback_to_native(plan: RenderAttemptPlan | None) -> bool:
 def is_render_protected(req_info: "RequestInfo", config: "CoordinatorConfig") -> bool:
     """Return whether Render fallback must avoid native plaintext request shapes."""
     obfuscation = config.token_obfuscation_config
-    return bool(
-        req_info._token_obfuscation_service is not None or obfuscation.enable or obfuscation.image_config.enable
-    )
+    return bool(req_info._token_obfuscation_service is not None or obfuscation.enable)
 
 
 def _is_text_only_chat_request(request: dict[str, Any]) -> bool:

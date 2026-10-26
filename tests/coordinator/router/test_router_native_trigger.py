@@ -546,9 +546,8 @@ class TestRouterNativeTrigger:
         del trigger_pair
         p_client = TokenOnlyEngineClient(PDRole.ROLE_P, unsupported_status=404)
         config = self._make_config()
-        if protection == "token":
-            config.token_obfuscation_config.enable = True
-        else:
+        config.token_obfuscation_config.enable = True
+        if protection == "image":
             config.token_obfuscation_config.image_config.enable = True
         req_info = make_render_request_info(
             "test-protected",
