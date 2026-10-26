@@ -845,6 +845,7 @@ class TokenizerManager(ThreadSafeSingleton):
         self.endpoint = config.tracer_config.endpoint
         self.tokenizer = None
         self._is_dsv4 = False
+        self._native_dsv4 = False
         self._next_load_attempt_at = 0.0
         scheduler_config = getattr(config, "scheduler_config", None)
         kv_config = getattr(scheduler_config, "kv_conductor_config", None) if scheduler_config else None
@@ -908,7 +909,10 @@ class TokenizerManager(ThreadSafeSingleton):
                         self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
                         self._is_dsv4 = True
                     else:
+                        if self.engine_type != "sglang":
+                            self._load_ascend_dsv4_adapter()
                         self.tokenizer = DeepseekV4Tokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+                        self._native_dsv4 = self.engine_type != "sglang"
                         self._is_dsv4 = True
                 else:
                     from transformers import AutoTokenizer
@@ -1016,9 +1020,23 @@ class TokenizerManager(ThreadSafeSingleton):
                 kwargs["enable_thinking"] = False
         return kwargs
 
+    @staticmethod
+    def _load_ascend_dsv4_adapter() -> None:
+        """Load the optional engine thinking adapter without requiring Ascend."""
+        from importlib import import_module
+
+        module = "vllm_ascend.patch.platform.patch_deepseek_v4_thinking"
+        try:
+            import_module(module)
+        except ModuleNotFoundError as exc:
+            # A missing adapter is optional. A dependency missing inside an
+            # installed adapter is a real initialization error and must surface.
+            if not exc.name or not (module == exc.name or module.startswith(exc.name + ".")):
+                raise
+
     def _apply_chat_template_dsv4(self, messages: list, tools: list | None, req_data: dict | None) -> list[int]:
         messages, tools = preprocess_messages_for_dsv4(messages, tools)
-        if not getattr(self.tokenizer, "chat_template", None):
+        if not getattr(self.tokenizer, "chat_template", None) and not self._native_dsv4:
             return self._encode_dsv4_messages(messages)
         result = self.tokenizer.apply_chat_template(
             messages, tools=tools, **self._build_dsv4_chat_template_kwargs(req_data)

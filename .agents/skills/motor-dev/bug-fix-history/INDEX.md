@@ -47,6 +47,7 @@
 
 | 日期 | 模块 | 案例 | 文件 | 关键词 |
 |------|------|------|------|--------|
+| 2026-10-26 | coordinator | 原生 DeepSeek renderer 被模板属性检查绕过 | [native-dsv4-renderer.md](coordinator/native-dsv4-renderer.md) | tokenizer, DeepSeek, chat_template, renderer, thinking |
 | 2026-09-29 | node_manager | Relaunch 后同一 endpoint 再次异常未触发恢复 | [relaunch-fault-episode-dedup.md](node_manager/relaunch-fault-episode-dedup.md) | NodeManager, engine relaunch, suicide freeze, abnormal dedup, repeated recovery |
 | 2026-09-29 | node_manager | Prefill KV容量耗尽导致虚推误判异常 | [virtual-inference-capacity-waiting.md](node_manager/virtual-inference-capacity-waiting.md) | NodeManager, virtual inference, KV Cache, capacity waiting, false positive |
 | 2026-09-28 | deployer | 快照 YAML 误删共享内存挂载 | [snapshot-shm-mount.md](deployer/snapshot-shm-mount.md) | snapshot, dshm, emptyDir, InferServiceSet |

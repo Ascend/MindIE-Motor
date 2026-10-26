@@ -500,3 +500,11 @@ bash tests/run_tests.sh tests/coordinator/
 ```
 
 For metrics-specific development, read `references/metrics.md`.
+
+## 原生 DeepSeek V4 tokenizer
+
+本地 vLLM 路径成功加载原生 DeepSeek V4 tokenizer 后，使用其自定义
+`apply_chat_template`，不以 Jinja `chat_template` 属性是否存在判断 renderer 能力。
+SGLang 与 AutoTokenizer 继续沿用原有模板和 marker 回退。原生 vLLM 路径可选加载
+匹配的 Ascend thinking 适配器；适配器缺失不构成依赖要求，其内部加载错误仍报告失败。
+请求的 tools、reasoning_effort 与 chat_template_kwargs 沿用既有归一化和优先级。
