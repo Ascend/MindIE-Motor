@@ -622,8 +622,8 @@ class TestRouterPDHybrid:
         req_info = make_render_request_info("rid-protected-hybrid", req_data, "v1/completions", [10, 20], req_len=99)
         router = self._render_router(req_info, make_render_client())
         router.config.render_config.enable_token_only_decode = True
-        router.config.token_obfuscation_config.enable = False
-        router.config.token_obfuscation_config.image_config.enable = True
+        router.config.token_obfuscation_config.enable = True
+        router.config.token_obfuscation_config.image_config.enable = False
 
         with pytest.raises(UpstreamHTTPError) as exc_info:
             await router.handle_request()

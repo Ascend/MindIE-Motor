@@ -282,7 +282,9 @@ async def _run_vllm_handoff(
     image_obfuscation=False,
 ):
     config = _config()
-    config.token_obfuscation_config.image_config.enable = image_obfuscation
+    if image_obfuscation:
+        config.token_obfuscation_config.enable = True
+        config.token_obfuscation_config.image_config.enable = True
     if enable_token_only_decode is None:
         config.render_config = SimpleNamespace()
     else:

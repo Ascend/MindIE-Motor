@@ -19,6 +19,7 @@ from motor.coordinator.router.render_execution import (
     RenderExecutionMode,
     build_render_attempt_plan,
     can_fallback_to_native,
+    is_render_protected,
     merge_native_completion_responses,
     merge_native_completion_streams,
     resolve_render_execution_mode,
@@ -97,7 +98,7 @@ def _case(
             NATIVE,
             api=CHAT_API,
         ),
-        _case({"prompt": "hi"}, TOKEN_ONLY, image_obfuscation=True),
+        _case({"prompt": "hi"}, RENDER_NATIVE, image_obfuscation=True),
         _case({"prompt": "hi"}, NATIVE, engine_type="sglang"),
     ],
 )
@@ -105,9 +106,14 @@ def test_resolve_render_execution_mode(req_info, config, engine_type, expected) 
     assert resolve_render_execution_mode(req_info, config, engine_type) is expected
 
 
+def test_is_render_protected_ignores_image_switch_when_outer_obfuscation_disabled() -> None:
+    req_info, config, _, _ = _case({"prompt": "hi"}, RENDER_NATIVE, image_obfuscation=True)
+    assert is_render_protected(req_info, config) is False
+
+
 @pytest.mark.parametrize(
     ("image_obfuscation", "expected_mode", "protected"),
-    [(False, RENDER_NATIVE, False), (True, TOKEN_ONLY, True)],
+    [(False, RENDER_NATIVE, False), (True, RENDER_NATIVE, False)],
 )
 def test_build_render_attempt_plan_materializes_retry_tokens_and_prompt_identity(
     image_obfuscation: bool,
