@@ -221,10 +221,12 @@ impl WorkerRegistry {
             (sb.is_pool_auto_attach() && req.medium_endpoints.is_empty() && req.endpoint.is_some())
                 || sb.is_node_pool_registration(&req.medium_endpoints);
 
-        // Detect whether this instance_id already exists (for replay gating).
-        let instance_exists = {
+        // Replay each newly registered DP endpoint, not only the first DP.
+        let endpoint_exists = {
             let instances = self.instances.read().await;
-            instances.contains_key(&req.instance_id)
+            instances
+                .get(&req.instance_id)
+                .is_some_and(|entry| entry.endpoints.contains_key(&req.dp_rank))
         };
 
         // ── Handle re-registration ────────────────────────────────────
@@ -391,7 +393,7 @@ impl WorkerRegistry {
         }
 
         if let Some(ref replay_ep) = req.replay_endpoint {
-            if !replay_ep.is_empty() && !instance_exists {
+            if !replay_ep.is_empty() && !endpoint_exists {
                 let replay_ep = replay_ep.clone();
                 let modelname = req.modelname.clone();
                 let tenant_id = req.tenant_id.clone();
@@ -754,6 +756,100 @@ mod tests {
         })
         .await
         .expect("pool replay must clear CPU blocks on every DP on the node");
+    }
+
+    #[tokio::test]
+    async fn test_replay_restores_each_dp_with_legacy_and_topic_frames() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        for with_topic in [false, true] {
+            let registry = WorkerRegistry::new();
+            let context = zmq::Context::new();
+            let stop = Arc::new(AtomicBool::new(false));
+            let mut publishers = Vec::new();
+            let mut counts = Vec::new();
+            let mut endpoints = Vec::new();
+            for dp in [0u32, 1] {
+                let router = context.socket(zmq::ROUTER).unwrap();
+                router.set_rcvtimeo(100).unwrap();
+                router.set_sndtimeo(1000).unwrap();
+                router.set_linger(0).unwrap();
+                router.bind("tcp://127.0.0.1:*").unwrap();
+                endpoints.push(router.get_last_endpoint().unwrap().unwrap());
+                let count = Arc::new(AtomicUsize::new(0));
+                counts.push(count.clone());
+                let stop = stop.clone();
+                publishers.push(std::thread::spawn(move || {
+                    let payload = rmp_serde::to_vec(&(
+                        0i64,
+                        vec![serde_json::json!([
+                            "BlockStored",
+                            [100],
+                            [1, 2, 3, 4],
+                            4,
+                            0,
+                            "GPU",
+                            "lora",
+                            0
+                        ])],
+                        dp,
+                    ))
+                    .unwrap();
+                    while !stop.load(Ordering::SeqCst) {
+                        let request = match router.recv_multipart(0) {
+                            Ok(request) => request,
+                            Err(zmq::Error::EAGAIN) => continue,
+                            Err(error) => panic!("replay request failed: {error}"),
+                        };
+                        count.fetch_add(1, Ordering::SeqCst);
+                        for (seq, body) in [(0u64, payload.clone()), (u64::MAX, Vec::new())] {
+                            let mut frames = vec![request[0].clone(), vec![]];
+                            if with_topic {
+                                frames.push(b"12345678".to_vec());
+                            }
+                            frames.push(seq.to_be_bytes().to_vec());
+                            frames.push(body);
+                            router.send_multipart(frames, 0).unwrap();
+                        }
+                    }
+                }));
+            }
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                for dp in [0u32, 1] {
+                    let request: RegisterRequest = serde_json::from_value(serde_json::json!({
+                        "instance_id": "engine", "dp_rank": dp, "type": "vLLM",
+                        "store_backend": "Mooncake", "modelname": "model", "block_size": 4,
+                        "medium_endpoints": {"npu": format!("inproc://engine-{dp}")},
+                        "replay_endpoint": endpoints[dp as usize]
+                    }))
+                    .unwrap();
+                    registry.register(&request).await.unwrap();
+                    loop {
+                        let response = registry.indexer.query("model", "default", &[1, 2, 3, 4], 4);
+                        let remains = response
+                            .ok()
+                            .and_then(|r| r.tenants.get("default").cloned())
+                            .and_then(|t| t.get("engine").cloned())
+                            .is_some_and(|m| m.dp.contains_key(&dp.to_string()));
+                        if remains {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                    registry.register(&request).await.unwrap();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            })
+            .await;
+            stop.store(true, Ordering::SeqCst);
+            for publisher in publishers {
+                publisher.join().unwrap();
+            }
+            result.expect("every new DP must consume its complete replay reply");
+            for count in counts {
+                assert_eq!(count.load(Ordering::SeqCst), 1);
+            }
+        }
     }
 
     #[test]
