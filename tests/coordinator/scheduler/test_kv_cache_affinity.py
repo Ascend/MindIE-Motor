@@ -988,6 +988,7 @@ class TestTokenizerManagerDsv4(unittest.TestCase):
         manager = TokenizerManager.__new__(TokenizerManager)
         manager.tokenizer = tokenizer
         manager._is_dsv4 = is_dsv4
+        manager._native_dsv4 = False
         manager.engine_type = engine_type
         manager.openai_standard = os.environ.get("OPENAI_STANDARD", "STANDARD")
         return manager
@@ -2580,3 +2581,70 @@ def test_select_with_load_logs_all_candidates_when_enabled(monkeypatch, caplog):
     assert len(messages) == 2
     assert any("req_id=req-kva" in m and "point=1-11" in m and "combined=4.00" in m for m in messages)
     assert any("point=1-12" in m and "prefill_cost=3.00" in m and "combined=8.00" in m for m in messages)
+
+
+@pytest.mark.parametrize(
+    "req_data,expected",
+    [
+        ({}, {}),
+        ({"reasoning_effort": "high"}, {"reasoning_effort": "high", "enable_thinking": True}),
+        ({"reasoning_effort": "low"}, {"reasoning_effort": "low", "enable_thinking": True}),
+        ({"reasoning_effort": "none"}, {"reasoning_effort": "none", "enable_thinking": False}),
+        ({"chat_template_kwargs": {"reasoning_effort": "high"}}, {"reasoning_effort": "high"}),
+        (
+            {"reasoning_effort": "high", "chat_template_kwargs": {"enable_thinking": False}},
+            {"reasoning_effort": "high", "enable_thinking": False},
+        ),
+    ],
+)
+def test_native_dsv4_renderer_without_chat_template_preserves_request(req_data, expected):
+    """Native renderers remain authoritative even without a Jinja template."""
+    manager, tokenizer = _build_tokenizer_manager()
+    manager._native_dsv4 = True
+    tokenizer.chat_template = None
+    tokenizer.apply_chat_template.return_value = [11, 22]
+    messages = [{"role": "user", "content": "测试"}]
+    tools = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+    assert manager._apply_chat_template_dsv4(messages, tools, req_data) == [11, 22]
+    kwargs = tokenizer.apply_chat_template.call_args.kwargs
+    assert kwargs["tools"][0]["function"]["name"] == "lookup"
+    assert kwargs["tokenize"] is True
+    assert kwargs["drop_thinking"] is True
+    for key, value in expected.items():
+        assert kwargs[key] == value
+    tokenizer.encode.assert_not_called()
+
+
+@pytest.mark.parametrize("missing", ["vllm_ascend", "vllm_ascend.patch.platform.patch_deepseek_v4_thinking"])
+def test_native_dsv4_adapter_is_optional(missing):
+    with patch("importlib.import_module", side_effect=ModuleNotFoundError(name=missing)):
+        TokenizerManager._load_ascend_dsv4_adapter()
+
+
+def test_native_dsv4_adapter_does_not_hide_broken_dependency():
+    with patch("importlib.import_module", side_effect=ModuleNotFoundError(name="broken_dependency")):
+        with pytest.raises(ModuleNotFoundError):
+            TokenizerManager._load_ascend_dsv4_adapter()
+
+
+@pytest.mark.parametrize("engine,native", [("vllm", True), ("sglang", False)])
+def test_native_dsv4_loading_retains_engine_fallback(engine, native):
+    from types import ModuleType
+    import sys
+
+    manager, tokenizer = _build_tokenizer_manager()
+    manager.tokenizer = None
+    manager.model_path = "/synthetic/DeepSeek-V4-Test"
+    manager.engine_type = engine
+    module = ModuleType("vllm.tokenizers.deepseek_v4")
+    factory = Mock()
+    factory.from_pretrained.return_value = tokenizer
+    module.DeepseekV4Tokenizer = factory
+    with (
+        patch.dict(sys.modules, {"vllm.tokenizers.deepseek_v4": module}),
+        patch.object(manager, "_is_deepseek_v4_model", return_value=True),
+        patch.object(manager, "_load_ascend_dsv4_adapter") as adapter,
+    ):
+        assert manager.get_tokenizer() is tokenizer
+    assert manager._native_dsv4 is native
+    assert adapter.call_count == int(native)
