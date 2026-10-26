@@ -407,13 +407,13 @@ hashes by taking the trailing eight bytes; do not document the typed path as rej
 
 ### Replay on Registration
 
-When a `/register` payload includes a `replay_endpoint` (and the instance is not already registered), the conductor starts a **ZMQ DEALER → ROUTER replay** session with the engine:
+When a `/register` payload includes a `replay_endpoint` (and the `(instance_id, dp_rank)` endpoint is not already registered), the conductor starts a **ZMQ DEALER → ROUTER replay** session with the engine:
 
 1. DEALER sends `[b"", start_seq: u64 BE]` (start_seq = 0)
-2. ROUTER replies `[b"", seq: u64 BE, msgpack_payload]` per buffered batch
+2. ROUTER replies `[b"", topic, seq: u64 BE, msgpack_payload]`; legacy replies omit topic
 3. End-of-stream: `seq == u64::MAX` (0xFFFFFFFFFFFFFFFF)
 
-Replay runs synchronously in a `spawn_blocking` task (blocking ZMQ I/O off the tokio runtime). Registration resolves the routing identity, matching mode, and HBM IP index once for both live ingestion and replay: YuanRong node pools use the node IP extracted from their CPU/Disk endpoint, including when events omit `backend_id`; engine registrations retain their instance ID. Pool replay uses the live pool wire-format dispatcher, bypassing vLLM parsing so untagged pool maps cannot be swallowed as unknown engine events. Engine replay tries vLLM batches followed by the legacy pool batch fallback. If the same instance re-registers later (`instance_exists`), replay is skipped. Replay runs asynchronously relative to queries; there is no query readiness gate around it.
+Replay runs synchronously in a `spawn_blocking` task (blocking ZMQ I/O off the tokio runtime). Registration resolves the routing identity, matching mode, and HBM IP index once for both live ingestion and replay: YuanRong node pools use the node IP extracted from their CPU/Disk endpoint, including when events omit `backend_id`; engine registrations retain their instance ID. Pool replay uses the live pool wire-format dispatcher, bypassing vLLM parsing so untagged pool maps cannot be swallowed as unknown engine events. Engine replay tries vLLM batches followed by the legacy pool batch fallback. Re-registering the same DP skips replay; a new DP in an existing instance still replays. Replay runs asynchronously relative to queries; there is no query readiness gate around it.
 
 ### Re-registration
 
@@ -429,8 +429,7 @@ When enabled, it re-registers missing P/U DPs and reconciles YuanRong node-pool 
 `GET /workers`; a missing node pool alone does not rebuild still-registered HBM subscribers.
 Node pools are keyed by `(IP, model)` and unregistered after their last DP reference leaves.
 Mooncake/Memcache central pools are not repaired by this periodic branch. Coordinator's YuanRong
-node-pool payload does not automatically include replay_endpoint. Rust replay is still gated by
-first instance ID, not first DP; registry readiness is not full index-recovery readiness.
+node-pool payload does not automatically include replay_endpoint. Replay is gated by first `(instance_id, dp_rank)` registration; registry readiness is not full index-recovery readiness.
 
 ---
 

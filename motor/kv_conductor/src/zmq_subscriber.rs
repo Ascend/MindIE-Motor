@@ -527,13 +527,28 @@ fn zmq_errno_reasonable(e: &zmq::Error) -> bool {
 // Replay on registration
 // ---------------------------------------------------------------------------
 
+fn replay_frame_parts(frames: &[Vec<u8>]) -> Option<(&[u8], &[u8])> {
+    // vLLM sends [delimiter, topic, sequence, payload]; older pool publishers
+    // send [delimiter, sequence, payload]. Receive the complete multipart
+    // reply so a topic frame cannot be mistaken for the sequence number.
+    let (delimiter, sequence, payload) = match frames {
+        [delimiter, _topic, sequence, payload] => (delimiter, sequence, payload),
+        [delimiter, sequence, payload] => (delimiter, sequence, payload),
+        _ => return None,
+    };
+    if !delimiter.is_empty() || sequence.len() != 8 {
+        return None;
+    }
+    Some((sequence.as_slice(), payload.as_slice()))
+}
+
 /// Connect to a vLLM engine's replay endpoint and request all buffered
 /// KV events, applying them to the indexer.
 ///
 /// vLLM's `ZmqEventPublisher` binds a ZMQ ROUTER on `replay_endpoint`.
 /// The protocol:
 ///   1. DEALER sends  `[b"", start_seq: u64 BE]`
-///   2. ROUTER replies `[b"", seq: u64 BE, msgpack_payload]` per buffered batch
+///   2. ROUTER replies `[b"", topic, seq: u64 BE, msgpack_payload]`; legacy replies omit topic
 ///   3. End-of-stream: seq == 0xFFFFFFFFFFFFFFFF (-1 as signed i64)
 ///
 /// Called during `/register` when the registration payload includes
@@ -576,34 +591,17 @@ pub fn replay_events(
 
     let mut batch_count: u64 = 0;
     let mut event_count: u64 = 0;
-    loop {
-        let delim = match socket.recv_msg(0) {
-            Ok(m) => m,
-            Err(_) => break,
-        };
-        let seq_msg = match socket.recv_msg(0) {
-            Ok(m) => m,
-            Err(_) => break,
-        };
-        let payload_msg = match socket.recv_msg(0) {
-            Ok(m) => m,
-            Err(_) => break,
-        };
-        drop(delim);
-
-        let seq_bytes: &[u8] = &seq_msg;
-        if seq_bytes.len() != 8 {
-            tracing::warn!(%replay_endpoint, "replay: bad seq len {}", seq_bytes.len());
+    while let Ok(frames) = socket.recv_multipart(0) {
+        let Some((seq_bytes, payload_bytes)) = replay_frame_parts(&frames) else {
+            tracing::warn!(%replay_endpoint, "replay: invalid multipart reply");
             break;
-        }
+        };
         let seq = u64::from_be_bytes(seq_bytes.try_into().unwrap());
         if seq == u64::MAX {
             tracing::info!(%replay_endpoint, batches = batch_count, events = event_count,
                            "replay: complete");
             break;
         }
-
-        let payload_bytes: &[u8] = &payload_msg;
 
         // Pool replay uses the same wire-format dispatch as live pool ingestion.
         // Untagged pool maps must not be accepted as unknown vLLM events.
@@ -677,7 +675,23 @@ pub fn replay_events(
 
 #[cfg(test)]
 mod tests {
-    use super::{event_source_for_media, EventSource};
+    use super::{event_source_for_media, replay_frame_parts, EventSource};
+    #[test]
+    fn replay_accepts_vllm_topic_and_legacy_replies() {
+        let seq = 23u64.to_be_bytes().to_vec();
+        for frames in [
+            vec![vec![], b"12345678".to_vec(), seq.clone(), vec![7]],
+            vec![vec![], seq.clone(), vec![7]],
+        ] {
+            let (actual, payload) = replay_frame_parts(&frames).unwrap();
+            assert_eq!(actual, seq.as_slice());
+            assert_eq!(payload, &[7]);
+        }
+        let end = vec![vec![], vec![], u64::MAX.to_be_bytes().to_vec(), vec![]];
+        assert_eq!(replay_frame_parts(&end).unwrap().0, u64::MAX.to_be_bytes());
+        assert!(replay_frame_parts(&[vec![], vec![], vec![]]).is_none());
+        assert!(replay_frame_parts(&[vec![1], seq, vec![]]).is_none());
+    }
     use crate::protocols::StorageMedium;
 
     #[test]
