@@ -10,6 +10,8 @@
 
 """Validation helpers for the NodeManager-managed Yuanrong Worker launcher."""
 
+from __future__ import annotations
+
 _LAUNCHER_KEYS = frozenset({"start_args", "worker_args"})
 _RESERVED_ARGS = frozenset({"w", "worker_address", "etcd_address", "shared_memory_size_mb"})
 _SCALAR_TYPES = (str, int, float, bool)
