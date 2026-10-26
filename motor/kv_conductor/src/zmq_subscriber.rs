@@ -277,7 +277,9 @@ fn subscriber_loop(
         // ZMQ PUB-SUB guarantees atomic delivery of multipart messages —
         // recv_multipart avoids protocol desync where a partial read
         // leaves leftover frames in the socket buffer.
-        let parts = match socket.recv_multipart(zmq::DONTWAIT) {
+        // Honor the receive timeout so idle subscriptions sleep and cancellation
+        // remains bounded; a complete event still wakes the receiver immediately.
+        let parts = match socket.recv_multipart(0) {
             Ok(parts) => parts,
             Err(e) => {
                 if zmq_errno_reasonable(&e) {
@@ -678,6 +680,89 @@ pub fn replay_events(
 #[cfg(test)]
 mod tests {
     use super::{event_source_for_media, EventSource};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn idle_subscriber_waits_without_spinning_and_stops() {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        fn cpu_ticks() -> u64 {
+            let stat = std::fs::read_to_string("/proc/thread-self/stat").unwrap();
+            let fields: Vec<_> = stat[stat.rfind(')').unwrap() + 2..]
+                .split_whitespace()
+                .collect();
+            fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
+        }
+
+        let ticks_per_second: f64 = String::from_utf8(
+            std::process::Command::new("getconf")
+                .arg("CLK_TCK")
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+        let context = zmq::Context::new();
+        let socket =
+            super::ZmqSubscriber::create_socket(&context, "inproc://idle-regression").unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let stop = cancel.clone();
+        let timer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            stop.cancel();
+        });
+        let before = cpu_ticks();
+        let started = Instant::now();
+        super::subscriber_loop(
+            socket,
+            "idle-model".into(),
+            "default".into(),
+            Arc::new(crate::indexer::Indexer::new()),
+            128,
+            "idle-backend".into(),
+            0,
+            vec![crate::protocols::StorageMedium::Npu],
+            EventSource::Engine,
+            crate::backend::MatchMode::None,
+            None,
+            cancel,
+        );
+        let elapsed = started.elapsed();
+        let cpu_seconds = (cpu_ticks() - before) as f64 / ticks_per_second;
+        timer.join().unwrap();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "idle cancellation exceeded its bound: {elapsed:?}"
+        );
+        assert!(
+            cpu_seconds < elapsed.as_secs_f64() * 0.1 + 0.02,
+            "idle receive spun for {cpu_seconds:.3}s CPU during {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn blocking_receive_wakes_for_complete_multipart_event() {
+        let context = zmq::Context::new();
+        let publisher = context.socket(zmq::XPUB).unwrap();
+        publisher.set_rcvtimeo(2000).unwrap();
+        publisher.bind("inproc://wake-regression").unwrap();
+        let subscriber =
+            super::ZmqSubscriber::create_socket(&context, "inproc://wake-regression").unwrap();
+        assert_eq!(publisher.recv_bytes(0).unwrap(), vec![1]);
+        let expected = vec![b"topic".to_vec(), 7u64.to_be_bytes().to_vec(), vec![0x90]];
+        let send = expected.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            publisher.send_multipart(send, 0).unwrap();
+        });
+        assert_eq!(subscriber.recv_multipart(0).unwrap(), expected);
+        writer.join().unwrap();
+    }
+
     use crate::protocols::StorageMedium;
 
     #[test]
