@@ -6,7 +6,7 @@
 **MindIE Motor**是面向大语言模型（LLM）分布式推理，如**PD分离推理**（Prefill与Decode阶段分离）的请求调度框架。它通过开放、可扩展的推理服务化平台架构，对接[vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)和[SGLang](https://github.com/sgl-project/sglang)原生运行时，旨在满足大语言模型的高性能推理需求。
 
 >[!NOTE]说明
->原MindIE PyMotor代码仓自3.1.0版本起更名为MindIE Motor，后续版本将沿用该命名。其软件定位与基本功能保持不变，当前以vLLM-Ascend为主，并支持SGLang原生引擎接入。
+>MindIE Motor 的软件定位与基本功能保持不变，对接 vLLM-Ascend 与 SGLang 原生引擎。
 
 ### 核心能力
 
@@ -64,7 +64,7 @@ MindIE Motor核心组件定义如下：
 
 ### 周边组件
 
-- **[vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)**: vLLM加速引擎，提供模型实例加速能力。
-- **[SGLang](https://github.com/sgl-project/sglang)**: 可通过 NodeManager 原生运行时接入的推理引擎，当前支持范围以[支持的推理引擎](./user_guide/features/supported_inference_engines.md)为准。
+- **[vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)**: 原生推理引擎，提供模型实例加速能力。支持范围见[支持的推理引擎](./user_guide/features/supported_inference_engines.md)。
+- **[SGLang](https://github.com/sgl-project/sglang)**: 原生推理引擎，提供模型实例加速能力。支持范围见[支持的推理引擎](./user_guide/features/supported_inference_engines.md)。
 - **[MindCluster](https://gitcode.com/Ascend/mind-cluster)**: 昇腾集群使能组件，提供Kubernetes底层支持能力，PD分离 CRD定义和配套Operator
 - **[CCAE](https://www.hiascend.com/software/ccae)**(可选)：华为算存网一体化运维可视化平台。

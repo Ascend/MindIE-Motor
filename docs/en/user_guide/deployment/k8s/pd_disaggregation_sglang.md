@@ -1,26 +1,25 @@
 # SGLang PD Disaggregation Deployment Guide
 
-This document describes how to complete a K8s **PD disaggregation** deployment with the **SGLang** engine based on MindIE Motor, and explains the key differences from vLLM.
+This document describes how to complete a K8s **PD disaggregation** deployment with the **SGLang** engine based on MindIE Motor.
 
 The general PD disaggregation procedure is the same as that in the [PD disaggregation deployment guide](./pd_disaggregation_deployment.md). This document covers only **the mandatory changes for SGLang and the verified reference configuration usage**.
 
 > [!NOTE]NOTE
 >
-> - The official documentation marks SGLang as **supported**: it can be deployed with `engine_type: sglang`;
-> - The coverage of some advanced engine-based capabilities may differ from that of vLLM;
+> - Deploy by setting `engine_type` to `sglang`;
 > - The client accesses only the **Coordinator** northbound interfaces, so switching engines does not require changing the call method.
 
-## Differences from vLLM PD Disaggregation
+## Deployment Notes
 
-| Item | vLLM | SGLang |
-| --- | --- | --- |
-| Configuration field | `engine_type: vllm` | `engine_type: sglang` |
-| Engine startup | `vllm serve` | `python3 -m sglang.launch_server` |
-| PD coordination | handoff / trigger (`kv_transfer_params`, etc.) | bootstrap (`bootstrap_host` / `bootstrap_port` / `bootstrap_room`) |
-| Mandatory ports | Mainly the business port | Business port + `disaggregation-bootstrap-port` |
-| Transport / storage | Configured per connector | `disaggregation-transfer-backend: ascend` must be configured; the Deployer additionally starts **MF Store** |
-| Health probe | Optional Motor virtual inference (`enable_virtual_inference`) | **Native generative** `GET /health`; no Motor virtual-inference monitor is created |
-| Configuration generation | The vLLM→Motor conversion tool can be used | **No equivalent conversion tool yet**; modify the reference configuration under `model_configs/sglang/` |
+| Item | Description |
+| --- | --- |
+| Configuration field | `engine_type: sglang` |
+| Engine startup | `python3 -m sglang.launch_server` |
+| PD coordination | bootstrap (`bootstrap_host` / `bootstrap_port` / `bootstrap_room`) |
+| Mandatory ports | Business port, and `disaggregation-bootstrap-port` |
+| Transport / storage | Configure `disaggregation-transfer-backend: ascend`; the Deployer additionally starts **MF Store** |
+| Health probe | Native generative `GET /health` |
+| Configuration | Use the reference configurations under `model_configs/sglang/` and modify them for the actual environment |
 
 ## Pre-check for 950 Series Servers
 
@@ -38,30 +37,15 @@ Only when 950 series servers are used: on each server, check whether `/lib/route
 
 ### Preparing the Image
 
-Load the image to **all relevant nodes** of the K8s cluster:
-
-- **Method 1**: Use the SGLang image with MindIE Motor installed, ensuring that `python3 -m motor` and `python3 -m sglang.launch_server` can be executed in the image. (Planned.)
-
-- **Method 2**: Manually install MindIE Motor based on the Ascend SGLang base image. See [Installing MindIE Motor based on the vllm-ascend/sglang image](../../maintenance/build_motor_image_from_vllm_ascend.md#installing-mindie-motor-based-on-the-vllm-ascendsglang-image).
+Load the image to **all relevant nodes** of the K8s cluster. Manually install MindIE Motor based on the Ascend SGLang base image. See [Installing MindIE Motor based on the vllm-ascend/sglang image](../../maintenance/build_motor_image_from_vllm_ascend.md#installing-mindie-motor-based-on-the-vllm-ascendsglang-image).
 
 ### Preparing examples
 
-Place `examples` on the K8s master node:
-
-- **Method 1**: Copy the `examples/` directory from the code repository;
-
-- **Method 2**: Export it from the image (the path is usually `/tmp/motor/examples`): (Planned.)
-
-```bash
-IMAGE="<image name or image ID>"
-cid=$(docker create "$IMAGE")
-docker cp "$cid:/tmp/motor/examples" ./examples
-docker rm "$cid"
-```
+Place `examples` on the K8s master node by copying the `examples/` directory from the code repository.
 
 ## Preparing the Configuration File
 
-SGLang currently does **not** have the script-based automatic conversion tool available on the vLLM side. Select a reference configuration from the repository directly, modify it according to your needs, and then deploy it.
+Select a reference configuration from the repository directly and modify it for the actual environment before deployment.
 
 ### Recommended Reference Configuration
 
@@ -224,7 +208,7 @@ The configuration method of general capabilities is the same as that in [PD disa
 
 - SGLang uses the **native generative** `/health` (a lightweight generation is run when idle and can be skipped when busy), and Motor does **not** create a virtual-inference Worker.
 
-- `enable_virtual_inference` affects only vLLM; setting it to `false` does **not** disable the SGLang generative `/health`.
+- Setting `enable_virtual_inference` to `false` does **not** disable the SGLang generative `/health`.
 
 - For details, see [Virtual Inference Health Probe](../../features/sim_inference.md).
 
@@ -308,9 +292,7 @@ To disable it, change the setting back to `load_balance` and remove `kv-events-c
 
 ### KV Pooling (Mooncake / Memcache)
 
-- On the SGLang path, the capability coverage and acceptance progress of KV pooling are behind those of vLLM, and adaptation is actively in progress.
-
-- For more pooling topics, see the [KV pooling deployment guide](../../features/kv_cache_store/README.md), and refer to the actual verification results.
+The SGLang inference engine plans to support this in the next version.
 
 ## Appendix
 
@@ -332,8 +314,6 @@ To disable it, change the setting back to `load_balance` and remove `kv-events-c
 | --- | --- |
 | Anthropic interface `/v1/messages` | Depends on upstream SGLang. Only `/v1/messages/count_tokens` is available |
 | chat streaming + rescheduling | Limited by the engine's `return_token_ids`; currently unavailable |
-| Pooling capability | Subject to the feature documentation and actual tests; not yet aligned with vLLM |
-| Container snapshot | Subject to the feature documentation and actual tests; not yet aligned with vLLM |
 
 ### examples Directory Structure (SGLang)
 
