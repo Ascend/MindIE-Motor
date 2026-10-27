@@ -2,7 +2,6 @@
 
 本文档指导基于 MindIE Motor 的 **SGLang** 引擎完成 K8s **PD 分离**部署。
 
-
 > [!NOTE]说明
 >
 > - 将 `engine_type` 配置为 `sglang` 后即可部署；
