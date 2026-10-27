@@ -35,24 +35,11 @@
 
 ### 准备镜像
 
-将镜像加载到 K8s 集群**所有相关节点**：
-
-- **方式一**：使用已安装 MindIE Motor 的 SGLang 镜像，保证镜像内可执行 `python3 -m motor` 与 `python3 -m sglang.launch_server`。
-- **方式二**：基于 Ascend SGLang 基座镜像手动安装 MindIE Motor，参考 [基于 vllm-ascend/sglang 镜像安装 MindIE Motor](../../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor)。
+将镜像加载到 K8s 集群**所有相关节点**。基于 Ascend SGLang 基座镜像手动安装 MindIE Motor，参考 [基于 vllm-ascend/sglang 镜像安装 MindIE Motor](../../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor)。
 
 ### 准备 examples
 
-将 `examples` 放到 K8s master 节点：
-
-- **方式一**：从代码仓拷贝仓库内目录 `examples/`；
-- **方式二**：从镜像导出（路径一般为 `/tmp/motor/examples`）：
-
-```bash
-IMAGE="<镜像名或镜像ID>"
-cid=$(docker create "$IMAGE")
-docker cp "$cid:/tmp/motor/examples" ./examples
-docker rm "$cid"
-```
+将 `examples` 放到 K8s master 节点，从代码仓拷贝仓库内目录 `examples/`。
 
 ## 准备配置文件
 
@@ -64,7 +51,7 @@ docker rm "$cid"
 | --- | --- | --- |
 | GLM 5.1 / Atlas 800I A3超节点服务器 1P1D | `model_configs/sglang/models/glm5.1/A3/` | GLM 5.1 PD 分离参考；更多典配见 [SGLang GLM 5.1 Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/glm_5_1) |
 | GLM 5.2 / Atlas 800I A3超节点服务器 1P1D | `model_configs/sglang/models/glm5.2/A3/` | GLM 5.2 PD 分离参考；更多典配见 [SGLang GLM 5.2 Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/glm_5_2) |
-| Qwen3-8B / Atlas 800I A2推理服务器 | `model_configs/sglang/models/qwen_8b/A2/` | 资源占用较小；更多典配见 [SGLang Qwen3-8B Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/qwen3_8b) |
+| Qwen3-8B / Atlas 800I A2推理服务器 | `model_configs/sglang/models/qwen_8b/A2/` | 资源占用较小，适合打通流程；更多典配见 [SGLang Qwen3-8B Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/qwen3_8b) |
 | 更多模型 | `model_configs/sglang/` | 根目录及子目录下的 `user_config.json` / `env.json` |
 
 每个典配目录需包含：
@@ -289,7 +276,7 @@ bash delete.sh <namespace>
 
 ### KV 池化（Mooncake / Memcache）
 
-配置见 [KV 池化部署指南](../../features/kv_cache_store/README.md)。
+SGLang 推理引擎计划下个版本支持。
 
 ## 附录
 

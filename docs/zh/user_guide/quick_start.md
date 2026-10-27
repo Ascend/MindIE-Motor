@@ -60,8 +60,6 @@ chmod -R 755 /mnt/weight
 
      当前已提供的模型目录包括：deepseek_v3.1、deepseek_v4_flash、deepseek_v4_pro、glm_5、glm_5.1、qwen_235b。
 
-     SGLang 典配位于 `model_configs/sglang/models/<模型名>/<硬件型号>/`，部署步骤见[SGLang PD 分离服务部署](./deployment/k8s/pd_disaggregation_sglang.md)。
-
    - **方式二：自动生成**
 
      将vLLM Ascend社区部署脚本一键转换为MindIE Motor配置。
