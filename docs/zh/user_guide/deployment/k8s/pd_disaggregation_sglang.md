@@ -1,26 +1,25 @@
 # PD分离服务部署（基于SGLang推理引擎）
 
-本文档指导基于 MindIE Motor 的 **SGLang** 引擎完成 K8s **PD 分离**部署，并说明与 vLLM 的关键差异。
+本文档指导基于 MindIE Motor 的 **SGLang** 引擎完成 K8s **PD 分离**部署。
 
 通用 PD 分离流程与 [PD 分离服务部署指导](./pd_disaggregation_deployment.md) 一致，本文只写 **SGLang 必改项与已验证典配用法**。
 
 > [!NOTE]说明
 >
-> - 官方文档将 SGLang 标为 **已支持**：可通过 `engine_type: sglang` 部署；
-> - 基于推理引擎的部分高级能力与 vLLM 覆盖范围可能不同；
+> - 将 `engine_type` 配置为 `sglang` 后即可部署；
 > - 客户端只访问 **Coordinator** 北向接口，切换引擎无需改调用方式。
 
-## 与 vLLM PD 分离的差异
+## 部署要点
 
-| 项 | vLLM | SGLang |
-| --- | --- | --- |
-| 配置字段 | `engine_type: vllm` | `engine_type: sglang` |
-| 引擎拉起 | `vllm serve` | `python3 -m sglang.launch_server` |
-| PD 协调 | handoff / trigger（`kv_transfer_params` 等） | bootstrap（`bootstrap_host` / `bootstrap_port` / `bootstrap_room`） |
-| 必配端口 | 业务口为主 | 业务口 + `disaggregation-bootstrap-port` |
-| 传输 / 存储 | 按 Connector 配置 | 需配置 `disaggregation-transfer-backend: ascend`，Deployer 会额外拉起 **MF Store** |
-| 健康探测 | 可选 Motor 虚推（`enable_virtual_inference`） | **原生生成式** `GET /health`，不创建 Motor 虚推 monitor |
-| 配置生成 | 可用 vLLM→Motor 转换工具 | **暂无对等转换工具**；请基于 `model_configs/sglang/` 典配修改 |
+| 项 | 说明 |
+| --- | --- |
+| 配置字段 | `engine_type: sglang` |
+| 引擎拉起 | `python3 -m sglang.launch_server` |
+| PD 协调 | bootstrap（`bootstrap_host` / `bootstrap_port` / `bootstrap_room`） |
+| 必配端口 | 业务口，以及 `disaggregation-bootstrap-port` |
+| 传输 / 存储 | 配置 `disaggregation-transfer-backend: ascend`，Deployer 会额外拉起 **MF Store** |
+| 健康探测 | 原生生成式 `GET /health` |
+| 配置 | 使用 `model_configs/sglang/` 下的典配，按实际环境修改 |
 
 ## 950 系列服务器预检查
 
@@ -36,28 +35,15 @@
 
 ### 准备镜像
 
-将镜像加载到 K8s 集群**所有相关节点**：
-
-- **方式一**：使用已安装 MindIE Motor 的 SGLang 镜像，保证镜像内可执行 `python3 -m motor` 与 `python3 -m sglang.launch_server`。（计划支持）
-- **方式二**：基于 Ascend SGLang 基座镜像手动安装 MindIE Motor，参考 [基于 vllm-ascend/sglang 镜像安装 MindIE Motor](../../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor)。
+将镜像加载到 K8s 集群**所有相关节点**。基于 Ascend SGLang 基座镜像手动安装 MindIE Motor，参考 [基于 vllm-ascend/sglang 镜像安装 MindIE Motor](../../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor)。
 
 ### 准备 examples
 
-将 `examples` 放到 K8s master 节点：
-
-- **方式一**：从代码仓拷贝仓库内目录 `examples/`；
-- **方式二**：从镜像导出（路径一般为 `/tmp/motor/examples`）：（计划支持）
-
-```bash
-IMAGE="<镜像名或镜像ID>"
-cid=$(docker create "$IMAGE")
-docker cp "$cid:/tmp/motor/examples" ./examples
-docker rm "$cid"
-```
+将 `examples` 放到 K8s master 节点，从代码仓拷贝仓库内目录 `examples/`。
 
 ## 准备配置文件
 
-SGLang 目前 **没有** vLLM 侧的脚本自动转换工具，请直接选用仓库典配，并按个人需求修改后部署。
+请直接选用仓库典配，并按实际环境修改后部署。
 
 ### 推荐典配
 
@@ -73,7 +59,7 @@ SGLang 目前 **没有** vLLM 侧的脚本自动转换工具，请直接选用�
 - `user_config.json`：部署拓扑、Motor 组件配置、引擎参数
 - `env.json`：各角色环境变量
 
-### 部署前必改项
+### 必改项
 
 打开典配中的 `user_config.json`，至少确认：
 
@@ -214,7 +200,7 @@ bash delete.sh <namespace>
 
 - NodeManager 对业务口做 `GET /health` 就绪与心跳。
 - SGLang 使用**原生生成式** `/health`（闲时跑轻量生成、忙时可跳过），Motor **不**创建虚推 Worker。
-- `enable_virtual_inference` 仅影响 vLLM，设为 `false` **不会**关闭 SGLang 生成式 `/health`。
+- 将 `enable_virtual_inference` 设为 `false` **不会**关闭 SGLang 生成式 `/health`。
 - 详见 [虚推健康探测](../../features/sim_inference.md)。
 
 ### ChunkPrefill
@@ -290,8 +276,7 @@ bash delete.sh <namespace>
 
 ### KV 池化（Mooncake / Memcache）
 
-- SGLang 路径上 KV 池化能力覆盖与验收进度弱于 vLLM，正在积极适配中。
-- 更多池化专项请参考 [KV 池化部署指南](../../features/kv_cache_store/README.md)，并以实际验证结论为准。
+SGLang 推理引擎计划下个版本支持。
 
 ## 附录
 
@@ -309,8 +294,6 @@ bash delete.sh <namespace>
 | --- | --- |
 | Anthropic 接口 `/v1/messages` | 依赖上游 SGLang。仅 `/v1/messages/count_tokens` 可用 |
 | chat 流式 + 重调度 | 受引擎 `return_token_ids` 限制，当前不可用 |
-| 池化能力 | 以特性文档与实测为准，尚未与 vLLM 对齐 |
-| 容器快照 | 以特性文档与实测为准，尚未与 vLLM 对齐 |
 
 ### examples 目录结构（SGLang）
 
