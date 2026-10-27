@@ -33,6 +33,8 @@ from lib.docker_utils import (
 )
 from lib.in_place_run import run_in_place
 from lib.container_ipc import host_ipc_enabled
+from lib.docker_commands import emit as emit_commands
+from lib.port_conflict import offer_engine_port_remap
 
 
 def _write_file(path: str, content: str, executable: bool = False) -> None:
@@ -119,11 +121,8 @@ def _validate_topology(user_config: dict) -> bool:
 
 
 def _controller_ports(user_config: dict):
-    api = (user_config.get(C.MOTOR_CONTROLLER_CONFIG) or {}).get("api_config") or {}
-    return [
-        ("controller", int(api.get("controller_api_port", D.DEFAULT_CONTROLLER_API_PORT))),
-        ("controller-obs", int(api.get("observability_api_port", D.DEFAULT_CONTROLLER_OBS_PORT))),
-    ]
+    ctrl, obs = D.docker_controller_ports(user_config)
+    return [("controller", ctrl), ("controller-obs", obs)]
 
 
 def _coordinator_ports(user_config: dict, params: D.DockerDeployParams, *, in_place: bool):
@@ -180,6 +179,8 @@ def preflight(
     devices_arg: str | None = None,
     check_devices: bool = True,
     template_fallback: bool = False,
+    check_ports: bool = True,
+    args=None,
 ) -> bool:
     ok = True
 
@@ -219,17 +220,24 @@ def preflight(
             logger.error("%s", exc)
             ok = False
 
-    for label, port in _ports_to_check(config_for_ports, params, identity, in_place=in_place):
-        if D.port_in_use(port):
-            holder = D.describe_port_holder(port)
-            logger.error(
-                "Host %s port %s is already in use%s. "
-                "Another process (not this workspace's Motor container) is holding it.",
-                label,
-                port,
-                f" by: {holder}" if holder else "",
-            )
-            ok = False
+    if check_ports and ok and identity is not None and engine_ports is not None and D.engine_role_of(identity.role):
+        offer_engine_port_remap(user_config, identity.role, engine_ports, args)
+        if engine_ports.specified():
+            config_for_ports = copy.deepcopy(user_config)
+            D.apply_engine_port_overrides(config_for_ports, identity.role, engine_ports)
+
+    if check_ports:
+        for label, port in _ports_to_check(config_for_ports, params, identity, in_place=in_place):
+            if D.port_in_use(port):
+                holder = D.describe_port_holder(port)
+                logger.error(
+                    "Host %s port %s is already in use%s. "
+                    "Another process (not this workspace's Motor container) is holding it.",
+                    label,
+                    port,
+                    f" by: {holder}" if holder else "",
+                )
+                ok = False
 
     return ok
 
@@ -289,6 +297,7 @@ def _prepare_and_render(args, deployer_dir: str):
         in_place=True,
         engine_ports=engine_ports,
         devices_arg=getattr(args, "devices", None),
+        args=args,
     ):
         logger.error("Preflight checks failed. Aborting.")
         sys.exit(1)
@@ -880,7 +889,7 @@ def attach_render_create_rollback(command: str, main_name: str, render_name: str
     )
 
 
-def _validate_one_click_identity(args, deployer_dir: str) -> None:
+def _validate_one_click_identity(args, deployer_dir: str, *, check_ports: bool = True) -> None:
     user_config_path, _env_config_path = resolve_config_paths(
         args.config_dir, args.user_config_path, args.env_config_path
     )
@@ -915,6 +924,8 @@ def _validate_one_click_identity(args, deployer_dir: str) -> None:
         in_place=True,
         engine_ports=engine_ports,
         check_devices=False,
+        check_ports=check_ports,
+        args=args,
     ):
         raise ValueError("Preflight checks failed.")
 
@@ -922,14 +933,103 @@ def _validate_one_click_identity(args, deployer_dir: str) -> None:
 def _validate_host_create(name: str, image: str) -> None:
     if not D.docker_available():
         raise ValueError("docker is not available on this host.")
-    if D.container_exists(name):
-        raise ValueError(
-            f"Container '{name}' already exists. "
-            f"This script will not replace it. docker exec -it {name} bash "
-            f"and pass --start, or docker rm -f {name} and create again."
-        )
     if not D.image_exists(image):
         raise ValueError(f"Image not found locally: {image} (docker image inspect failed).")
+
+
+def _user_config_for_host_create(args) -> dict:
+    user_config_path, _env_config_path = resolve_config_paths(
+        getattr(args, "config_dir", None),
+        getattr(args, "user_config_path", None),
+        getattr(args, "env_config_path", None),
+    )
+    try:
+        return read_json(user_config_path)
+    except OSError as exc:
+        raise ValueError(f"Cannot read user config to check the Render container: {exc}") from exc
+
+
+def _occupied_host_containers(args, main_name: str) -> list[str]:
+    """Containers this host create would replace: the named one, plus Render when it owns that sibling.
+
+    Management and single-container deploys own ``<name>-vllm-render`` when Render is enabled.
+    Engine roles do not. Returns only names that already exist, in delete order.
+    """
+    from lib.generator.render import (
+        docker_render_container_name,
+        is_render_enabled,
+        resolve_render_image,
+        role_needs_docker_render,
+    )
+
+    role = getattr(args, "role", None) if args is not None else None
+    sibling = None
+    if args is not None and role_needs_docker_render(role):
+        sibling = docker_render_container_name(main_name)
+        if sibling == main_name:
+            sibling = None
+    main_exists = D.container_exists(main_name)
+    sibling_exists = sibling is not None and D.container_exists(sibling)
+    if not main_exists and not sibling_exists:
+        return []
+
+    owned = [main_name]
+    if sibling is not None:
+        user_config = _user_config_for_host_create(args)
+        if is_render_enabled(user_config):
+            image, _use_cpu = resolve_render_image(user_config)
+            if not D.image_exists(image):
+                raise ValueError(f"Render image not found locally: {image} (docker image inspect failed).")
+            owned.append(sibling)
+    return [name for name in owned if D.container_exists(name)]
+
+
+def _offer_replace_existing_containers(
+    names: list[str],
+    *,
+    remove_fn: Callable[[str], None] | None = None,
+    input_fn: Callable[[str], str] | None = None,
+    isatty_fn: Callable[[], bool] | None = None,
+) -> None:
+    """Ask before ``docker rm -f`` on containers this host create would replace.
+
+    ``y`` / ``yes`` removes every name. ``N``, empty input, EOF, or a non-TTY stdin
+    aborts and leaves the containers in place.
+    """
+    if not names:
+        return
+    remove = remove_fn or D.remove_container
+    ask = input_fn or input
+    tty = isatty_fn or sys.stdin.isatty
+    shown = ", ".join(names)
+    if not tty():
+        raise ValueError(
+            f"Container already exists: {shown}. stdin is not a TTY, so nothing was removed. "
+            "Re-run in a terminal and answer y to delete and continue, "
+            f"or docker rm -f {shown}."
+        )
+    for name in names:
+        logger.error("[Container] %s already exists.", name)
+    logger.error("[Container] Enter y=delete and continue, N=abort.")
+    while True:
+        try:
+            answer = ask(f"[Container] {shown} -> y / N: ").strip().lower()
+        except EOFError as exc:
+            raise ValueError(f"Container already exists: {shown}. No interactive input; nothing was removed.") from exc
+        if answer in ("", "n", "no"):
+            raise ValueError(
+                f"Container already exists: {shown}. Left in place. "
+                f"Answer y to delete and continue, or docker exec -it {names[0]} bash and pass --start."
+            )
+        if answer in ("y", "yes"):
+            for name in names:
+                remove(name)
+            return
+        logger.error("[Container] invalid input %r. Enter y or N.", answer)
+
+
+def _replace_occupied_host_containers(args, main_name: str) -> None:
+    _offer_replace_existing_containers(_occupied_host_containers(args, main_name))
 
 
 def _ensure_render_sidecar_on_host(args, deployer_dir: str, main_name: str) -> tuple[int, str | None]:
@@ -976,7 +1076,9 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
         try:
             if getattr(args, "role", None) != D.ROLE_RENDER:
                 D.require_pod_ip_and_nic(getattr(args, "pod_ip", None), getattr(args, "nic_name", None))
-            _validate_one_click_identity(args, deployer_dir)
+            # Ports are checked after an existing container is removed. A leftover
+            # container on the host network is the usual reason those ports look busy.
+            _validate_one_click_identity(args, deployer_dir, check_ports=False)
         except (KeyError, TypeError, ValueError) as exc:
             logger.error("%s", exc)
             return 1
@@ -1034,17 +1136,23 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
         logger.error("%s", exc)
         return 1
     command = drop_duplicate_bind_mounts(command, env)
-    if start_service:
-        try:
-            command = attach_one_click_command(command, build_in_place_inner_command(args, deployer_dir))
-        except ValueError as exc:
-            logger.error("%s", exc)
-            return 1
     if not attach_npu and "--device" in command:
         logger.error(
             "This docker-run template must not contain --device. Edit ENTER_DOCKER_RUN_CTRL or ENTER_DOCKER_RUN_KVS."
         )
         return 1
+    try:
+        _replace_occupied_host_containers(args, env["NAME"])
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return 1
+    if start_service:
+        try:
+            _validate_one_click_identity(args, deployer_dir, check_ports=True)
+            command = attach_one_click_command(command, build_in_place_inner_command(args, deployer_dir))
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.error("%s", exc)
+            return 1
     render_rc, render_name = _ensure_render_sidecar_on_host(args, deployer_dir, env["NAME"])
     if render_rc != 0:
         return 1
@@ -1088,7 +1196,9 @@ def parse_arguments() -> argparse.Namespace:
         type=str,
         default=None,
         help="Container name. Required when creating a container. "
-        "If this name already exists, the script errors and does not replace it.",
+        "If this name already exists, a terminal asks before deleting it. "
+        "A management or single-container deploy with Render enabled also offers to delete "
+        "<name>-vllm-render. Non-interactive runs abort and do not replace an existing container.",
     )
     parser.add_argument(
         "--role",
@@ -1145,6 +1255,14 @@ def parse_arguments() -> argparse.Namespace:
         "--pod-ip must be this NIC's IPv4.",
     )
     # 可选、常用参数
+    parser.add_argument(
+        "--show-commands",
+        action="store_true",
+        help="Print docker_deploy.py commands from user_config.json and exit. "
+        "Does not create a container or start Motor. "
+        "One inference container is one server. Management and kv_store share an inference server. "
+        "Pass --start to print in-container commands instead of host one-click commands.",
+    )
     parser.add_argument(
         "--start",
         action="store_true",
@@ -1242,6 +1360,15 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> None:
     args = parse_arguments()
     deployer_dir = os.path.dirname(os.path.abspath(__file__))
+    if getattr(args, "show_commands", False):
+        sys.exit(
+            emit_commands(
+                args.config_dir,
+                os.path.join(deployer_dir, "docker_deploy.py"),
+                in_container=bool(args.start),
+                create=bool(args.create),
+            )
+        )
     if getattr(args, "create", False) and getattr(args, "start", False):
         logger.error("Pass only one of --create and --start.")
         sys.exit(1)

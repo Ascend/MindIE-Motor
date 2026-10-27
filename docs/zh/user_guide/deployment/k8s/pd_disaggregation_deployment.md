@@ -259,7 +259,7 @@ Ascend 950PR&DT系列产品分为PR、DT两类，两者的内存存在差异，D
   ```
 
 - **关闭**：删除上述字段或不填。
-- **注意**：仅 Kubernetes PD 分离生效。`hardware_type` 为 `Ascend950` 时基础 `nodeSelector` 为 `accelerator: huawei-npu`；芯片名标签是额外一条。全 PR 或全 DT 组网无需填写。Docker 部署无调度器，异构由人工按机器形态分配容器完成，参见 [Docker多容器PD分离部署](../docker/multi_container.md) 中的「PR / DT 异构部署」章节。
+- **注意**：仅 Kubernetes PD 分离生效。`hardware_type` 为 `Ascend950` 时基础 `nodeSelector` 为 `accelerator: huawei-npu`；芯片名标签是额外一条。全 PR 或全 DT 组网无需填写。Docker 部署无调度器，按 [宿主机部署：PD 分离](../docker/host/pd_disaggregation_deployment.md#启动服务) 的打印结果部署即可：Prefill 命令放到 PR 上，Decode 命令放到 DT 上。
 - **特性约束**：开启后 Prefill 只能调度到 PR 节点、Decode 只能调度到 DT 节点。依赖「把 P 腾出的节点拿去跑 D」或「D 占用 PR 节点」的能力不可用；同角色恢复/扩容也只能使用对应类型的空闲节点。
 
   | 特性 | PR+DT 异构 | 说明 |

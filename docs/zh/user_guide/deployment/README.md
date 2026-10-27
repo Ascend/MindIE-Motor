@@ -12,11 +12,13 @@ MindIE Motor 支持以下部署方式，可根据自身环境选择：
 
 ## Docker 部署
 
-适用于单机或无 K8s 环境。入口为 `examples/deployer/docker_deploy.py`。
+仅依赖docker组件，可实现**快速敏捷**的服务部署。针对不同使用场景，提供如下部署方案：
 
-→ [Docker单容器服务部署指导](docker/single_container.md)
-
-→ [Docker多容器PD分离部署](docker/multi_container.md)
+| 方案 | 设计场景 |  服务器数量 |
+| :--- | :--- | :--- |
+| [单容器部署方案](docker/single_container.md) | **小模型（权重＜100GB）、单机**：在一个容器内部署推理PD分离或者PD混部服务，适用于**小模型验证**。 | 1台 |
+| [宿主机部署方案](docker/host/pd_disaggregation_deployment.md) | 普通场景：适用**所有模型、服务器仅安装 Docker**，用户户在**宿主机执行一条指令创建容器并部署服务**，但容器的生命周期需要用户手动管理。 |  不限 |
+| [容器内部署方案](docker/container/pd_disaggregation_deployment.md)| 云平台场景：适用**所有模型、服务器由云化平台管理（例如 ModelArts）**，容器的创建和回收由平台纳管，用户在**容器内执行一条指令部署服务**。 |  不限 |
 
 ## Slurm 部署
 

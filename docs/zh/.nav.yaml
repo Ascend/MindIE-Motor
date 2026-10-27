@@ -16,7 +16,10 @@ nav:
               - PD混部服务部署: user_guide/deployment/k8s/pd_aggregation_deployment.md
           - Docker 部署:
               - 单容器部署: user_guide/deployment/docker/single_container.md
-              - 多容器部署: user_guide/deployment/docker/multi_container.md
+              - 宿主机部署：PD分离: user_guide/deployment/docker/host/pd_disaggregation_deployment.md
+              - 宿主机部署：PD混部: user_guide/deployment/docker/host/pd_aggregation_deployment.md
+              - 容器内部署：PD分离: user_guide/deployment/docker/container/pd_disaggregation_deployment.md
+              - 容器内部署：PD混部: user_guide/deployment/docker/container/pd_aggregation_deployment.md
           - Slurm 部署:
               - 概述: user_guide/deployment/slurm/README.md
               - 环境准备: user_guide/deployment/slurm/environment_preparation.md
