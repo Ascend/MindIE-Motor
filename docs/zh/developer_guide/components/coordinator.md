@@ -41,6 +41,14 @@ Mgmt 与 Obs 在主备两侧都运行。并可配合共享内存 `RoleShmHolder`
 [max_tokens 自适应](../../user_guide/features/max_tokens_adaptation.md) 与
 [KV Cache 亲和调度](../../user_guide/features/kvcache_affinity.md)。
 
+### Responses 的 PD 请求参数
+
+vLLM 原生 PD handoff 路径中，Coordinator 将发给 P 实例的 Responses 请求设置为
+`max_output_tokens=1`、`min_tokens=1`、`stream=false`、`background=false`。
+其中 `min_tokens=1` 与 Chat/Completion 的 Prefill 行为对齐，目标是避免 P 首 token 直接输出 EOS。
+发给 D 实例的请求仍保留客户端的输出预算、`min_tokens` 和流式、后台执行配置，P 的改写不会修改原请求。
+Motor 负责上述参数的构造与转发；目标引擎需支持 Responses 的 `min_tokens` 并将其用于采样。
+
 ## 环境准备
 
 - 配置来源：`CoordinatorConfig.from_json()`，通常来自挂载的 `user_config.json` 中 **`motor_coordinator_config`** 等合并结果，字段定义见 `motor/config/coordinator.py`。独立部署时入口只读环境变量 `USER_CONFIG_PATH`。

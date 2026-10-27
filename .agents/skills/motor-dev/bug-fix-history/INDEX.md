@@ -77,3 +77,4 @@
 
 | 2026-10-12 | deployer | vLLM 可选服务名被 Render 强制要求 | [vllm-service-name-fallback.md](deployer/vllm-service-name-fallback.md) | vLLM, served_model_name, Render, resolver, model fallback |
 | 2026-10-12 | deployer | 启动脚本强制预加载 jemalloc 导致自定义算子不兼容 | [forced-jemalloc-preload.md](deployer/forced-jemalloc-preload.md) | deployer, jemalloc, LD_PRELOAD, CANN, tiling |
+| 2026-10-27 | coordinator | Responses Prefill 未发送最小生成 token 约束 | [responses-prefill-min-tokens.md](coordinator/responses-prefill-min-tokens.md) | coordinator, Responses, Prefill, min_tokens, EOS |

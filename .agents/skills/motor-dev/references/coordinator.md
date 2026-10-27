@@ -353,6 +353,14 @@ to the native engine. For scheduling tokenization, `responses_input.py` maps
 Non-message and other unsupported scheduling shapes fall back instead of
 claiming an incorrect KV prefix match.
 
+For native vLLM PD handoff, `VllmProtocolAdapter.build_prefill_request` sets
+`max_output_tokens=1`, `min_tokens=1`, `stream=false`, and `background=false` on the
+Responses Prefill leg, matching the Chat/Completion Prefill request contract.
+Decode retains the client's output budget, minimum-token field, and lifecycle
+fields; Prefill overrides never mutate the original request. Motor constructs and
+forwards these parameters; the target engine must support Responses `min_tokens`
+and apply it to sampling.
+
 ### Hot-Reload
 
 Hot-reload is driven by a process-local `ConfigWatcher` in the **Inference Worker, Scheduler, Mgmt, and Obs processes** (not the daemon's loop). Each watcher calls `CoordinatorConfig.reload()` against that process's config object; the Worker skip-set includes the runtime-only `worker_index`. If no valid config path exists, hot-reload is disabled. Reloading the config object does not rebuild lifespan-scoped objects: in particular, `SampleController`, its interval, checker, reporter, and enabled/disabled wiring are assembled during Worker startup, so changes under `precision_detection_config` require a Worker restart for reliable effect.
