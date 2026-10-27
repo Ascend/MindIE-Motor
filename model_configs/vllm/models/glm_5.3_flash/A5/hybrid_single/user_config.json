@@ -1,0 +1,61 @@
+{
+  "version": "v2.0",
+  "motor_deploy_config": {
+    "deploy_mode": "infer_service_set",
+    "hybrid_instances_num": 1,
+    "single_hybrid_instance_pod_num": 1,
+    "hybrid_pod_npu_num": 8,
+    "image_name": "<请按实际情况填写镜像名称>",
+    "job_id": "mindie-motor",
+    "hardware_type": "Ascend950",
+    "weight_mount_path": "<请按实际情况填写模型权重文件的访问路径>"
+  },
+  "motor_controller_config": {},
+  "motor_coordinator_config": {
+    "scheduler_config": {
+      "deploy_mode": "single_node"
+    }
+  },
+  "motor_engine_union_config": {
+    "engine_type": "vllm",
+    "engine_config": {
+      "served_model_name": "glm",
+      "model": "<请按实际情况填写模型权重文件的访问路径>",
+      "gpu_memory_utilization": 0.9,
+      "data_parallel_size": 1,
+      "tensor_parallel_size": 8,
+      "pipeline_parallel_size": 1,
+      "enable_expert_parallel": true,
+      "seed": 1024,
+      "max-model-len": 132096,
+      "max-num-batched-tokens": 8192,
+      "max-num-seqs": 32,
+      "trust-remote-code": true,
+      "quantization": "ascend",
+      "kv-cache-dtype": "fp8",
+      "limit-mm-per-prompt": {
+        "image": 1,
+        "video": 0
+      },
+      "compilation-config": {
+        "cudagraph_mode": "FULL_DECODE_ONLY",
+        "cudagraph_capture_sizes": [
+          1,
+          2,
+          4,
+          8,
+          16,
+          32,
+          64,
+          96,
+          128
+        ]
+      },
+      "speculative-config": {
+        "num_speculative_tokens": 3,
+        "method": "deepseek_mtp",
+        "enforce_eager": true
+      }
+    }
+  }
+}
