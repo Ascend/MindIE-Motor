@@ -1,0 +1,141 @@
+{
+  "version": "v2.0",
+  "motor_deploy_config": {
+    "p_instances_num": 1,
+    "d_instances_num": 1,
+    "single_p_instance_pod_num": 4,
+    "single_d_instance_pod_num": 4,
+    "p_pod_npu_num": 8,
+    "d_pod_npu_num": 8,
+    "image_name": "<请按实际情况填写镜像名称>",
+    "job_id": "mindie-motor",
+    "hardware_type": "800I_A2",
+    "weight_mount_path": "<请按实际情况填写模型权重文件的访问路径>"
+  },
+  "motor_controller_config": {},
+  "motor_coordinator_config": {},
+  "motor_engine_prefill_config": {
+    "engine_type": "vllm",
+    "engine_config": {
+      "data_parallel_size": 1,
+      "tensor_parallel_size": 16,
+      "pipeline_parallel_size": 2,
+      "nnodes": 4,
+      "master-port": 29501,
+      "distributed-executor-backend": "mp",
+      "data_parallel_rpc_port": 9000,
+      "served_model_name": "glm-5",
+      "model": "<请按实际情况填写模型权重文件的访问路径>",
+      "seed": 1024,
+      "enable_expert_parallel": true,
+      "quantization": "ascend",
+      "enable-chunked-prefill": true,
+      "enable-prefix-caching": true,
+      "max-model-len": 135000,
+      "max-num-batched-tokens": 16384,
+      "max-num-seqs": 64,
+      "gpu_memory_utilization": 0.92,
+      "trust-remote-code": true,
+      "async-scheduling": true,
+      "enforce-eager": true,
+      "safetensors-load-strategy": "prefetch",
+      "kv-cache-dtype": "int8",
+      "attention_config": {
+        "indexer_kv_dtype": "int8"
+      },
+      "enable-auto-tool-choice": true,
+      "tool-call-parser": "glm47",
+      "reasoning-parser": "glm45",
+      "speculative-config": {
+        "num_speculative_tokens": 3,
+        "method": "deepseek_mtp",
+        "enforce_eager": true
+      },
+      "additional-config": {
+        "enable_dsa_cp": true,
+        "enable_flashcomm1": true
+      },
+      "kv_transfer_config": {
+        "kv_connector": "MooncakeConnectorV2",
+        "kv_role": "kv_producer",
+        "engine_id": "0",
+        "kv_port": "30000",
+        "kv_connector_extra_config": {
+          "use_ascend_direct": true,
+          "prefill": {
+            "dp_size": 1,
+            "pp_size": 2,
+            "tp_size": 16,
+            "pp_layer_partition": "41,37"
+          },
+          "decode": {
+            "dp_size": 16,
+            "tp_size": 2
+          }
+        }
+      }
+    }
+  },
+  "motor_engine_decode_config": {
+    "engine_type": "vllm",
+    "engine_config": {
+      "data_parallel_size": 16,
+      "tensor_parallel_size": 2,
+      "pipeline_parallel_size": 1,
+      "data_parallel_rpc_port": 9000,
+      "served_model_name": "glm-5",
+      "model": "<请按实际情况填写模型权重文件的访问路径>",
+      "seed": 1024,
+      "enable_expert_parallel": true,
+      "enable-chunked-prefill": true,
+      "enable-prefix-caching": true,
+      "max-model-len": 135000,
+      "max-num-batched-tokens": 256,
+      "max-num-seqs": 32,
+      "gpu_memory_utilization": 0.92,
+      "trust-remote-code": true,
+      "async-scheduling": true,
+      "quantization": "ascend",
+      "safetensors-load-strategy": "prefetch",
+      "kv-cache-dtype": "int8",
+      "attention_config": {
+        "indexer_kv_dtype": "int8"
+      },
+      "enable-auto-tool-choice": true,
+      "tool-call-parser": "glm47",
+      "reasoning-parser": "glm45",
+      "additional-config": {
+        "recompute_scheduler_enable": true,
+        "enable_sparse_sfa_c8": true,
+        "enable_sparse_li_c8": true
+      },
+      "speculative-config": {
+        "num_speculative_tokens": 3,
+        "method": "deepseek_mtp",
+        "enforce_eager": true
+      },
+      "compilation-config": {
+        "cudagraph_mode": "FULL_DECODE_ONLY"
+      },
+      "kv_transfer_config": {
+        "kv_connector": "MooncakeConnectorV2",
+        "kv_role": "kv_consumer",
+        "engine_id": "1",
+        "kv_port": "30100",
+        "kv_connector_extra_config": {
+          "use_ascend_direct": true,
+          "prefill": {
+            "dp_size": 1,
+            "pp_size": 2,
+            "tp_size": 16,
+            "pp_layer_partition": "41,37"
+          },
+          "decode": {
+            "dp_size": 16,
+            "tp_size": 2
+          }
+        }
+      }
+    }
+  }
+}
