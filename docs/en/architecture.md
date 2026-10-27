@@ -5,7 +5,7 @@
 **MindIE Motor** is a request scheduling framework oriented to distributed inference of large language models (LLMs), such as **PD disaggregation inference** (separation of the Prefill and Decode phases). Through an open and scalable inference service platform architecture, it connects to [vLLM-Ascend](https://github.com/vllm-project/vllm-ascend) and the SGLang native runtime, aiming to meet the high-performance inference requirements of LLMs.
 
 > [!NOTE]NOTE
-> The original MindIE PyMotor repository has been renamed to MindIE Motor starting from version 3.1.0, and this naming will be used in subsequent releases. Its software positioning and core functionalities remain unchanged. It connects to the vLLM-Ascend and SGLang native engines.
+> MindIE Motor's software positioning and core functionalities remain unchanged. It connects to the vLLM-Ascend and SGLang native engines.
 
 ### Core Capabilities
 
