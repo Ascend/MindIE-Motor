@@ -5,7 +5,7 @@
 **MindIE Motor** is a request scheduling framework oriented to distributed inference of large language models (LLMs), such as **PD disaggregation inference** (separation of the Prefill and Decode phases). Through an open and scalable inference service platform architecture, it connects to [vLLM-Ascend](https://github.com/vllm-project/vllm-ascend) and the SGLang native runtime, aiming to meet the high-performance inference requirements of LLMs.
 
 > [!NOTE]NOTE
-> The original MindIE PyMotor repository has been renamed to MindIE Motor starting from version 3.1.0, and this naming will be used in subsequent releases. Its software positioning and core functionalities remain unchanged. vLLM-Ascend is currently the primary engine, and SGLang native engine access is also supported.
+> The original MindIE PyMotor repository has been renamed to MindIE Motor starting from version 3.1.0, and this naming will be used in subsequent releases. Its software positioning and core functionalities remain unchanged. It connects to the vLLM-Ascend and SGLang native engines.
 
 ### Core Capabilities
 
@@ -75,9 +75,9 @@ As the node-level service manager, it provides the following capabilities:
 
 ### Peripheral Components
 
-- **[vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)**: vLLM acceleration engine, which provides model instance acceleration capabilities.
+- **[vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)**: native inference engine, which provides model instance acceleration capabilities. For the supported scope, see [Supported Inference Engines](./user_guide/features/supported_inference_engines.md).
 
-- **[SGLang](https://github.com/sgl-project/sglang)**: an inference engine that can be accessed through the NodeManager native runtime. For the currently supported scope, see [Supported Inference Engines](./user_guide/features/supported_inference_engines.md).
+- **[SGLang](https://github.com/sgl-project/sglang)**: native inference engine, which provides model instance acceleration capabilities. For the supported scope, see [Supported Inference Engines](./user_guide/features/supported_inference_engines.md).
 
 - **[MindCluster](https://gitcode.com/Ascend/mind-cluster)**: Ascend cluster enablement component, which provides underlying Kubernetes support capabilities, CRD definitions in PD disaggregation, and supporting operators.
 
