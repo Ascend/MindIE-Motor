@@ -14,6 +14,7 @@ import pytest
 
 from motor.coordinator.router.adapters.pd_protocol import (
     ADAPTERS,
+    NATIVE_GENERATE_API,
     CoordinationMode,
     EngineEndpointMetadata,
     EngineLegSpec,
@@ -24,7 +25,6 @@ from motor.coordinator.router.adapters.pd_protocol import (
     LegContext,
     PrefillMetadata,
     SglangProtocolAdapter,
-    NATIVE_GENERATE_API,
     VllmProtocolAdapter,
 )
 
@@ -107,15 +107,17 @@ def test_vllm_prefill_does_not_add_max_completion_tokens():
     assert "max_completion_tokens" not in body
 
 
-def test_vllm_responses_prefill_uses_native_output_budget_field():
+@pytest.mark.parametrize("min_tokens", [None, 0, 2])
+def test_vllm_responses_prefill_requires_one_token_without_mutating_client_request(min_tokens: int | None):
     request = {
         "max_output_tokens": 32,
         "max_tokens": 16,
-        "min_tokens": 2,
         "max_completion_tokens": 8,
         "stream": True,
         "background": True,
     }
+    if min_tokens is not None:
+        request["min_tokens"] = min_tokens
     original = deepcopy(request)
 
     body = (
@@ -132,12 +134,15 @@ def test_vllm_responses_prefill_uses_native_output_budget_field():
     assert body["background"] is False
     assert body["stream"] is False
     assert "max_tokens" not in body
-    assert "min_tokens" not in body
+    assert body["min_tokens"] == 1
     assert "max_completion_tokens" not in body
 
 
-def test_vllm_responses_decode_preserves_client_lifecycle_fields():
+@pytest.mark.parametrize("min_tokens", [None, 0, 2])
+def test_vllm_responses_decode_preserves_client_lifecycle_fields(min_tokens: int | None):
     request = {"max_output_tokens": 32, "background": True, "stream": True}
+    if min_tokens is not None:
+        request["min_tokens"] = min_tokens
     original = deepcopy(request)
     ticket = {"do_remote_prefill": True, "remote_host": "10.0.0.1"}
 
@@ -155,6 +160,8 @@ def test_vllm_responses_decode_preserves_client_lifecycle_fields():
     assert body["background"] is True
     assert body["stream"] is True
     assert body["max_output_tokens"] == 32
+    assert body.get("min_tokens") == min_tokens
+    assert ("min_tokens" in body) == ("min_tokens" in original)
     assert body["kv_transfer_params"] == ticket
 
 

@@ -185,7 +185,7 @@ class VllmProtocolAdapter:
             body["background"] = False
             body["max_output_tokens"] = 1
             body.pop("max_tokens", None)
-            body.pop("min_tokens", None)
+            body["min_tokens"] = 1
             body.pop("max_completion_tokens", None)
         else:
             body["max_tokens"] = 1
