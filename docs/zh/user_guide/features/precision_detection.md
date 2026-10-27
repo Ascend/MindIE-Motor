@@ -8,6 +8,9 @@
 
 精度检测功能开启后，Coordinator 在选定 Decode 实例后抢占该实例的采样窗口，仅对抢占成功的请求注入 logprobs、top_logprobs 和 return_token_ids。响应完成后，采集的 token id 与 logprob 进入后台检测；检测结果按最终的 P/D 实例组累计。
 
+> [!WARNING] 性能影响
+> **重要：精度检测不是零开销功能。**每次有 Decode 请求成功抢占采样窗口时，该请求会额外携带 `logprobs`、`top_logprobs` 和 `return_token_ids`，因此会增加引擎计算、响应传输和后台检测资源消耗，造成较大的性能开销。开销仅作用于采样请求。后台检测不阻塞用户响应及 TPOT。
+
 当同一个实例组连续多次被检测为异常时，Coordinator会通过内部Router对目标实例组发起固定问答拨测。拨测完成后，Coordinator上报精度异常告警到Controller；如果Controller侧开启自动恢复，Controller会终止告警中的Decode实例，并在告警携带Prefill实例ID时同步终止Prefill实例。
 
 Coordinator的请求处理链路会发生以下变化：
