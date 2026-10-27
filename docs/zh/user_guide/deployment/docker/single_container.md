@@ -1,9 +1,9 @@
 # 基于Docker的单容器服务部署
 
-本文档指导用户基于Docker在单机上完成推理服务的部署，1台服务器、1个容器内完成整个PD分离的部署，适用于小模型（权重小于100GB）场景，该部署方式不依赖K8s。大模型或多机部署可参见[基于Docker的多容器服务部署](multi_container.md)。KV池化需要单独的kv_store容器，请使用多容器部署并参考[开启KV池化（可选）](./multi_container.md#开启kv池化可选)。
+本文档指导用户基于Docker在单机上完成推理服务的部署，1台服务器、1个容器内完成整个PD分离的部署，适用于小模型（权重小于100GB）场景，该部署方式不依赖K8s。大模型或多机部署可参见[宿主机部署：PD 分离](host/pd_disaggregation_deployment.md)。KV池化需要单独的kv_store容器，请使用宿主机部署并参考[开启KV池化（可选）](./host/pd_disaggregation_deployment.md#开启kv池化可选)。
 
 >[!NOTE] 说明
-> 单容器部署中，Prefill与Decode在同1个容器、同1台机器上，不支持Ascend 950PR&DT系列产品异构部署。PR + DT混合组网请参考[PR/DT异构部署（可选）](./multi_container.md#prdt异构部署可选)。
+> 单容器部署中，Prefill与Decode在同1个容器、同1台机器上，不支持 Ascend 950PR 与 950DT 混合组网。混合组网请使用[宿主机部署：PD 分离](./host/pd_disaggregation_deployment.md#启动服务)，Prefill 命令放到 950PR 上，Decode 命令放到 950DT 上。
 
 ## 部署流程示意图
 
@@ -118,7 +118,7 @@
 
 修改以下配置可以开启Render特性。特性开启后，部署单容器服务时，`docker_deploy.py`会在宿主机额外创建名为`{NAME}-vllm-render`的新容器`{NAME}`（即`--container-name`），并在其中运行vLLM Render服务。当用户终止服务时，请注意回收该容器。Render创建失败则不再创建主容器；主容器创建失败会删掉本次启动的Render。
 
-Docker场景下Coordinator与Render同生共死：容器内`--start`会 `docker restart` Render兄弟容器；Coordinator退出时`docker stop` Render。Render首次就绪后持续心跳，连续失败则Coordinator 跟随退出。为此会把宿主机`/var/run/docker.sock`挂进单容器；已创建的旧容器需重建后才具备该挂载。
+容器内`--start`会 `docker restart` Render兄弟容器；Coordinator退出时`docker stop` Render。Render退出后Coordinator继续运行。为此会把宿主机`/var/run/docker.sock`挂进单容器；已创建的旧容器需重建后才具备该挂载。
 
 在user_config.json开启Rander特性，示例如下：
 
@@ -132,7 +132,7 @@ Docker场景下Coordinator与Render同生共死：容器内`--start`会 `docker 
 }
 ```
 
-若该容器已经存在，部署脚本不会覆盖它。进入容器后执行以下命令：
+若主容器或 `{NAME}-vllm-render` 已经存在，在终端执行部署命令时会询问是否删除后继续。这一步在端口检查之前，避免把上次容器占用的端口当成新的冲突。回答 `y` 会删除这些已有容器再重新创建；回答 `N`，或在非交互环境执行，则中止且不覆盖。需要沿用已有 Render 容器时，进入该容器执行：
 
 ```bash
 python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --start --role render

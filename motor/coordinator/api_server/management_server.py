@@ -16,9 +16,7 @@ Does not create or start inference Workers; those are started by CoordinatorDaem
 
 import asyncio
 import json
-import os
 import secrets
-import signal
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -56,11 +54,6 @@ _rl = RateLimitedLogger(logger)
 _READINESS_REMAINS_READY_KEY = "coordinator.readiness.remains_ready"
 _RENDER_HEALTH_RETRY_SECONDS = 5.0
 _EXTERNAL_MODEL_PROBE_WORKERS = 8
-_RENDER_HEALTH_FAIL_THRESHOLD = 3
-
-
-def _in_kubernetes() -> bool:
-    return bool(os.getenv("KUBERNETES_SERVICE_HOST") or os.getenv("POD_NAMESPACE"))
 
 
 # Readiness 503: result -> HTTP detail.
@@ -284,47 +277,18 @@ class ManagementServer(BaseCoordinatorServer):
                 pass
         self._render_health_task = None
 
-    def _stop_coordinator_for_render(self) -> None:
-        """Take the Coordinator daemon down so Docker does not keep serving."""
-        logger.error("vLLM Render sidecar is down; stopping Coordinator (docker fail-closed)")
-        daemon_pid = self._daemon_pid
-        if daemon_pid:
-            try:
-                os.kill(daemon_pid, signal.SIGTERM)
-                return
-            except OSError as exc:
-                logger.error("Failed to signal Coordinator daemon pid=%s: %s", daemon_pid, exc)
-        logger.error("Coordinator daemon pid is unavailable; cannot fail-close with Render")
-
     async def _observe_render_health(self) -> None:
-        """Wait until Render is ready; Docker then heartbeats and fail-closes."""
+        """Wait until Render is ready, then stop. A later Render outage leaves Coordinator running."""
         client = VLLMRenderClient(self.coordinator_config.render_config)
         unavailable_logged = False
-        ready = False
-        consecutive_failures = 0
         try:
             while True:
                 if await client.health():
-                    if not ready:
-                        logger.info("vLLM Render sidecar is ready")
-                        ready = True
-                        if _in_kubernetes():
-                            return
-                    consecutive_failures = 0
-                elif not ready:
-                    if not unavailable_logged:
-                        logger.warning("vLLM Render sidecar is unavailable; Coordinator will use tokenizer fallback")
-                        unavailable_logged = True
-                else:
-                    consecutive_failures += 1
-                    logger.warning(
-                        "vLLM Render sidecar heartbeat failed (%s/%s)",
-                        consecutive_failures,
-                        _RENDER_HEALTH_FAIL_THRESHOLD,
-                    )
-                    if consecutive_failures >= _RENDER_HEALTH_FAIL_THRESHOLD:
-                        self._stop_coordinator_for_render()
-                        return
+                    logger.info("vLLM Render sidecar is ready")
+                    return
+                if not unavailable_logged:
+                    logger.warning("vLLM Render sidecar is unavailable; Coordinator will use tokenizer fallback")
+                    unavailable_logged = True
                 await asyncio.sleep(_RENDER_HEALTH_RETRY_SECONDS)
         finally:
             await client.aclose()

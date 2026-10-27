@@ -328,6 +328,10 @@ DEFAULT_COORD_MGMT_PORT = 1026
 DEFAULT_COORD_OBS_PORT = 1027
 DEFAULT_CONTROLLER_API_PORT = 1026
 DEFAULT_CONTROLLER_OBS_PORT = 1027
+# Docker shares the host network. Coordinator already uses 1026/1027, so an unset
+# Controller moves to these fixed ports. Every container reads the same values.
+DOCKER_CONTROLLER_API_PORT = 2026
+DOCKER_CONTROLLER_OBS_PORT = 2027
 DEFAULT_INFER_NODE_PORT = 31015
 DEFAULT_OBS_NODE_PORT = 31017
 
@@ -1072,7 +1076,7 @@ def _require_pod_npu_num(user_config: dict, engine_role: str) -> int:
 
 
 def validate_role_pod_layout(user_config: dict, engine_role: str) -> int:
-    """Ensure pod_num × pod_npu == dp × tp × pp. Return NPUs for this container."""
+    """Allow pod_num × pod_npu >= dp × tp × pp. Return NPUs for this container."""
     section = _engine_section(user_config, engine_role)
     if section is None:
         raise ValueError(f"{engine_role} has no engine section to derive NPU count.")
@@ -1081,10 +1085,10 @@ def validate_role_pod_layout(user_config: dict, engine_role: str) -> int:
     dp, tp, pp = _engine_parallel_sizes(section)
     left = pod_num * pod_npu
     right = dp * tp * pp
-    if left != right:
+    if left < right:
         raise ValueError(
             f"{engine_role}: {pod_num} containers × {pod_npu} NPUs = {left}, "
-            f"but data_parallel_size×tensor_parallel_size×pipeline_parallel_size "
+            f"which is less than data_parallel_size×tensor_parallel_size×pipeline_parallel_size "
             f"= {dp}×{tp}×{pp} = {right}."
         )
     return pod_npu
@@ -1232,6 +1236,56 @@ def validate_attached_npu_count(
     )
 
 
+def _explicit_config_port(api: dict, key: str) -> int | None:
+    if key not in api:
+        return None
+    value = api[key]
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
+def docker_controller_ports(user_config: dict) -> tuple[int, int]:
+    """Controller ports this Docker deploy will use.
+
+    An explicit ``user_config.json`` value wins. Missing ports become 2026/2027
+    on every container, so the engine dials the same address the Controller binds.
+    """
+    section = user_config.get(C.MOTOR_CONTROLLER_CONFIG) or {}
+    api = section.get("api_config") if isinstance(section, dict) else None
+    if not isinstance(api, dict):
+        api = {}
+    ctrl = _explicit_config_port(api, "controller_api_port")
+    obs = _explicit_config_port(api, "observability_api_port")
+    return (
+        DOCKER_CONTROLLER_API_PORT if ctrl is None else ctrl,
+        DOCKER_CONTROLLER_OBS_PORT if obs is None else obs,
+    )
+
+
+def apply_docker_controller_port_defaults(user_config: dict) -> bool:
+    """Write 2026/2027 into a config copy when the user left those keys unset."""
+    section = user_config.get(C.MOTOR_CONTROLLER_CONFIG)
+    if not isinstance(section, dict):
+        section = {}
+        user_config[C.MOTOR_CONTROLLER_CONFIG] = section
+    api = section.get("api_config")
+    if not isinstance(api, dict):
+        api = {}
+        section["api_config"] = api
+    filled = []
+    if _explicit_config_port(api, "controller_api_port") is None:
+        api["controller_api_port"] = DOCKER_CONTROLLER_API_PORT
+        filled.append("controller_api_port=%s" % DOCKER_CONTROLLER_API_PORT)
+    if _explicit_config_port(api, "observability_api_port") is None:
+        api["observability_api_port"] = DOCKER_CONTROLLER_OBS_PORT
+        filled.append("observability_api_port=%s" % DOCKER_CONTROLLER_OBS_PORT)
+    if not filled:
+        return False
+    logger.info("Docker controller ports left unset; using %s.", ", ".join(filled))
+    return True
+
+
 def prepare_configmap(
     deployer_dir: str,
     configmap_path: str,
@@ -1242,11 +1296,16 @@ def prepare_configmap(
     engine_ports: EnginePortOverrides | None = None,
 ) -> None:
     def apply_docker_overrides(dest_user_config) -> None:
-        if not engine_ports or not engine_ports.specified():
-            return
         with dest_user_config.open(encoding="utf-8") as handle:
             copied = json.load(handle)
-        apply_engine_port_overrides(copied, role, engine_ports)
+        if not isinstance(copied, dict):
+            return
+        changed = apply_docker_controller_port_defaults(copied)
+        if role and engine_ports and engine_ports.specified():
+            apply_engine_port_overrides(copied, role, engine_ports)
+            changed = True
+        if not changed:
+            return
         with dest_user_config.open("w", encoding="utf-8", newline="\n") as handle:
             json.dump(copied, handle, indent=2, ensure_ascii=False)
             handle.write("\n")
@@ -1439,6 +1498,15 @@ def image_exists(image: str) -> bool:
 
 def container_exists(name: str) -> bool:
     return _docker("inspect", name).returncode == 0
+
+
+def remove_container(name: str) -> None:
+    """Force-remove a container (``docker rm -f``)."""
+    result = _docker("rm", "-f", name)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise ValueError(f"Failed to remove container '{name}': {detail}")
+    logger.info("Removed container %s", name)
 
 
 DOCKER_SOCK = "/var/run/docker.sock"

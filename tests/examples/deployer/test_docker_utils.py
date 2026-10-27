@@ -106,6 +106,7 @@ class DockerDeployTests(unittest.TestCase):
                         },
                     ),
                     patch.object(docker_deploy, "_validate_host_create"),
+                    patch.object(docker_deploy, "_replace_occupied_host_containers"),
                     patch.object(docker_deploy, "_hardware_type_from_args", return_value="800I_A3"),
                     patch.object(docker_deploy, "_dshm_size_from_args", return_value="32Gi"),
                     patch.object(D, "validate_attached_npu_count"),
@@ -237,13 +238,26 @@ class DockerDeployTests(unittest.TestCase):
                 return_value={"NAME": "motor-p0", "IMAGE": "img", "WEIGHT": "/w", "EXAMPLES": "/e"},
             ),
             patch.object(D, "docker_available", return_value=True),
+            patch.object(D, "image_exists", return_value=True),
             patch.object(D, "container_exists", return_value=True),
+            patch.object(docker_deploy, "_hardware_type_from_args", return_value="800I_A2"),
+            patch.object(docker_deploy, "enter_docker_run_template", return_value=C.ENTER_DOCKER_RUN_CTRL),
+            patch.object(docker_deploy, "_dshm_size_from_args", return_value=None),
+            patch.object(docker_deploy, "apply_enter_devices", side_effect=lambda t, *_a, **_k: t),
+            patch.object(docker_deploy, "insert_create_binds", side_effect=lambda t, *_a, **_k: t),
+            patch.object(docker_deploy, "apply_enter_weight", side_effect=lambda t, *_a, **_k: t),
+            patch.object(docker_deploy, "apply_enter_shm", side_effect=lambda t, *_a, **_k: t),
+            patch.object(docker_deploy, "_require_host_binds"),
+            patch.object(docker_deploy, "_occupied_host_containers", return_value=["motor-p0"]),
+            patch.object(sys.stdin, "isatty", return_value=False),
+            patch.object(D, "remove_container") as remove,
             patch.object(os, "execvpe") as execvpe,
             patch.object(docker_deploy, "_ensure_render_sidecar_on_host") as ensure_render,
         ):
             self.assertEqual(docker_deploy._run_enter(args, "/tmp/deployer"), 1)
         execvpe.assert_not_called()
         ensure_render.assert_not_called()
+        remove.assert_not_called()
 
     def test_signal_services_only_kills_mocked_pids(self):
         leftover = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "vllm serve leftover"])
