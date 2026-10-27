@@ -2,7 +2,6 @@
 
 本文档指导基于 MindIE Motor 的 **SGLang** 引擎完成 K8s **PD 分离**部署。
 
-通用 PD 分离流程与 [PD 分离服务部署指导](./pd_disaggregation_deployment.md) 一致，本文只写 **SGLang 必改项与已验证典配用法**。
 
 > [!NOTE]说明
 >
@@ -59,7 +58,7 @@
 - `user_config.json`：部署拓扑、Motor 组件配置、引擎参数
 - `env.json`：各角色环境变量
 
-### 部署前必改项
+### 必改项
 
 打开典配中的 `user_config.json`，至少确认：
 
