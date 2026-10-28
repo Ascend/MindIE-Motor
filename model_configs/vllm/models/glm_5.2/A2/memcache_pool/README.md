@@ -1,13 +1,15 @@
 # glm_5.2 · A2 · memcache_pool
 
-来源：在本仓库 `glm_5.2/A2/pd` 上按 #1268 的 MemCache 处理逻辑叠加；对照 vLLM Ascend `GLM5.2.md` §5.1.4 A2（提交 `9db9336d492e9a2bc6320355e2c803a4a9449592`，代码块起始行 3536/3664）。PP 分区按 GLM-5.2 使用 `41,37`。
+来源：在同硬件 `pd/` 典配上叠加 Motor **KV Conductor 亲和调度**（现场标准池化），不是 vLLM Ascend 文档里的 MemCache/Mooncake Store `MultiConnector`。
 
-场景：A2 8-pod PD + MemCache 池化。`kv_cache_store_config` 已选择 A2 所需的 inprocess LocalService（Motor 对 A2 会强制 inprocess）。填写镜像与权重路径后，按仓库 deployer 指导部署。
+对照字段：
 
-Motor 适配要点：
+- Coordinator：`prefill_scheduler_type=kv_cache_affinity`，`decode_scheduler_type=load_balance`
+- Prefill：`kv-events-config`（zmq，`tcp://*:5557` / replay `tcp://*:6667`）
+- 顶层 `kv_conductor_config`：`http_server_port=13333`，`block_size=128`
+- P/D 传输仍用 `MooncakeConnectorV2`，不改拓扑
+- 非 Flash 未开 Render；`block_size` 先按 Motor 默认主组粒度 `128`。若 conductor 报 `block_size_mismatch`，按主注意力组实际事件粒度改。
 
-- 外层 `MultiConnector`：内层保留 `MooncakeConnectorV2`，并增加 `AscendStoreConnector`（`backend=memcache`，`use_layerwise=false`）。
-- Decode 打开 `enable-prefix-caching`。Prefill 按原文使用 `no-async-scheduling`。
-- Prefill 仍写 `nnodes=4`；Decode 不写 `nnodes`。不写 `api-server-count`。
+场景：A2 PD 分离 + KV Conductor 池化。镜像名、权重路径、`prefill_node_selector` 按实际环境填写。不要把现场 `NO_PROXY` / 业务 IP 写进典配。
 
-该配置完成静态转换与字段校验，未执行 NPU 启动、精度或性能验证。
+该配置完成静态转换与字段校验，未在本仓库侧重复跑 NPU。

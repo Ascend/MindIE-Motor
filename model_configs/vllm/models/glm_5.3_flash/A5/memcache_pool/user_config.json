@@ -10,14 +10,24 @@
     "image_name": "<请按实际情况填写镜像名称>",
     "job_id": "mindie-motor",
     "hardware_type": "Ascend950",
-    "weight_mount_path": "<请按实际情况填写模型权重文件的访问路径>"
+    "weight_mount_path": "<请按实际情况填写模型权重文件的访问路径>",
+    "prefill_node_selector": {}
   },
   "motor_controller_config": {},
-  "motor_coordinator_config": {},
-  "kv_cache_store_config": {
-    "backend": "memcache",
-    "local_service_mode": "inprocess",
-    "local_config_path": "/usr/local/Ascend/pyMotor/conf/mmc-local-inprocess.conf"
+  "motor_coordinator_config": {
+    "scheduler_config": {
+      "prefill_scheduler_type": "kv_cache_affinity",
+      "decode_scheduler_type": "load_balance"
+    },
+    "render_config": {
+      "enable": true,
+      "launch_args": {
+        "renderer_num_workers": 8,
+        "hf_overrides": {
+          "quantization_config": null
+        }
+      }
+    }
   },
   "motor_engine_prefill_config": {
     "engine_type": "vllm",
@@ -73,40 +83,27 @@
         "multistream_overlap_shared_expert": true
       },
       "kv_transfer_config": {
-        "kv_connector": "MultiConnector",
+        "kv_connector": "MooncakeConnectorV2",
         "kv_role": "kv_producer",
-        "kv_port": "30100",
         "engine_id": "0",
+        "kv_port": "30100",
         "kv_connector_extra_config": {
-          "connectors": [
-            {
-              "kv_connector": "MooncakeConnectorV2",
-              "kv_role": "kv_producer",
-              "engine_id": "0",
-              "kv_port": "30100",
-              "kv_connector_extra_config": {
-                "prefill": {
-                  "dp_size": 1,
-                  "tp_size": 8
-                },
-                "decode": {
-                  "dp_size": 8,
-                  "tp_size": 1
-                }
-              }
-            },
-            {
-              "kv_connector": "AscendStoreConnector",
-              "kv_role": "kv_producer",
-              "kv_connector_extra_config": {
-                "lookup_rpc_port": "0",
-                "backend": "memcache",
-                "use_layerwise": false,
-                "memcache_dp_init_barrier": true
-              }
-            }
-          ]
+          "prefill": {
+            "dp_size": 1,
+            "tp_size": 8
+          },
+          "decode": {
+            "dp_size": 8,
+            "tp_size": 1
+          }
         }
+      },
+      "kv-events-config": {
+        "publisher": "zmq",
+        "enable_kv_cache_events": true,
+        "endpoint": "tcp://*:5557",
+        "topic": "kv-events",
+        "replay_endpoint": "tcp://*:6667"
       }
     }
   },
@@ -150,43 +147,25 @@
         "recompute_scheduler_enable": true
       },
       "kv_transfer_config": {
-        "kv_connector": "MultiConnector",
+        "kv_connector": "MooncakeConnectorV2",
         "kv_role": "kv_consumer",
-        "kv_port": "30800",
         "engine_id": "1",
+        "kv_port": "30800",
         "kv_connector_extra_config": {
-          "connectors": [
-            {
-              "kv_connector": "MooncakeConnectorV2",
-              "kv_role": "kv_consumer",
-              "engine_id": "1",
-              "kv_port": "30800",
-              "kv_connector_extra_config": {
-                "prefill": {
-                  "dp_size": 1,
-                  "tp_size": 8
-                },
-                "decode": {
-                  "dp_size": 8,
-                  "tp_size": 1
-                }
-              }
-            },
-            {
-              "kv_connector": "AscendStoreConnector",
-              "kv_role": "kv_consumer",
-              "kv_connector_extra_config": {
-                "lookup_rpc_port": "0",
-                "backend": "memcache",
-                "use_layerwise": false,
-                "memcache_dp_init_barrier": true,
-                "consumer_is_to_load": false,
-                "consumer_is_to_put": false
-              }
-            }
-          ]
+          "prefill": {
+            "dp_size": 1,
+            "tp_size": 8
+          },
+          "decode": {
+            "dp_size": 8,
+            "tp_size": 1
+          }
         }
       }
     }
+  },
+  "kv_conductor_config": {
+    "block_size": 1152,
+    "http_server_port": 13333
   }
 }
