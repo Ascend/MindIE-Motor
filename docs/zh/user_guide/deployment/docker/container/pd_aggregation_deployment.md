@@ -1,8 +1,6 @@
-# 基于Docker的容器内PD混部服务部署指导
+# 基于Docker的容器内PD混部服务部署
 
 本文档指导用户在已创建的容器内部署PD混部服务。容器由云化平台（例如 ModelArts）或用户创建，用户进入容器后执行一条指令拉起服务。
-
----
 
 ## 准备镜像
 
@@ -21,8 +19,6 @@
    ```bash
    docker load -i xxxx.tar
    ```
-
----
 
 ## 准备服务启动脚本
 
@@ -74,8 +70,6 @@
 
    将整个/home/examples目录，**拷贝至所有服务器的相同路径**下。
 
----
-
 ## 创建容器
 
 按照规划在集群内的服务器上创建容器，一共需要创建三类容器。容器名与[启动服务](#启动服务)回显中的`--container-name`一致。`examples/deployer/lib/constant.py`中的模板可供参考：
@@ -91,8 +85,6 @@
 ```bash
 docker exec -it <容器名> bash
 ```
-
----
 
 ## 启动服务
 
@@ -158,8 +150,6 @@ docker exec -it <容器名> bash
    | --coordinator-ip/--controller-ip | 服务器 1 的 IP。管理面部署在服务器 1。 |
    | --kv-store-ip | 服务器 1 的 IP。开启池化时 kv_store 也部署在服务器 1，与管理面同机。 |
 
----
-
 ## 推理验证
 
 在**部署管理服务的服务器上**发送如下推理请求，即可进行推理验证：
@@ -187,8 +177,6 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 /home/examples/motor_workspace/motor-kvs/kvs/log/docker-kv_store-<时间戳>.log
 ```
 
----
-
 ## 终止服务与重复部署
 
 在终端执行`Ctrl+C`可终止服务，但不会退出容器。服务终止后会出现如下提示，便于用户重新部署。
@@ -198,8 +186,6 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --start --container-name motor-u0 --role union --instance-name u0 --pod-ip <本机IP地址> --nic-name <本机主网卡名称>
 运行日志：examples/motor_workspace/motor-u0/u0/log/docker-union-u0-<时间戳>.log
 ```
-
----
 
 ## 启用Render特性（可选）
 
@@ -226,8 +212,6 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 ```
 
 在管理面容器内执行`--start`时，会重启该 Render 容器。管理面进程退出时，会停止该 Render 容器。Render 退出后，Coordinator 继续运行。
-
----
 
 ## 调优指导
 

@@ -1,8 +1,6 @@
-# 基于Docker的多容器PD混部服务部署指导
+# 基于Docker的多容器PD混部服务部署
 
 本文档指导用户基于docker组件部署PD混部服务。用户在**宿主机执行一条指令创建容器并部署服务**，但容器的生命周期需要用户手动管理。
-
----
 
 ## 准备镜像
 
@@ -21,8 +19,6 @@
    ```bash
    docker load -i xxxx.tar
    ```
-
----
 
 ## 准备服务启动脚本
 
@@ -73,8 +69,6 @@
 3. <a id="step0003"></a>同步启动脚本配置。
 
    将整个/home/examples目录，**拷贝至所有服务器的相同路径**下。
-
----
 
 ## 启动服务
 
@@ -133,8 +127,6 @@
    | --coordinator-ip/--controller-ip | 服务器 1 的 IP。管理面部署在服务器 1。 |
    | --kv-store-ip | 服务器 1 的 IP。开启池化时 kv_store 也部署在服务器 1，与管理面同机。 |
 
----
-
 ## 推理验证
 
 在**部署管理服务的服务器上**发送如下推理请求，即可进行推理验证：
@@ -156,8 +148,6 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 {"detail":"Service is not available"}
 ```
 
----
-
 ## 终止服务与重复部署
 
 在终端执行`Ctrl+C`可终止服务，但不会退出容器。服务终止后会出现如下提示，便于用户重新部署。
@@ -167,8 +157,6 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --start --container-name motor-u0 --role union --instance-name u0 --pod-ip <本机IP地址> --nic-name <本机主网卡名称>
 运行日志：examples/motor_workspace/motor-u0/u0/log/docker-union-u0-<时间戳>.log
 ```
-
----
 
 ## 启用Render特性（可选）
 
@@ -189,8 +177,6 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_
 按[启动服务指导](#启动服务)部署管理面服务时，会额外创建一个名为 `<container-name>-vllm-render` 的容器，并在其中启动 vLLM Render。当管理面服务被终止时，render服务会被自动终止；当管理面服务被重启时，render服务被自动重启。Render退出后，管理面服务继续运行。
 
 若 `<container-name>` 或 `<container-name>-vllm-render` 已经存在，终端部署会询问是否删除后继续。这一步在端口检查之前：上次容器没清掉时，它占用的端口会随容器一起释放，不再被当成端口冲突。回答 `y` 会同时删除管理面容器和 Render 容器，再重新创建。回答 `N`，或在非交互环境执行，则中止且不覆盖。
-
----
 
 ## 调优指导
 

@@ -506,7 +506,7 @@ MindIE Motor依赖Kubernetes提供的容器编排能力，包括Pod部署、服�
     <!-- end id2 -->
 
     <!-- npu="950" id3 -->
-3. Ascend 950PR&DT系列产品（普通集群）。
+3. Ascend 950PR&950DT系列产品（普通集群）。
 
    >[!NOTE] 说明
    >`accelerator-type` 需按实际形态填写。普通集群使用 `850-Atlas-8p-8`；若为Atlas 850超节点服务器请改为 `850-SuperPod-Atlas-8`；Atlas 950超节点服务器请改为 `950-SuperPod-Atlas-8`。详细请参考[创建节点标签](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/01_preparing_for_installation.md#%E5%88%9B%E5%BB%BA%E8%8A%82%E7%82%B9%E6%A0%87%E7%AD%BE)。

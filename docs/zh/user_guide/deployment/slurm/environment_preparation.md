@@ -1,4 +1,4 @@
-# Slurm 集群环境准备
+# Slurm集群环境准备
 
 本章用于准备运行 MindIE Motor 所需的 Slurm 集群环境。请按“安装软件 → 配置集群 → 启动并验证”的顺序执行，完成后再阅读[服务部署](./service_deployment.md)。
 

@@ -1,4 +1,4 @@
-# Coordinator 裸机独立部署
+# Coordinator独立部署
 
 在物理机 / 虚拟机（无 K8s）上单独部署 Motor Coordinator，对接已存在的原生 vLLM Prefill / Decode 引擎，支持多 P 多 D。Coordinator 是纯 CPU 服务，不依赖 NPU、Controller、Node Manager。
 
