@@ -40,7 +40,7 @@ The role division for one request is as follows:
 
 | Constraint | Requirement |
 |----------|------|
-| Hardware | <ul><li>Atlas 800I A2</li><li>Atlas 800I A3</li><li>Ascend 950PR&950DT products</li></ul> |
+| Hardware | <ul><li>Atlas 800I A2</li><li>Atlas 800I A3</li><li>950PR&950DT products</li></ul> |
 | Deployment scenario | Supports both K8s and Docker deployment forms. |
 | Engine | Supports vLLM and SGLang. |
 | Feature mutual exclusion | <ul><li>K8s deployment supports all features of the current code repository.</li><li>Docker-only deployment supports only whole-service-level RAS monitoring, virtual inference health probe, engine restart, PD disaggregation degradation to aggregation, D2D weight direct transfer, faulty request rescheduling, faulty instance circuit breaker, precision anomaly detection, and other RAS features.</li></ul> |

@@ -1,8 +1,6 @@
-# 基于Docker的容器内PD分离服务部署指导
+# 基于Docker的容器内PD分离服务部署
 
 本文档指导用户在已创建的容器内部署PD分离服务。容器由云化平台（例如 ModelArts）或用户创建，用户进入容器后执行一条指令拉起服务。
-
----
 
 ## 准备镜像
 
@@ -21,8 +19,6 @@
    ```bash
    docker load -i xxxx.tar
    ```
-
----
 
 ## 准备服务启动脚本
 
@@ -65,8 +61,6 @@
 3. <a id="step0003"></a>同步启动脚本配置。
 
     将整个/home/examples目录，**拷贝至所有服务器的相同路径**下。
-
----
 
 ## 容器数量规划
 
@@ -142,15 +136,11 @@
      --controller-ip <controller管理服务所在服务器的 IP地址>
    ```
 
----
-
 ## 开启KV池化（可选）
 
 不开启池化可跳过本节。
 
 开启后，P/D通过`MultiConnector`同时做Prefill→Decode直传和KV入池；还需要单独部署一个**kv_store**容器（请参考[5.（可选）部署KV Cache Store](#step002)），更多详细内容请参考[KV池化能力](../../../features/kv_cache_store/README.md)文档来修改user_config.json配置文件。
-
----
 
 ## 创建容器
 
@@ -171,8 +161,6 @@
 ```bash
 docker exec -it <容器名> bash
 ```
-
----
 
 ## 容器内启动服务
 
@@ -262,8 +250,6 @@ docker exec -it <容器名> bash
 
 上述命令执行后，窗口将启动对应服务，用户在屏幕上可观察到日志打印。
 
----
-
 ## 推理验证
 
 在**部署管理服务的服务器上**发送如下推理请求，即可进行推理验证：
@@ -291,8 +277,6 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 /home/examples/motor_workspace/motor-kvs/kvs/log/docker-kv_store-<时间戳>.log
 ```
 
----
-
 ## 终止服务与重复部署
 
 在终端执行`Ctrl+C`可终止服务，但不会退出容器。服务终止后会出现如下提示，便于用户重新部署。
@@ -302,8 +286,6 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --start --container-name motor-ctrl --role coordinator,controller --pod-ip <本机IP地址> --nic-name <本机主网卡名称>
 运行日志：examples/motor_workspace/motor-ctrl/ctrl/log/docker-coordinator-controller-<时间戳>.log
 ```
-
----
 
 ## 启用Render特性（可选）
 
@@ -330,8 +312,6 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 ```
 
 在管理面容器内执行`--start`时，会重启该 Render 容器。管理面进程退出时，会停止该 Render 容器。Render 退出后，Coordinator 继续运行。
-
----
 
 ## 调优指导
 

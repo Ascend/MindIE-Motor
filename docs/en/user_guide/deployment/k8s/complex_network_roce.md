@@ -1,6 +1,6 @@
 # Modifying the Deployer for Complex Networking
 
-On Ascend 950PR&950DT products, when host RoCE is used for HYBM pooling and for cross-node Prefill and Decode, the following changes must be made in **your own deployment copy** of `examples/deployer`, relative to the current `master`. The changes are bound to the site NICs, DNS, card IDs, and huge pages, so they are not merged into the trunk directly.
+On 950PR&950DT products, when host RoCE is used for HYBM pooling and for cross-node Prefill and Decode, the following changes must be made in **your own deployment copy** of `examples/deployer`, relative to the current `master`. The changes are bound to the site NICs, DNS, card IDs, and huge pages, so they are not merged into the trunk directly.
 
 The IP addresses, node names, card IDs, huge page sizes, and hixlep paths below are all from one site example (Prefill on `motor-master-109`, Decode on `motor-worker-104`, namespace `mindie-motor-dsv4-roce`). Replace them with your own values in another environment.
 
@@ -23,9 +23,9 @@ After the change, run `ulimit -l` in the engine container; it should return `unl
 
 ## 2. Changing the Memcache Protocol to device_rdma
 
-On Ascend 950PR&950DT products, the current `master` sets the LocalService protocol to `device_urma` (earlier templates default to `device_sdma`). This pooling uses HYBM RoCE, not UB.
+On 950PR&950DT products, the current `master` sets the LocalService protocol to `device_urma` (earlier templates default to `device_sdma`). This pooling uses HYBM RoCE, not UB.
 
-- `device_sdma` is rejected outright on Ascend 950PR&950DT products, reporting `A5 or x86 not support batch extend copy`.
+- `device_sdma` is rejected outright on 950PR&950DT products, reporting `A5 or x86 not support batch extend copy`.
 
 - `device_urma` does not match the current host RoCE.
 
@@ -51,7 +51,7 @@ In the same function, if `KV_CACHE_STORE_PORT` is set, change the port of `ock.m
 
 ## 3. Adding Privileges to the Engine Container
 
-The current `master` grants privileges to the engine only under the host-nic overlay of ASCEND_GLOBAL_RESOURCE_CONFIG (`uboe` / `roce` / `ub_rtp:device`). To align with a colleague's Docker `--privileged`, always enable privileges for the engine Pods on Ascend 950PR&950DT products; otherwise TsdOpen cannot see the host RoCE devices.
+The current `master` grants privileges to the engine only under the host-nic overlay of ASCEND_GLOBAL_RESOURCE_CONFIG (`uboe` / `roce` / `ub_rtp:device`). To align with a colleague's Docker `--privileged`, always enable privileges for the engine Pods on 950PR&950DT products; otherwise TsdOpen cannot see the host RoCE devices.
 
 In `apply_a5_engine_pod_config` in `examples/deployer/lib/generator/engine.py`, in the branch for this product, after appending the hostPath and before checking the overlay, add the following to the container:
 
@@ -393,7 +393,7 @@ Add the `nodeSelector` of the same machine to the Pods of Controller, Coordinato
 
 ### 13.3 Separating Ports on the Same Machine
 
-In `user_config.json`, Prefill and Decode each have 1 instance, 1 Pod, and 4 cards, with `data_parallel_size` set to 4 and `tensor_parallel_size` set to 1. Set `hardware_type` to `Ascend950`. Fill in the image according to the on-site Ascend 950PR&950DT series product image.
+In `user_config.json`, Prefill and Decode each have 1 instance, 1 Pod, and 4 cards, with `data_parallel_size` set to 4 and `tensor_parallel_size` set to 1. Set `hardware_type` to `Ascend950`. Fill in the image according to the on-site 950PR&950DT series product image.
 
 With `hostNetwork` on the same machine, the following ports must not be shared between the two sides:
 

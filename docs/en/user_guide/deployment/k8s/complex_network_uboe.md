@@ -1,6 +1,6 @@
 # UBOE Networking Modifications
 
-On Ascend 950PR&950DT products, when `uboe:device` is used for pooling and Prefill and Decode are placed on the same machine with 4 cards each, modify the following places in your own deployment copy, relative to `examples/deployer` of the current `master`. These values are tied to node names and are not merged into the mainline directly.
+On 950PR&950DT products, when `uboe:device` is used for pooling and Prefill and Decode are placed on the same machine with 4 cards each, modify the following places in your own deployment copy, relative to `examples/deployer` of the current `master`. These values are tied to node names and are not merged into the mainline directly.
 
 The configuration directory of this example is `model_configs/vllm/dsv4_uboe_memcache_k8s/`, and `deploy.py` is in `examples/deployer/`. Both Prefill and Decode are pinned to `motor-master`, and the namespace comes from `job_id`: `mindie-motor-dsv4-k8s`. The Coordinator NodePort in the example is `31015`.
 
@@ -49,7 +49,7 @@ kubelet runs `probe/probe.sh` directly without sourcing `boot.sh`, so unset the 
 
 ## 3. Do Not Enable Privileges for the UBOE Overlay
 
-The current `master` adds `privileged: true` for engines on Ascend 950PR&950DT products when ASCEND_GLOBAL_RESOURCE_CONFIG is `uboe` / `roce` / `ub_rtp:device`. When P/D each occupy 4 cards on the same node, a privileged container sees all cards, and the two sides initialize the same set of physical cards.
+The current `master` adds `privileged: true` for engines on 950PR&950DT products when ASCEND_GLOBAL_RESOURCE_CONFIG is `uboe` / `roce` / `ub_rtp:device`. When P/D each occupy 4 cards on the same node, a privileged container sees all cards, and the two sides initialize the same set of physical cards.
 
 In `apply_a5_engine_pod_config` of `lib/generator/engine.py`, change the code as follows when the overlay is enabled:
 
@@ -59,7 +59,7 @@ sec[C.PRIVILEGED] = False
 sec["allowPrivilegeEscalation"] = False
 ```
 
-Keep it non-privileged so that the device plugin hides the NPUs that do not belong to this Pod. Do not follow the host RoCE setup and make all engines on Ascend 950PR&950DT products privileged.
+Keep it non-privileged so that the device plugin hides the NPUs that do not belong to this Pod. Do not follow the host RoCE setup and make all engines on 950PR&950DT products privileged.
 
 ## 4. Remove the Duplicate npu-smi Mount
 

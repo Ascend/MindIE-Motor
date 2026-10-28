@@ -6,7 +6,7 @@
 
 适用范围说明：
 
-- 适用机器：Atlas 800I A2推理服务器、Atlas 800I A3超节点服务器、Ascend 950PR&DT系列产品
+- 适用机器：Atlas 800I A2推理服务器、Atlas 800I A3超节点服务器、Ascend 950PR&950DT系列产品
 - 适用场景：大EP出现挂死等服务不可用且不可自恢复的场景
 - 部署形态：Kubernetes 或 **Docker-only（无 K8s）**。Docker-only 不能依赖 `kubectl get pods`，需在启动命令中增加 `--coordinator-ip`；端口仍从 `user_config.json` 读取。
 

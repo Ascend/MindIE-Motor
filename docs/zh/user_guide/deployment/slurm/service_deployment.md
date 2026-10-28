@@ -1,4 +1,4 @@
-# Slurm 服务部署
+# Slurm服务部署
 
 本文介绍如何使用 `examples/deployer/slurm_deploy.py`，通过 Slurm 和 Apptainer 部署
 MindIE Motor。部署前请先完成[环境准备](./environment_preparation.md)。

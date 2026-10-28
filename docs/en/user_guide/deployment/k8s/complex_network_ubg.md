@@ -1,6 +1,6 @@
 # UBG Networking Modification
 
-On Ascend 950PR&950DT products, when a single node has 16 cards, Prefill uses `0-7`, Decode uses `8-15`, and the communication protocol is `ub_rtp:device`, make the following changes in **your own Docker startup copy** relative to the current `master`. This approach does not go through the K8s `deploy.py`. The patches are bound to the on-site card IDs, NICs, and ports, and are not merged into the trunk directly.
+On 950PR&950DT products, when a single node has 16 cards, Prefill uses `0-7`, Decode uses `8-15`, and the communication protocol is `ub_rtp:device`, make the following changes in **your own Docker startup copy** relative to the current `master`. This approach does not go through the K8s `deploy.py`. The patches are bound to the on-site card IDs, NICs, and ports, and are not merged into the trunk directly.
 
 The IP, NICs, image name, and card IDs below are examples from the run on `141.63.88.64` on 2026-09-20. The model is `Qwen3-30B-A3B-W8A8`. Replace them with your own values when you change machines.
 

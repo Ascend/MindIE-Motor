@@ -133,7 +133,7 @@ None
 - Added capacity planning metrics, supporting HPA-based automatic scaling and PD ratio derivation.
 - Added support for configuring scheduling policies for Prefill and Decode separately.
 - Added the Coordinator independent deployment mode and Mooncake standalone deployment adaptation.
-- Added support for deploying inference services in IPv6 single-stack networking on Ascend 950PR&950DT products.
+- Added support for deploying inference services in IPv6 single-stack networking on 950PR&950D products.
 - Added startup acceleration for inference engine services.
 - Added support for the Coordinator to use an independent vLLM Render service to implement tokenizer capabilities.
 - Added support for data obfuscation inference (PMCC). The Coordinator side performs bidirectional permutation of the obfuscated vocabulary and multimodal tensors, and can directly host data obfuscation weights.

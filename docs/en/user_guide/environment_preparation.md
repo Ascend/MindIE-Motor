@@ -515,7 +515,7 @@ Based on the server type, perform the following operations on the management nod
     <!-- end id2 -->
 
     <!-- npu="950" id3 -->
-3. Ascend 950PR&DT products (common cluster).
+3. 950PR&950DT products (common cluster).
 
    >[!NOTE]NOTE
    >`accelerator-type` must be filled in based on the actual form. For a common cluster, use `850-Atlas-8p-8`; for an Atlas 850, change it to `850-SuperPod-Atlas-8`; for an Atlas 950 SuperPoD, change it to `950-SuperPod-Atlas-8`. For details, see [Creating Node Labels](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/en/scheduling/installation_guide/03_installation/manual_installation/01_preparing_for_installation.md#%E5%88%9B%E5%BB%BA%E8%8A%82%E7%82%B9%E6%A0%87%E7%AD%BE).

@@ -2,11 +2,11 @@
 
 This document uses a **complete and detailed** deployment case to guide developers through deploying the Motor-based PD disaggregation service, and provides guidance on configuration optimization practices for production environments. If the underlying engine is **SGLang**, refer to [SGLang PD Disaggregation Deployment Guide](./pd_disaggregation_sglang.md) first.
 
-## Pre-check for Ascend 950PR&DT products (Can Be Omitted for Other Server Series)
+## Pre-check for 950PR&950DT products (Can Be Omitted for Other Server Series)
 
 - **Preparing the hixlep configuration path**
 
-    When deploying inference services on Ascend 950PR&DT products, check on each server whether the `/lib/route.conf` and `/etc/hccl_rootinfo.json` configuration files and the `/etc/hixlep` directory (UB link topology structure) exist and are correct. If they do not exist or are incorrect, refer to the [hixlep configuration file generation document](https://gitcode.com/cann/hixl/wiki/A5%20LocalCommRes%E9%85%8D%E7%BD%AE%E6%8C%87%E5%8D%97.md) to generate the corresponding content, and use the "D2D scenario" when generating `/etc/hixlep`.
+    When deploying inference services on 950PR&950DT products, check on each server whether the `/lib/route.conf` and `/etc/hccl_rootinfo.json` configuration files and the `/etc/hixlep` directory (UB link topology structure) exist and are correct. If they do not exist or are incorrect, refer to the [hixlep configuration file generation document](https://gitcode.com/cann/hixl/wiki/A5%20LocalCommRes%E9%85%8D%E7%BD%AE%E6%8C%87%E5%8D%97.md) to generate the corresponding content, and use the "D2D scenario" when generating `/etc/hixlep`.
 
 ## Obtaining the Startup Script (Setup and Image Preparation)
 
@@ -266,7 +266,7 @@ Schedule requests with the same prefix to the same instance to reuse the existin
 
 ### PD Heterogeneous (PR/DT) Scheduling
 
-Ascend 950PR&DT products are classified into PR and DT types: PR uses Bailu memory, and DT uses HBM. HBM provides higher bandwidth and better performance and is more suitable for Decode; Prefill can be deployed on PR. Therefore, in a **PR + DT networking** scenario, P instances must be scheduled to PR nodes and D instances to DT nodes.
+950PR&950DT products are classified into PR and DT types: PR uses Bailu memory, and DT uses HBM. HBM provides higher bandwidth and better performance and is more suitable for Decode; Prefill can be deployed on PR. Therefore, in a **PR + DT networking** scenario, P instances must be scheduled to PR nodes and D instances to DT nodes.
 
 - **Principle**: Append `huawei.com/npu.chip.name` to the `nodeSelector` of the PD disaggregation Prefill/Decode Pods so that it matches the existing chip label on the node.
 
