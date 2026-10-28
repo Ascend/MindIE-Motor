@@ -41,19 +41,19 @@ vLLM 常用模型的配置示例在 [model_configs/vllm/models](./model_configs/
 
 | 模型 | Atlas 800I A2 | Atlas 800I A3 超节点 | Ascend 950PR |
 | --- | --- | --- | --- |
-| DeepSeek-V3.1 | [A2](./model_configs/vllm/models/deepseek_v3.1/A2) | [A3](./model_configs/vllm/models/deepseek_v3.1/A3) | [A5](./model_configs/vllm/models/deepseek_v3.1/A5) |
-| DeepSeek-V4 🔥🔥 |  |  |  |
-| DeepSeek-V4-Flash 🔥 | [A2](./model_configs/vllm/models/deepseek_v4_flash/A2) | [A3](./model_configs/vllm/models/deepseek_v4_flash/A3) | [A5](./model_configs/vllm/models/deepseek_v4_flash/A5) |
-| DeepSeek-V4-Pro | [A2](./model_configs/vllm/models/deepseek_v4_pro/A2) | [A3](./model_configs/vllm/models/deepseek_v4_pro/A3) | [A5](./model_configs/vllm/models/deepseek_v4_pro/A5) |
-| DeepSeek-V4.1 🔥🔥 |  |  |  |
 | DeepSeek-V4.1-Flash 🔥🔥🔥 |  |  |  |
-| GLM-5 | [A2](./model_configs/vllm/models/glm_5/A2) | [A3](./model_configs/vllm/models/glm_5/A3) | [A5](./model_configs/vllm/models/glm_5/A5) |
-| GLM-5.1 🔥 | [A2](./model_configs/vllm/models/glm_5.1/A2) | [A3](./model_configs/vllm/models/glm_5.1/A3) | [A5](./model_configs/vllm/models/glm_5.1/A5) |
+| GLM-5.3-Flash 🔥🔥🔥 |  |  |  |
+| DeepSeek-V4-Flash-DSpark 🔥🔥🔥 |  |  |  |
+| DeepSeek-V4 🔥🔥 |  |  |  |
+| DeepSeek-V4.1 🔥🔥 |  |  |  |
 | GLM-5.2 🔥🔥 |  |  |  |
 | GLM-5.3 🔥🔥 |  |  |  |
-| GLM-5.3-Flash 🔥🔥🔥 |  |  |  |
+| DeepSeek-V4-Flash 🔥 | [A2](./model_configs/vllm/models/deepseek_v4_flash/A2) | [A3](./model_configs/vllm/models/deepseek_v4_flash/A3) | [A5](./model_configs/vllm/models/deepseek_v4_flash/A5) |
+| GLM-5.1 🔥 | [A2](./model_configs/vllm/models/glm_5.1/A2) | [A3](./model_configs/vllm/models/glm_5.1/A3) | [A5](./model_configs/vllm/models/glm_5.1/A5) |
+| DeepSeek-V3.1 | [A2](./model_configs/vllm/models/deepseek_v3.1/A2) | [A3](./model_configs/vllm/models/deepseek_v3.1/A3) | [A5](./model_configs/vllm/models/deepseek_v3.1/A5) |
+| DeepSeek-V4-Pro | [A2](./model_configs/vllm/models/deepseek_v4_pro/A2) | [A3](./model_configs/vllm/models/deepseek_v4_pro/A3) | [A5](./model_configs/vllm/models/deepseek_v4_pro/A5) |
+| GLM-5 | [A2](./model_configs/vllm/models/glm_5/A2) | [A3](./model_configs/vllm/models/glm_5/A3) | [A5](./model_configs/vllm/models/glm_5/A5) |
 | Qwen3-235B | [A2](./model_configs/vllm/models/qwen_235b/A2) | [A3](./model_configs/vllm/models/qwen_235b/A3) | — |
-| DeepSeek-V4-Flash-DSpark 🔥🔥🔥 |  |  |  |
 
 ## ⚙️ 功能介绍
 
