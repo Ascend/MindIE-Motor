@@ -1,3 +1,3 @@
 # deepseek_v4_flash · A2 · pd
 
-来源：vLLM Ascend `DeepSeek-V4-Flash.md` A2 MTP PD（4×1P + 1×4D）。每个 P 实例 DP8×TP1（8 卡），Decode 实例跨 4 机 DP32×TP1。`MooncakeHybridConnector`，`mtp` tokens=1。未在本实验室实测。
+由 A3 现场跑通的 MTP 1P1D 按 **16 卡 = 两台 A2（各 8 卡）** 映射：引擎切分不变（Prefill DP4×TP4，Decode DP16×TP1，`mtp` tokens=1，`block-size=32`，1M 上下文），部署改为每个实例 2 个 8 卡 Pod。未在 A2 机器上实测。跨机互联与 A3 机内 HCCS 不同，属于映射残留风险。
