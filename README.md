@@ -2,8 +2,6 @@
     <img alt="MindIE Motor" src="./docs/zh/imgs/MindIE-Motor-wordmark.jpg" width="720">
 </p>
 
-<h1 align="center">MindIE Motor</h1>
-
 <div align="center">
 
 [![Ascend](https://img.shields.io/badge/Community-MindIE%20Motor-blue.svg)](https://www.hiascend.com/forum/)
@@ -16,13 +14,13 @@
 
 ## ✨ 最新消息
 
-- [2026.10.15]: 🚀 3.2.0 发布，对接 SGLang 原生引擎，提供 PD 分离推理服务
-- [2026.10.15]: 🚀 支持 D2D 权重加载，缩短新实例启动时间
-- [2026.10.15]: 🚀 支持 Docker only 一键部署，以及基于 Slurm + Apptainer 的部署
-- [2026.10.15]: 🚀 支持跨超节点部署、PD 异构部署，以及推理大 EP 场景下的 DP 域缩容
-- [2026.10.15]: 🚀 支持基于 HPA 的自动扩缩容，Prefill 与 Decode 可分别配置调度策略
-- [2026.10.15]: 🚀 支持数据混淆推理（PMCC）
-- [2026.10.15]: 🚀 长短序列动态分桶调度、KV Cache 亲和性调度增强（POC）
+- [2026.10.28]: 🚀 3.2.0 发布，对接 SGLang 原生引擎，提供 PD 分离推理服务
+- [2026.10.28]: 🚀 支持 D2D 权重加载，缩短新实例启动时间
+- [2026.10.28]: 🚀 支持 Docker only 一键部署，以及基于 Slurm + Apptainer 的部署
+- [2026.10.28]: 🚀 支持跨超节点部署、PD 异构部署，以及推理大 EP 场景下的 DP 域缩容
+- [2026.10.28]: 🚀 支持基于 HPA 的自动扩缩容，Prefill 与 Decode 可分别配置调度策略
+- [2026.10.28]: 🚀 支持数据混淆推理（PMCC）
+- [2026.10.28]: 🚀 长短序列动态分桶调度、KV Cache 亲和性调度增强（POC）
 - [2026.03]: 🚀 MindIE Motor 正式开源
 
 ## ℹ️ 简介
