@@ -224,6 +224,8 @@ def _build_render_container(
         {C.NAME: "HF_HUB_OFFLINE", C.VALUE: "1"},
         {C.NAME: "TRANSFORMERS_OFFLINE", C.VALUE: "1"},
         {C.NAME: "VLLM_LOGGING_LEVEL", C.VALUE: "INFO"},
+        # Render performs preprocessing only; disabling MLA avoids vLLM CPU MLA+Mamba cache validation conflicts.
+        {C.NAME: "VLLM_MLA_DISABLE", C.VALUE: "1"},
         {C.NAME: "OMP_NUM_THREADS", C.VALUE: "4"},
     ]
     if not use_cpu_image:
@@ -333,6 +335,7 @@ def render_runtime_env(use_cpu_image: bool) -> dict[str, str]:
         "HF_HUB_OFFLINE": "1",
         "TRANSFORMERS_OFFLINE": "1",
         "VLLM_LOGGING_LEVEL": "INFO",
+        "VLLM_MLA_DISABLE": "1",
         "OMP_NUM_THREADS": "4",
     }
     if not use_cpu_image:
@@ -404,6 +407,8 @@ def build_docker_render_run_argv(container_name: str, user_config: dict[str, Any
         "TRANSFORMERS_OFFLINE=1",
         "-e",
         "VLLM_LOGGING_LEVEL=INFO",
+        "-e",
+        "VLLM_MLA_DISABLE=1",
         "-e",
         "OMP_NUM_THREADS=4",
     ]

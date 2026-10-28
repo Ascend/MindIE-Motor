@@ -26,6 +26,7 @@ from lib.generator.render import (
     build_docker_render_run_argv,
     build_render_exec_argv,
     configure_render_sidecar,
+    render_runtime_env,
     role_needs_docker_render,
 )
 from lib.generator.single_container import generate_yaml_single_container
@@ -110,7 +111,9 @@ def test_cpu_render_uses_dedicated_image_without_ascend_runtime():
     assert _render_arg(container, "--renderer-num-workers") == "4"
     assert C.ASCEND_910_NPU_NUM not in container[C.RESOURCES][C.REQUESTS]
     assert container["command"] == ["vllm"]
-    assert "VLLM_PLUGINS" not in {item[C.NAME] for item in container[C.ENV]}
+    env = {item[C.NAME]: item[C.VALUE] for item in container[C.ENV]}
+    assert env["VLLM_MLA_DISABLE"] == "1"
+    assert "VLLM_PLUGINS" not in env
     assert ASCEND_DRIVER_VOLUME_NAME not in {item[C.NAME] for item in pod_spec[C.VOLUMES]}
 
 
@@ -183,6 +186,7 @@ def test_docker_render_run_argv_uses_launch_args():
     assert "--renderer-num-workers" in argv
     assert argv[argv.index("--renderer-num-workers") + 1] == "3"
     assert "--enable-auto-tool-choice" in argv
+    assert "VLLM_MLA_DISABLE=1" in argv
     domains_index = argv.index("--allowed-media-domains")
     assert argv[domains_index + 1 : domains_index + 3] == ["images.example.com", "media.example.com"]
     assert "--host" in argv
@@ -208,6 +212,7 @@ def test_docker_render_exec_argv_matches_run_command():
     assert role_needs_docker_render("render") is False
     assert role_needs_docker_render("prefill") is False
     assert role_needs_docker_render("coordinator") is True
+    assert render_runtime_env(True)["VLLM_MLA_DISABLE"] == "1"
     disabled = _user_config()
     disabled[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["enable"] = False
     with pytest.raises(ValueError, match="enable is false"):
@@ -239,6 +244,7 @@ def test_ascend_render_inherits_service_image_and_mounts_driver_without_requesti
     assert "vllm.triton_utils" in container["args"][3]
     assert container["args"][4:6] == ["launch", "render"]
     env = {item[C.NAME]: item[C.VALUE] for item in container[C.ENV]}
+    assert env["VLLM_MLA_DISABLE"] == "1"
     assert env["VLLM_PLUGINS"] == ""
     assert env["TORCH_DEVICE_BACKEND_AUTOLOAD"] == "0"
     assert env["VLLM_CACHE_ROOT"] == "/tmp/vllm-render-cache"

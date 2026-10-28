@@ -218,41 +218,38 @@ vLLM Render 通过 `user_config.json` 中的 `motor_coordinator_config.render_co
         "port": 8100
       },
       "timeout_ms": 5000,
-      "image_name": "vllm-render-cpu:v0.25.0-arm64"
+      "image_name": ""
     }
   }
 }
 ```
 
-Deployer 会将 Render Sidecar 添加到 Coordinator Pod，并从当前 vLLM Engine 配置读取模型信息。`image_name`
-指定独立 CPU 镜像；省略时复用服务镜像、只读挂载 Ascend 驱动库且不申请 NPU。`enable_token_only_decode`
-默认为 `false`，此时 Render 仍负责分词，流式与非流式 Decode 均使用原生 OpenAI 响应；设置为 `true` 后两者均改用 token-only + Derender。`endpoint` 和 `timeout_ms`
-有默认值，无特殊需求无需配置。启用 `kv_cache_affinity` 调度时建议同时开启 Render，以复用同一份 prompt token ID。
+Deployer 会将 Render Sidecar 添加到 Coordinator Pod，并从当前 vLLM Engine 配置读取模型信息。`image_name`指定独立 CPU 镜像；省略时复用服务镜像、只读挂载 Ascend 驱动库且不申请 NPU。
+`enable_token_only_decode`默认为 `false`，此时 Render 仍负责分词，流式与非流式 Decode 均使用原生 OpenAI 响应；设置为 `true` 后两者均改用 token-only decode + Derender，非流式要求 vLLM ≥ 0.24，流式要求 vLLM ≥ 0.27。
+`endpoint` 和 `timeout_ms`有默认值，无特殊需求无需配置。启用 `kv_cache_affinity` 调度时建议同时开启 Render，以复用同一份 prompt token ID。
 
 vLLM Render 支持配置 `launch_args`，如启用多个 render worker thread 以及 Hermes Tool Call parser 时：
 
 ```json
 {
-  "launch_args": {
-    "renderer_num_workers": 4,
-    "enable_auto_tool_choice": true,
-    "tool_call_parser": "hermes"
+  "render_config": {
+    "enable": true,
+    "launch_args": {
+      "renderer_num_workers": 4,
+      "enable_auto_tool_choice": true,
+      "tool_call_parser": "hermes"
+    }
   }
 }
 ```
 
-`renderer_num_workers` 未配置时，Deployer 默认传 `4`。`tool_call_parser`、`reasoning_parser` 等解析参数还要求
-Render 镜像具备匹配的 Derender 能力：非流式解析要求 vLLM >= 0.25.0；流式解析要求包含 vLLM PR #50550
-（该功能未包含在 v0.29.0 及更早正式版本中）。其他高阶参数及对应取值可参考 vLLM 官方社区，按需配置。
+`renderer_num_workers` 未配置时，Deployer 默认传 `4`。使用 Tool Call 或 Reasoning 时，`tokenizer_mode`、`tool_call_parser`、`reasoning_parser`、`enable_auto_tool_choice` 等参数必须与推理引擎保持一致；非流式要求 vLLM ≥ 0.25，流式要求 vLLM ≥ 0.30，否则可能出现精度异常或响应字段解析错误。其他高阶参数及对应取值可参考 vLLM 官方社区，按需配置。
 
-使用限制：
+其他说明：
 
 - vLLM 0.30+ 对 token-only Generate 新增了 `--enable-scale-out` 门禁；开启 Render 后 Motor 会在支持时为 P/D/Union 引擎自动开启，无需手动配置。
-- `enable_token_only_decode` 默认值为 `false`。关闭时 Render 仍参与路由前分词和 PD Prefill，流式与非流式 Decode 均使用 vLLM 原生 OpenAI 响应；开启后两者均使用 token-only + Derender。非流式 Derender 要求 vLLM >= 0.24.0，流式要求 vLLM >= 0.27.0。
-- 普通文本请求的流式和非流式链路由 `enable_token_only_decode` 统一选择；数据混淆要求开启 token-only Decode。
-- 单 prompt 重调度继续使用 token ID replay；多 prompt 已输出后的逐 prompt replay、Trigger 多 prompt、SGLang 和本地 tokenizer 沿用原有边界。
+- vLLM 0.30 的 streaming Derender 在高并发场景可能造成 TPOT 劣化，部署前应结合实际并发和输出长度进行性能测试。该限制仅影响 `enable_token_only_decode=true` 的流式请求。
 - 请求级 Render 超时或接口不支持时回退本地 tokenizer；请求校验错误（400/422，以及带结构化错误响应的 404）和 Derender 失败直接返回客户端。Docker 场景下 Render 创建失败则不建主容器，主容器创建失败则删除 Render；`--start` 重启 Render 兄弟容器，Coordinator 退出则停止 Render。Render 退出后 Coordinator 继续运行。
-- 流式 Derender 按 chunk 无状态调用；长 prompt 或高并发场景需评估 Sidecar 的 CPU 与通信开销。
 
 数据混淆权重可通过 `motor_coordinator_config.token_obfuscation_config.enable=true` 开启 token 混淆。
 `vocab_size` 与 `token_white_list` 都没有内置默认值：`vocab_size` 未配置时由 Coordinator 从被服务权重目录的
@@ -261,8 +258,7 @@ Render 镜像具备匹配的 Derender 能力：非流式解析要求 vLLM >= 0.2
 Qwen3-VL 验证权重使用的 37 个白名单 token 见 [数据混淆推理（PMCC）](../../docs/zh/user_guide/features/data_obfuscation.md)，也可从混淆权重目录的
 `obf_config.json` 中抄录）；`seed_content` 默认留空，开启时必须通过受控配置显式注入。
 Seed 可用于还原词表置换，必须与混淆权重同权限保管，禁止提交到代码仓库或写入日志。
-开启后支持流式和非流式 vLLM Render token-only 链路；Render、混淆或 token-only endpoint 失败时请求直接失败，
-不回退原生 OpenAI 路径。
+该功能要求 `render_config.enable=true` 且 `render_config.enable_token_only_decode=true`。开启后支持流式和非流式 vLLM Render token-only 链路；Render、混淆或 token-only endpoint 失败时请求直接失败，不回退原生 OpenAI 路径。
 
 多模态数据混淆权重还可通过 `motor_coordinator_config.token_obfuscation_config.image_config.enable=true`
 开启图像混淆：Coordinator 在 Render 返回后，对 `features.kwargs_data` 中每个模态的张量载荷调用 SDK 的
