@@ -31,9 +31,17 @@
 
 ## ℹ️ 简介
 
-MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提供一键式 PD 分离与 PD 混部部署。它基于云原生插件化架构，对接 [vLLM-Ascend](https://github.com/vllm-project/vllm-ascend) 与 [SGLang](https://github.com/sgl-project/sglang) 原生引擎，结合高性能调度与负载均衡，构建高可用、可扩展的大规模推理服务。组件说明见 [架构](./docs/zh/architecture.md)。
+MindIE Motor 是面向大语言模型分布式推理的请求调度框架，基于云原生插件化架构，对接 [vLLM-Ascend](https://github.com/vllm-project/vllm-ascend) 与 [SGLang](https://github.com/sgl-project/sglang) 原生引擎。组件说明见 [架构](./docs/zh/architecture.md)。
 
 <img src="./docs/zh/imgs/MindIE-Motor-architecture-zh.png" alt="MindIE Motor 架构" width="100%"/>
+
+<table>
+  <tr>
+    <td width="33%" align="center"><b><a href="#一键部署">一键部署</a></b><br>Kubernetes、Docker、Slurm 上拉起 PD 分离与 PD 混部。</td>
+    <td width="33%" align="center"><b><a href="#极致性能">极致性能</a></b><br>PD / EPD 分离，配合 KV Cache 亲和、动态分桶和 KV 池化。</td>
+    <td width="33%" align="center"><b><a href="#稳定可靠">稳定可靠</a></b><br>请求与实例重调度、主备倒换、ScaleP2D，以及自动和手动扩缩容。</td>
+  </tr>
+</table>
 
 ## 🤖 常用模型
 
@@ -59,7 +67,7 @@ vLLM 常用模型的配置示例在 [model_configs/vllm/models](./model_configs/
 
 引擎与部署方式的覆盖范围见 [特性支持列表](./docs/zh/user_guide/features/supported_features.md)。下表只列主要能力入口。
 
-**一键部署**
+### 一键部署
 
 | 特性名称 | 介绍 |
 | --- | --- |
@@ -72,7 +80,7 @@ vLLM 常用模型的配置示例在 [model_configs/vllm/models](./model_configs/
 | Slurm | [Slurm 部署](./docs/zh/user_guide/deployment/slurm/README.md) |
 | Coordinator 独立部署 | [裸机独立部署](./docs/zh/user_guide/deployment/standalone.md) |
 
-**极致性能**
+### 极致性能
 
 | 特性名称 | 介绍 |
 | --- | --- |
@@ -84,7 +92,7 @@ vLLM 常用模型的配置示例在 [model_configs/vllm/models](./model_configs/
 | max_tokens 自适应 | [max_tokens 自适应](./docs/zh/user_guide/features/max_tokens_adaptation.md) |
 | 支持的推理引擎 | [支持的推理引擎](./docs/zh/user_guide/features/supported_inference_engines.md) |
 
-**稳定可靠**
+### 稳定可靠
 
 | 特性名称 | 介绍 |
 | --- | --- |
