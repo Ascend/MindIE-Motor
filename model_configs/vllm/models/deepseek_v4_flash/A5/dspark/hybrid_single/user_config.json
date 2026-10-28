@@ -1,0 +1,59 @@
+{
+  "version": "v2.0",
+  "motor_deploy_config": {
+    "deploy_mode": "infer_service_set",
+    "hybrid_instances_num": 1,
+    "single_hybrid_instance_pod_num": 1,
+    "hybrid_pod_npu_num": 8,
+    "image_name": "<请按实际情况填写镜像名称>",
+    "job_id": "mindie-motor",
+    "hardware_type": "Ascend950",
+    "weight_mount_path": "<请按实际情况填写模型权重文件的访问路径>"
+  },
+  "motor_controller_config": {},
+  "motor_coordinator_config": {
+    "scheduler_config": {
+      "deploy_mode": "single_node"
+    }
+  },
+  "motor_engine_union_config": {
+    "engine_type": "vllm",
+    "engine_config": {
+      "served_model_name": "dsv4",
+      "model": "<请按实际情况填写模型权重文件的访问路径>",
+      "gpu_memory_utilization": 0.9,
+      "data_parallel_size": 8,
+      "tensor_parallel_size": 1,
+      "pipeline_parallel_size": 1,
+      "prefill-context-parallel-size": 1,
+      "enable_expert_parallel": true,
+      "enable-chunked-prefill": true,
+      "max-model-len": 1048576,
+      "max-num-batched-tokens": 16384,
+      "max-num-seqs": 32,
+      "block-size": 32,
+      "safetensors-load-strategy": "prefetch",
+      "tokenizer-mode": "deepseek_v4",
+      "tool-call-parser": "deepseek_v4",
+      "enable-auto-tool-choice": true,
+      "reasoning-parser": "deepseek_v4",
+      "kv-cache-dtype": "fp8",
+      "attention_config": {
+        "indexer_kv_dtype": "fp8"
+      },
+      "compilation-config": {
+        "cudagraph_mode": "FULL_DECODE_ONLY"
+      },
+      "no_disable_hybrid_kv_cache_manager": true,
+      "speculative-config": {
+        "num_speculative_tokens": 5,
+        "method": "dspark"
+      },
+      "additional-config": {
+        "enable_cpu_binding": "True",
+        "multistream_overlap_shared_expert": true,
+        "enable_shared_expert_dp": true
+      }
+    }
+  }
+}

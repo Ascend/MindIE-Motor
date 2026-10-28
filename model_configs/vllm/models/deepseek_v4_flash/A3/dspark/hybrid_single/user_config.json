@@ -1,0 +1,65 @@
+{
+  "version": "v2.0",
+  "motor_deploy_config": {
+    "deploy_mode": "infer_service_set",
+    "hybrid_instances_num": 1,
+    "single_hybrid_instance_pod_num": 1,
+    "hybrid_pod_npu_num": 16,
+    "image_name": "<请按实际情况填写镜像名称>",
+    "job_id": "mindie-motor",
+    "hardware_type": "800I_A3",
+    "weight_mount_path": "<请按实际情况填写模型权重文件的访问路径>"
+  },
+  "motor_controller_config": {},
+  "motor_coordinator_config": {
+    "scheduler_config": {
+      "deploy_mode": "single_node"
+    }
+  },
+  "motor_engine_union_config": {
+    "engine_type": "vllm",
+    "engine_config": {
+      "served_model_name": "dsv4",
+      "model": "<请按实际情况填写模型权重文件的访问路径>",
+      "gpu_memory_utilization": 0.9,
+      "data_parallel_size": 4,
+      "tensor_parallel_size": 4,
+      "pipeline_parallel_size": 1,
+      "enable_expert_parallel": true,
+      "data_parallel_rpc_port": 9000,
+      "max-model-len": 1048576,
+      "max-num-batched-tokens": 10240,
+      "max-num-seqs": 64,
+      "block-size": 32,
+      "quantization": "ascend",
+      "tokenizer-mode": "deepseek_v4",
+      "tool-call-parser": "deepseek_v4",
+      "enable-auto-tool-choice": true,
+      "reasoning-parser": "deepseek_v4",
+      "model-loader-extra-config": {
+        "enable_multithread_load": true,
+        "num_threads": 128
+      },
+      "attention_config": {
+        "indexer_kv_dtype": "int8"
+      },
+      "speculative-config": {
+        "method": "dspark",
+        "num_speculative_tokens": 7,
+        "enforce_eager": true
+      },
+      "compilation-config": {
+        "cudagraph_mode": "FULL_DECODE_ONLY"
+      },
+      "additional-config": {
+        "ascend_compilation_config": {
+          "enable_npugraph_ex": true,
+          "enable_static_kernel": false
+        },
+        "enable_cpu_binding": true,
+        "enable_dsa_cp": true,
+        "multistream_overlap_shared_expert": true
+      }
+    }
+  }
+}
