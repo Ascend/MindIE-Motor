@@ -33,22 +33,22 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 引擎与部署方式的覆盖范围见 [特性支持列表](./docs/zh/user_guide/features/supported_features.md)。下表只列主要能力入口。
 
-**服务部署**
+**一键式服务部署**
 
 | 特性名称 | 介绍 |
 | --- | --- |
-| K8s PD 分离 | [PD 分离服务部署](./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md) |
-| K8s PD 混部 | [PD 混部服务部署](./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md) |
-| K8s SGLang PD 分离 | [SGLang PD 分离服务部署](./docs/zh/user_guide/deployment/k8s/pd_disaggregation_sglang.md) |
-| Docker | [单容器](./docs/zh/user_guide/deployment/docker/single_container.md)、[宿主机部署](./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md)、[容器内部署](./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md) |
-| Slurm | [Slurm 部署](./docs/zh/user_guide/deployment/slurm/README.md) |
-| Coordinator 独立部署 | [Coordinator 独立部署](./docs/zh/user_guide/deployment/standalone.md) |
+| K8s平台 PD 分离 | [PD 分离服务部署](./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md) |
+| K8s平台 PD 混部 | [PD 混部服务部署](./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md) |
+| Docker平台 PD 分离 | [单容器](./docs/zh/user_guide/deployment/docker/single_container.md)、[宿主机部署](./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md)、[容器内部署](./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md) |
+| Docker平台 PD 混部 | [Slurm 部署](./docs/zh/user_guide/deployment/slurm/README.md) |
+| 云化平台 PD 分离 | [单容器](./docs/zh/user_guide/deployment/docker/single_container.md)、[宿主机部署](./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md)、[容器内部署](./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md) |
+| 云化平台 PD 分离 | [单容器](./docs/zh/user_guide/deployment/docker/single_container.md)、[宿主机部署](./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md)、[容器内部署](./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md) |
+| 调度器（coordinator） 独立部署 | [Coordinator 独立部署](./docs/zh/user_guide/deployment/standalone.md) |
 
 **推理与调度**
 
 | 特性名称 | 介绍 |
 | --- | --- |
-| PD 分离 | [PD 分离](./docs/zh/user_guide/features/pd_disaggregation.md) |
 | EPD 分离 | [EPD 分离](./docs/zh/user_guide/features/EPD_disaggregation.md) |
 | KV Cache 亲和性调度 | [KV Cache 亲和性调度](./docs/zh/user_guide/features/kvcache_affinity.md) |
 | 动态分桶调度 | [动态分桶调度](./docs/zh/user_guide/features/dynamic_bucket.md) |
@@ -62,7 +62,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 | --- | --- |
 | 请求重调度 | [请求重调度](./docs/zh/user_guide/features/fault_tolerance/rescheduler.md) |
 | 实例重调度 | [实例重调度](./docs/zh/user_guide/features/fault_tolerance/instance_rescheduling.md) |
-| ScaleP2D | [ScaleP2D 故障恢复](./docs/zh/user_guide/features/fault_tolerance/scale_p2d.md) |
+| 缩P保D | [缩P保D 故障恢复](./docs/zh/user_guide/features/fault_tolerance/scale_p2d.md) |
 | 主备倒换 | [主备倒换](./docs/zh/user_guide/features/fault_tolerance/standby.md) |
 | 自动 / 手动扩缩容 | [自动弹性扩缩容](./docs/zh/user_guide/features/auto_scaling.md)、[手动扩缩容](./docs/zh/user_guide/features/manual_scaling.md) |
 | 容器快照 | [容器快照](./docs/zh/user_guide/features/container_snapshot.md) |
@@ -72,17 +72,12 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 ## 🚀 快速入门
 
-- **在线文档**：[MindIE Motor 文档](https://mindie-motor.readthedocs.io/)
-- **获取镜像**：在 [昇腾镜像仓库](https://www.hiascend.com/developer/ascendhub/detail/f1690465f39847a8b0a1f9e5b36a03c4) 切换到「镜像下载」。
 - **环境准备**：安装前的软硬件准备见 [环境准备](./docs/zh/user_guide/environment_preparation.md)。
 - **快速部署**：启动服务、接口调用、精度与性能测试、停止服务见 [快速部署](./docs/zh/user_guide/quick_start.md)。
 
 ## 📦 安装指南
 
-- **官方镜像**：见上方镜像仓库。
 - **基于 vLLM-Ascend / SGLang 基座镜像安装**：见 [准备 MindIE Motor 镜像](./docs/zh/user_guide/maintenance/build_motor_image_from_vllm_ascend.md)。
-- **K8s**：从 [部署模式说明](./docs/zh/user_guide/deployment/k8s/README.md) 开始。已有集群时也可使用 [云原生部署与 Helm Chart](./examples/cloud_native_deploy/README.zh.md)。
-- **Docker / Slurm**：见 [部署方式](./docs/zh/user_guide/deployment/README.md)。
 
 ## 📘 使用指南
 
