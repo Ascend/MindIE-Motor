@@ -53,7 +53,7 @@ vLLM 常用模型的配置示例在 [model_configs/vllm/models](./model_configs/
 | GLM-5.3 |  |  |  |
 | GLM-5.3-Flash |  |  |  |
 | Qwen3-235B | [A2](./model_configs/vllm/models/qwen_235b/A2) | [A3](./model_configs/vllm/models/qwen_235b/A3) | — |
-| DSpark |  |  |  |
+| DeepSeek-V4-Flash-DSpark |  |  |  |
 
 ## ⚙️ 功能介绍
 
