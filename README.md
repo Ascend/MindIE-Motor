@@ -61,7 +61,7 @@ vLLM 常用模型的配置示例在 [model_configs/vllm/models](./model_configs/
 
 <table>
   <tr>
-    <th width="33%" align="center">🚀 一键部署</th>
+    <th width="33%" align="center">🎯 一键部署</th>
     <th width="33%" align="center">⚡ 极致性能</th>
     <th width="33%" align="center">🛡️ 稳定可靠</th>
   </tr>
