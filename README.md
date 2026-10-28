@@ -59,28 +59,30 @@ vLLM 常用模型的配置示例在 [model_configs/vllm/models](./model_configs/
 
 引擎与部署方式的覆盖范围见 [特性支持列表](./docs/zh/user_guide/features/supported_features.md)。下表只列主要能力入口。
 
-**一键式服务部署**
+**服务部署**
 
 | 特性名称 | 介绍 |
 | --- | --- |
-| K8s平台 PD 分离 | [PD 分离服务部署](./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md) |
-| K8s平台 PD 混部 | [PD 混部服务部署](./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md) |
-| Docker平台 PD 分离 | [单容器](./docs/zh/user_guide/deployment/docker/single_container.md)、[宿主机部署](./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md)、[容器内部署](./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md) |
-| Docker平台 PD 混部 | [Slurm 部署](./docs/zh/user_guide/deployment/slurm/README.md) |
-| 云化平台 PD 分离 | [单容器](./docs/zh/user_guide/deployment/docker/single_container.md)、[宿主机部署](./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md)、[容器内部署](./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md) |
-| 云化平台 PD 分离 | [单容器](./docs/zh/user_guide/deployment/docker/single_container.md)、[宿主机部署](./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md)、[容器内部署](./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md) |
-| 调度器（coordinator） 独立部署 | [Coordinator 独立部署](./docs/zh/user_guide/deployment/standalone.md) |
+| K8s PD 分离（vLLM） | [PD 分离服务部署](./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md) |
+| K8s PD 分离（SGLang） | [PD 分离服务部署](./docs/zh/user_guide/deployment/k8s/pd_disaggregation_sglang.md) |
+| K8s PD 混部 | [PD 混部服务部署](./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md) |
+| Docker 单容器 | [单容器服务部署](./docs/zh/user_guide/deployment/docker/single_container.md) |
+| Docker 宿主机 | [PD 分离](./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md)、[PD 混部](./docs/zh/user_guide/deployment/docker/host/pd_aggregation_deployment.md) |
+| Docker 容器内（云化平台） | [PD 分离](./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md)、[PD 混部](./docs/zh/user_guide/deployment/docker/container/pd_aggregation_deployment.md) |
+| Slurm | [Slurm 部署](./docs/zh/user_guide/deployment/slurm/README.md) |
+| Coordinator 独立部署 | [裸机独立部署](./docs/zh/user_guide/deployment/standalone.md) |
 
 **推理与调度**
 
 | 特性名称 | 介绍 |
 | --- | --- |
-| EPD 分离 | [EPD 分离](./docs/zh/user_guide/features/EPD_disaggregation.md) |
+| PD 分离 | [PD 分离](./docs/zh/user_guide/features/pd_disaggregation.md) |
+| EPD 分离 | [EPD 分离部署](./docs/zh/user_guide/features/EPD_disaggregation.md) |
 | KV Cache 亲和性调度 | [KV Cache 亲和性调度](./docs/zh/user_guide/features/kvcache_affinity.md) |
 | 动态分桶调度 | [动态分桶调度](./docs/zh/user_guide/features/dynamic_bucket.md) |
-| KV 池化 | [KV 池化](./docs/zh/user_guide/features/kv_cache_store/README.md) |
+| KV 池化 | [KV 池化能力](./docs/zh/user_guide/features/kv_cache_store/README.md) |
 | max_tokens 自适应 | [max_tokens 自适应](./docs/zh/user_guide/features/max_tokens_adaptation.md) |
-| 推理引擎 | [支持对接的推理引擎](./docs/zh/user_guide/features/supported_inference_engines.md) |
+| 支持的推理引擎 | [支持的推理引擎](./docs/zh/user_guide/features/supported_inference_engines.md) |
 
 **可靠性与运维**
 
@@ -88,12 +90,12 @@ vLLM 常用模型的配置示例在 [model_configs/vllm/models](./model_configs/
 | --- | --- |
 | 请求重调度 | [请求重调度](./docs/zh/user_guide/features/fault_tolerance/rescheduler.md) |
 | 实例重调度 | [实例重调度](./docs/zh/user_guide/features/fault_tolerance/instance_rescheduling.md) |
-| 缩P保D | [缩P保D 故障恢复](./docs/zh/user_guide/features/fault_tolerance/scale_p2d.md) |
+| ScaleP2D 故障恢复 | [ScaleP2D 故障恢复](./docs/zh/user_guide/features/fault_tolerance/scale_p2d.md) |
 | 主备倒换 | [主备倒换](./docs/zh/user_guide/features/fault_tolerance/standby.md) |
-| 自动 / 手动扩缩容 | [自动弹性扩缩容](./docs/zh/user_guide/features/auto_scaling.md)、[手动扩缩容](./docs/zh/user_guide/features/manual_scaling.md) |
+| 自动弹性扩缩容、手动扩缩容 | [自动弹性扩缩容](./docs/zh/user_guide/features/auto_scaling.md)、[手动扩缩容](./docs/zh/user_guide/features/manual_scaling.md) |
 | 容器快照 | [容器快照](./docs/zh/user_guide/features/container_snapshot.md) |
 | D2D 权重加载 | [D2D 权重加载](./docs/zh/user_guide/features/startup_acceleration.md) |
-| 数据混淆推理 | [数据混淆推理（PMCC）](./docs/zh/user_guide/features/data_obfuscation.md) |
+| 数据混淆推理（PMCC） | [数据混淆推理（PMCC）](./docs/zh/user_guide/features/data_obfuscation.md) |
 | 精度检测 | [精度检测](./docs/zh/user_guide/features/precision_detection.md) |
 
 ## 🚀 快速入门
