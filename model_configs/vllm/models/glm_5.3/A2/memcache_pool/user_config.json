@@ -10,14 +10,15 @@
     "image_name": "<请按实际情况填写镜像名称>",
     "job_id": "mindie-motor",
     "hardware_type": "800I_A2",
-    "weight_mount_path": "<请按实际情况填写模型权重文件的访问路径>"
+    "weight_mount_path": "<请按实际情况填写模型权重文件的访问路径>",
+    "prefill_node_selector": {}
   },
   "motor_controller_config": {},
-  "motor_coordinator_config": {},
-  "kv_cache_store_config": {
-    "backend": "memcache",
-    "local_service_mode": "inprocess",
-    "local_config_path": "/usr/local/Ascend/pyMotor/conf/mmc-local-inprocess.conf"
+  "motor_coordinator_config": {
+    "scheduler_config": {
+      "prefill_scheduler_type": "kv_cache_affinity",
+      "decode_scheduler_type": "load_balance"
+    }
   },
   "motor_engine_prefill_config": {
     "engine_type": "vllm",
@@ -26,7 +27,7 @@
       "tensor_parallel_size": 16,
       "pipeline_parallel_size": 2,
       "nnodes": 4,
-      "master-port": 7060,
+      "master-port": 29501,
       "distributed-executor-backend": "mp",
       "data_parallel_rpc_port": 9000,
       "served_model_name": "glm",
@@ -36,11 +37,12 @@
       "quantization": "ascend",
       "enable-chunked-prefill": true,
       "enable-prefix-caching": true,
-      "max-model-len": 128000,
+      "max-model-len": 135000,
       "max-num-batched-tokens": 16384,
       "max-num-seqs": 64,
       "gpu_memory_utilization": 0.92,
       "trust-remote-code": true,
+      "async-scheduling": true,
       "enforce-eager": true,
       "safetensors-load-strategy": "prefetch",
       "kv-cache-dtype": "int8",
@@ -51,7 +53,7 @@
       "tool-call-parser": "glm47",
       "reasoning-parser": "glm47",
       "speculative-config": {
-        "num_speculative_tokens": 1,
+        "num_speculative_tokens": 3,
         "method": "deepseek_mtp",
         "enforce_eager": true
       },
@@ -60,44 +62,31 @@
         "enable_flashcomm1": true
       },
       "kv_transfer_config": {
-        "kv_connector": "MultiConnector",
+        "kv_connector": "MooncakeConnectorV2",
         "kv_role": "kv_producer",
-        "kv_port": "30000",
         "engine_id": "0",
+        "kv_port": "30000",
         "kv_connector_extra_config": {
-          "connectors": [
-            {
-              "kv_connector": "MooncakeConnectorV2",
-              "kv_role": "kv_producer",
-              "engine_id": "0",
-              "kv_port": "30000",
-              "kv_connector_extra_config": {
-                "use_ascend_direct": true,
-                "prefill": {
-                  "dp_size": 1,
-                  "pp_size": 2,
-                  "tp_size": 16,
-                  "pp_layer_partition": "42,36"
-                },
-                "decode": {
-                  "dp_size": 16,
-                  "tp_size": 2
-                }
-              }
-            },
-            {
-              "kv_connector": "AscendStoreConnector",
-              "kv_role": "kv_producer",
-              "kv_connector_extra_config": {
-                "lookup_rpc_port": "0",
-                "backend": "memcache",
-                "use_layerwise": false
-              }
-            }
-          ]
+          "use_ascend_direct": true,
+          "prefill": {
+            "dp_size": 1,
+            "pp_size": 2,
+            "tp_size": 16,
+            "pp_layer_partition": "42,36"
+          },
+          "decode": {
+            "dp_size": 16,
+            "tp_size": 2
+          }
         }
       },
-      "no-async-scheduling": true
+      "kv-events-config": {
+        "publisher": "zmq",
+        "enable_kv_cache_events": true,
+        "endpoint": "tcp://*:5557",
+        "topic": "kv-events",
+        "replay_endpoint": "tcp://*:6667"
+      }
     }
   },
   "motor_engine_decode_config": {
@@ -113,9 +102,9 @@
       "enable_expert_parallel": true,
       "enable-chunked-prefill": true,
       "enable-prefix-caching": true,
-      "max-model-len": 128000,
+      "max-model-len": 135000,
       "max-num-batched-tokens": 256,
-      "max-num-seqs": 64,
+      "max-num-seqs": 32,
       "gpu_memory_utilization": 0.92,
       "trust-remote-code": true,
       "async-scheduling": true,
@@ -129,10 +118,12 @@
       "tool-call-parser": "glm47",
       "reasoning-parser": "glm47",
       "additional-config": {
-        "recompute_scheduler_enable": true
+        "recompute_scheduler_enable": true,
+        "enable_sparse_sfa_c8": true,
+        "enable_sparse_li_c8": true
       },
       "speculative-config": {
-        "num_speculative_tokens": 5,
+        "num_speculative_tokens": 3,
         "method": "deepseek_mtp",
         "enforce_eager": true
       },
@@ -140,43 +131,28 @@
         "cudagraph_mode": "FULL_DECODE_ONLY"
       },
       "kv_transfer_config": {
-        "kv_connector": "MultiConnector",
+        "kv_connector": "MooncakeConnectorV2",
         "kv_role": "kv_consumer",
-        "kv_port": "30200",
         "engine_id": "1",
+        "kv_port": "30100",
         "kv_connector_extra_config": {
-          "connectors": [
-            {
-              "kv_connector": "MooncakeConnectorV2",
-              "kv_role": "kv_consumer",
-              "engine_id": "1",
-              "kv_port": "30200",
-              "kv_connector_extra_config": {
-                "use_ascend_direct": true,
-                "prefill": {
-                  "dp_size": 1,
-                  "pp_size": 2,
-                  "tp_size": 16,
-                  "pp_layer_partition": "42,36"
-                },
-                "decode": {
-                  "dp_size": 16,
-                  "tp_size": 2
-                }
-              }
-            },
-            {
-              "kv_connector": "AscendStoreConnector",
-              "kv_role": "kv_consumer",
-              "kv_connector_extra_config": {
-                "lookup_rpc_port": "0",
-                "backend": "memcache",
-                "use_layerwise": false
-              }
-            }
-          ]
+          "use_ascend_direct": true,
+          "prefill": {
+            "dp_size": 1,
+            "pp_size": 2,
+            "tp_size": 16,
+            "pp_layer_partition": "42,36"
+          },
+          "decode": {
+            "dp_size": 16,
+            "tp_size": 2
+          }
         }
       }
     }
+  },
+  "kv_conductor_config": {
+    "block_size": 128,
+    "http_server_port": 13333
   }
 }
