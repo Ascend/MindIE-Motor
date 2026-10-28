@@ -2,7 +2,7 @@
 
 来源：vLLM Ascend `DeepSeek-V4-Flash.md`（`releases/v0.30.0`，§5.2.1 A3 series with dspark）。Motor 适配后在 Atlas 800I A3 上完成 1P1D 启动与 Coordinator 推理。权重为 **0731** `DeepSeek-V4-Flash-0731-w8a8`，不是同目录 MTP 基线的 `DeepSeek-V4-Flash-w8a8-mtp`。
 
-场景：A3 1P1D PD（Prefill DP2×TP1×PCP8，Decode DP16×TP1，`MooncakeHybridConnector`，投机 `dspark` tokens=5）。与上级目录 MTP 典配独立，不要覆盖 `deepseek_v4_flash/A3/user_config.json`。填写镜像与权重路径后，按仓库 deployer 指导部署。
+场景：A3 1P1D PD（Prefill DP2×TP1×PCP8，Decode DP16×TP1，`MooncakeHybridConnector`，投机 `dspark` tokens=5）。与同级 `pd/`（MTP）独立，不要覆盖 `deepseek_v4_flash/A3/user_config.json`。填写镜像与权重路径后，按仓库 deployer 指导部署。
 
 相对源头文档的 Motor / 现场调整：
 
