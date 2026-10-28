@@ -2,7 +2,7 @@
 
 ## 特性介绍
 
-MemCache为MindIE Motor默认池化后端，基于 [memcache_hybrid](https://gitcode.com/Ascend/memcache) 提供高效KV池化能力，已预装在MindIE Motor镜像中，无需额外安装。通过池化机制实现KV缓存跨请求复用，提升缓存命中率，降低推理TTFT，减少重复计算，提升推理吞吐。
+MemCache为MindIE Motor默认池化后端，基于 [memcache_hybrid](https://gitcode.com/Ascend/memcache) 提供高效KV池化能力，已预装在MindIE Motor镜像中，无需额外安装。通过池化机制实现KV缓存跨请求复用，提升缓存命中率，降低推理TTFT，减少重复计算，提升推理吞吐。跨超节点场景（基于1825网卡进行参数面数据传输）、跨超节点场景（基于UB_RTP协议进行参数面数据传输）和跨超节点场景（基于 UBoE 协议进行参数面数据传输）的参数面池化部署，见 [950系列服务器跨超节点场景memcache池化后端服务部署指导](memcache_950.md)。
 
 ### 工作原理
 
