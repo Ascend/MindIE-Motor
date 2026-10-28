@@ -1,89 +1,113 @@
 <h1 align="center">MindIE Motor</h1>
 
-<p align="center">昇腾上的推理调度层。请求从 Coordinator 进来，Prefill 和 Decode 可以拆开，也可以混部。<br>引擎对接 vLLM-Ascend 与 SGLang。</p>
-
 <div align="center">
 
-[![release](https://img.shields.io/badge/release-3.2.0-1B3A4B)](./docs/zh/release_note_motor.md)
-[![license](https://img.shields.io/badge/license-MulanPSL__2-1B3A4B)](./LICENSE.md)
-[![docs](https://img.shields.io/badge/docs-online-1B3A4B)](https://mindie-motor.readthedocs.io/)
-[![Zread](https://img.shields.io/badge/Zread-Ask_AI-3E6B89)](https://zread.ai/Ascend/MindIE-Motor)
-[![DeepWiki](https://img.shields.io/badge/DeepWiki-Ask_AI-3E6B89)](https://deepwiki.com/Ascend/MindIE-Motor)
+[![Ascend](https://img.shields.io/badge/Community-MindIE%20Motor-blue.svg)](https://www.hiascend.com/forum/)
+[![License](https://img.shields.io/badge/License-MulanPSL%202-blue)](./LICENSE.md)
+[![Docs](https://img.shields.io/badge/Docs-Read%20the%20Docs-8CA1AF)](https://mindie-motor.readthedocs.io/)
+[![Zread](https://img.shields.io/badge/Zread-Ask_AI-_.svg?style=flat&color=0052D9&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff)](https://zread.ai/Ascend/MindIE-Motor)&nbsp;&nbsp;&nbsp;&nbsp;
+[![DeepWiki](https://img.shields.io/badge/DeepWiki-Ask_AI-_.svg?style=flat&color=0052D9&labelColor=000000&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACwAAAAyCAYAAAAnWDnqAAAAAXNSR0IArs4c6QAAA05JREFUaEPtmUtyEzEQhtWTQyQLHNak2AB7ZnyXZMEjXMGeK/AIi+QuHrMnbChYY7MIh8g01fJoopFb0uhhEqqcbWTp06/uv1saEDv4O3n3dV60RfP947Mm9/SQc0ICFQgzfc4CYZoTPAswgSJCCUJUnAAoRHOAUOcATwbmVLWdGoH//PB8mnKqScAhsD0kYP3j/Yt5LPQe2KvcXmGvRHcDnpxfL2zOYJ1mFwrryWTz0advv1Ut4CJgf5uhDuDj5eUcAUoahrdY/56ebRWeraTjMt/00Sh3UDtjgHtQNHwcRGOC98BJEAEymycmYcWwOprTgcB6VZ5JK5TAJ+fXGLBm3FDAmn6oPPjR4rKCAoJCal2eAiQp2x0vxTPB3ALO2CRkwmDy5WohzBDwSEFKRwPbknEggCPB/imwrycgxX2NzoMCHhPkDwqYMr9tRcP5qNrMZHkVnOjRMWwLCcr8ohBVb1OMjxLwGCvjTikrsBOiA6fNyCrm8V1rP93iVPpwaE+gO0SsWmPiXB+jikdf6SizrT5qKasx5j8ABbHpFTx+vFXp9EnYQmLx02h1QTTrl6eDqxLnGjporxl3NL3agEvXdT0WmEost648sQOYAeJS9Q7bfUVoMGnjo4AZdUMQku50McDcMWcBPvr0SzbTAFDfvJqwLzgxwATnCgnp4wDl6Aa+Ax283gghmj+vj7feE2KBBRMW3FzOpLOADl0Isb5587h/U4gGvkt5v60Z1VLG8BhYjbzRwyQZemwAd6cCR5/XFWLYZRIMpX39AR0tjaGGiGzLVyhse5C9RKC6ai42ppWPKiBagOvaYk8lO7DajerabOZP46Lby5wKjw1HCRx7p9sVMOWGzb/vA1hwiWc6jm3MvQDTogQkiqIhJV0nBQBTU+3okKCFDy9WwferkHjtxib7t3xIUQtHxnIwtx4mpg26/HfwVNVDb4oI9RHmx5WGelRVlrtiw43zboCLaxv46AZeB3IlTkwouebTr1y2NjSpHz68WNFjHvupy3q8TFn3Hos2IAk4Ju5dCo8B3wP7VPr/FGaKiG+T+v+TQqIrOqMTL1VdWV1DdmcbO8KXBz6esmYWYKPwDL5b5FA1a0hwapHiom0r/cKaoqr+27/XcrS5UwSMbQAAAABJRU5ErkJggg==)](https://deepwiki.com/Ascend/MindIE-Motor)
 
 </div>
 
-## 这一版
+## ✨ 最新消息
 
-3.2.0 于 2026-10-15 发布，配套和兼容性见 [版本配套说明](./docs/zh/release_note_motor.md)。仓库在 2026 年 3 月开源。
+- [2026.10.15]: 🚀 3.2.0 发布，对接 SGLang 原生引擎，提供 PD 分离推理服务
+- [2026.10.15]: 🚀 支持 D2D 权重加载，缩短新实例启动时间
+- [2026.10.15]: 🚀 支持 Docker only 一键部署，以及基于 Slurm + Apptainer 的部署
+- [2026.10.15]: 🚀 支持跨超节点部署、PD 异构部署，以及推理大 EP 场景下的 DP 域缩容
+- [2026.10.15]: 🚀 支持基于 HPA 的自动扩缩容，Prefill 与 Decode 可分别配置调度策略
+- [2026.10.15]: 🚀 支持数据混淆推理（PMCC）
+- [2026.10.15]: 🚀 长短序列动态分桶调度、KV Cache 亲和性调度增强（POC）
+- [2026.03]: 🚀 MindIE Motor 正式开源
 
-| 变化 | 说明 |
+## ℹ️ 简介
+
+MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提供一键式 PD 分离与 PD 混部部署。它基于云原生插件化架构，对接 [vLLM-Ascend](https://github.com/vllm-project/vllm-ascend) 与 [SGLang](https://github.com/sgl-project/sglang) 原生引擎，结合高性能调度与负载均衡，构建高可用、可扩展的大规模推理服务。
+
+<img src="./docs/zh/imgs/MindIE_Motor_Architecture.png" alt="MindIE Motor 架构" width="1200"/>
+
+## ⚙️ 功能介绍
+
+引擎与部署方式的覆盖范围见 [特性支持列表](./docs/zh/user_guide/features/supported_features.md)。下表只列主要能力入口。
+
+**服务部署**
+
+| 特性名称 | 介绍 |
 | --- | --- |
-| SGLang | 对接 SGLang 原生引擎，提供 PD 分离推理 |
-| 权重拉起 | D2D 权重加载，新实例可从同角色就绪实例拉权重 |
-| 部署面 | Docker only 一键部署，以及 Slurm + Apptainer |
-| 拓扑 | 跨超节点、PD 异构，大 EP 下 DP 域可缩容运行 |
-| 调度 | 基于 HPA 的自动扩缩容；Prefill 与 Decode 可分别配置调度策略 |
-| 数据 | 数据混淆推理（PMCC） |
-| POC | 长短序列动态分桶；KV Cache 亲和调度增强，支持 HBM / CPU / Disk 命中 |
+| K8s PD 分离 | [PD 分离服务部署](./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md) |
+| K8s PD 混部 | [PD 混部服务部署](./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md) |
+| K8s SGLang PD 分离 | [SGLang PD 分离服务部署](./docs/zh/user_guide/deployment/k8s/pd_disaggregation_sglang.md) |
+| Docker | [单容器](./docs/zh/user_guide/deployment/docker/single_container.md)、[宿主机部署](./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md)、[容器内部署](./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md) |
+| Slurm | [Slurm 部署](./docs/zh/user_guide/deployment/slurm/README.md) |
+| Coordinator 独立部署 | [Coordinator 独立部署](./docs/zh/user_guide/deployment/standalone.md) |
 
-## 请求怎么走
+**推理与调度**
 
-客户端只打 Coordinator 的北向接口。Coordinator 负责路由和负载，Controller 管实例身份和故障动作，NodeManager 在计算节点拉起引擎进程。
-
-<p align="center">
-  <img alt="MindIE Motor 组件关系" src="./docs/zh/imgs/MindIE_Motor_Architecture.png" width="920">
-</p>
-
-图中仍画有 EngineServer。3.2.0 已去掉该模块，NodeManager 直接拉起 vLLM-Ascend 或 SGLang。组件说明见 [架构](./docs/zh/architecture.md)。
-
-## 先选部署
-
-| 场景 | 适合 | 从这里进入 |
-| --- | --- | --- |
-| K8s，PD 分离 | Prefill 与 Decode 分实例，要独立扩容 | [PD 分离服务部署](./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md) |
-| K8s，PD 混部 | 同一实例同时做 Prefill 和 Decode | [PD 混部服务部署](./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md) |
-| K8s，SGLang | 引擎用 SGLang，流程与通用 PD 分离相同，文档只写必改项 | [SGLang PD 分离部署](./docs/zh/user_guide/deployment/k8s/pd_disaggregation_sglang.md) |
-| 只有 Docker | 单机小模型、宿主机起容器，或云平台只给容器 | [部署方式](./docs/zh/user_guide/deployment/README.md) |
-| Slurm | HPC 集群，用 Apptainer 提交作业 | [Slurm 部署](./docs/zh/user_guide/deployment/slurm/README.md) |
-| 只要调度面 | 引擎已在跑，不部署 Controller 和 NodeManager | [Coordinator 独立部署](./docs/zh/user_guide/deployment/standalone.md) |
-
-K8s 的模式对照见 [部署模式说明](./docs/zh/user_guide/deployment/k8s/README.md)。集群里用 Job 跑部署器时，用 [Helm Chart](./examples/cloud_native_deploy/README.zh.md)。
-
-## 打开哪项能力
-
-引擎和部署方式是否覆盖，以 [特性支持列表](./docs/zh/user_guide/features/supported_features.md) 为准。引擎参数见 [支持对接的推理引擎](./docs/zh/user_guide/features/supported_inference_engines.md)。
-
-| 想做的事 | 文档 |
+| 特性名称 | 介绍 |
 | --- | --- |
-| 拆开 Prefill / Decode | [PD 分离](./docs/zh/user_guide/features/pd_disaggregation.md) |
-| 编码、Prefill、Decode 三段拆开 | [EPD 分离](./docs/zh/user_guide/features/EPD_disaggregation.md) |
-| 按前缀命中把请求送到已有缓存的实例 | [KV Cache 亲和](./docs/zh/user_guide/features/kvcache_affinity.md) |
-| 长短请求分桶，减轻互相拖死 | [动态分桶](./docs/zh/user_guide/features/dynamic_bucket.md) |
-| 把 KV 放到节点外的池子 | [KV 池化](./docs/zh/user_guide/features/kv_cache_store/README.md) |
-| 按真实输入长度裁剪 max_tokens | [max_tokens 自适应](./docs/zh/user_guide/features/max_tokens_adaptation.md) |
-| 流式中途换实例续写 | [请求重调度](./docs/zh/user_guide/features/fault_tolerance/rescheduler.md) |
-| 整实例迁走 | [实例重调度](./docs/zh/user_guide/features/fault_tolerance/instance_rescheduling.md) |
-| Decode 故障时用 Prefill 节点顶上 | [ScaleP2D](./docs/zh/user_guide/features/fault_tolerance/scale_p2d.md) |
-| Controller / Coordinator 主备 | [主备倒换](./docs/zh/user_guide/features/fault_tolerance/standby.md) |
-| 按指标增减实例 | [自动扩缩容](./docs/zh/user_guide/features/auto_scaling.md)、[手动扩缩容](./docs/zh/user_guide/features/manual_scaling.md) |
-| 新实例少等权重加载 | [D2D 权重加载](./docs/zh/user_guide/features/startup_acceleration.md)、[容器快照](./docs/zh/user_guide/features/container_snapshot.md) |
-| 权重和词表做了混淆 | [数据混淆推理](./docs/zh/user_guide/features/data_obfuscation.md) |
-| 抽样看输出是否漂了 | [精度检测](./docs/zh/user_guide/features/precision_detection.md) |
+| PD 分离 | [PD 分离](./docs/zh/user_guide/features/pd_disaggregation.md) |
+| EPD 分离 | [EPD 分离](./docs/zh/user_guide/features/EPD_disaggregation.md) |
+| KV Cache 亲和性调度 | [KV Cache 亲和性调度](./docs/zh/user_guide/features/kvcache_affinity.md) |
+| 动态分桶调度 | [动态分桶调度](./docs/zh/user_guide/features/dynamic_bucket.md) |
+| KV 池化 | [KV 池化](./docs/zh/user_guide/features/kv_cache_store/README.md) |
+| max_tokens 自适应 | [max_tokens 自适应](./docs/zh/user_guide/features/max_tokens_adaptation.md) |
+| 推理引擎 | [支持对接的推理引擎](./docs/zh/user_guide/features/supported_inference_engines.md) |
 
-接口、维护和错误码在 [用户指南目录](./docs/zh/user_guide/menu_user_manual.md)。
+**可靠性与运维**
 
-## 第一次部署
+| 特性名称 | 介绍 |
+| --- | --- |
+| 请求重调度 | [请求重调度](./docs/zh/user_guide/features/fault_tolerance/rescheduler.md) |
+| 实例重调度 | [实例重调度](./docs/zh/user_guide/features/fault_tolerance/instance_rescheduling.md) |
+| ScaleP2D | [ScaleP2D 故障恢复](./docs/zh/user_guide/features/fault_tolerance/scale_p2d.md) |
+| 主备倒换 | [主备倒换](./docs/zh/user_guide/features/fault_tolerance/standby.md) |
+| 自动 / 手动扩缩容 | [自动弹性扩缩容](./docs/zh/user_guide/features/auto_scaling.md)、[手动扩缩容](./docs/zh/user_guide/features/manual_scaling.md) |
+| 容器快照 | [容器快照](./docs/zh/user_guide/features/container_snapshot.md) |
+| D2D 权重加载 | [D2D 权重加载](./docs/zh/user_guide/features/startup_acceleration.md) |
+| 数据混淆推理 | [数据混淆推理（PMCC）](./docs/zh/user_guide/features/data_obfuscation.md) |
+| 精度检测 | [精度检测](./docs/zh/user_guide/features/precision_detection.md) |
 
-1. 核对软硬件：[环境准备](./docs/zh/user_guide/environment_preparation.md)。
-2. 取镜像。官方包在 [昇腾镜像仓库](https://www.hiascend.com/developer/ascendhub/detail/f1690465f39847a8b0a1f9e5b36a03c4) 的「镜像下载」。也可以在 vLLM-Ascend 或 SGLang 基座上安装，见 [准备 MindIE Motor 镜像](./docs/zh/user_guide/maintenance/build_motor_image_from_vllm_ascend.md)。
-3. 走完启动、调用、精度与性能测试、停止：[快速部署](./docs/zh/user_guide/quick_start.md)。
+## 🚀 快速入门
 
-在线文档：<https://mindie-motor.readthedocs.io/>
+- **在线文档**：[MindIE Motor 文档](https://mindie-motor.readthedocs.io/)
+- **获取镜像**：在 [昇腾镜像仓库](https://www.hiascend.com/developer/ascendhub/detail/f1690465f39847a8b0a1f9e5b36a03c4) 切换到「镜像下载」。
+- **环境准备**：安装前的软硬件准备见 [环境准备](./docs/zh/user_guide/environment_preparation.md)。
+- **快速部署**：启动服务、接口调用、精度与性能测试、停止服务见 [快速部署](./docs/zh/user_guide/quick_start.md)。
 
-## 反馈和改代码
+## 📦 安装指南
 
-使用问题先查 [Issues](https://gitcode.com/Ascend/MindIE-Motor/issues)，没有相同的再 [新建](https://gitcode.com/Ascend/MindIE-Motor/issues/create/choose)，写上现象、步骤、日志和环境。安全问题不要发公开 Issue，按 [security.md](./security.md) 联系维护者。
+- **官方镜像**：见上方镜像仓库。
+- **基于 vLLM-Ascend / SGLang 基座镜像安装**：见 [准备 MindIE Motor 镜像](./docs/zh/user_guide/maintenance/build_motor_image_from_vllm_ascend.md)。
+- **K8s**：从 [部署模式说明](./docs/zh/user_guide/deployment/k8s/README.md) 开始。已有集群时也可使用 [云原生部署与 Helm Chart](./examples/cloud_native_deploy/README.zh.md)。
+- **Docker / Slurm**：见 [部署方式](./docs/zh/user_guide/deployment/README.md)。
 
-提交代码见 [贡献者指南](./contributing.md)。提交前运行 [tests/run_tests.sh](./tests/run_tests.sh)。Pull Request 建好后，在评论里回复 `compile` 触发门禁。
+## 📘 使用指南
 
-会议在 [Ascend 会议中心](https://meeting.ascend.osinfra.cn/)，讨论在 [昇腾论坛](https://www.hiascend.com/forum/)。许可证是 [Mulan PSL v2](./LICENSE.md)。
+用户指南覆盖环境准备、服务部署、特性配置、API、维护和错误码。完整目录见 [MindIE Motor 用户指南](./docs/zh/user_guide/menu_user_manual.md)。
+
+架构与组件说明见 [MindIE Motor 架构](./docs/zh/architecture.md)。
+
+## 🔀 版本说明
+
+当前发布版本为 3.2.0。组件配套、兼容性和更新说明见 [版本配套说明](./docs/zh/release_note_motor.md)。
+
+## 🛠️ 贡献指南
+
+贡献流程见 [贡献者指南](./contributing.md)。
+
+提交 Pull Request 后，在评论中回复 `compile` 触发门禁流水线。提交前请通过单元测试，入口为 [tests/run_tests.sh](./tests/run_tests.sh)。
+
+## ⚖️ 相关说明
+
+🔹 《[版本配套说明](./docs/zh/release_note_motor.md)》<br>
+🔹 《[许可证声明](./LICENSE.md)》<br>
+🔹 《[安全问题反馈](./security.md)》<br>
+
+## 🤝 建议与交流
+
+欢迎为社区做贡献。使用中的问题请先查看 [Issues](https://gitcode.com/Ascend/MindIE-Motor/issues)，没有对应项时再 [新建 Issue](https://gitcode.com/Ascend/MindIE-Motor/issues/create/choose)，并补充现象、复现步骤、日志和环境信息。
+
+安全问题请不要写进公开 Issue，按 [security.md](./security.md) 联系维护者。
+
+MindIE 系列 TC/SIG 会议见 [Ascend 会议中心](https://meeting.ascend.osinfra.cn/)。技术交流见 [昇腾论坛](https://www.hiascend.com/forum/)。
