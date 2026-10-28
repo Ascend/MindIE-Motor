@@ -67,37 +67,43 @@ vLLM 常用模型的配置示例在 [model_configs/vllm/models](./model_configs/
   </tr>
   <tr>
     <td valign="top">
-      <a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md">K8s PD 分离（vLLM）</a><br>
-      <a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_sglang.md">K8s PD 分离（SGLang）</a><br>
-      <a href="./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md">K8s PD 混部</a><br>
-      <a href="./docs/zh/user_guide/deployment/docker/single_container.md">Docker 单容器</a><br>
-      <a href="./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md">Docker 宿主机 PD 分离</a><br>
-      <a href="./docs/zh/user_guide/deployment/docker/host/pd_aggregation_deployment.md">Docker 宿主机 PD 混部</a><br>
-      <a href="./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md">Docker 容器内（云化平台）PD 分离</a><br>
-      <a href="./docs/zh/user_guide/deployment/docker/container/pd_aggregation_deployment.md">Docker 容器内（云化平台）PD 混部</a><br>
-      <a href="./docs/zh/user_guide/deployment/slurm/README.md">Slurm</a><br>
-      <a href="./docs/zh/user_guide/deployment/standalone.md">Coordinator 独立部署</a>
+      <table width="100%">
+        <tr><td align="left" width="50%">K8s PD 分离（vLLM）</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">K8s PD 分离（SGLang）</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_sglang.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">K8s PD 混部</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">Docker 单容器</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/deployment/docker/single_container.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">Docker 宿主机 PD 分离</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">Docker 宿主机 PD 混部</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/deployment/docker/host/pd_aggregation_deployment.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">Docker 容器内（云化平台）PD 分离</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">Docker 容器内（云化平台）PD 混部</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/deployment/docker/container/pd_aggregation_deployment.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">Slurm</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/deployment/slurm/README.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">Coordinator 独立部署</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/deployment/standalone.md">链接</a></td></tr>
+      </table>
     </td>
     <td valign="top">
-      <a href="./docs/zh/user_guide/features/pd_disaggregation.md">PD 分离</a><br>
-      <a href="./docs/zh/user_guide/features/EPD_disaggregation.md">EPD 分离</a><br>
-      <a href="./docs/zh/user_guide/features/kvcache_affinity.md">KV Cache 亲和性调度</a><br>
-      <a href="./docs/zh/user_guide/features/dynamic_bucket.md">动态分桶调度</a><br>
-      <a href="./docs/zh/user_guide/features/kv_cache_store/README.md">KV 池化</a><br>
-      <a href="./docs/zh/user_guide/features/max_tokens_adaptation.md">max_tokens 自适应</a><br>
-      <a href="./docs/zh/user_guide/features/supported_inference_engines.md">支持的推理引擎</a>
+      <table width="100%">
+        <tr><td align="left" width="50%">PD 分离</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/pd_disaggregation.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">EPD 分离</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/EPD_disaggregation.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">KV Cache 亲和性调度</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/kvcache_affinity.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">动态分桶调度</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/dynamic_bucket.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">KV 池化</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/kv_cache_store/README.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">max_tokens 自适应</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/max_tokens_adaptation.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">支持的推理引擎</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/supported_inference_engines.md">链接</a></td></tr>
+      </table>
     </td>
     <td valign="top">
-      <a href="./docs/zh/user_guide/features/fault_tolerance/rescheduler.md">请求重调度</a><br>
-      <a href="./docs/zh/user_guide/features/fault_tolerance/instance_rescheduling.md">实例重调度</a><br>
-      <a href="./docs/zh/user_guide/features/fault_tolerance/scale_p2d.md">ScaleP2D 故障恢复</a><br>
-      <a href="./docs/zh/user_guide/features/fault_tolerance/standby.md">主备倒换</a><br>
-      <a href="./docs/zh/user_guide/features/auto_scaling.md">自动弹性扩缩容</a><br>
-      <a href="./docs/zh/user_guide/features/manual_scaling.md">手动扩缩容</a><br>
-      <a href="./docs/zh/user_guide/features/container_snapshot.md">容器快照</a><br>
-      <a href="./docs/zh/user_guide/features/startup_acceleration.md">D2D 权重加载</a><br>
-      <a href="./docs/zh/user_guide/features/data_obfuscation.md">数据混淆推理（PMCC）</a><br>
-      <a href="./docs/zh/user_guide/features/precision_detection.md">精度检测</a>
+      <table width="100%">
+        <tr><td align="left" width="50%">请求重调度</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/fault_tolerance/rescheduler.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">实例重调度</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/fault_tolerance/instance_rescheduling.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">ScaleP2D 故障恢复</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/fault_tolerance/scale_p2d.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">主备倒换</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/fault_tolerance/standby.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">自动弹性扩缩容</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/auto_scaling.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">手动扩缩容</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/manual_scaling.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">容器快照</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/container_snapshot.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">D2D 权重加载</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/startup_acceleration.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">数据混淆推理（PMCC）</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/data_obfuscation.md">链接</a></td></tr>
+        <tr><td align="left" width="50%">精度检测</td><td align="left" nowrap width="50%"><a href="./docs/zh/user_guide/features/precision_detection.md">链接</a></td></tr>
+      </table>
     </td>
   </tr>
 </table>
