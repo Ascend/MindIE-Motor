@@ -59,7 +59,7 @@ vLLM 常用模型的配置示例在 [model_configs/vllm/models](./model_configs/
 
 引擎与部署方式的覆盖范围见 [特性支持列表](./docs/zh/user_guide/features/supported_features.md)。下表只列主要能力入口。
 
-**服务部署**
+**一键部署**
 
 | 特性名称 | 介绍 |
 | --- | --- |
@@ -72,7 +72,7 @@ vLLM 常用模型的配置示例在 [model_configs/vllm/models](./model_configs/
 | Slurm | [Slurm 部署](./docs/zh/user_guide/deployment/slurm/README.md) |
 | Coordinator 独立部署 | [裸机独立部署](./docs/zh/user_guide/deployment/standalone.md) |
 
-**推理与调度**
+**极致性能**
 
 | 特性名称 | 介绍 |
 | --- | --- |
@@ -84,7 +84,7 @@ vLLM 常用模型的配置示例在 [model_configs/vllm/models](./model_configs/
 | max_tokens 自适应 | [max_tokens 自适应](./docs/zh/user_guide/features/max_tokens_adaptation.md) |
 | 支持的推理引擎 | [支持的推理引擎](./docs/zh/user_guide/features/supported_inference_engines.md) |
 
-**可靠性与运维**
+**稳定可靠**
 
 | 特性名称 | 介绍 |
 | --- | --- |
