@@ -1,4 +1,4 @@
-# deepseek_v4_flash · A3 · dspark · pd
+# deepseek_v4_flash_0731 · A3 · pd
 
 来源：vLLM Ascend `DeepSeek-V4-Flash.md`（`releases/v0.30.0`，A3 series with DSpark PD）。Motor 适配后在 Atlas 800I A3 上完成 1P1D 启动与 Coordinator 推理。权重 `DeepSeek-V4-Flash-0731-w8a8`。
 
