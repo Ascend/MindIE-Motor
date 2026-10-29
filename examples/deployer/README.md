@@ -8,11 +8,7 @@
 
 👉 **[PD Disaggregation 完整部署指南](../../docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md)**
 
-Ascend 950PR&950DT系列产品的 RoCE 现场改法见 **[复杂组网 deployer 改法](../../docs/zh/user_guide/deployment/k8s/complex_network_roce.md)**。跨节点 host RoCE 和单机非特权 RoCE 是两套做法，改动留在部署副本里，不直接合入主干。
-
-单机 16 卡、Decode 用 8-15 的 UBG / ub_rtp 改法见 **[UBG 组网改法](../../docs/zh/user_guide/deployment/k8s/complex_network_ubg.md)**。
-
-同一节点 P/D 各 4 卡的 UBOE（`uboe:device`，不要开特权）见 **[UBOE 组网改法](../../docs/zh/user_guide/deployment/k8s/complex_network_uboe.md)**。
+Ascend 950PR&950DT系列产品的 RoCE 现场改法见 **[950系列服务器跨超节点场景memcache池化后端服务部署指导](../../docs/zh/user_guide/features/kv_cache_store/backend/memcache_950.md)**。按文件清单改部署副本，不直接合入主干。
 
 建议在正式部署前先阅读上述文档，按文档完成环境准备与配置后再使用本目录中的工具进行部署。
 
