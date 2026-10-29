@@ -965,11 +965,19 @@ class TestKvCacheAffinityTokenizationUtils(unittest.TestCase):
 
 
 class TestTokenizerManagerDsv4(unittest.TestCase):
-    def _make_manager(self, tokenizer: Mock, *, is_dsv4: bool, engine_type: str = "vllm") -> TokenizerManager:
+    def _make_manager(
+        self,
+        tokenizer: Mock,
+        *,
+        is_dsv4: bool,
+        engine_type: str = "vllm",
+        vllm_dsv4_tokenizer: bool = True,
+    ) -> TokenizerManager:
         # Bypass singleton init (which tries to load real tokenizers / config).
         manager = TokenizerManager.__new__(TokenizerManager)
         manager.tokenizer = tokenizer
         manager._is_dsv4 = is_dsv4
+        manager._vllm_dsv4_tokenizer = vllm_dsv4_tokenizer
         manager.engine_type = engine_type
         manager.openai_standard = os.environ.get("OPENAI_STANDARD", "STANDARD")
         return manager
@@ -1077,13 +1085,30 @@ class TestTokenizerManagerDsv4(unittest.TestCase):
         tokenizer = Mock()
         tokenizer.chat_template = None
         tokenizer.encode.return_value = [11, 22, 33]
-        manager = self._make_manager(tokenizer, is_dsv4=True)
+        manager = self._make_manager(tokenizer, is_dsv4=True, vllm_dsv4_tokenizer=False)
 
         out = manager._apply_chat_template_dsv4([{"role": "user", "content": "hi"}], None, None)
         self.assertEqual(out, [11, 22, 33])
         tokenizer.apply_chat_template.assert_not_called()
         encoded = tokenizer.encode.call_args[0][0]
         self.assertEqual(encoded, "<｜User｜>hi<｜Assistant｜>")
+
+    def test_apply_chat_template_dsv4_sglang_uses_sglang_encoder(self):
+        """SGLang keeps its own encoder even when the vLLM tokenizer loaded."""
+        tokenizer = Mock()
+        tokenizer.apply_chat_template.return_value = [1, 2, 3]
+        tokenizer.encode.return_value = [9, 9]
+        manager = self._make_manager(tokenizer, is_dsv4=True, engine_type="sglang")
+        self.assertTrue(manager._vllm_dsv4_tokenizer)
+
+        out = manager._apply_chat_template_dsv4([{"role": "user", "content": "hi"}], None, None)
+
+        self.assertEqual(out, [9, 9])
+        tokenizer.apply_chat_template.assert_not_called()
+        self.assertEqual(
+            tokenizer.encode.call_args[0][0],
+            "<｜begin▁of▁sentence｜><｜User｜>hi<｜Assistant｜></think>",
+        )
 
     def test_encode_dsv4_messages_vllm_multiturn_keeps_assistant_marker(self):
         tokenizer = Mock()
@@ -1127,20 +1152,25 @@ class TestTokenizerManagerDsv4(unittest.TestCase):
             "<｜end▁of▁sentence｜><｜User｜>q2<｜Assistant｜></think>",
         )
 
-    def test_is_deepseek_v4_model_detects_from_config(self):
+    def test_deepseek_tokenizer_mode_from_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             cfg = tmp_path / "config.json"
 
+            cfg.write_text(json.dumps({"model_type": "deepseek_v41"}), encoding="utf-8")
+            self.assertEqual(TokenizerManager._deepseek_tokenizer_mode(str(tmp_path)), "deepseek_v41")
+
+            cfg.write_text(json.dumps({"architectures": ["DeepseekV41ForCausalLM"]}), encoding="utf-8")
+            self.assertEqual(TokenizerManager._deepseek_tokenizer_mode(str(tmp_path)), "deepseek_v41")
+
             cfg.write_text(json.dumps({"model_type": "deepseek_v4"}), encoding="utf-8")
-            self.assertTrue(TokenizerManager._is_deepseek_v4_model(str(tmp_path)))
+            self.assertEqual(TokenizerManager._deepseek_tokenizer_mode(str(tmp_path)), "deepseek_v4")
 
             cfg.write_text(json.dumps({"architectures": ["DeepseekV4ForCausalLM"]}), encoding="utf-8")
-            self.assertTrue(TokenizerManager._is_deepseek_v4_model(str(tmp_path)))
+            self.assertEqual(TokenizerManager._deepseek_tokenizer_mode(str(tmp_path)), "deepseek_v4")
 
         with tempfile.TemporaryDirectory() as tmp2:
-            # No config.json
-            self.assertFalse(TokenizerManager._is_deepseek_v4_model(tmp2))
+            self.assertIsNone(TokenizerManager._deepseek_tokenizer_mode(tmp2))
 
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
@@ -1681,7 +1711,7 @@ class TestTokenizerManagerFunction(unittest.TestCase):
 
         # Create TokenizerManager
         with patch.dict("sys.modules", {"transformers": transformers_mod}):
-            with patch.object(TokenizerManager, "_is_deepseek_v4_model", return_value=False):
+            with patch.object(TokenizerManager, "_deepseek_tokenizer_mode", return_value=None):
                 tokenizer_manager = TokenizerManager(mock_config)
 
         # Verifying Initialization
@@ -1726,17 +1756,18 @@ class TestTokenizerManagerFunction(unittest.TestCase):
     def _install_dsv4_module(self, mock_tokenizer):
         import types
 
-        mock_cls = Mock()
-        mock_cls.from_pretrained.return_value = mock_tokenizer
-        vllm_mod = types.ModuleType("vllm")
-        tokenizers_mod = types.ModuleType("vllm.tokenizers")
-        dsv4_mod = types.ModuleType("vllm.tokenizers.deepseek_v4")
-        dsv4_mod.DeepseekV4Tokenizer = mock_cls
-        return mock_cls, {
-            "vllm": vllm_mod,
-            "vllm.tokenizers": tokenizers_mod,
-            "vllm.tokenizers.deepseek_v4": dsv4_mod,
-        }
+        registry_mod = types.ModuleType("vllm.tokenizers.registry")
+        tokenizer_registry = Mock()
+        tokenizer_registry.load_tokenizer.return_value = mock_tokenizer
+        setattr(registry_mod, "TokenizerRegistry", tokenizer_registry)
+        return (
+            {
+                "vllm": types.ModuleType("vllm"),
+                "vllm.tokenizers": types.ModuleType("vllm.tokenizers"),
+                "vllm.tokenizers.registry": registry_mod,
+            },
+            tokenizer_registry,
+        )
 
     @patch('motor.config.coordinator.CoordinatorConfig')
     def test_dsv4_tokenizer_used_for_sglang_engine(self, mock_config_class):
@@ -1744,32 +1775,38 @@ class TestTokenizerManagerFunction(unittest.TestCase):
         mock_config = self._mock_tokenizer_config("sglang")
         mock_config_class.return_value = mock_config
         mock_tokenizer = Mock()
-        mock_cls, modules = self._install_dsv4_module(mock_tokenizer)
+        modules, tokenizer_registry = self._install_dsv4_module(mock_tokenizer)
         with patch.dict("sys.modules", modules):
-            with patch.object(TokenizerManager, "_is_deepseek_v4_model", return_value=True):
+            with patch.object(TokenizerManager, "_deepseek_tokenizer_mode", return_value="deepseek_v4"):
                 manager = TokenizerManager(mock_config)
 
         self.assertIs(manager.tokenizer, mock_tokenizer)
         self.assertTrue(manager._is_dsv4)
-        mock_cls.from_pretrained.assert_called_once()
+        self.assertTrue(manager._vllm_dsv4_tokenizer)
+        tokenizer_registry.load_tokenizer.assert_called_once_with(
+            "deepseek_v4", "/path/to/model", trust_remote_code=True
+        )
 
     @patch('motor.config.coordinator.CoordinatorConfig')
     def test_dsv4_tokenizer_used_for_vllm_engine(self, mock_config_class):
         mock_config = self._mock_tokenizer_config("vllm")
         mock_config_class.return_value = mock_config
         mock_tokenizer = Mock()
-        mock_cls, modules = self._install_dsv4_module(mock_tokenizer)
+        modules, tokenizer_registry = self._install_dsv4_module(mock_tokenizer)
         with patch.dict("sys.modules", modules):
-            with patch.object(TokenizerManager, "_is_deepseek_v4_model", return_value=True):
+            with patch.object(TokenizerManager, "_deepseek_tokenizer_mode", return_value="deepseek_v4"):
                 manager = TokenizerManager(mock_config)
 
         self.assertIs(manager.tokenizer, mock_tokenizer)
         self.assertTrue(manager._is_dsv4)
-        mock_cls.from_pretrained.assert_called_once()
+        self.assertTrue(manager._vllm_dsv4_tokenizer)
+        tokenizer_registry.load_tokenizer.assert_called_once_with(
+            "deepseek_v4", "/path/to/model", trust_remote_code=True
+        )
 
     @patch('motor.config.coordinator.CoordinatorConfig')
     def test_dsv4_tokenizer_falls_back_without_vllm(self, mock_config_class):
-        """Missing vllm DeepseekV4Tokenizer must not crash SGLang coordinators."""
+        """Missing vllm TokenizerRegistry must not crash SGLang coordinators."""
         mock_config = self._mock_tokenizer_config("sglang")
         mock_config_class.return_value = mock_config
         mock_tokenizer = Mock()
@@ -1780,16 +1817,56 @@ class TestTokenizerManagerFunction(unittest.TestCase):
             {
                 "vllm": None,
                 "vllm.tokenizers": None,
-                "vllm.tokenizers.deepseek_v4": None,
+                "vllm.tokenizers.registry": None,
                 "transformers": transformers_mod,
             },
         ):
-            with patch.object(TokenizerManager, "_is_deepseek_v4_model", return_value=True):
+            with patch.object(TokenizerManager, "_deepseek_tokenizer_mode", return_value="deepseek_v4"):
                 manager = TokenizerManager(mock_config)
 
         self.assertIs(manager.tokenizer, mock_tokenizer)
         self.assertTrue(manager._is_dsv4)
+        self.assertFalse(manager._vllm_dsv4_tokenizer)
         transformers_mod.AutoTokenizer.from_pretrained.assert_called_once()
+
+    @patch('motor.config.coordinator.CoordinatorConfig')
+    def test_dsv4_tokenizer_retries_after_load_failure(self, mock_config_class):
+        """A transient load failure must retry, not permanently fall back to AutoTokenizer."""
+        mock_config = self._mock_tokenizer_config("vllm")
+        mock_config_class.return_value = mock_config
+
+        mock_tokenizer = Mock()
+        import types
+
+        registry_mod = types.ModuleType("vllm.tokenizers.registry")
+        tokenizer_registry = Mock()
+        # First load is a transient failure; the next attempt succeeds.
+        tokenizer_registry.load_tokenizer.side_effect = [OSError("transient"), mock_tokenizer]
+        setattr(registry_mod, "TokenizerRegistry", tokenizer_registry)
+        transformers_mod = Mock()
+        transformers_mod.AutoTokenizer.from_pretrained.return_value = mock_tokenizer
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "vllm": types.ModuleType("vllm"),
+                "vllm.tokenizers": types.ModuleType("vllm.tokenizers"),
+                "vllm.tokenizers.registry": registry_mod,
+                "transformers": transformers_mod,
+            },
+        ):
+            with patch.object(TokenizerManager, "_deepseek_tokenizer_mode", return_value="deepseek_v4"):
+                manager = TokenizerManager(mock_config)
+
+                # __init__'s eager load hit the transient failure: no AutoTokenizer fallback.
+                self.assertIsNone(manager.tokenizer)
+                transformers_mod.AutoTokenizer.from_pretrained.assert_not_called()
+
+                # Clear the cooldown and retry: the vLLM tokenizer now loads.
+                manager._next_load_attempt_at = 0.0
+                tokenizer = manager.get_tokenizer()
+                self.assertIs(tokenizer, mock_tokenizer)
+                self.assertTrue(manager._vllm_dsv4_tokenizer)
 
 
 class TestTokenizerManagerInitialize(unittest.TestCase):

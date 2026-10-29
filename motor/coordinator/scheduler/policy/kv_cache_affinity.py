@@ -820,6 +820,13 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
 class TokenizerManager(ThreadSafeSingleton):
     """Tokenizer shared directly by KV affinity and context-budget routing."""
 
+    # Whether the vLLM DeepseekV4Tokenizer (apply_chat_template exposed as a method,
+    # not a chat_template string) was loaded. Class-level default keeps the
+    # _apply_chat_template_dsv4 gate from raising AttributeError on managers built
+    # via __new__ (tests); __init__ always sets it, so production is unaffected.
+    _vllm_dsv4_tokenizer = False
+    _warned_marker_fallback = False
+
     def __init__(self, config: CoordinatorConfig | None = None):
         if hasattr(self, "_initialized"):
             return
@@ -831,6 +838,7 @@ class TokenizerManager(ThreadSafeSingleton):
         self.endpoint = config.tracer_config.endpoint
         self.tokenizer = None
         self._is_dsv4 = False
+        self._vllm_dsv4_tokenizer = False
         self._next_load_attempt_at = 0.0
         scheduler_config = getattr(config, "scheduler_config", None)
         kv_config = getattr(scheduler_config, "kv_conductor_config", None) if scheduler_config else None
@@ -880,26 +888,36 @@ class TokenizerManager(ThreadSafeSingleton):
             if not getattr(self, "model_path", ""):
                 return None
             try:
-                if self._is_deepseek_v4_model(self.model_path):
+                dsv4_mode = self._deepseek_tokenizer_mode(self.model_path)
+                if dsv4_mode is not None:
                     try:
-                        from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer  # pylint: disable=import-error,no-name-in-module
-                    except ImportError as exc:
+                        from vllm.tokenizers.registry import TokenizerRegistry  # pylint: disable=import-error,no-name-in-module
+                    except ImportError:
+                        # Only a missing vLLM tokenizer module degrades here. A real
+                        # load failure (transient I/O, unregistered mode, ...) must
+                        # bubble to the outer handler so it retries after the cooldown
+                        # instead of pinning the coordinator to hand-built markers.
                         logger.warning(
-                            "DeepseekV4Tokenizer unavailable for engine_type=%s (%s); falling back to AutoTokenizer",
+                            "DeepSeek %s tokenizer unavailable for engine_type=%s; falling back to AutoTokenizer",
+                            dsv4_mode,
                             self.engine_type,
-                            exc,
                         )
                         from transformers import AutoTokenizer
 
                         self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
                         self._is_dsv4 = True
+                        self._vllm_dsv4_tokenizer = False
                     else:
-                        self.tokenizer = DeepseekV4Tokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+                        self.tokenizer = TokenizerRegistry.load_tokenizer(
+                            dsv4_mode, self.model_path, trust_remote_code=True
+                        )
                         self._is_dsv4 = True
+                        self._vllm_dsv4_tokenizer = True
                 else:
                     from transformers import AutoTokenizer
 
                     self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+                    self._vllm_dsv4_tokenizer = False
             except Exception as exc:
                 self._next_load_attempt_at = time.monotonic() + _TOKENIZER_LOAD_RETRY_SECONDS
                 logger.warning(
@@ -942,13 +960,17 @@ class TokenizerManager(ThreadSafeSingleton):
             return None
 
     @staticmethod
-    def _is_deepseek_v4_model(model_path: str) -> bool:
+    def _deepseek_tokenizer_mode(model_path: str) -> str | None:
         config_dict = TokenizerManager._read_model_config_dict(model_path)
         if not config_dict:
-            return False
-        return config_dict.get("model_type") == "deepseek_v4" or "DeepseekV4ForCausalLM" in (
-            config_dict.get("architectures") or []
-        )
+            return None
+        model_type = config_dict.get("model_type")
+        architectures = config_dict.get("architectures") or []
+        if model_type == "deepseek_v41" or "DeepseekV41ForCausalLM" in architectures:
+            return "deepseek_v41"
+        if model_type == "deepseek_v4" or "DeepseekV4ForCausalLM" in architectures:
+            return "deepseek_v4"
+        return None
 
     @staticmethod
     def _build_dsv4_chat_template_kwargs(req_data: dict | None) -> dict:
@@ -1004,12 +1026,28 @@ class TokenizerManager(ThreadSafeSingleton):
 
     def _apply_chat_template_dsv4(self, messages: list, tools: list | None, req_data: dict | None) -> list[int]:
         messages, tools = preprocess_messages_for_dsv4(messages, tools)
-        if not getattr(self.tokenizer, "chat_template", None):
-            return self._encode_dsv4_messages(messages)
-        result = self.tokenizer.apply_chat_template(
-            messages, tools=tools, **self._build_dsv4_chat_template_kwargs(req_data)
-        )
-        return result if isinstance(result, list) else self.tokenizer.encode(result, add_special_tokens=False)
+        if self._vllm_dsv4_tokenizer and not self._is_sglang_engine():
+            result = self.tokenizer.apply_chat_template(
+                messages, tools=tools, **self._build_dsv4_chat_template_kwargs(req_data)
+            )
+            return result if isinstance(result, list) else self.tokenizer.encode(result, add_special_tokens=False)
+
+        # SGLang deployments must keep their own marker encoder: the vLLM
+        # apply_chat_template output does not match SGLang's stored KV tokens. For
+        # vLLM without the DeepseekV4Tokenizer, the hand-built markers below cannot
+        # reproduce the engine's tokenization (BOS / reasoning-effort prompt /
+        # <think> markers / reasoning are all lost), so prefix queries will miss.
+        # Warn once instead of on every request on this per-request path.
+        if not self._is_sglang_engine() and not self._warned_marker_fallback:
+            logger.warning(
+                "kv_affinity dsv4 tokenize using hand-built markers (vLLM DeepseekV4Tokenizer "
+                "not loaded); tokens will not match the engine and prefix hits will miss"
+            )
+            self._warned_marker_fallback = True
+        return self._encode_dsv4_messages(messages)
+
+    def _is_sglang_engine(self) -> bool:
+        return str(getattr(self, "engine_type", "vllm") or "vllm").strip().lower() == "sglang"
 
     def _encode_dsv4_messages(self, messages: list) -> list[int]:
         """Hand-built markers used only when the tokenizer has no chat_template.
@@ -1019,8 +1057,7 @@ class TokenizerManager(ThreadSafeSingleton):
         so a vLLM deploy that also lacks ``chat_template`` still queries
         Conductor with the same tokens as before.
         """
-        engine_type = str(getattr(self, "engine_type", "vllm") or "vllm").strip().lower()
-        if engine_type == "sglang":
+        if self._is_sglang_engine():
             return self._encode_dsv4_messages_sglang(messages)
         return self._encode_dsv4_messages_vllm(messages)
 
