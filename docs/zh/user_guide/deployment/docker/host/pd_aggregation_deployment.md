@@ -46,7 +46,7 @@
    ```json
    {
      "motor_deploy_config": {
-       "hybrid_instances_num": 2,
+       "hybrid_instances_num": 4,
        "single_hybrid_instance_pod_num": 1,
        "hybrid_pod_npu_num": 2
      }
@@ -80,10 +80,10 @@
    python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config --show-commands
    ```
 
-   回显如下：
+   回显如下（一台服务器部署一个推理容器）。下例为 4 个混部实例，每个实例 1 个容器、2 张卡：
 
    ```text
-   预计使用 2 台服务器。
+   预计使用 4 台服务器。
 
    服务器 1：管理面
    python3 /home/examples/deployer/docker_deploy.py \
@@ -105,20 +105,18 @@
      --controller-ip "<服务器1 IP>"
 
    服务器 2：混部 u1
-   python3 /home/examples/deployer/docker_deploy.py \
-     --config_dir /home/examples/config \
-     --container-name motor-u1 \
-     --role union \
-     --instance-name u1 \
-     --pod-ip "<本机IP>" \
-     --nic-name "<本机网卡>" \
-     --coordinator-ip "<服务器1 IP>" \
-     --controller-ip "<服务器1 IP>"
+   ...
+
+   服务器 3：混部 u2
+   ...
+
+   服务器 4：混部 u3
+   ...
    ```
 
 2. 执行服务启动命令
 
-   请参照以下规则**修改上述启动指令**，**在不同服务器的宿主机执行服务启动命令**
+   请参照以下规则**修改上述启动指令**，**在不同服务器的宿主机执行服务启动命令**。
 
    | 参数 | 说明 |
    | :--- | :--- |
@@ -126,6 +124,10 @@
    | --nic-name | 当前服务器对应的主网卡名。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`dev`字段后面是`--nic-name`值。 |
    | --coordinator-ip/--controller-ip | 服务器 1 的 IP。管理面部署在服务器 1。 |
    | --kv-store-ip | 服务器 1 的 IP。开启池化时 kv_store 也部署在服务器 1，与管理面同机。 |
+
+   【可选】如果需要**一台服务器部署多个推理容器**，请参考[同一服务器部署多个推理容器](#同一服务器部署多个推理容器)部署服务。
+
+---
 
 ## 推理验证
 
@@ -186,51 +188,114 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_
 
 部署脚本会为用户自动创建容器，容器将自动挂载用户的服务启动脚本以及权重文件的路径。如需自定义容器的创建指令，可以手动调整 `examples/deployer/lib/constant.py` 文件中的 docker-run 模板。
 
-### 同一服务器部署多个推理容器时错开端口
+### 同一服务器部署多个推理容器
 
-同一服务器上部署多个推理容器时，须先通过`--devices`为本容器分配NPU，再规划并错开本容器端口。
+记录[启动服务](#启动服务)里 `--show-commands` 的回显，按下面修改。下面以 1 台 8 卡服务器部署 4 个混部实例为例。每个实例 1 个容器、2 张卡，卡号依次为 `0,1`、`2,3`、`4,5`、`6,7`。
 
-`--devices`填写本容器使用的卡号。同一服务器上的多个推理容器须使用不同卡号，卡数须与该容器所需NPU数量一致。
+1. 管理面启动命令
 
-错开端口时，在启动命令中增加下列参数：
+   无需修改，按回显执行。
 
-| 参数 | 说明 |
-| :--- | :--- |
-| --node-manager-port | 实际运行时的NodeManager端口，用于引擎节点管理。 |
-| --data-parallel-rpc-port | 实际运行时的数据并行RPC端口。 |
-| --kv-port | 实际运行时的KV传输端口。 |
-| --base-port | 实际运行时的引擎端点起始端口。 |
+   ```bash
+   python3 /home/examples/deployer/docker_deploy.py \
+     --config_dir /home/examples/config \
+     --container-name motor-ctrl \
+     --role coordinator,controller \
+     --pod-ip "<本机IP>" \
+     --nic-name "<本机网卡>"
+   ```
 
-以混部实例u0的2个容器部署在同一服务器为例。2个容器分别使用卡0与卡1，端口规划如下
+2. kv_store 启动命令
 
-| --container-name | --devices | --node-manager-port | --data-parallel-rpc-port | --base-port |
-| :--- | :--- | :--- | :--- | :--- |
-| motor-u0-0 | 0 | 4026 | 9000 | 10000 |
-| motor-u0-1 | 1 | 4126 | 9100 | 11000 |
+   未开启池化时，回显没有这条命令。开启池化后无需修改，按回显执行。
 
-执行以下命令部署容器`motor-u0-0`：
+   ```bash
+   python3 /home/examples/deployer/docker_deploy.py \
+     --config_dir /home/examples/config \
+     --container-name motor-kvs \
+     --role kv_store \
+     --pod-ip "<本机IP>" \
+     --nic-name "<本机网卡>" \
+     --coordinator-ip "<本机IP>" \
+     --controller-ip "<本机IP>"
+   ```
 
-```bash
-python3 docker_deploy.py --config_dir ../../model_configs/vllm \
-  ... \
-  --devices 0 \
-  ... \
-  --node-manager-port 4026 \
-  --data-parallel-rpc-port 9000 \
-  --base-port 10000
-```
+3. 混部推理容器启动命令
 
-执行以下命令部署容器`motor-u0-1`：
+   额外添加以下五个参数。
 
-```bash
-python3 docker_deploy.py --config_dir ../../model_configs/vllm \
-  ... \
-  --devices 1 \
-  ... \
-  --node-manager-port 4126 \
-  --data-parallel-rpc-port 9100 \
-  --base-port 11000
-```
+   `motor-u0`：
 
->[!NOTE] 说明
->开启池化时，以上命令分别增加不同的`--kv-port`，例如`21000`与`22000`。未开启池化不要传`--kv-port`。
+   ```bash
+   python3 /home/examples/deployer/docker_deploy.py \
+     --config_dir /home/examples/config \
+     --container-name motor-u0 \
+     --role union \
+     --instance-name u0 \
+     --pod-ip "<本机IP>" \
+     --nic-name "<本机网卡>" \
+     --coordinator-ip "<服务器1 IP>" \
+     --controller-ip "<服务器1 IP>" \
+     --devices 0,1  \                  # 本容器使用的卡号，2 张卡。同一台服务器上不能重叠
+     --node-manager-port 4026  \       # NodeManager 端口。同一台服务器上错开，例如 4026、4126
+     --data-parallel-rpc-port 9000  \  # 数据并行 RPC 端口。同一台服务器上错开，例如 9000、9100
+     --base-port 10000  \              # 引擎端点起始端口，会再占用后续一段端口。同一台服务器上错开，例如 10000、11000
+     --kv-port 21000                   # KV 传输起始端口，会再占用后续一段端口。同一台服务器上错开，例如 21000、22000
+   ```
+
+   `motor-u1`：
+
+   ```bash
+   python3 /home/examples/deployer/docker_deploy.py \
+     --config_dir /home/examples/config \
+     --container-name motor-u1 \
+     --role union \
+     --instance-name u1 \
+     --pod-ip "<本机IP>" \
+     --nic-name "<本机网卡>" \
+     --coordinator-ip "<服务器1 IP>" \
+     --controller-ip "<服务器1 IP>" \
+     --devices 2,3  \                  # 本容器使用的卡号，2 张卡。同一台服务器上不能重叠
+     --node-manager-port 4126  \       # NodeManager 端口。同一台服务器上错开，例如 4026、4126
+     --data-parallel-rpc-port 9100  \  # 数据并行 RPC 端口。同一台服务器上错开，例如 9000、9100
+     --base-port 11000  \              # 引擎端点起始端口，会再占用后续一段端口。同一台服务器上错开，例如 10000、11000
+     --kv-port 22000                   # KV 传输起始端口，会再占用后续一段端口。同一台服务器上错开，例如 21000、22000
+   ```
+
+   `motor-u2`：
+
+   ```bash
+   python3 /home/examples/deployer/docker_deploy.py \
+     --config_dir /home/examples/config \
+     --container-name motor-u2 \
+     --role union \
+     --instance-name u2 \
+     --pod-ip "<本机IP>" \
+     --nic-name "<本机网卡>" \
+     --coordinator-ip "<服务器1 IP>" \
+     --controller-ip "<服务器1 IP>" \
+     --devices 4,5  \                  # 本容器使用的卡号，2 张卡。同一台服务器上不能重叠
+     --node-manager-port 4226  \       # NodeManager 端口。同一台服务器上错开，例如 4226、4326
+     --data-parallel-rpc-port 9200  \  # 数据并行 RPC 端口。同一台服务器上错开，例如 9200、9300
+     --base-port 12000  \              # 引擎端点起始端口，会再占用后续一段端口。同一台服务器上错开，例如 12000、13000
+     --kv-port 23000                   # KV 传输起始端口，会再占用后续一段端口。同一台服务器上错开，例如 23000、24000
+   ```
+
+   `motor-u3`：
+
+   ```bash
+   python3 /home/examples/deployer/docker_deploy.py \
+     --config_dir /home/examples/config \
+     --container-name motor-u3 \
+     --role union \
+     --instance-name u3 \
+     --pod-ip "<本机IP>" \
+     --nic-name "<本机网卡>" \
+     --coordinator-ip "<服务器1 IP>" \
+     --controller-ip "<服务器1 IP>" \
+     --devices 6,7  \                  # 本容器使用的卡号，2 张卡。同一台服务器上不能重叠
+     --node-manager-port 4326  \       # NodeManager 端口。同一台服务器上错开，例如 4226、4326
+     --data-parallel-rpc-port 9300  \  # 数据并行 RPC 端口。同一台服务器上错开，例如 9200、9300
+     --base-port 13000  \              # 引擎端点起始端口，会再占用后续一段端口。同一台服务器上错开，例如 12000、13000
+     --kv-port 24000                   # KV 传输起始端口，会再占用后续一段端口。同一台服务器上错开，例如 23000、24000
+   ```
