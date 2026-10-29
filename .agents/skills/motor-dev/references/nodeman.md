@@ -502,6 +502,12 @@ barriers heartbeat until the container checkpoint is done. During container snap
   the `/snapshot/health` readiness contract, prepares restore metadata, rebinds endpoint ids after
   restore, and gates heartbeat/readiness around checkpoint and restore `start_cmd`.
 
+`NativeEngineService.wait_ready()` filters headless endpoints from its local HTTP target
+list before calculating the timeout; non-headless endpoints still require `READY`.
+An empty HTTP target list succeeds without asserting process liveness. Engine FT background
+polling also excludes headless endpoints locally. Original endpoint lists, process monitoring,
+heartbeat runtime states and instance-wide readiness checks remain unchanged.
+
 ## Testing
 
 ```bash

@@ -244,6 +244,38 @@ def test_wait_ready_returns_true_when_all_endpoints_are_ready():
     assert service.wait_ready(endpoints, timeout=1) is True
 
 
+@pytest.mark.parametrize("include_http", [False, True])
+def test_wait_ready_excludes_headless_without_mutating_endpoints(include_http):
+    service = _native_engine_service()
+    headless = _make_endpoint(0, headless=True)
+    http = _make_endpoint(1)
+    endpoints = [headless, http] if include_http else [headless]
+    original = list(endpoints)
+    service.supervisor.probe_spec.return_value = SimpleNamespace(startup_timeout_seconds=1)
+    service.supervisor.state.return_value = RuntimeState.READY
+
+    assert service.wait_ready(endpoints) is True
+    assert endpoints == original
+    assert endpoints[0].headless is True
+    if include_http:
+        service.supervisor.probe_spec.assert_called_once_with(http.id)
+        service.supervisor.state.assert_called_once_with(http.id, http.ip, int(http.business_port))
+    else:
+        service.supervisor.probe_spec.assert_not_called()
+        service.supervisor.state.assert_not_called()
+
+
+@pytest.mark.parametrize("state", list(RuntimeState))
+def test_wait_ready_requires_ready_for_http_endpoint(state):
+    service = _native_engine_service()
+    service.supervisor.state.return_value = state
+    with (
+        patch.object(service_module.time, "monotonic", side_effect=[0.0, 0.1, 2.0]),
+        patch.object(service_module.time, "sleep"),
+    ):
+        assert service.wait_ready([_make_endpoint(0)], timeout=1) is (state == RuntimeState.READY)
+
+
 def test_wait_ready_returns_false_on_timeout():
     service = _native_engine_service()
     service.supervisor.state.return_value = RuntimeState.STARTING

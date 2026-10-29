@@ -355,11 +355,14 @@ class NativeEngineService:
     def wait_ready(self, endpoints: list[Endpoint], timeout: float | None = None) -> bool:
         """Wait until every native engine's readiness probe succeeds.
 
+        Headless endpoints have no HTTP readiness probe and are excluded.
+        An empty HTTP target list succeeds without asserting process liveness.
         The probe hits the engine's business port (the OpenAI API), which only
         accepts connections once the model finished loading.  By default the
         wait uses the longest configured probe startup timeout.  False means
         at least one endpoint did not become ready before the deadline.
         """
+        endpoints = [endpoint for endpoint in endpoints if not endpoint.headless]
         if timeout is None:
             startup_timeouts = [
                 probe.startup_timeout_seconds
