@@ -77,7 +77,7 @@
 | 容器类型 | 参考模板 | 配置说明 |
 | --- | --- | --- |
 | 管理面 | [ENTER_DOCKER_RUN_CTRL](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L611-L622) | 容器名`motor-ctrl`，创建在服务器 1。 |
-| 混部 | Atlas 800I A2：[ENTER_DOCKER_RUN_A2](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L448-L480)<br>Atlas 800I A3：[ENTER_DOCKER_RUN_A3](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L482-L522)<br>Ascend 950（8卡）：[ENTER_DOCKER_RUN_A5](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L524-L561)<br>Ascend 950（16卡）：[ENTER_DOCKER_RUN_A5_POD16](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L563-L609) | 1 个实例只占 1 个 Pod 时，容器名为`motor-u0`、`motor-u1`。1 个实例拆成多个 Pod 时，容器名为`motor-u0-0`、`motor-u0-1`。同一实例的多个容器可以放在不同服务器。 |
+| 混部 | Atlas 800I A2：[ENTER_DOCKER_RUN_A2](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L448-L480)<br>Atlas 800I A3：[ENTER_DOCKER_RUN_A3](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L482-L522)<br>Ascend 950（8卡）：[ENTER_DOCKER_RUN_A5](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L524-L561)<br>Ascend 950（16卡）：[ENTER_DOCKER_RUN_A5_POD16](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L563-L609) | 1 个实例只占 1 个 容器时，容器名为`motor-u0`、`motor-u1`。1 个实例拆成多个容器时，容器名为`motor-u0-0`、`motor-u0-1`。每台服务器仅创建一个容器。 |
 | kv_store | [ENTER_DOCKER_RUN_KVS](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L624-L638) | 开启池化时创建，容器名`motor-kvs`，放在服务器 1。 |
 
 创建容器时，必须把服务启动脚本文件夹挂载进容器（例如：`-v /home/examples:/home/examples`）,创建完成后进入容器：
@@ -87,6 +87,8 @@ docker exec -it <容器名> bash
 ```
 
 ## 启动服务
+
+默认情况下，一台服务器仅部署一个混部推理容器，如需**一台服务器部署多个混部推理实例（仅用于小模型）**，请参考[同一容器部署多个推理实例](#同一容器部署多个推理实例)。
 
 1. 获取服务启动命令
 
@@ -139,7 +141,7 @@ docker exec -it <容器名> bash
 
 2. 执行服务启动命令
 
-   进入回显中对应的容器，参照以下规则**修改上述启动指令**后执行。
+   进入回显中对应的容器，参照以下规则**修改上述启动指令**后执行。每个混部容器仅执行一次。
 
    | 参数 | 说明 |
    | :--- | :--- |
@@ -219,49 +221,70 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 创建容器的模板仅供参考。调整挂载时，在`docker run`命令中增删`-v`。云化平台创建容器时，在平台的挂载配置中调整。宿主机路径须真实存在。
 
-### 同一服务器部署多个推理容器时错开端口
+### 同一容器部署多个推理实例
 
-同一服务器上部署多个混部容器时，创建容器时为本容器分配 NPU，再在`--start`命令中错开端口。
+一个容器里可以执行多条`--start`，每条启动一个推理实例。每条命令使用不同的`--instance-name`和`--devices`，并错开端口。两条命令各开一个窗口。引擎角色的`--start --devices`会把同一串卡号写入本进程的`MOTOR_START_DEVICES`，下次`--start`和 Ctrl+C 只回收本实例；管理面或不带`--devices`的`--start`仍会回收该容器内全部 Motor/vLLM 进程。
 
-同一服务器上的多个混部容器使用不同卡号（`--device /dev/davinciN`），卡数与该容器所需 NPU 数量一致。
+下面以 1 个容器部署 2 个混部实例为例，容器挂载卡`0,1,2,3`。混部 `u0`使用`0,1`，混部 `u1`使用`2,3`。
 
-错开端口时，在容器内`--start`命令中增加下列参数：
+1. 创建容器
 
-| 参数 | 说明 |
-| :--- | :--- |
-| --node-manager-port | 实际运行时的NodeManager端口，用于引擎节点管理。 |
-| --data-parallel-rpc-port | 实际运行时的数据并行RPC端口。 |
-| --kv-port | 实际运行时的KV传输端口。 |
-| --base-port | 实际运行时的引擎端点起始端口。 |
+   在宿主机执行一次。这个容器挂上两个实例要用的卡。管理面仍单独创建一个容器，按[启动服务](#启动服务)的回显执行。
 
-以混部实例 u0 的 2 个容器部署在同一服务器为例。2 个容器分别使用卡 0 与卡 1，端口规划如下
+   ```bash
+   python3 /home/examples/deployer/docker_deploy.py \
+     --config_dir /home/examples/config \
+     --create \
+     --container-name motor-hybrid \
+     --devices 0,1,2,3    # 这个容器挂载两个实例要用的卡
+   ```
 
-| --container-name | 挂载卡号 | --node-manager-port | --data-parallel-rpc-port | --base-port |
-| :--- | :--- | :--- | :--- | :--- |
-| motor-u0-0 | 0 | 4026 | 9000 | 10000 |
-| motor-u0-1 | 1 | 4126 | 9100 | 11000 |
+2. 进入容器
 
-进入容器`motor-u0-0`后执行：
+   ```bash
+   docker exec -it motor-hybrid bash
+   ```
 
-```bash
-python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config \
-  --start \
-  ... \
-  --node-manager-port 4026 \
-  --data-parallel-rpc-port 9000 \
-  --base-port 10000
-```
+3. 执行混部 u0 启动命令
 
-进入容器`motor-u0-1`后执行：
+   额外添加以下五个参数。
 
-```bash
-python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config \
-  --start \
-  ... \
-  --node-manager-port 4126 \
-  --data-parallel-rpc-port 9100 \
-  --base-port 11000
-```
+   ```bash
+   python3 /home/examples/deployer/docker_deploy.py \
+     --config_dir /home/examples/config \
+     --start \
+     --container-name motor-hybrid \
+     --role union \
+     --instance-name u0 \
+     --pod-ip "<本机IP>" \
+     --nic-name "<本机网卡>" \
+     --coordinator-ip "<服务器1 IP>" \
+     --controller-ip "<服务器1 IP>" \
+     --devices 0,1  \                  # 本实例使用的卡号，2 张卡。同一容器里的其他实例不能重叠
+     --node-manager-port 4026  \       # NodeManager 端口。同一容器里错开，例如 4026、4226
+     --data-parallel-rpc-port 9000  \  # 数据并行 RPC 端口。同一容器里错开，例如 9000、9200
+     --base-port 10000  \              # 引擎端点起始端口，会再占用后续一段端口。同一容器里错开，例如 10000、12000
+     --kv-port 21000                   # KV 传输起始端口，会再占用后续一段端口。同一容器里错开，例如 21000、23000
+   ```
 
->[!NOTE] 说明
->开启池化时，以上命令分别增加不同的`--kv-port`，例如`21000`与`22000`。未开启池化不要传`--kv-port`。
+4. 执行混部 u1 启动命令
+
+   开一个新的窗口，进入容器后，执行以下命令，额外添加以下五个参数。
+
+   ```bash
+   python3 /home/examples/deployer/docker_deploy.py \
+     --config_dir /home/examples/config \
+     --start \
+     --container-name motor-hybrid \
+     --role union \
+     --instance-name u1 \
+     --pod-ip "<本机IP>" \
+     --nic-name "<本机网卡>" \
+     --coordinator-ip "<服务器1 IP>" \
+     --controller-ip "<服务器1 IP>" \
+     --devices 2,3  \                  # 本实例使用的卡号，2 张卡。同一容器里的其他实例不能重叠
+     --node-manager-port 4226  \       # NodeManager 端口。同一容器里错开，例如 4026、4226
+     --data-parallel-rpc-port 9200  \  # 数据并行 RPC 端口。同一容器里错开，例如 9000、9200
+     --base-port 12000  \              # 引擎端点起始端口，会再占用后续一段端口。同一容器里错开，例如 10000、12000
+     --kv-port 23000                   # KV 传输起始端口，会再占用后续一段端口。同一容器里错开，例如 21000、23000
+   ```

@@ -316,18 +316,21 @@ def _prepare_and_render(args, deployer_dir: str):
         sys.exit(1)
 
     start_motor_path = os.path.join(workspace, "start_motor.sh")
-    _write_file(
-        start_motor_path,
-        D.render_start_motor_sh(
+    try:
+        script = D.render_start_motor_sh(
             params,
             configmap_path,
             identity=identity,
             nic_name=getattr(args, "nic_name", None),
             pod_ip=getattr(args, "pod_ip", None),
             deployer_dir=deployer_dir,
-        ),
-        executable=True,
-    )
+            container_name=_container_name_from_args_or_env(args),
+            devices=getattr(args, "devices", None),
+        )
+    except ValueError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
+    _write_file(start_motor_path, script, executable=True)
     logger.info("Artifacts written to %s (start_motor.sh).", workspace)
     return params, workspace, identity
 
@@ -466,6 +469,7 @@ def _start_in_place(
     identity: D.DockerRuntimeIdentity | None = None,
     on_stop: Callable[[], None] | None = None,
     extra_lines: list[str] | None = None,
+    only_devices: str | None = None,
 ) -> int:
     start_motor_path = os.path.join(workspace, "start_motor.sh")
     if not os.path.isfile(start_motor_path):
@@ -481,6 +485,7 @@ def _start_in_place(
         format_restart_command(),
         on_stop=on_stop,
         extra_lines=extra_lines,
+        only_devices=only_devices,
     )
 
 
@@ -520,8 +525,21 @@ def run(args, deployer_dir: str) -> int:
             follow.stop()
 
     extra_lines = [f"Render 日志：{follow.log_path}"] if follow is not None else None
+    only_devices = (
+        D.isolate_start_devices(
+            identity.role if identity else None,
+            getattr(args, "devices", None),
+        )
+        or None
+    )
     try:
-        return _start_in_place(workspace, identity=identity, on_stop=on_stop, extra_lines=extra_lines)
+        return _start_in_place(
+            workspace,
+            identity=identity,
+            on_stop=on_stop,
+            extra_lines=extra_lines,
+            only_devices=only_devices,
+        )
     finally:
         if follow is not None:
             follow.stop()
@@ -1300,8 +1318,14 @@ def parse_arguments() -> argparse.Namespace:
         help="Host NPU ids, e.g. '0' or '0,1'. Engine/single create keeps only those "
         "--device /dev/davinciN lines already in the A2/A5 or A3 template and sets "
         "-e ASCEND_VISIBLE_DEVICES; omit to attach every card in that template. "
-        "Ignored for dedicated control-plane and kv_store create. Not used with "
-        "--start (the container already has whatever create attached).",
+        "Ignored for dedicated control-plane and kv_store create. "
+        "On --start with --role prefill/decode/union, limits this process to those "
+        "cards, exports MOTOR_START_DEVICES for NodeManager and this parent "
+        "(so a second --start / Ctrl+C only reaps this instance), and writes "
+        "hccl.json/ranktable.json under a per-instance config directory. "
+        "Host one-click inner --start does not forward --devices. "
+        "Omit on --start to use every card already attached to the container; "
+        "unmarked --start still reaps every Motor/vLLM leftover in this container.",
     )
     # 不常用，兜底
     parser.add_argument(

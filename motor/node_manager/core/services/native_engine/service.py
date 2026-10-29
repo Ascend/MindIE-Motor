@@ -193,7 +193,7 @@ class NativeEngineService:
             for i, endpoint in enumerate(endpoints_info):
                 env = base_env.copy()
                 if self.enable_multi_endpoints:
-                    device_ids_str = self._calc_visible_device_ids(i, device_size)
+                    device_ids_str = self._endpoint_visible_device_ids(env, i, device_size)
                     logger.info("Device IDs: %s", device_ids_str)
                     env["ASCEND_RT_VISIBLE_DEVICES"] = device_ids_str
 
@@ -546,6 +546,32 @@ class NativeEngineService:
             and identity.host == endpoint.ip
             and identity.port == int(endpoint.business_port)
         )
+
+    def _endpoint_visible_device_ids(self, env: dict, index: int, device_size: int) -> str:
+        """Cards for one engine process.
+
+        --start --devices exports MOTOR_START_DEVICES with the user cards in
+        user order. Slice that list per endpoint the same way the logical
+        0,1,... path does (index * local_world_size). Host one-click inner
+        --start does not set the marker, so keep logical 0,1 after the
+        container remaps attached /dev/davinciN.
+        """
+        start_devices = (env.get("MOTOR_START_DEVICES") or "").strip()
+        if start_devices:
+            return self._slice_start_devices(start_devices, index)
+        return self._calc_visible_device_ids(index, device_size)
+
+    def _slice_start_devices(self, start_devices: str, index: int) -> str:
+        cards = [part.strip() for part in start_devices.split(",") if part.strip()]
+        local_world_size = self.parallel_config.local_world_size
+        start = index * local_world_size
+        end = start + local_world_size
+        if start < 0 or end > len(cards):
+            raise ValueError(
+                f"MOTOR_START_DEVICES={start_devices!r} has {len(cards)} card(s); "
+                f"endpoint index={index} needs {local_world_size} card(s) at offset {start}"
+            )
+        return ",".join(cards[start:end])
 
     def _calc_visible_device_ids(self, index: int, device_size: int) -> str:
         local_world_size = self.parallel_config.local_world_size

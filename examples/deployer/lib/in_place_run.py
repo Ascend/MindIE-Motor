@@ -76,12 +76,38 @@ def _is_service_cmd(cmd: bytes) -> bool:
     return any(marker in cmd for marker in _SERVICE_MARKERS)
 
 
+def _start_devices() -> str:
+    return (os.environ.get("MOTOR_START_DEVICES") or "").strip()
+
+
+def _proc_environ(pid: int) -> bytes:
+    try:
+        return Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return b""
+
+
+def _belongs_to_this_start(pid: int) -> bool:
+    """When this process has MOTOR_START_DEVICES, only reap that instance.
+
+    docker_deploy --start --devices must put the same marker on this parent
+    (see run_in_place only_devices) that start_motor.sh exports to children.
+    Host one-click inner --start and control-plane --start leave it unset, so
+    every leftover Motor/vLLM in this container is still this instance.
+    """
+    mine = _start_devices()
+    if not mine:
+        return True
+    marker = f"MOTOR_START_DEVICES={mine}".encode()
+    return marker in _proc_environ(pid).split(b"\x00")
+
+
 def _service_pids(protected: set[int]) -> list[int]:
     found: list[int] = []
     for pid in _iter_pids():
         if pid <= 1 or pid in protected:
             continue
-        if _is_service_cmd(_cmdline(pid)):
+        if _is_service_cmd(_cmdline(pid)) and _belongs_to_this_start(pid):
             found.append(pid)
     return found
 
@@ -133,6 +159,8 @@ def _pid1_orphan_pids(protected: set[int]) -> list[int]:
             continue
         cmd = _cmdline(pid)
         if b"docker_deploy.py" in cmd:
+            continue
+        if not _belongs_to_this_start(pid):
             continue
         if _is_python_proc(pid) or _is_service_cmd(cmd):
             found.append(pid)
@@ -224,7 +252,18 @@ def run_in_place(
     grace: float | None = None,
     on_stop: Callable[[], None] | None = None,
     extra_lines: list[str] | None = None,
+    only_devices: str | None = None,
 ) -> int:
+    marker = (only_devices or "").strip()
+    if marker:
+        # Must land on this parent before cleanup. Children inherit it too;
+        # start_motor.sh also exports the same value.
+        os.environ["MOTOR_START_DEVICES"] = marker
+    else:
+        # Unmarked --start reaps every leftover Motor/vLLM in this container.
+        # Drop a stale parent marker so a previous marked run in this process,
+        # or an inherited shell export, cannot shrink that sweep.
+        os.environ.pop("MOTOR_START_DEVICES", None)
     grace_s = _grace_sec() if grace is None else max(0.1, float(grace))
     protected = {os.getpid(), os.getppid(), 1}
     stop_notified = False
@@ -240,6 +279,8 @@ def run_in_place(
             print(f"on_stop failed: {exc}", flush=True)
 
     # Next --start after exec bash must clear last run's orphan vLLM first.
+    # Marked --start only reaps this instance. Unmarked --start reaps every
+    # Motor/vLLM leftover in this container (control-plane / one-click).
     _signal_services(signal.SIGKILL, protected)
     _reap_pid1_orphans(protected)
     known: set[int] = set()

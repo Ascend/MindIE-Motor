@@ -59,23 +59,42 @@ def get_hardware_type():
     return HardwareType.UNKNOWN
 
 
+def _davinci_ids():
+    import glob
+
+    device_ids = []
+    for device_path in glob.glob("/dev/davinci*"):
+        match = re.search(r'davinci(\d+)', device_path)
+        if match:
+            device_ids.append(match.group(1))
+    return device_ids
+
+
+def _limited_device_ids():
+    raw = os.environ.get("ASCEND_RT_VISIBLE_DEVICES") or os.environ.get("ASCEND_VISIBLE_DEVICES") or ""
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
 def get_visible_devices():
     try:
-        import glob
-
-        davinci_devices = glob.glob("/dev/davinci*")
-        if davinci_devices:
-            device_ids = []
-            for device_path in davinci_devices:
-                match = re.search(r'davinci(\d+)', device_path)
-                if match:
-                    device_ids.append(match.group(1))
-            if device_ids:
-                return sorted(device_ids)
-
+        device_ids = _davinci_ids()
     except Exception as e:
         logging.error("Failed to detect visible devices: %s", e)
-    return []
+        return []
+    if not device_ids:
+        return []
+    limited = _limited_device_ids()
+    if not limited:
+        return sorted(device_ids)
+    present = set(device_ids)
+    missing = [device_id for device_id in limited if device_id not in present]
+    if missing:
+        raise RuntimeError(
+            "ASCEND_RT_VISIBLE_DEVICES requests "
+            + ",".join(missing)
+            + " but those /dev/davinci nodes are not in this container."
+        )
+    return limited
 
 
 def _run_command(cmd_args):
