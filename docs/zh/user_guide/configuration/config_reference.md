@@ -482,11 +482,11 @@ motor_coordinator_config字段配置样例如下所示：
 | context_budget_mode | string | 请求路由前使用模型 tokenizer 计算 prompt token 数，并将实际生效的 `max_tokens` / `max_completion_tokens` 裁剪到模型剩余上下文。适用于 `load_balance`、`round_robin`、`kv_cache_affinity`。可选值：`off`（默认）或 `on`；开启 `on` 时，P/D 引擎配置必须提供 `model` 与 `max_model_len`。 |
 | **render_config字段** |-|-|
 | enable | bool | 是否启用 vLLM Render Sidecar。默认值：`false`。启用后，Coordinator 优先调用 Render；Render 不可用、超时或接口不支持时回退本地 tokenizer，请求校验错误（400/422，以及带结构化错误响应的 404）直接返回客户端。vLLM 0.30+ 对 token-only Generate 新增了 `--enable-scale-out` 门禁，Motor 会在支持时为 P/D/Union 引擎自动开启，无需手动配置。启用 KV Cache 亲和性调度时建议同时开启。 |
-| enable_token_only_decode | bool | 是否让流式和非流式请求的 Decode 统一使用 token-only Generate 与 Derender。默认值：`false`；此时 Render 仍参与路由前分词和 PD Prefill，Decode 使用 vLLM 原生 OpenAI 接口。设置为 `true` 后两种请求均切换为 token-only；非流式要求 vLLM >= 0.24.0，流式要求 vLLM >= 0.27.0。数据混淆要求设置为 `true`。 |
+| enable_token_only_decode | bool | 是否让流式和非流式请求的 Decode 统一使用 token-only Generate 与 Derender。默认值：`false`；此时 Render 仍参与路由前分词和 PD Prefill，Decode 使用 vLLM 原生 OpenAI 接口。设置为 `true` 后两种请求均切换为 token-only，版本要求见“Render 使用限制”。数据混淆要求设置为 `true`。 |
 | endpoint | object | Render Sidecar 地址。`host` 默认值为 `127.0.0.1`，Sidecar 部署仅支持本机地址；`port` 默认值为 `8100`。 |
 | timeout_ms | int | Render、Derender 与健康检查的 HTTP 超时时间，单位：毫秒。默认值：`5000`。 |
 | image_name | string | Render Sidecar 镜像。配置后使用该独立镜像；为空时复用 `motor_deploy_config.image_name`。默认值为空。 |
-| launch_args | object | 可选的 `vllm launch render` 参数；无额外启动参数时无需配置。`renderer_num_workers` 未配置时默认传 `4`。对象会序列化为单个 JSON 参数值，数组会展开为多个参数值。配置 `tool_call_parser`、`reasoning_parser` 等解析参数时，非流式 Derender 要求 vLLM >= 0.25.0，流式 Derender 要求包含 vLLM PR #50550。模型、监听地址、端口、served model name 和访问日志过滤由 Motor 管理，不能在此覆盖。可用参数以 [vLLM Render CLI](https://docs.vllm.ai/en/latest/api/vllm/entrypoints/cli/launch/) 为准。 |
+| launch_args | object | 可选的 `vllm launch render` 参数；无额外启动参数时无需配置。`renderer_num_workers` 未配置时默认传 `4`。对象会序列化为单个 JSON 参数值，数组会展开为多个参数值。模型、监听地址、端口、served model name 和访问日志过滤由 Motor 管理，不能在此覆盖。可用参数以 [vLLM Render CLI](https://docs.vllm.ai/en/latest/cli/launch/render/) 为准。 |
 | **token_obfuscation_config字段** |-|-|
 | enable | bool | 是否启用与数据混淆权重配套的 token 混淆。默认值：`false`。要求 `render_config.enable=true` 且 `render_config.enable_token_only_decode=true`。开启后支持流式和非流式 vLLM Render token-only 请求，任何混淆或 Render 失败都会拒绝请求，不回退原生 OpenAI 推理。 |
 | model_path | string | 可选，显式指定被服务的权重目录（用于从其中读取 `vocab_size`）。默认值为空，此时使用 `motor_engine_{prefill,decode,encode,union}_config.engine_config.model`（多模型共存时必须显式指定）。 |
@@ -657,6 +657,14 @@ motor_coordinator_config字段配置样例如下所示：
 | additional_annotations | object | 可选；Coordinator工作负载及其Pod模板的自定义Annotations。 |
 | additional_labels | object | 可选；Coordinator工作负载及其Pod模板的自定义Labels。 |
 | image_name | string | 可选；Coordinator 容器镜像。不填则使用 `motor_deploy_config.image_name`。**仅 Kubernetes 部署生效**；Docker 部署统一使用 `motor_deploy_config.image_name`。 |
+
+>[!NOTE]说明
+>
+>**Render 使用限制**
+>
+>- **配置一致性**：Render 必须与推理引擎使用相同的模型、Tokenizer 和 Chat Template 配置。使用 Tool Call 或 Reasoning 时，`tokenizer_mode`、`tool_call_parser`、`reasoning_parser`、`enable_auto_tool_choice` 等参数也应保持一致，否则可能出现精度异常或响应字段解析错误。
+>- **版本要求**：普通非流式 Derender 要求 vLLM ≥ 0.24，普通流式 Derender 要求 vLLM ≥ 0.27；使用 Tool Call 或 Reasoning 时，非流式要求 vLLM ≥ 0.25，流式要求 vLLM ≥ 0.30。建议 Render 与推理引擎使用相同的 vLLM 版本。
+>- **流式性能**：vLLM 0.30 的 streaming Derender 在高并发场景可能造成 TPOT 劣化，部署前应结合实际并发和输出长度进行性能测试。该限制仅影响 `enable_token_only_decode=true` 的流式请求；默认关闭时 Decode 使用原生 OpenAI 接口，不受影响。
 
 ## motor_engine_union_config
 
