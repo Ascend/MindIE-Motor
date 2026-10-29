@@ -310,6 +310,7 @@ def gen_kv_store_env(kv_store_config):
 
 
 CONTAINER_CONFIG_PATH = "/usr/local/Ascend/pyMotor/conf"
+_CONFIG_DIR_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 _API_CONFIG = "api_config"
 _COORD_INFER_PORT = "coordinator_api_infer_port"
@@ -408,6 +409,33 @@ def required_visible_device_count(user_config: dict) -> int:
     p_pods = _require_instance_pod_num(user_config, "prefill")
     d_pods = _require_instance_pod_num(user_config, "decode")
     return p_instances * p_pods * p_npu + d_instances * d_pods * d_npu
+
+
+def in_place_config_path(container_name: str | None, job_name: str | None, *, isolate: bool) -> str:
+    """Config directory for one --start.
+
+    One container can run several --start commands. When --devices limits this
+    command to its own cards, keep hccl.json, ranktable.json and the config
+    sync pid under a directory named by the container and instance.
+    """
+    if not isolate:
+        return CONTAINER_CONFIG_PATH
+    parts: list[str] = []
+    for raw in (container_name, job_name):
+        name = (raw or "").strip()
+        if not name:
+            continue
+        if _CONFIG_DIR_NAME.fullmatch(name) is None:
+            raise ValueError(
+                f"cannot isolate config directory for name {name!r}. Use letters, digits, '.', '_' or '-'."
+            )
+        parts.append(name)
+    if not parts:
+        raise ValueError(
+            "--devices on --start needs --container-name or --instance-name "
+            "so each command gets its own config directory."
+        )
+    return "/".join([CONTAINER_CONFIG_PATH, *parts])
 
 
 def parse_visible_device_ids(raw: str) -> list[int]:
@@ -1361,6 +1389,39 @@ def ensure_docker_render_sidecar(main_container_name: str, user_config: dict, ro
     return name
 
 
+def start_devices_marker(devices: str | None) -> str:
+    """Canonical MOTOR_START_DEVICES value, same string as start_motor.sh export.
+
+    Empty when ``devices`` is omitted. Used both in the generated script and in
+    the docker_deploy parent so --start cleanup can tell this instance from a
+    sibling in the same container.
+    """
+    raw = (devices or "").strip()
+    if not raw:
+        return ""
+    return ",".join(str(device_id) for device_id in parse_visible_device_ids(raw))
+
+
+def isolate_start_devices(role: str | None, devices: str | None) -> str:
+    """Marker for in-container engine --start --devices; empty for control roles."""
+    if engine_role_of(role) is None:
+        return ""
+    return start_devices_marker(devices)
+
+
+def _device_env_lines(devices: str | None) -> list[str]:
+    visible = start_devices_marker(devices)
+    if not visible:
+        return []
+    return [
+        f'export ASCEND_VISIBLE_DEVICES="{visible}"',
+        f'export ASCEND_RT_VISIBLE_DEVICES="{visible}"',
+        # Only --start --devices sets this. Host one-click inner --start does not
+        # forward --devices, so NodeManager keeps slicing logical 0,1.
+        f'export MOTOR_START_DEVICES="{visible}"',
+    ]
+
+
 def render_start_motor_sh(
     params: DockerDeployParams,
     configmap_path: str,
@@ -1368,17 +1429,25 @@ def render_start_motor_sh(
     nic_name: str | None = None,
     pod_ip: str | None = None,
     deployer_dir: str | None = None,
+    container_name: str | None = None,
+    devices: str | None = None,
 ) -> str:
     role = identity.role if identity else C.ROLE_SINGLE_CONTAINER
     kv_env = dict(params.kv_store_env)
     if identity is not None and params.kv_store_enabled:
         kv_env[C.ENV_KVS_MASTER_SERVICE] = identity.kv_store_ip
+    isolate = engine_role_of(role) is not None and bool((devices or "").strip())
+    config_path = in_place_config_path(
+        container_name,
+        identity.job_name if identity is not None else None,
+        isolate=isolate,
+    )
     lines = [
         "#!/bin/bash",
         "set -e",
         "",
         f'export CONFIGMAP_PATH="{configmap_path}"',
-        f'export CONFIG_PATH="{CONTAINER_CONFIG_PATH}"',
+        f'export CONFIG_PATH="{config_path}"',
         f"export ROLE={role}",
     ]
     if role == ROLE_RENDER:
@@ -1403,7 +1472,7 @@ def render_start_motor_sh(
         "set -e",
         "",
         f'export CONFIGMAP_PATH="{configmap_path}"',
-        f'export CONFIG_PATH="{CONTAINER_CONFIG_PATH}"',
+        f'export CONFIG_PATH="{config_path}"',
         f"export ROLE={role}",
     ]
     if identity is not None:
@@ -1432,6 +1501,7 @@ def render_start_motor_sh(
     )
     for key, value in kv_env.items():
         lines.append(f'export {key}="{value}"')
+    lines.extend(_device_env_lines(devices if isolate else None))
     lines.extend(
         [
             "",

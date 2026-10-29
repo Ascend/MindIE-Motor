@@ -100,7 +100,7 @@
 
    Prefill推理容器总数 = `p_instances_num` × `single_p_instance_pod_num`。Decode、混部同理。
 
-3. 配置示例。
+3. **示例**。
 
    ```json
    {
@@ -125,16 +125,7 @@
    | motor-d0-0 | decode | d0 |
    | motor-d0-1 | decode | d0 |
 
-   每个容器在对应服务器上先按[创建容器](#创建容器)创建，再进入容器按[容器内启动服务](#容器内启动服务)启动。以Prefill实例`p0`为例，容器内执行：
-
-   ```bash
-   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
-     --start --container-name motor-p0 \
-     --role prefill --instance-name p0 \
-     --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
-     --coordinator-ip <coordinator管理服务所在服务器的 IP地址> \
-     --controller-ip <controller管理服务所在服务器的 IP地址>
-   ```
+---
 
 ## 开启KV池化（可选）
 
@@ -149,7 +140,7 @@
 | 容器类型 | 参考模板 | 配置说明 |
 | --- | --- | --- |
 | 管理容器 | [ENTER_DOCKER_RUN_CTRL](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L607-L618) | 容器名`motor-ctrl`，创建在服务器 1。 |
-| P/D实例推理容器 | Atlas 800I A2：[ENTER_DOCKER_RUN_A2](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L444-L476)<br>Atlas 800I A3：[ENTER_DOCKER_RUN_A3](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L478-L518)<br>Ascend 950（8卡）：[ENTER_DOCKER_RUN_A5](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L520-L557)<br>Ascend 950（16卡）：[ENTER_DOCKER_RUN_A5_POD16](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L559-L605) | 1 个实例只占 1 个 Pod 时，容器名为`motor-p0`、`motor-d0`。1 个实例拆成多个 Pod 时，容器名为`motor-p0-0`、`motor-p0-1`。同一实例的多个容器可以放在不同服务器。 |
+| P/D实例推理容器 | Atlas 800I A2：[ENTER_DOCKER_RUN_A2](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L444-L476)<br>Atlas 800I A3：[ENTER_DOCKER_RUN_A3](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L478-L518)<br>Ascend 950（8卡）：[ENTER_DOCKER_RUN_A5](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L520-L557)<br>Ascend 950（16卡）：[ENTER_DOCKER_RUN_A5_POD16](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L559-L605) | 1 个实例只占 1 个 容器时，容器名为`motor-p0`、`motor-d0`。1 个实例拆成多个容器时，容器名为`motor-p0-0`、`motor-p0-1`。每台服务器仅创建一个容器。 |
 | kv_store | [ENTER_DOCKER_RUN_KVS](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L620-L634) | 开启池化时创建，容器名`motor-kvs`，放在服务器 1。 |
 
 创建时请满足以下条件：
@@ -164,11 +155,11 @@ docker exec -it <容器名> bash
 
 ## 容器内启动服务
 
-1个完整的推理服务需要至少1个管理面容器以及多个推理容器。开启KV池化时，还需要1个`kv_store`容器。推理容器的数量、名称及所在服务器请参见[容器数量规划](#容器数量规划)，请按规划在对应服务器上分别创建容器后，进入容器执行`--start`。`--start`只在当前环境拉起服务，不会再创建容器，也不需要传`--devices`。
+默认情况下，一台服务器仅部署一个Prefill/Decode推理容器，如需**一台服务器部署多个P/D推理实例（仅用于小模型）**，请参考[同一容器部署多个推理实例](#同一容器部署多个推理实例)。
 
 进入容器后，在`examples/deployer`目录下执行以下命令部署服务。
 
-1. 部署Controller。
+1. 部署Controller（任意容器执行）。
 
    ```bash
    python3 docker_deploy.py --config_dir ../../model_configs/vllm \
@@ -177,7 +168,7 @@ docker exec -it <容器名> bash
      --coordinator-ip <Coordinator所在IP>
    ```
 
-2. 部署Coordinator。
+2. 部署Coordinator（任意容器执行）。
 
    ```bash
    python3 docker_deploy.py --config_dir ../../model_configs/vllm \
@@ -186,9 +177,7 @@ docker exec -it <容器名> bash
      --controller-ip <Controller所在IP>
    ```
 
-   若管理面合在同一容器，将`--role`改为`coordinator,controller`，可不传`--coordinator-ip`、`--controller-ip`（默认使用本容器`--pod-ip`）。
-
-3. 部署Prefill。
+3. 部署Prefill（每个prefill容器仅执行一次）。
 
    ```bash
    python3 docker_deploy.py --config_dir ../../model_configs/vllm \
@@ -200,7 +189,7 @@ docker exec -it <容器名> bash
      --controller-ip <管理面IP>
    ```
 
-4. 部署Decode。
+4. 部署Decode（每个decode容器仅执行一次）。
 
    ```bash
    python3 docker_deploy.py --config_dir ../../model_configs/vllm \
@@ -231,7 +220,7 @@ docker exec -it <容器名> bash
 >[!NOTE] 说明
 >
 >- 开启池化时，部署管理面（coordinator/controller）和Prefill/Decode时需额外增加`--kv-store-ip <kv_store所在服务器的IP地址>`。`--role kv_store`可省略，默认使用`--pod-ip`。
->- 同一服务器部署多个推理容器时，错开端口的参数（`--node-manager-port`等）同样加在`--start`命令中，请参考[同一服务器部署多个推理容器时错开端口](#同一服务器部署多个推理容器时错开端口)。
+>- 同一容器部署多个推理实例时，每条`--start`使用不同的`--devices`和端口，请参考[同一容器部署多个推理实例](#同一容器部署多个推理实例)。
 >- 混部角色将`--role`改为`union`，`--instance-name`与容器数量规划一致（例如`u0`）。
 
 **表 5** 容器内部署命令参数解释
@@ -319,49 +308,70 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 创建容器的模板仅供参考。调整挂载时，在`docker run`命令中增删`-v`。云化平台创建容器时，在平台的挂载配置中调整。宿主机路径须真实存在。
 
-### 同一服务器部署多个推理容器时错开端口
+### 同一容器部署多个推理实例
 
-同一服务器上部署多个推理容器时，创建容器时为本容器分配 NPU，再在`--start`命令中错开端口。
+一个容器里可以执行多次执行`--start`，以此部署多个推理实例。
 
-同一服务器上的多个推理容器使用不同卡号（`--device /dev/davinciN`），卡数与该容器所需 NPU 数量一致。
+下面以 1 个容器部署 1 个 Prefill 和 1 个 Decode 为例，容器挂载卡`0,1,2,3`。Prefill `p0`使用`0,1`，Decode `d0`使用`2,3`。
 
-错开端口时，在容器内`--start`命令中增加下列参数：
+1. 创建容器
 
-| 参数 | 说明 |
-| :--- | :--- |
-| --node-manager-port | 实际运行时的NodeManager端口，用于引擎节点管理。 |
-| --data-parallel-rpc-port | 实际运行时的数据并行RPC端口。 |
-| --kv-port | 实际运行时的KV传输端口。 |
-| --base-port | 实际运行时的引擎端点起始端口。 |
+   在宿主机执行一次。这个容器挂上两个实例要用的卡。管理面仍单独创建一个容器，按[容器内启动服务](#容器内启动服务)的回显执行。
 
-以 Decode 实例 d0 的 2 个容器部署在同一服务器为例。2 个容器分别使用卡 0 与卡 1，端口规划如下
+   ```bash
+   python3 /home/examples/deployer/docker_deploy.py \
+     --config_dir /home/examples/config \
+     --create \
+     --container-name motor-pd \
+     --devices 0,1,2,3    # 这个容器挂载两个实例要用的卡
+   ```
 
-| --container-name | 挂载卡号 | --node-manager-port | --data-parallel-rpc-port | --base-port |
-| :--- | :--- | :--- | :--- | :--- |
-| motor-d0-0 | 0 | 4026 | 9000 | 10000 |
-| motor-d0-1 | 1 | 4126 | 9100 | 11000 |
+2. 进入容器
 
-进入容器`motor-d0-0`后执行：
+   ```bash
+   docker exec -it motor-pd bash
+   ```
 
-```bash
-python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config \
-  --start \
-  ... \
-  --node-manager-port 4026 \
-  --data-parallel-rpc-port 9000 \
-  --base-port 10000
-```
+3. 执行Prefill 启动命令
 
-进入容器`motor-d0-1`后执行：
+   额外添加以下五个参数。
 
-```bash
-python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config \
-  --start \
-  ... \
-  --node-manager-port 4126 \
-  --data-parallel-rpc-port 9100 \
-  --base-port 11000
-```
+   ```bash
+   python3 /home/examples/deployer/docker_deploy.py \
+     --config_dir /home/examples/config \
+     --start \
+     --container-name motor-pd \
+     --role prefill \
+     --instance-name p0 \
+     --pod-ip "<本机IP>" \
+     --nic-name "<本机网卡>" \
+     --coordinator-ip "<服务器1 IP>" \
+     --controller-ip "<服务器1 IP>" \
+     --devices 0,1  \                  # 本实例使用的卡号，2 张卡。同一容器里的其他实例不能重叠
+     --node-manager-port 4026  \       # NodeManager 端口。同一容器里错开，例如 4026、4226
+     --data-parallel-rpc-port 9000  \  # 数据并行 RPC 端口。同一容器里错开，例如 9000、9200
+     --base-port 10000  \              # 引擎端点起始端口，会再占用后续一段端口。同一容器里错开，例如 10000、12000
+     --kv-port 21000                   # KV 传输起始端口，会再占用后续一段端口。同一容器里错开，例如 21000、23000
+   ```
 
->[!NOTE] 说明
->开启池化时，以上命令分别增加不同的`--kv-port`，例如`21000`与`22000`。未开启池化不要传`--kv-port`。
+4. 执行Decode 启动命令
+
+   开一个新的窗口，进入容器后，执行以下命令，额外添加以下五个参数。
+
+   ```bash
+   python3 /home/examples/deployer/docker_deploy.py \
+     --config_dir /home/examples/config \
+     --start \
+     --container-name motor-pd \
+     --role decode \
+     --instance-name d0 \
+     --pod-ip "<本机IP>" \
+     --nic-name "<本机网卡>" \
+     --coordinator-ip "<服务器1 IP>" \
+     --controller-ip "<服务器1 IP>" \
+     --devices 2,3  \                  # 本实例使用的卡号，2 张卡。同一容器里的其他实例不能重叠
+     --node-manager-port 4226  \       # NodeManager 端口。同一容器里错开，例如 4026、4226
+     --data-parallel-rpc-port 9200  \  # 数据并行 RPC 端口。同一容器里错开，例如 9000、9200
+     --base-port 12000  \              # 引擎端点起始端口，会再占用后续一段端口。同一容器里错开，例如 10000、12000
+     --kv-port 23000                   # KV 传输起始端口，会再占用后续一段端口。同一容器里错开，例如 21000、23000
+   ```

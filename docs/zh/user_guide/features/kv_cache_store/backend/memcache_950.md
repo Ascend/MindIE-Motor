@@ -8,6 +8,46 @@ Ascend 950PR&950DT系列产品在跨超节点场景下，用 1825 网卡做参�
 
 这套改法不支持单机多容器。`deploy.py` 和 `delete.sh` 不用改。只用 Docker 时，按 [单容器部署指南](../../../deployment/docker/single_container.md) 做。
 
+### 修改 /etc/hixlep
+
+使用 RoCE 时，在宿主机 `/etc/hixlep` 准备端点配置文件，并在 Prefill、Decode 两侧的 `kv_connector_extra_config` 中设置 `ascend_local_comm_res_path`。两侧 DP 为 4、TP 为 1 时示例如下。把这些字段合并进现有的 `--kv-transfer-config`，并行度按现场部署修改。
+
+```json
+{
+    "kv_connector_extra_config": {
+        "prefill": {
+            "dp_size": 4,
+            "tp_size": 1
+        },
+        "decode": {
+            "dp_size": 4,
+            "tp_size": 1
+        },
+        "ascend_local_comm_res_path": "/etc/hixlep"
+    }
+}
+```
+
+PD 分离同时通过 MultiConnector 做 KV 池化时，把 `ascend_local_comm_res_path` 写在外层 MultiConnector 的 `kv_connector_extra_config` 中，与 `connectors` 列表同级。不要写进子 connector 的 `kv_connector_extra_config`。worker 从外层 KV 传输配置读取端点文件。Prefill、Decode 的并行度仍写在 Mooncake P/D 子 connector 的配置里。
+
+宿主机上每张实际使用的物理 NPU 各建一个端点文件，文件名为 `/etc/hixlep/ub_endpoint_npu_<物理NPU编号>.json`。后缀是宿主机物理 NPU 编号，不是 DP rank，也不是可见设备中的序号。文件内容示例：
+
+```json
+{
+    "version": "1.3",
+    "net_instance_id": "superpod_0",
+    "endpoint_list": [
+        {
+            "protocol": "roce",
+            "comm_id": "<宿主机RoCE IP>",
+            "placement": "host"
+        }
+    ]
+}
+```
+
+把 `<宿主机RoCE IP>` 换成该节点实际的 RoCE IP。每个容器内，端点文件必须出现在所配置的路径下。
+
 ### 修改 boot.sh
 
 容器默认 memlock 只有 64MB。Prefill 打开 `MF_HYBM_RDMA_SWAP_SPACE_SIZE=2048` 时，要 pin 大约 2GB 的 RoCE swap MR。
@@ -27,7 +67,19 @@ Ascend 950PR&950DT系列产品在跨超节点场景下，用 1825 网卡做参�
 
       改完后在引擎容器里执行 `ulimit -l`，应看到 `unlimited`。
 
-  3. host 网络访问不了 kube-dns 的 ClusterIP 时，Decode 可能起不来。先核对集群 DNS 和路由。确需按本例规避时，在 engine 分支里把 `/etc/resolv.conf` 中的 ClusterIP 换成本集群 CoreDNS Pod 的 IP，并放在最前面。
+  3. 容器使用 host 网络时，宿主机可能访问不到 `kube-dns` 的 ClusterIP，Decode 会因域名解析失败起不来。先核对集群 DNS 和路由。确认需要规避时，再改 `examples/deployer/startup/boot.sh`。
+
+      只改推理角色这一段，加在 `source "$SCRIPT_DIR/engine.sh"` 前面。`controller`、`coordinator`、`kv_store`、`render` 不用改。
+
+      ```bash
+      "encode"|"prefill"|"decode"|"union")
+          # 将 <CoreDNS Pod IP> 换成下面命令查到的 IP
+          sed -i '1inameserver <CoreDNS Pod IP>' /etc/resolv.conf
+          source "$SCRIPT_DIR/engine.sh"
+          ;;
+      ```
+
+      CoreDNS Pod 的 IP可以通过以下命令查询：
 
       ```bash
       kubectl get pods -n kube-system -o wide | grep coredns
