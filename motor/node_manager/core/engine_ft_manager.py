@@ -350,7 +350,11 @@ class EngineFtManager:
                     break
                 continue
             with self._config_lock:
-                endpoints = [endpoint for endpoint in self._endpoints if endpoint.id not in self._retired_endpoint_ids]
+                endpoints = [
+                    endpoint
+                    for endpoint in self._endpoints
+                    if endpoint.id not in self._retired_endpoint_ids and not endpoint.headless
+                ]
             if endpoints:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=len(endpoints)) as executor:
                     list(executor.map(self._poll_engine, endpoints))

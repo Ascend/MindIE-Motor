@@ -712,3 +712,29 @@ def test_send_fault_carries_reporter_identity(mock_report, reporter):
     assert payload["instance_id"] == 7
     assert payload["pod_ip"] == "192.168.1.1"
     assert payload["node_manager_port"] == str(reporter._config.api_config.node_manager_port)
+
+
+@pytest.mark.parametrize("include_http", [False, True])
+@pytest.mark.parametrize("after_resume", [False, True])
+def test_main_loop_excludes_headless_and_retired_without_mutating_endpoints(reporter, include_http, after_resume):
+    headless = Endpoint(id=0, ip="127.0.0.1", business_port="8000", headless=True)
+    retired = Endpoint(id=1, ip="127.0.0.1", business_port="8001")
+    http = Endpoint(id=2, ip="127.0.0.1", business_port="8002")
+    endpoints = [headless, retired, http] if include_http else [headless, retired]
+    reporter._endpoints = endpoints
+    reporter._retired_endpoint_ids.add(retired.id)
+    if after_resume:
+        reporter.pause()
+        reporter.resume()
+
+    with (
+        patch.object(reporter, "_poll_engine") as poll,
+        patch.object(reporter._stop_event, "wait", return_value=True),
+    ):
+        reporter._main_loop()
+    if include_http:
+        poll.assert_called_once_with(http)
+    else:
+        poll.assert_not_called()
+    assert reporter._endpoints is endpoints
+    assert reporter._endpoints == ([headless, retired, http] if include_http else [headless, retired])
