@@ -99,13 +99,11 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
         <tr><td align="left" width="320">K⁠V⁠ ⁠C⁠a⁠c⁠h⁠e⁠ ⁠亲⁠和⁠性⁠调⁠度</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/kvcache_affinity.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">A⁠g⁠e⁠n⁠t⁠ ⁠H⁠i⁠n⁠t⁠ ⁠会⁠话⁠亲⁠和⁠与⁠调⁠度</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/agent_hint.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">动⁠态⁠分⁠桶⁠调⁠度</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/dynamic_bucket.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">K⁠V⁠ ⁠池⁠化</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/kv_cache_store/README.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">M⁠o⁠o⁠n⁠c⁠a⁠k⁠e⁠ ⁠共⁠享⁠ ⁠K⁠V⁠ ⁠P⁠o⁠o⁠l</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/kv_cache_store/backend/mooncake.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">M⁠e⁠m⁠C⁠a⁠c⁠h⁠e⁠ ⁠共⁠享⁠ ⁠K⁠V⁠ ⁠P⁠o⁠o⁠l</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/kv_cache_store/backend/memcache.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">Y⁠u⁠a⁠n⁠r⁠o⁠n⁠g⁠ ⁠共⁠享⁠ ⁠K⁠V⁠ ⁠P⁠o⁠o⁠l</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/kv_cache_store/backend/yuanrong.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">U⁠C⁠M⁠ ⁠前⁠缀⁠复⁠用</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/kv_cache_store/backend/ucm.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">M⁠o⁠o⁠n⁠c⁠a⁠k⁠e⁠ ⁠K⁠V⁠ ⁠C⁠a⁠c⁠h⁠e⁠ ⁠池⁠化⁠后⁠端</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/kv_cache_store/backend/mooncake.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">M⁠e⁠m⁠C⁠a⁠c⁠h⁠e⁠ ⁠K⁠V⁠ ⁠C⁠a⁠c⁠h⁠e⁠ ⁠池⁠化⁠后⁠端</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/kv_cache_store/backend/memcache.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">Y⁠u⁠a⁠n⁠r⁠o⁠n⁠g⁠ ⁠K⁠V⁠ ⁠C⁠a⁠c⁠h⁠e⁠ ⁠池⁠化⁠后⁠端</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/kv_cache_store/backend/yuanrong.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">U⁠C⁠M⁠ ⁠K⁠V⁠ ⁠C⁠a⁠c⁠h⁠e⁠ ⁠池⁠化⁠后⁠端</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/kv_cache_store/backend/ucm.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">m⁠a⁠x⁠_⁠t⁠o⁠k⁠e⁠n⁠s⁠ ⁠自⁠适⁠应</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/max_tokens_adaptation.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">支⁠持⁠的⁠推⁠理⁠引⁠擎</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/supported_inference_engines.md">链⁠接</a></td></tr>
       </table>
     </td>
     <td class="gap" width="24" style="border:none;padding:0;background:transparent"><img alt="" src="./docs/zh/imgs/gap.png" width="24" height="1"></td>
