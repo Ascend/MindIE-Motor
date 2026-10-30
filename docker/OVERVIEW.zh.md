@@ -27,13 +27,14 @@
 
 ```text
 <Motor版本>-vllm_ascend<推理引擎版本>-<芯片系列>-<操作系统>-<python版本>
+<Motor版本>-sglang<推理引擎版本>-<芯片系列>-<操作系统>-<python版本>
 ```
 
 | 字段 | 示例值 | 说明 |
 |---|---|---|
 | `Motor版本` | `3.2.0`、`3.2.0b6` | MindIE-Motor 版本号 |
-| `引擎版本` | `0.30.0`、`0.30.0rc2` | 配套 vllm-ascend 版本 |
-| `芯片系列` | `a2`、`a3`、`a5` | 目标昇腾芯片系列 |
+| `引擎版本` | `0.5.21`、`0.30.0` | 配套 SGLang 或 vllm-ascend 版本 |
+| `芯片系列` | `a3`、`a5`、`a2` | 目标昇腾芯片系列 |
 | `操作系统` | `ubuntu22.04`、`openeuler24.03` | 基础操作系统 |
 | `python版本` | `py3.12` | Python 版本 |
 
@@ -54,7 +55,11 @@ vllm_ascend_<模型名>-<芯片系列>-<操作系统>-<python版本>
 
 ### 最新版本 MindIE-Motor 3.2.0
 
-如下所示是 MindIE-Motor 在 AscendHub 发布的最新版本 3.2.0 的全部镜像（2026/10/30），配套vllm-ascend v0.30.0商发版本发布。历史版本所有的 Tag 请参考 [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md)。
+如下所示是 MindIE-Motor 在 AscendHub 发布的最新版本 3.2.0 中 vLLM-Ascend 与 SGLang 的镜像（2026/10/30）。历史版本所有的 Tag 请参考 [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md)。
+
+#### vLLM-Ascend 镜像
+
+以下镜像配套 vLLM-Ascend v0.30.0 发布。
 
 | Tag | Dockerfile | 架构 | 镜像内容 |
 |---|---|---|---|
@@ -64,6 +69,15 @@ vllm_ascend_<模型名>-<芯片系列>-<操作系统>-<python版本>
 | `3.2.0-vllm_ascend0.30.0-a3-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0 / vllm-ascend 0.30.0 |
 | `3.2.0-vllm_ascend0.30.0-a5-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0 / vllm-ascend 0.30.0 |
 | `3.2.0-vllm_ascend0.30.0-a5-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0 / vllm-ascend 0.30.0 |
+
+#### SGLang 镜像
+
+以下镜像配套 SGLang v0.5.21 发布。
+
+| Tag | Dockerfile | 架构 | 镜像内容 |
+|---|---|---|---|
+| `3.2.0-sglang0.5.21-a3-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0 / SGLang 0.5.21 |
+| `3.2.0-sglang0.5.21-a5-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0 / SGLang 0.5.21 |
 
 ## 快速开始
 
@@ -81,7 +95,7 @@ vllm_ascend_<模型名>-<芯片系列>-<操作系统>-<python版本>
 每个 Dockerfile 会在构建时自动 clone 指定分支与 commit 的源码，并在镜像内执行 `build.sh` 安装 `motor` / `ccae_reporter`，**无需本地源码或构建上下文**。将 `<tag>` 替换为目标组合后，在项目根目录执行：
 
 ```bash
-TAG="3.2.0-vllm_ascend0.30.0-a2-ubuntu22.04-py3.12"
+TAG="3.2.0-sglang0.5.21-a3-ubuntu22.04-py3.12"
 
 docker build --network=host \
     --platform=linux/arm64 \
