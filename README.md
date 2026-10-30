@@ -37,10 +37,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 ## 🖥️ 服务部署
 
-<table>
-  <tr>
-    <td valign="top">
-      <table>
+<table align="left" width="48%">
         <tr><th align="center" colspan="2">🎯 部署指导</th></tr>
         <tr><td align="left" width="320">K⁠8⁠s⁠ ⁠P⁠D⁠ ⁠分⁠离⁠（⁠v⁠L⁠L⁠M⁠）</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">K⁠8⁠s⁠ ⁠P⁠D⁠ ⁠分⁠离⁠（⁠S⁠G⁠L⁠a⁠n⁠g⁠）</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_sglang.md">链⁠接</a></td></tr>
@@ -53,10 +50,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
         <tr><td align="left" width="320">S⁠l⁠u⁠r⁠m</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/slurm/README.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">C⁠o⁠o⁠r⁠d⁠i⁠n⁠a⁠t⁠o⁠r⁠ ⁠独⁠立⁠部⁠署</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/standalone.md">链⁠接</a></td></tr>
       </table>
-    </td>
-    <td width="32"></td>
-    <td valign="top">
-      <table>
+<table align="right" width="48%">
         <tr><th align="center" colspan="4">🤖 常用模型</th></tr>
         <tr>
           <th align="left">模型</th>
@@ -78,22 +72,14 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
         <tr><td>GLM-5</td><td><a href="./model_configs/vllm/models/glm_5/A2">A2</a></td><td><a href="./model_configs/vllm/models/glm_5/A3">A3</a></td><td><a href="./model_configs/vllm/models/glm_5/A5">A5</a></td></tr>
         <tr><td>Qwen3-235B</td><td><a href="./model_configs/vllm/models/qwen_235b/A2">A2</a></td><td><a href="./model_configs/vllm/models/qwen_235b/A3">A3</a></td><td>—</td></tr>
       </table>
-    </td>
-  </tr>
-</table>
+<br clear="all">
 
 ## ⚙️ 功能介绍
 
 引擎与部署方式的覆盖范围见 [特性支持列表](./docs/zh/user_guide/features/supported_features.md)。下表只列主要能力入口。
 
-<table>
-  <tr>
-    <th align="center">⚡ 极致性能</th>
-    <th align="center">🛡️ 稳定可靠</th>
-  </tr>
-  <tr>
-    <td valign="top">
-      <table>
+<table align="left" width="48%">
+  <tr><th align="center" colspan="2">⚡ 极致性能</th></tr>
         <tr><td align="left" width="320">P⁠D⁠ ⁠分⁠离</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/pd_disaggregation.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">E⁠P⁠D⁠ ⁠分⁠离</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/EPD_disaggregation.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">K⁠V⁠ ⁠C⁠a⁠c⁠h⁠e⁠ ⁠亲⁠和⁠性⁠调⁠度</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/kvcache_affinity.md">链⁠接</a></td></tr>
@@ -102,9 +88,8 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
         <tr><td align="left" width="320">m⁠a⁠x⁠_⁠t⁠o⁠k⁠e⁠n⁠s⁠ ⁠自⁠适⁠应</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/max_tokens_adaptation.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">支⁠持⁠的⁠推⁠理⁠引⁠擎</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/supported_inference_engines.md">链⁠接</a></td></tr>
       </table>
-    </td>
-    <td valign="top">
-      <table>
+<table align="right" width="48%">
+  <tr><th align="center" colspan="2">🛡️ 稳定可靠</th></tr>
         <tr><td align="left" width="320">请⁠求⁠重⁠调⁠度</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/rescheduler.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">实⁠例⁠重⁠调⁠度</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/instance_rescheduling.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">S⁠c⁠a⁠l⁠e⁠P⁠2⁠D⁠ ⁠故⁠障⁠恢⁠复</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/scale_p2d.md">链⁠接</a></td></tr>
@@ -116,9 +101,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
         <tr><td align="left" width="320">数⁠据⁠混⁠淆⁠推⁠理⁠（⁠P⁠M⁠C⁠C⁠）</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/data_obfuscation.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">精⁠度⁠检⁠测</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/precision_detection.md">链⁠接</a></td></tr>
       </table>
-    </td>
-  </tr>
-</table>
+<br clear="all">
 
 ## 🚀 快速入门
 
