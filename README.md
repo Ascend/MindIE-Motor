@@ -114,12 +114,17 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
         <tr><td align="left" width="320">实⁠例⁠重⁠调⁠度</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/instance_rescheduling.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">S⁠c⁠a⁠l⁠e⁠P⁠2⁠D⁠ ⁠故⁠障⁠恢⁠复</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/scale_p2d.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">主⁠备⁠倒⁠换</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/standby.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">异⁠常⁠实⁠例⁠重⁠启</td><td align="right" width="72"><a href="./docs/zh/design/fault_tolerance/overview.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">虚⁠推⁠健⁠康⁠探⁠测</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/sim_inference.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">服⁠务⁠限⁠流</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/rate_limiting.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">R⁠A⁠S⁠ ⁠监⁠控</td><td align="right" width="72"><a href="./examples/features/fault_tolerance/ras_monitor/readme.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">自⁠动⁠弹⁠性⁠扩⁠缩⁠容</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/auto_scaling.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">手⁠动⁠扩⁠缩⁠容</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/manual_scaling.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">容⁠器⁠快⁠照</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/container_snapshot.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">D⁠2⁠D⁠ ⁠权⁠重⁠加⁠载</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/startup_acceleration.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">数⁠据⁠混⁠淆⁠推⁠理⁠（⁠P⁠M⁠C⁠C⁠）</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/data_obfuscation.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">精⁠度⁠检⁠测</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/precision_detection.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">T⁠r⁠a⁠c⁠i⁠n⁠g</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/tracing.md">链⁠接</a></td></tr>
       </table>
     </td>
   </tr>
