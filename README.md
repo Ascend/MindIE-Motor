@@ -41,7 +41,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
   <tr>
     <td valign="top">
       <table>
-        <tr><th align="center" colspan="2">🎯 部署指导</th></tr>
+        <tr><th style="font-size:18px" align="center" colspan="2">🎯 部署指导</th></tr>
         <tr><th align="left" colspan="2">K⁠8⁠s⁠ ⁠部⁠署</th></tr>
         <tr><td align="left" width="320">P⁠D⁠ ⁠分⁠离⁠（⁠v⁠L⁠L⁠M⁠）</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">P⁠D⁠ ⁠分⁠离⁠（⁠S⁠G⁠L⁠a⁠n⁠g⁠）</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_sglang.md">链⁠接</a></td></tr>
@@ -60,7 +60,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
     <td class="gap" width="24" style="border:none;padding:0;background:transparent"><img alt="" src="./docs/zh/imgs/gap.png" width="24" height="1"></td>
     <td valign="top">
       <table>
-        <tr><th align="center" colspan="4">🤖 常用模型</th></tr>
+        <tr><th style="font-size:18px" align="center" colspan="4">🤖 常用模型</th></tr>
         <tr>
           <th align="left">模型</th>
           <th align="center">Atlas 800I A2</th>
@@ -93,7 +93,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
   <tr>
     <td valign="top">
       <table>
-        <tr><th align="center" colspan="2">⚡ 极致性能</th></tr>
+        <tr><th style="font-size:18px" align="center" colspan="2">⚡ 极致性能</th></tr>
         <tr><td align="left" width="320">P⁠D⁠ ⁠分⁠离</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/pd_disaggregation.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">E⁠P⁠D⁠ ⁠分⁠离⁠（⁠多⁠模⁠态⁠）</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/EPD_disaggregation.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">K⁠V⁠ ⁠C⁠a⁠c⁠h⁠e⁠ ⁠亲⁠和⁠性⁠调⁠度</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/kvcache_affinity.md">链⁠接</a></td></tr>
@@ -109,7 +109,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
     <td class="gap" width="24" style="border:none;padding:0;background:transparent"><img alt="" src="./docs/zh/imgs/gap.png" width="24" height="1"></td>
     <td valign="top">
       <table>
-        <tr><th align="center" colspan="2">🛡️ 稳定可靠</th></tr>
+        <tr><th style="font-size:18px" align="center" colspan="2">🛡️ 稳定可靠</th></tr>
         <tr><td align="left" width="320">请⁠求⁠重⁠调⁠度</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/rescheduler.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">缩⁠P⁠保⁠D</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/scale_p2d.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">主⁠备⁠倒⁠换</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/standby.md">链⁠接</a></td></tr>
