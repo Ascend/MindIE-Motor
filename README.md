@@ -150,10 +150,26 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 ## 🤝 联系我们
 
-  如有任何社区贡献想法（代码合入、Bug 反馈、issue进展跟踪、议题讨论等），欢迎加入社区交流群，或私聊社区管理员，我们将全程协助您完成贡献。
-  
-  
-  MindIE 系列 TC/SIG 会议见 [Ascend 会议中心](https://meeting.ascend.osinfra.cn/)。技术交流见 [昇腾论坛](https://www.hiascend.com/forum/)。
+如有任何社区贡献想法（代码合入、Bug 反馈、issue进展跟踪、议题讨论等），欢迎加入社区交流群，或私聊社区管理员，我们将全程协助您完成贡献。
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="./docs/zh/imgs/community-repo-owner.jpg" alt="社区代码仓仓主" width="220"><br>
+      <b>社区代码仓仓主</b>
+    </td>
+    <td align="center" width="33%">
+      <img src="./docs/zh/imgs/community-admin.jpg" alt="社区管理员" width="220"><br>
+      <b>社区管理员</b>
+    </td>
+    <td align="center" width="33%">
+      <img src="./docs/zh/imgs/community-wechat-group.jpg" alt="社区开源交流群" width="220"><br>
+      <b>社区开源交流群</b>
+    </td>
+  </tr>
+</table>
+
+MindIE 系列 TC/SIG 会议见 [Ascend 会议中心](https://meeting.ascend.osinfra.cn/)。技术交流见 [昇腾论坛](https://www.hiascend.com/forum/)。
 
 ## ⚖️ 许可说明
 
