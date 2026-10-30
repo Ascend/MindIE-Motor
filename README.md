@@ -1,3 +1,5 @@
+# MindIE Motor
+
 <p align="center">
     <img alt="MindIE Motor" src="./docs/zh/imgs/MindIE-Motor-wordmark.jpg" width="100%">
 </p>
