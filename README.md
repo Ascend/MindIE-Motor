@@ -67,13 +67,13 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
           <th align="center">Atlas 800I A3 超节点</th>
           <th align="center">Atlas 950系列服务器</th>
         </tr>
-        <tr><td>DeepSeek-V4.1-Flash 🔥🔥🔥</td><td align="center"></td><td align="center"></td><td align="center"></td></tr>
-        <tr><td>GLM-5.3-Flash 🔥🔥🔥</td><td align="center"></td><td align="center"></td><td align="center"></td></tr>
-        <tr><td>DeepSeek-V4-Flash-DSpark 🔥🔥🔥</td><td align="center"></td><td align="center"></td><td align="center"></td></tr>
-        <tr><td>DeepSeek-V4 🔥🔥</td><td align="center"></td><td align="center"></td><td align="center"></td></tr>
-        <tr><td>DeepSeek-V4.1 🔥🔥</td><td align="center"></td><td align="center"></td><td align="center"></td></tr>
-        <tr><td>GLM-5.2 🔥🔥</td><td align="center"></td><td align="center"></td><td align="center"></td></tr>
-        <tr><td>GLM-5.3 🔥🔥</td><td align="center"></td><td align="center"></td><td align="center"></td></tr>
+        <tr><td>DeepSeek-V4.1-Flash 🔥🔥🔥</td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>GLM-5.3-Flash 🔥🔥🔥</td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>DeepSeek-V4-Flash-DSpark 🔥🔥🔥</td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>DeepSeek-V4 🔥🔥</td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>DeepSeek-V4.1 🔥🔥</td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>GLM-5.2 🔥🔥</td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>GLM-5.3 🔥🔥</td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
         <tr><td>DeepSeek-V4-Flash 🔥</td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_flash/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_flash/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_flash/A5">A5</a></td></tr>
         <tr><td>GLM-5.1 🔥</td><td align="center"><a href="./model_configs/vllm/models/glm_5.1/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5.1/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5.1/A5">A5</a></td></tr>
         <tr><td>DeepSeek-V3.1</td><td align="center"><a href="./model_configs/vllm/models/deepseek_v3.1/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v3.1/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v3.1/A5">A5</a></td></tr>
