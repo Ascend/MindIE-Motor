@@ -138,12 +138,6 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 - **基于 vLLM-Ascend / SGLang 基座镜像安装**：见 [准备 MindIE Motor 镜像](./docs/zh/user_guide/maintenance/build_motor_image_from_vllm_ascend.md)。
 
-## 📘 使用指南
-
-用户指南覆盖环境准备、服务部署、特性配置、API、维护和错误码。完整目录见 [MindIE Motor 用户指南](./docs/zh/user_guide/menu_user_manual.md)。
-
-架构与组件说明见 [MindIE Motor 架构](./docs/zh/architecture.md)。
-
 ## 🔀 版本说明
 
 当前发布版本为 3.2.0。组件配套、兼容性和更新说明见 [版本配套说明](./docs/zh/release_note_motor.md)。
@@ -152,37 +146,16 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 贡献流程见 [贡献者指南](./contributing.md)。
 
-提交 Pull Request 后，在评论中回复 `compile` 触发门禁流水线。提交前请通过单元测试，入口为 [tests/run_tests.sh](./tests/run_tests.sh)。
-
-## ⚖️ 相关说明
-
-🔹 《[版本配套说明](./docs/zh/release_note_motor.md)》<br>
-🔹 《[许可证声明](./LICENSE.md)》<br>
-🔹 《[安全问题反馈](./security.md)》<br>
-
-## 🤝 建议与交流
-
-欢迎为社区做贡献。使用中的问题请先查看 [Issues](https://gitcode.com/Ascend/MindIE-Motor/issues)，没有对应项时再 [新建 Issue](https://gitcode.com/Ascend/MindIE-Motor/issues/create/choose)，并补充现象、复现步骤、日志和环境信息。
-
 安全问题请不要写进公开 Issue，按 [security.md](./security.md) 联系维护者。
 
-MindIE 系列 TC/SIG 会议见 [Ascend 会议中心](https://meeting.ascend.osinfra.cn/)。技术交流见 [昇腾论坛](https://www.hiascend.com/forum/)。
+## 🤝 联系我们
 
-<p align="center">扫描二维码联系仓主、管理员，或加入开源交流群。</p>
-<table>
-  <tr>
-    <td align="center" width="33%">
-      <img src="./docs/zh/imgs/community-repo-owner.jpg" alt="社区代码仓仓主" width="220"><br>
-      <b>社区代码仓仓主</b>
-    </td>
-    <td align="center" width="33%">
-      <img src="./docs/zh/imgs/community-admin.jpg" alt="社区管理员" width="220"><br>
-      <b>社区管理员</b>
-    </td>
-    <td align="center" width="33%">
-      <img src="./docs/zh/imgs/community-wechat-group.jpg" alt="社区开源交流群" width="220"><br>
-      <b>社区开源交流群</b>
-    </td>
-  </tr>
-</table>
+  如有任何社区贡献想法（代码合入、Bug 反馈、issue进展跟踪、议题讨论等），欢迎加入社区交流群，或私聊社区管理员，我们将全程协助您完成贡献。
+  
+  
+  MindIE 系列 TC/SIG 会议见 [Ascend 会议中心](https://meeting.ascend.osinfra.cn/)。技术交流见 [昇腾论坛](https://www.hiascend.com/forum/)。
 
+## ⚖️ 许可说明
+
+🔹 《[许可证声明](./LICENSE.md)》<br>
+🔹 《[安全问题反馈](./security.md)》<br>
