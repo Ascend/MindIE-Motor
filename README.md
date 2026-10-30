@@ -159,12 +159,12 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
       <b>社区代码仓仓主</b>
     </td>
     <td align="center" width="33%">
-      <img src="./docs/zh/imgs/community-admin.jpg" alt="社区管理员" width="220"><br>
-      <b>社区管理员</b>
-    </td>
-    <td align="center" width="33%">
       <img src="./docs/zh/imgs/community-wechat-group.jpg" alt="社区开源交流群" width="220"><br>
       <b>社区开源交流群</b>
+    </td>
+    <td align="center" width="33%">
+      <img src="./docs/zh/imgs/community-admin.jpg" alt="社区管理员" width="220"><br>
+      <b>社区管理员</b>
     </td>
   </tr>
 </table>
