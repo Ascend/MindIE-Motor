@@ -111,8 +111,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
       <table>
         <tr><th align="center" colspan="2">🛡️ 稳定可靠</th></tr>
         <tr><td align="left" width="320">请⁠求⁠重⁠调⁠度</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/rescheduler.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">实⁠例⁠重⁠调⁠度</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/instance_rescheduling.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">S⁠c⁠a⁠l⁠e⁠P⁠2⁠D⁠ ⁠故⁠障⁠恢⁠复</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/scale_p2d.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">缩⁠P⁠保⁠D</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/scale_p2d.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">主⁠备⁠倒⁠换</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/standby.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">异⁠常⁠实⁠例⁠重⁠启</td><td align="right" width="72"><a href="./docs/zh/design/fault_tolerance/overview.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">虚⁠推⁠健⁠康⁠探⁠测</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/sim_inference.md">链⁠接</a></td></tr>
