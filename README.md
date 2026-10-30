@@ -35,35 +35,10 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 <img src="./docs/zh/imgs/MindIE-Motor-architecture-zh.png" alt="MindIE Motor 架构" width="100%"/>
 
-## 🤖 常用模型
-
-vLLM 常用模型的配置示例在 [model_configs/vllm/models](./model_configs/vllm/models)。生成方式见 [配置说明](./model_configs/vllm/models/README.md)。
-
-| 模型 | Atlas 800I A2 | Atlas 800I A3 超节点 | Ascend 950PR |
-| --- | --- | --- | --- |
-| DeepSeek-V4.1-Flash 🔥🔥🔥 |  |  |  |
-| GLM-5.3-Flash 🔥🔥🔥 |  |  |  |
-| DeepSeek-V4-Flash-DSpark 🔥🔥🔥 |  |  |  |
-| DeepSeek-V4 🔥🔥 |  |  |  |
-| DeepSeek-V4.1 🔥🔥 |  |  |  |
-| GLM-5.2 🔥🔥 |  |  |  |
-| GLM-5.3 🔥🔥 |  |  |  |
-| DeepSeek-V4-Flash 🔥 | [A2](./model_configs/vllm/models/deepseek_v4_flash/A2) | [A3](./model_configs/vllm/models/deepseek_v4_flash/A3) | [A5](./model_configs/vllm/models/deepseek_v4_flash/A5) |
-| GLM-5.1 🔥 | [A2](./model_configs/vllm/models/glm_5.1/A2) | [A3](./model_configs/vllm/models/glm_5.1/A3) | [A5](./model_configs/vllm/models/glm_5.1/A5) |
-| DeepSeek-V3.1 | [A2](./model_configs/vllm/models/deepseek_v3.1/A2) | [A3](./model_configs/vllm/models/deepseek_v3.1/A3) | [A5](./model_configs/vllm/models/deepseek_v3.1/A5) |
-| DeepSeek-V4-Pro | [A2](./model_configs/vllm/models/deepseek_v4_pro/A2) | [A3](./model_configs/vllm/models/deepseek_v4_pro/A3) | [A5](./model_configs/vllm/models/deepseek_v4_pro/A5) |
-| GLM-5 | [A2](./model_configs/vllm/models/glm_5/A2) | [A3](./model_configs/vllm/models/glm_5/A3) | [A5](./model_configs/vllm/models/glm_5/A5) |
-| Qwen3-235B | [A2](./model_configs/vllm/models/qwen_235b/A2) | [A3](./model_configs/vllm/models/qwen_235b/A3) | — |
-
-## ⚙️ 功能介绍
-
-引擎与部署方式的覆盖范围见 [特性支持列表](./docs/zh/user_guide/features/supported_features.md)。下表只列主要能力入口。
-
 <table>
   <tr>
     <th align="center">🎯 一键部署</th>
-    <th align="center">⚡ 极致性能</th>
-    <th align="center">🛡️ 稳定可靠</th>
+    <th align="center">🤖 常用模型</th>
   </tr>
   <tr>
     <td valign="top">
@@ -80,6 +55,43 @@ vLLM 常用模型的配置示例在 [model_configs/vllm/models](./model_configs/
         <tr><td align="left" width="320">C⁠o⁠o⁠r⁠d⁠i⁠n⁠a⁠t⁠o⁠r⁠ ⁠独⁠立⁠部⁠署</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/standalone.md">链⁠接</a></td></tr>
       </table>
     </td>
+    <td valign="top">
+      <p>vLLM 常用模型的配置示例在 <a href="./model_configs/vllm/models">model_configs/vllm/models</a>。生成方式见 <a href="./model_configs/vllm/models/README.md">配置说明</a>。</p>
+      <table>
+        <tr>
+          <th align="left">模型</th>
+          <th align="left">Atlas 800I A2</th>
+          <th align="left">Atlas 800I A3 超节点</th>
+          <th align="left">Ascend 950PR</th>
+        </tr>
+        <tr><td>DeepSeek-V4.1-Flash 🔥🔥🔥</td><td></td><td></td><td></td></tr>
+        <tr><td>GLM-5.3-Flash 🔥🔥🔥</td><td></td><td></td><td></td></tr>
+        <tr><td>DeepSeek-V4-Flash-DSpark 🔥🔥🔥</td><td></td><td></td><td></td></tr>
+        <tr><td>DeepSeek-V4 🔥🔥</td><td></td><td></td><td></td></tr>
+        <tr><td>DeepSeek-V4.1 🔥🔥</td><td></td><td></td><td></td></tr>
+        <tr><td>GLM-5.2 🔥🔥</td><td></td><td></td><td></td></tr>
+        <tr><td>GLM-5.3 🔥🔥</td><td></td><td></td><td></td></tr>
+        <tr><td>DeepSeek-V4-Flash 🔥</td><td><a href="./model_configs/vllm/models/deepseek_v4_flash/A2">A2</a></td><td><a href="./model_configs/vllm/models/deepseek_v4_flash/A3">A3</a></td><td><a href="./model_configs/vllm/models/deepseek_v4_flash/A5">A5</a></td></tr>
+        <tr><td>GLM-5.1 🔥</td><td><a href="./model_configs/vllm/models/glm_5.1/A2">A2</a></td><td><a href="./model_configs/vllm/models/glm_5.1/A3">A3</a></td><td><a href="./model_configs/vllm/models/glm_5.1/A5">A5</a></td></tr>
+        <tr><td>DeepSeek-V3.1</td><td><a href="./model_configs/vllm/models/deepseek_v3.1/A2">A2</a></td><td><a href="./model_configs/vllm/models/deepseek_v3.1/A3">A3</a></td><td><a href="./model_configs/vllm/models/deepseek_v3.1/A5">A5</a></td></tr>
+        <tr><td>DeepSeek-V4-Pro</td><td><a href="./model_configs/vllm/models/deepseek_v4_pro/A2">A2</a></td><td><a href="./model_configs/vllm/models/deepseek_v4_pro/A3">A3</a></td><td><a href="./model_configs/vllm/models/deepseek_v4_pro/A5">A5</a></td></tr>
+        <tr><td>GLM-5</td><td><a href="./model_configs/vllm/models/glm_5/A2">A2</a></td><td><a href="./model_configs/vllm/models/glm_5/A3">A3</a></td><td><a href="./model_configs/vllm/models/glm_5/A5">A5</a></td></tr>
+        <tr><td>Qwen3-235B</td><td><a href="./model_configs/vllm/models/qwen_235b/A2">A2</a></td><td><a href="./model_configs/vllm/models/qwen_235b/A3">A3</a></td><td>—</td></tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+## ⚙️ 功能介绍
+
+引擎与部署方式的覆盖范围见 [特性支持列表](./docs/zh/user_guide/features/supported_features.md)。下表只列主要能力入口。
+
+<table>
+  <tr>
+    <th align="center">⚡ 极致性能</th>
+    <th align="center">🛡️ 稳定可靠</th>
+  </tr>
+  <tr>
     <td valign="top">
       <table>
         <tr><td align="left" width="320">P⁠D⁠ ⁠分⁠离</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/pd_disaggregation.md">链⁠接</a></td></tr>
