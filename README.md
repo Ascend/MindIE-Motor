@@ -116,7 +116,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
         <tr><td align="left" width="320">异⁠常⁠实⁠例⁠重⁠启</td><td align="right" width="72"><a href="./docs/zh/design/fault_tolerance/overview.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">虚⁠推⁠健⁠康⁠探⁠测</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/sim_inference.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">服⁠务⁠限⁠流</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/rate_limiting.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">R⁠A⁠S⁠ ⁠监⁠控</td><td align="right" width="72"><a href="./examples/features/fault_tolerance/ras_monitor/readme.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">R⁠A⁠S⁠ ⁠m⁠o⁠n⁠i⁠t⁠o⁠r⁠ ⁠服⁠务⁠健⁠康⁠监⁠控</td><td align="right" width="72"><a href="./examples/features/fault_tolerance/ras_monitor/readme.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">自⁠动⁠弹⁠性⁠扩⁠缩⁠容</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/auto_scaling.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">手⁠动⁠扩⁠缩⁠容</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/manual_scaling.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">容⁠器⁠快⁠照</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/container_snapshot.md">链⁠接</a></td></tr>
