@@ -35,16 +35,13 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 <img src="./docs/zh/imgs/MindIE-Motor-architecture-zh.png" alt="MindIE Motor 架构" width="100%"/>
 
-## 服务部署
+## 🖥️ 服务部署
 
 <table>
   <tr>
-    <th align="center">🎯 一键部署</th>
-    <th align="center">🤖 常用模型</th>
-  </tr>
-  <tr>
     <td valign="top">
       <table>
+        <tr><th align="center" colspan="2">🎯 部署指导</th></tr>
         <tr><td align="left" width="320">K⁠8⁠s⁠ ⁠P⁠D⁠ ⁠分⁠离⁠（⁠v⁠L⁠L⁠M⁠）</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">K⁠8⁠s⁠ ⁠P⁠D⁠ ⁠分⁠离⁠（⁠S⁠G⁠L⁠a⁠n⁠g⁠）</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_sglang.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">K⁠8⁠s⁠ ⁠P⁠D⁠ ⁠混⁠部</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md">链⁠接</a></td></tr>
@@ -57,13 +54,15 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
         <tr><td align="left" width="320">C⁠o⁠o⁠r⁠d⁠i⁠n⁠a⁠t⁠o⁠r⁠ ⁠独⁠立⁠部⁠署</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/standalone.md">链⁠接</a></td></tr>
       </table>
     </td>
+    <td width="32"></td>
     <td valign="top">
       <table>
+        <tr><th align="center" colspan="4">🤖 常用模型</th></tr>
         <tr>
           <th align="left">模型</th>
           <th align="left">Atlas 800I A2</th>
           <th align="left">Atlas 800I A3 超节点</th>
-          <th align="left">Ascend 950PR</th>
+          <th align="left">Atlas 950系列服务器</th>
         </tr>
         <tr><td>DeepSeek-V4.1-Flash 🔥🔥🔥</td><td></td><td></td><td></td></tr>
         <tr><td>GLM-5.3-Flash 🔥🔥🔥</td><td></td><td></td><td></td></tr>
