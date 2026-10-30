@@ -35,6 +35,8 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 <img src="./docs/zh/imgs/MindIE-Motor-architecture-zh.png" alt="MindIE Motor 架构" width="100%"/>
 
+## 服务部署
+
 <table>
   <tr>
     <th align="center">🎯 一键部署</th>
@@ -56,7 +58,6 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
       </table>
     </td>
     <td valign="top">
-      <p>vLLM 常用模型的配置示例在 <a href="./model_configs/vllm/models">model_configs/vllm/models</a>。生成方式见 <a href="./model_configs/vllm/models/README.md">配置说明</a>。</p>
       <table>
         <tr>
           <th align="left">模型</th>
