@@ -123,7 +123,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
         <tr><td align="left" width="320">D⁠2⁠D⁠ ⁠权⁠重⁠加⁠载</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/startup_acceleration.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">数⁠据⁠混⁠淆⁠推⁠理⁠（⁠P⁠M⁠C⁠C⁠）</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/data_obfuscation.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">精⁠度⁠检⁠测</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/precision_detection.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">T⁠r⁠a⁠c⁠i⁠n⁠g</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/tracing.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">请⁠求⁠耗⁠时⁠追⁠踪</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/tracing.md">链⁠接</a></td></tr>
       </table>
     </td>
   </tr>
