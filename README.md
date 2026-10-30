@@ -95,7 +95,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
       <table>
         <tr><th align="center" colspan="2">⚡ 极致性能</th></tr>
         <tr><td align="left" width="320">P⁠D⁠ ⁠分⁠离</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/pd_disaggregation.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">E⁠P⁠D⁠ ⁠分⁠离</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/EPD_disaggregation.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">E⁠P⁠D⁠ ⁠分⁠离⁠（⁠多⁠模⁠态⁠）</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/EPD_disaggregation.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">K⁠V⁠ ⁠C⁠a⁠c⁠h⁠e⁠ ⁠亲⁠和⁠性⁠调⁠度</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/kvcache_affinity.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">A⁠g⁠e⁠n⁠t⁠ ⁠H⁠i⁠n⁠t⁠ ⁠会⁠话⁠亲⁠和⁠与⁠调⁠度</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/agent_hint.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">动⁠态⁠分⁠桶⁠调⁠度</td><td align="right" width="72"><a href="./docs/zh/user_guide/features/dynamic_bucket.md">链⁠接</a></td></tr>
