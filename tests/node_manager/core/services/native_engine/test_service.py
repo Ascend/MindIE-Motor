@@ -357,3 +357,29 @@ def test_stop_waits_for_inflight_pull_and_monitor_stays_cleared():
     # stop() must have waited for the in-flight pull and cleared its monitor;
     # otherwise the pull would install the monitor after stop() returned.
     assert service._virtual_monitor is None
+
+
+def test_endpoint_visible_device_ids_keep_start_devices():
+    service = _native_engine_service()
+    service.enable_multi_endpoints = True
+    service.device_num = 2
+    service.parallel_config = SimpleNamespace(local_world_size=2)
+    assert service._endpoint_visible_device_ids({"MOTOR_START_DEVICES": "2,3"}, 0, 2) == "2,3"
+    assert service._endpoint_visible_device_ids({}, 0, 2) == "0,1"
+    assert service._endpoint_visible_device_ids({"MOTOR_START_DEVICES": "  "}, 0, 2) == "0,1"
+
+
+def test_endpoint_visible_device_ids_slice_start_devices():
+    service = _native_engine_service()
+    service.enable_multi_endpoints = True
+    service.device_num = 4
+    service.parallel_config = SimpleNamespace(local_world_size=1)
+    env = {"MOTOR_START_DEVICES": "0,1,2,3"}
+    assert service._endpoint_visible_device_ids(env, 0, 4) == "0"
+    assert service._endpoint_visible_device_ids(env, 1, 4) == "1"
+    service.parallel_config = SimpleNamespace(local_world_size=2)
+    env = {"MOTOR_START_DEVICES": "4,5,6,7"}
+    assert service._endpoint_visible_device_ids(env, 0, 4) == "4,5"
+    assert service._endpoint_visible_device_ids(env, 1, 4) == "6,7"
+    with pytest.raises(ValueError, match="offset 4"):
+        service._endpoint_visible_device_ids(env, 2, 4)

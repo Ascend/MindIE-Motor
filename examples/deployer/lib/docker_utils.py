@@ -302,12 +302,17 @@ def gen_kv_store_env(kv_store_config):
 
 
 CONTAINER_CONFIG_PATH = "/usr/local/Ascend/pyMotor/conf"
+_CONFIG_DIR_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 _API_CONFIG = "api_config"
 _COORD_INFER_PORT = "coordinator_api_infer_port"
 _COORD_OBS_PORT = "coordinator_obs_port"
 DEFAULT_COORD_INFER_PORT = 1025
 DEFAULT_COORD_OBS_PORT = 1027
+# Docker shares the host network. Coordinator already uses 1025/1027, so an unset
+# Controller moves to these fixed ports. Every container reads the same values.
+DOCKER_CONTROLLER_API_PORT = 2026
+DOCKER_CONTROLLER_OBS_PORT = 2027
 DEFAULT_INFER_NODE_PORT = 31015
 DEFAULT_OBS_NODE_PORT = 31017
 
@@ -388,6 +393,33 @@ def required_visible_device_count(user_config: dict) -> int:
     prefill_section = user_config[C.MOTOR_ENGINE_PREFILL_CONFIG]
     decode_section = user_config[C.MOTOR_ENGINE_DECODE_CONFIG]
     return p_instances * _engine_world_size(prefill_section) + d_instances * _engine_world_size(decode_section)
+
+
+def in_place_config_path(container_name: str | None, job_name: str | None, *, isolate: bool) -> str:
+    """Config directory for one --start.
+
+    One container can run several --start commands. When --devices limits this
+    command to its own cards, keep hccl.json, ranktable.json and the config
+    sync pid under a directory named by the container and instance.
+    """
+    if not isolate:
+        return CONTAINER_CONFIG_PATH
+    parts: list[str] = []
+    for raw in (container_name, job_name):
+        name = (raw or "").strip()
+        if not name:
+            continue
+        if _CONFIG_DIR_NAME.fullmatch(name) is None:
+            raise ValueError(
+                f"cannot isolate config directory for name {name!r}. Use letters, digits, '.', '_' or '-'."
+            )
+        parts.append(name)
+    if not parts:
+        raise ValueError(
+            "--devices on --start needs --container-name or --instance-name "
+            "so each command gets its own config directory."
+        )
+    return "/".join([CONTAINER_CONFIG_PATH, *parts])
 
 
 def parse_visible_device_ids(raw: str) -> list[int]:
@@ -1199,10 +1231,15 @@ def prepare_configmap(
     shutil.copyfile(user_config_path, dest_user_config)
     shutil.copyfile(env_config_path, os.path.join(configmap_path, "env.json"))
 
-    if engine_ports and engine_ports.specified():
-        with open(dest_user_config, encoding="utf-8") as handle:
-            copied = json.load(handle)
-        apply_engine_port_overrides(copied, role, engine_ports)
+    with open(dest_user_config, encoding="utf-8") as handle:
+        copied = json.load(handle)
+    changed = False
+    if isinstance(copied, dict):
+        changed = apply_docker_controller_port_defaults(copied)
+        if role and engine_ports and engine_ports.specified():
+            apply_engine_port_overrides(copied, role, engine_ports)
+            changed = True
+    if changed:
         with open(dest_user_config, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(copied, handle, indent=2, ensure_ascii=False)
             handle.write("\n")
@@ -1219,17 +1256,108 @@ def _run_set_env_docker(deployer_dir: str, configmap_path: str) -> None:
     module.set_env_docker(configmap_path)
 
 
+def _explicit_config_port(api: dict, key: str) -> int | None:
+    if key not in api:
+        return None
+    value = api[key]
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
+def docker_controller_ports(user_config: dict) -> tuple[int, int]:
+    """Controller ports this Docker deploy will use.
+
+    An explicit ``user_config.json`` value wins. Missing ports become 2026/2027
+    on every container, so the engine dials the same address the Controller binds.
+    """
+    section = user_config.get(C.MOTOR_CONTROLLER_CONFIG) or {}
+    api = section.get("api_config") if isinstance(section, dict) else None
+    if not isinstance(api, dict):
+        api = {}
+    ctrl = _explicit_config_port(api, "controller_api_port")
+    obs = _explicit_config_port(api, "observability_api_port")
+    return (
+        DOCKER_CONTROLLER_API_PORT if ctrl is None else ctrl,
+        DOCKER_CONTROLLER_OBS_PORT if obs is None else obs,
+    )
+
+
+def apply_docker_controller_port_defaults(user_config: dict) -> bool:
+    """Write 2026/2027 into a config copy when the user left those keys unset."""
+    section = user_config.get(C.MOTOR_CONTROLLER_CONFIG)
+    if not isinstance(section, dict):
+        section = {}
+        user_config[C.MOTOR_CONTROLLER_CONFIG] = section
+    api = section.get("api_config")
+    if not isinstance(api, dict):
+        api = {}
+        section["api_config"] = api
+    filled = []
+    if _explicit_config_port(api, "controller_api_port") is None:
+        api["controller_api_port"] = DOCKER_CONTROLLER_API_PORT
+        filled.append(f"controller_api_port={DOCKER_CONTROLLER_API_PORT}")
+    if _explicit_config_port(api, "observability_api_port") is None:
+        api["observability_api_port"] = DOCKER_CONTROLLER_OBS_PORT
+        filled.append(f"observability_api_port={DOCKER_CONTROLLER_OBS_PORT}")
+    if not filled:
+        return False
+    logger.info("Docker controller ports left unset; using %s.", ", ".join(filled))
+    return True
+
+
+def start_devices_marker(devices: str | None) -> str:
+    """Canonical MOTOR_START_DEVICES value, same string as start_motor.sh export.
+
+    Empty when ``devices`` is omitted. Used both in the generated script and in
+    the docker_deploy parent so --start cleanup can tell this instance from a
+    sibling in the same container.
+    """
+    raw = (devices or "").strip()
+    if not raw:
+        return ""
+    return ",".join(str(device_id) for device_id in parse_visible_device_ids(raw))
+
+
+def isolate_start_devices(role: str | None, devices: str | None) -> str:
+    """Marker for in-container engine --start --devices; empty for control roles."""
+    if engine_role_of(role) is None:
+        return ""
+    return start_devices_marker(devices)
+
+
+def _device_env_lines(devices: str | None) -> list[str]:
+    visible = start_devices_marker(devices)
+    if not visible:
+        return []
+    return [
+        f'export ASCEND_VISIBLE_DEVICES="{visible}"',
+        f'export ASCEND_RT_VISIBLE_DEVICES="{visible}"',
+        # Only --start --devices sets this. Host one-click inner --start does not
+        # forward --devices, so NodeManager keeps slicing logical 0,1.
+        f'export MOTOR_START_DEVICES="{visible}"',
+    ]
+
+
 def render_start_motor_sh(
     params: DockerDeployParams,
     configmap_path: str,
     identity: DockerRuntimeIdentity | None = None,
     nic_name: str | None = None,
     pod_ip: str | None = None,
+    container_name: str | None = None,
+    devices: str | None = None,
 ) -> str:
     role = identity.role if identity else C.ROLE_SINGLE_CONTAINER
     kv_env = dict(params.kv_store_env)
     if identity is not None and params.kv_store_enabled:
         kv_env[C.ENV_KVS_MASTER_SERVICE] = identity.kv_store_ip
+    isolate = engine_role_of(role) is not None and bool((devices or "").strip())
+    config_path = in_place_config_path(
+        container_name,
+        identity.job_name if identity is not None else None,
+        isolate=isolate,
+    )
     ip, nic = require_pod_ip_and_nic(
         identity.pod_ip if identity is not None else pod_ip,
         nic_name or (identity.nic_name if identity is not None else None),
@@ -1239,7 +1367,7 @@ def render_start_motor_sh(
         "set -e",
         "",
         f'export CONFIGMAP_PATH="{configmap_path}"',
-        f'export CONFIG_PATH="{CONTAINER_CONFIG_PATH}"',
+        f'export CONFIG_PATH="{config_path}"',
         f"export ROLE={role}",
     ]
     if identity is not None:
@@ -1268,6 +1396,7 @@ def render_start_motor_sh(
     )
     for key, value in kv_env.items():
         lines.append(f'export {key}="{value}"')
+    lines.extend(_device_env_lines(devices if isolate else None))
     lines.extend(
         [
             "",
@@ -1326,3 +1455,12 @@ def image_exists(image: str) -> bool:
 
 def container_exists(name: str) -> bool:
     return _docker("inspect", name).returncode == 0
+
+
+def remove_container(name: str) -> None:
+    """Force-remove a container (``docker rm -f``)."""
+    result = _docker("rm", "-f", name)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise ValueError(f"Failed to remove container '{name}': {detail}")
+    logger.info("Removed container %s", name)

@@ -17,12 +17,15 @@ import re
 import shlex
 import stat
 import sys
+from collections.abc import Callable
 from datetime import datetime
 
 import lib.constant as C
 import lib.docker_utils as D
+from lib.docker_commands import emit as emit_commands
 from lib.docker_utils import logger, read_json, resolve_config_paths, validate_instance_nums, validate_pd_hybrid_config
 from lib.in_place_run import run_in_place
+from lib.port_conflict import offer_engine_port_remap
 
 
 def _write_file(path: str, content: str, executable: bool = False) -> None:
@@ -101,11 +104,8 @@ def _validate_topology(user_config: dict) -> bool:
 
 
 def _controller_ports(user_config: dict):
-    api = (user_config.get(C.MOTOR_CONTROLLER_CONFIG) or {}).get("api_config") or {}
-    return [
-        ("controller", int(api.get("controller_api_port", 2026))),
-        ("controller-obs", int(api.get("observability_api_port", 2027))),
-    ]
+    ctrl, obs = D.docker_controller_ports(user_config)
+    return [("controller", ctrl), ("controller-obs", obs)]
 
 
 def _ports_to_check(
@@ -146,6 +146,8 @@ def preflight(
     devices_arg: str | None = None,
     check_devices: bool = True,
     template_fallback: bool = False,
+    check_ports: bool = True,
+    args=None,
 ) -> bool:
     ok = True
 
@@ -184,17 +186,24 @@ def preflight(
             logger.error("%s", exc)
             ok = False
 
-    for label, port in _ports_to_check(config_for_ports, params, identity, in_place=in_place):
-        if D.port_in_use(port):
-            holder = D.describe_port_holder(port)
-            logger.error(
-                "Host %s port %s is already in use%s. "
-                "Another process (not this workspace's Motor container) is holding it.",
-                label,
-                port,
-                f" by: {holder}" if holder else "",
-            )
-            ok = False
+    if check_ports and ok and identity is not None and engine_ports is not None and D.engine_role_of(identity.role):
+        offer_engine_port_remap(user_config, identity.role, engine_ports, args)
+        if engine_ports.specified():
+            config_for_ports = copy.deepcopy(user_config)
+            D.apply_engine_port_overrides(config_for_ports, identity.role, engine_ports)
+
+    if check_ports:
+        for label, port in _ports_to_check(config_for_ports, params, identity, in_place=in_place):
+            if D.port_in_use(port):
+                holder = D.describe_port_holder(port)
+                logger.error(
+                    "Host %s port %s is already in use%s. "
+                    "Another process (not this workspace's Motor container) is holding it.",
+                    label,
+                    port,
+                    f" by: {holder}" if holder else "",
+                )
+                ok = False
 
     return ok
 
@@ -254,6 +263,7 @@ def _prepare_and_render(args, deployer_dir: str):
         in_place=True,
         engine_ports=engine_ports,
         devices_arg=getattr(args, "devices", None),
+        args=args,
     ):
         logger.error("Preflight checks failed. Aborting.")
         sys.exit(1)
@@ -272,17 +282,20 @@ def _prepare_and_render(args, deployer_dir: str):
         sys.exit(1)
 
     start_motor_path = os.path.join(workspace, "start_motor.sh")
-    _write_file(
-        start_motor_path,
-        D.render_start_motor_sh(
+    try:
+        script = D.render_start_motor_sh(
             params,
             configmap_path,
             identity=identity,
             nic_name=getattr(args, "nic_name", None),
             pod_ip=getattr(args, "pod_ip", None),
-        ),
-        executable=True,
-    )
+            container_name=_container_name_from_args_or_env(args),
+            devices=getattr(args, "devices", None),
+        )
+    except ValueError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
+    _write_file(start_motor_path, script, executable=True)
     logger.info("Artifacts written to %s (start_motor.sh).", workspace)
     return params, workspace, identity
 
@@ -334,6 +347,7 @@ def _new_run_log_path(workspace: str, identity: D.DockerRuntimeIdentity | None =
 def _start_in_place(
     workspace: str,
     identity: D.DockerRuntimeIdentity | None = None,
+    only_devices: str | None = None,
 ) -> int:
     start_motor_path = os.path.join(workspace, "start_motor.sh")
     if not os.path.isfile(start_motor_path):
@@ -343,7 +357,12 @@ def _start_in_place(
     if log_path is None:
         return 1
     logger.info("starting Motor in this environment via %s", start_motor_path)
-    return run_in_place(start_motor_path, log_path, format_restart_command())
+    return run_in_place(
+        start_motor_path,
+        log_path,
+        format_restart_command(),
+        only_devices=only_devices,
+    )
 
 
 def _print_in_place_banner(
@@ -369,7 +388,14 @@ def run(args, deployer_dir: str) -> int:
         return 1
     params, workspace, identity = _prepare_and_render(args, deployer_dir)
     _print_in_place_banner(workspace, identity, params)
-    return _start_in_place(workspace, identity=identity)
+    only_devices = (
+        D.isolate_start_devices(
+            identity.role if identity else None,
+            getattr(args, "devices", None),
+        )
+        or None
+    )
+    return _start_in_place(workspace, identity=identity, only_devices=only_devices)
 
 
 def _parse_role(value: str) -> str:
@@ -674,7 +700,7 @@ def attach_one_click_command(template: str, inner: str) -> str:
     return body[: -len(_IMAGE_BASH)] + f'"$IMAGE" bash -c {shlex.quote(script)}\n'
 
 
-def _validate_one_click_identity(args, deployer_dir: str) -> None:
+def _validate_one_click_identity(args, deployer_dir: str, *, check_ports: bool = True) -> None:
     user_config_path, _env_config_path = resolve_config_paths(
         args.config_dir, args.user_config_path, args.env_config_path
     )
@@ -709,6 +735,8 @@ def _validate_one_click_identity(args, deployer_dir: str) -> None:
         in_place=True,
         engine_ports=engine_ports,
         check_devices=False,
+        check_ports=check_ports,
+        args=args,
     ):
         raise ValueError("Preflight checks failed.")
 
@@ -716,14 +744,63 @@ def _validate_one_click_identity(args, deployer_dir: str) -> None:
 def _validate_host_create(name: str, image: str) -> None:
     if not D.docker_available():
         raise ValueError("docker is not available on this host.")
-    if D.container_exists(name):
-        raise ValueError(
-            f"Container '{name}' already exists. "
-            f"This script will not replace it. docker exec -it {name} bash "
-            f"and pass --start, or docker rm -f {name} and create again."
-        )
     if not D.image_exists(image):
         raise ValueError(f"Image not found locally: {image} (docker image inspect failed).")
+
+
+def _occupied_host_containers(_args, main_name: str) -> list[str]:
+    """Containers this host create would replace. Returns names that already exist."""
+    if D.container_exists(main_name):
+        return [main_name]
+    return []
+
+
+def _offer_replace_existing_containers(
+    names: list[str],
+    *,
+    remove_fn: Callable[[str], None] | None = None,
+    input_fn: Callable[[str], str] | None = None,
+    isatty_fn: Callable[[], bool] | None = None,
+) -> None:
+    """Ask before ``docker rm -f`` on containers this host create would replace.
+
+    ``y`` / ``yes`` removes every name. ``N``, empty input, EOF, or a non-TTY stdin
+    aborts and leaves the containers in place.
+    """
+    if not names:
+        return
+    remove = remove_fn or D.remove_container
+    ask = input_fn or input
+    tty = isatty_fn or sys.stdin.isatty
+    shown = ", ".join(names)
+    if not tty():
+        raise ValueError(
+            f"Container already exists: {shown}. stdin is not a TTY, so nothing was removed. "
+            "Re-run in a terminal and answer y to delete and continue, "
+            f"or docker rm -f {shown}."
+        )
+    for name in names:
+        logger.error("[Container] %s already exists.", name)
+    logger.error("[Container] Enter y=delete and continue, N=abort.")
+    while True:
+        try:
+            answer = ask(f"[Container] {shown} -> y / N: ").strip().lower()
+        except EOFError as exc:
+            raise ValueError(f"Container already exists: {shown}. No interactive input; nothing was removed.") from exc
+        if answer in ("", "n", "no"):
+            raise ValueError(
+                f"Container already exists: {shown}. Left in place. "
+                f"Answer y to delete and continue, or docker exec -it {names[0]} bash and pass --start."
+            )
+        if answer in ("y", "yes"):
+            for name in names:
+                remove(name)
+            return
+        logger.error("[Container] invalid input %r. Enter y or N.", answer)
+
+
+def _replace_occupied_host_containers(args, main_name: str) -> None:
+    _offer_replace_existing_containers(_occupied_host_containers(args, main_name))
 
 
 def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
@@ -735,7 +812,9 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
     if start_service:
         try:
             D.require_pod_ip_and_nic(getattr(args, "pod_ip", None), getattr(args, "nic_name", None))
-            _validate_one_click_identity(args, deployer_dir)
+            # Ports are checked after an existing container is removed. A leftover
+            # container on the host network is the usual reason those ports look busy.
+            _validate_one_click_identity(args, deployer_dir, check_ports=False)
         except (KeyError, TypeError, ValueError) as exc:
             logger.error("%s", exc)
             return 1
@@ -777,17 +856,23 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
     except ValueError as exc:
         logger.error("%s", exc)
         return 1
-    if start_service:
-        try:
-            command = attach_one_click_command(command, build_in_place_inner_command(args, deployer_dir))
-        except ValueError as exc:
-            logger.error("%s", exc)
-            return 1
     if not attach_npu and "--device" in command:
         logger.error(
             "This docker-run template must not contain --device. Edit ENTER_DOCKER_RUN_CTRL or ENTER_DOCKER_RUN_KVS."
         )
         return 1
+    try:
+        _replace_occupied_host_containers(args, env["NAME"])
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return 1
+    if start_service:
+        try:
+            _validate_one_click_identity(args, deployer_dir, check_ports=True)
+            command = attach_one_click_command(command, build_in_place_inner_command(args, deployer_dir))
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.error("%s", exc)
+            return 1
     print(command, end="", flush=True)
     merged = os.environ.copy()
     merged.update(env)
@@ -819,7 +904,8 @@ def parse_arguments() -> argparse.Namespace:
         type=str,
         default=None,
         help="Container name. Required when creating a container. "
-        "If this name already exists, the script errors and does not replace it.",
+        "If this name already exists, a terminal asks before deleting it. "
+        "Non-interactive runs abort and do not replace an existing container.",
     )
     parser.add_argument(
         "--role",
@@ -876,6 +962,14 @@ def parse_arguments() -> argparse.Namespace:
     )
     # 可选、常用参数
     parser.add_argument(
+        "--show-commands",
+        action="store_true",
+        help="Print docker_deploy.py commands from user_config.json and exit. "
+        "Does not create a container or start Motor. "
+        "One inference container is one server. Management and kv_store share an inference server. "
+        "Pass --start to print in-container commands instead of host one-click commands.",
+    )
+    parser.add_argument(
         "--start",
         action="store_true",
         dest="start",
@@ -909,8 +1003,14 @@ def parse_arguments() -> argparse.Namespace:
         help="Host NPU ids, e.g. '0' or '0,1'. Engine/single create keeps only those "
         "--device /dev/davinciN lines already in the A2/A5 or A3 template and sets "
         "-e ASCEND_VISIBLE_DEVICES; omit to attach every card in that template. "
-        "Ignored for dedicated control-plane and kv_store create. Not used with "
-        "--start (the container already has whatever create attached).",
+        "Ignored for dedicated control-plane and kv_store create. "
+        "On --start with --role prefill/decode/union, limits this process to those "
+        "cards, exports MOTOR_START_DEVICES for NodeManager and this parent "
+        "(so a second --start / Ctrl+C only reaps this instance), and writes "
+        "hccl.json/ranktable.json under a per-instance config directory. "
+        "Host one-click inner --start does not forward --devices. "
+        "Omit on --start to use every card already attached to the container; "
+        "unmarked --start still reaps every Motor/vLLM leftover in this container.",
     )
     # 不常用，兜底
     parser.add_argument(
@@ -969,6 +1069,15 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> None:
     args = parse_arguments()
     deployer_dir = os.path.dirname(os.path.abspath(__file__))
+    if getattr(args, "show_commands", False):
+        sys.exit(
+            emit_commands(
+                args.config_dir,
+                os.path.join(deployer_dir, "docker_deploy.py"),
+                in_container=bool(args.start),
+                create=bool(args.create),
+            )
+        )
     if getattr(args, "create", False) and getattr(args, "start", False):
         logger.error("Pass only one of --create and --start.")
         sys.exit(1)
