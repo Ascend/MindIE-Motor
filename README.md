@@ -45,11 +45,10 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
         <tr><td align="left" width="320">K⁠8⁠s⁠ ⁠P⁠D⁠ ⁠分⁠离⁠（⁠v⁠L⁠L⁠M⁠）</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">K⁠8⁠s⁠ ⁠P⁠D⁠ ⁠分⁠离⁠（⁠S⁠G⁠L⁠a⁠n⁠g⁠）</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_sglang.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">K⁠8⁠s⁠ ⁠P⁠D⁠ ⁠混⁠部</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">D⁠o⁠c⁠k⁠e⁠r⁠ ⁠单⁠容⁠器</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/docker/single_container.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">D⁠o⁠c⁠k⁠e⁠r⁠ ⁠宿⁠主⁠机⁠ ⁠P⁠D⁠ ⁠分⁠离</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">D⁠o⁠c⁠k⁠e⁠r⁠ ⁠宿⁠主⁠机⁠ ⁠P⁠D⁠ ⁠混⁠部</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/docker/host/pd_aggregation_deployment.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">D⁠o⁠c⁠k⁠e⁠r⁠ ⁠容⁠器⁠内⁠（⁠云⁠化⁠平⁠台⁠）⁠P⁠D⁠ ⁠分⁠离</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">D⁠o⁠c⁠k⁠e⁠r⁠ ⁠容⁠器⁠内⁠（⁠云⁠化⁠平⁠台⁠）⁠P⁠D⁠ ⁠混⁠部</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_aggregation_deployment.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">d⁠o⁠c⁠k⁠e⁠r⁠ ⁠o⁠n⁠l⁠y⁠ ⁠P⁠D⁠分⁠离⁠部⁠署</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">d⁠o⁠c⁠k⁠e⁠r⁠ ⁠o⁠n⁠l⁠y⁠ ⁠P⁠D⁠混⁠部⁠部⁠署</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/docker/host/pd_aggregation_deployment.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">d⁠o⁠c⁠k⁠e⁠r⁠ ⁠o⁠n⁠l⁠y⁠ ⁠云⁠化⁠平⁠台⁠（⁠例⁠如⁠：⁠m⁠o⁠d⁠e⁠l⁠ ⁠a⁠r⁠t⁠s⁠）⁠P⁠D⁠分⁠离⁠部⁠署</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">d⁠o⁠c⁠k⁠e⁠r⁠ ⁠o⁠n⁠l⁠y⁠ ⁠云⁠化⁠平⁠台⁠（⁠例⁠如⁠：⁠m⁠o⁠d⁠e⁠l⁠ ⁠a⁠r⁠t⁠s⁠）⁠P⁠D⁠混⁠部⁠部⁠署</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_aggregation_deployment.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">S⁠l⁠u⁠r⁠m</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/slurm/README.md">链⁠接</a></td></tr>
         <tr><td align="left" width="320">C⁠o⁠o⁠r⁠d⁠i⁠n⁠a⁠t⁠o⁠r⁠ ⁠独⁠立⁠部⁠署</td><td align="right" width="72"><a href="./docs/zh/user_guide/deployment/standalone.md">链⁠接</a></td></tr>
       </table>
