@@ -43,14 +43,14 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
       <table>
         <tr><th align="center" colspan="2">🎯 部署指导</th></tr>
         <tr><th align="left" colspan="2">K⁠8⁠s⁠ ⁠部⁠署</th></tr>
-        <tr><td align="left" width="320">K⁠8⁠s⁠ ⁠P⁠D⁠ ⁠分⁠离⁠（⁠v⁠L⁠L⁠M⁠）</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">K⁠8⁠s⁠ ⁠P⁠D⁠ ⁠分⁠离⁠（⁠S⁠G⁠L⁠a⁠n⁠g⁠）</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_sglang.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">K⁠8⁠s⁠ ⁠P⁠D⁠ ⁠混⁠部</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">P⁠D⁠ ⁠分⁠离⁠（⁠v⁠L⁠L⁠M⁠）</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">P⁠D⁠ ⁠分⁠离⁠（⁠S⁠G⁠L⁠a⁠n⁠g⁠）</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_disaggregation_sglang.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">P⁠D⁠ ⁠混⁠部</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md">链⁠接</a></td></tr>
         <tr><th align="left" colspan="2">d⁠o⁠c⁠k⁠e⁠r⁠ ⁠部⁠署</th></tr>
-        <tr><td align="left" width="320">d⁠o⁠c⁠k⁠e⁠r⁠ ⁠o⁠n⁠l⁠y⁠ ⁠P⁠D⁠分⁠离⁠部⁠署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">d⁠o⁠c⁠k⁠e⁠r⁠ ⁠o⁠n⁠l⁠y⁠ ⁠P⁠D⁠混⁠部⁠部⁠署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/host/pd_aggregation_deployment.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">d⁠o⁠c⁠k⁠e⁠r⁠ ⁠o⁠n⁠l⁠y⁠ ⁠云⁠化⁠平⁠台⁠（⁠例⁠如⁠：⁠M⁠o⁠d⁠e⁠l⁠A⁠r⁠t⁠s⁠）⁠P⁠D⁠分⁠离⁠部⁠署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md">链⁠接</a></td></tr>
-        <tr><td align="left" width="320">d⁠o⁠c⁠k⁠e⁠r⁠ ⁠o⁠n⁠l⁠y⁠ ⁠云⁠化⁠平⁠台⁠（⁠例⁠如⁠：⁠M⁠o⁠d⁠e⁠l⁠A⁠r⁠t⁠s⁠）⁠P⁠D⁠混⁠部⁠部⁠署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_aggregation_deployment.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">P⁠D⁠分⁠离⁠部⁠署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">P⁠D⁠混⁠部⁠部⁠署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/host/pd_aggregation_deployment.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">云⁠化⁠平⁠台⁠（⁠例⁠如⁠：⁠M⁠o⁠d⁠e⁠l⁠A⁠r⁠t⁠s⁠）⁠P⁠D⁠分⁠离⁠部⁠署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md">链⁠接</a></td></tr>
+        <tr><td align="left" width="320">云⁠化⁠平⁠台⁠（⁠例⁠如⁠：⁠M⁠o⁠d⁠e⁠l⁠A⁠r⁠t⁠s⁠）⁠P⁠D⁠混⁠部⁠部⁠署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_aggregation_deployment.md">链⁠接</a></td></tr>
         <tr><th align="left" colspan="2">S⁠l⁠u⁠r⁠m⁠ ⁠部⁠署</th></tr>
         <tr><td align="left" width="320">S⁠l⁠u⁠r⁠m</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/slurm/README.md">链⁠接</a></td></tr>
         <tr><th align="left" colspan="2">调⁠度⁠器⁠独⁠立⁠部⁠署</th></tr>
