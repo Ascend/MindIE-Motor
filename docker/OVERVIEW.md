@@ -26,13 +26,13 @@ Official published images are named `mindie-motor` and hosted on [AscendHub mind
 Current published image tags follow this format:
 
 ```text
-<MotorVersion>-<EngineVersion>-<ChipSeries>-<OperatingSystem>-<PythonVersion>
+<MotorVersion>-vllm_ascend<EngineVersion>-<ChipSeries>-<OperatingSystem>-<PythonVersion>
 ```
 
 | Field | Example Value | Description |
 |---|---|---|
-| `MotorVersion` | `3.2.0b6`, `3.2.0b5` | MindIE-Motor version number |
-| `EngineVersion` | `0.30.0rc2`, `0.30.0rc1` | Matching vllm-ascend version |
+| `MotorVersion` | `3.2.0`, `3.2.0b6` | MindIE-Motor version number |
+| `EngineVersion` | `0.30.0`, `0.30.0rc2` | Matching vllm-ascend version |
 | `ChipSeries` | `a2`, `a3`, `a5` | Target Atlas chip series |
 | `OperatingSystem` | `ubuntu22.04`, `openeuler24.03` | Base OS |
 | `PythonVersion` | `py3.12` | Python version |
@@ -52,42 +52,18 @@ vllm_ascend_<ModelName>-<ChipSeries>-<OperatingSystem>-<PythonVersion>
 
 3.0.x historical tags use a different naming scheme; see [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md).
 
-### Latest Dedicated Image vllm_ascend_deepseek_v4.1_flash
+### Latest Version MindIE-Motor 3.2.0
 
-The following table lists the latest DeepSeek V4.1 Flash dedicated images on AscendHub. These images are released to pair with the vllm-ascend `deepseek-v4.1-flash` images. Their tags follow the dedicated format above. For historical tags, see [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md).
-
-| Tag | Dockerfile | Architecture | Image Contents |
-|---|---|---|---|
-| `vllm_ascend_deepseek_v4.1_flash-a2-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/vllm_ascend_deepseek_v4.1_flash-a2-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0+deepseek.v4.1.flash / vllm-ascend deepseek-v4.1-flash |
-| `vllm_ascend_deepseek_v4.1_flash-a2-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/vllm_ascend_deepseek_v4.1_flash-a2-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0+deepseek.v4.1.flash / vllm-ascend deepseek-v4.1-flash |
-| `vllm_ascend_deepseek_v4.1_flash-a3-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/vllm_ascend_deepseek_v4.1_flash-a3-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0+deepseek.v4.1.flash / vllm-ascend deepseek-v4.1-flash |
-| `vllm_ascend_deepseek_v4.1_flash-a3-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/vllm_ascend_deepseek_v4.1_flash-a3-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0+deepseek.v4.1.flash / vllm-ascend deepseek-v4.1-flash |
-
-### Latest Beta Version MindIE-Motor 3.2.0b6
-
-The following are all images of MindIE-Motor 3.2.0b6 published on AscendHub, released to pair with the vLLM-Ascend v0.30.0rc2 images. For historical tags, see [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md)
+The following table lists all images for the latest MindIE-Motor 3.2.0 release on AscendHub (2026/10/30), released to pair with the vLLM-Ascend v0.30.0 commercial release. For historical tags, see [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md).
 
 | Tag | Dockerfile | Architecture | Image Contents |
 |---|---|---|---|
-| `3.2.0b6-vllm_ascend0.30.0rc2-a2-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0b6 / vllm-ascend 0.30.0rc2 |
-| `3.2.0b6-vllm_ascend0.30.0rc2-a2-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0b6 / vllm-ascend 0.30.0rc2 |
-| `3.2.0b6-vllm_ascend0.30.0rc2-a3-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0b6 / vllm-ascend 0.30.0rc2 |
-| `3.2.0b6-vllm_ascend0.30.0rc2-a3-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0b6 / vllm-ascend 0.30.0rc2 |
-| `3.2.0b6-vllm_ascend0.30.0rc2-a5-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0b6 / vllm-ascend 0.30.0rc2 |
-| `3.2.0b6-vllm_ascend0.30.0rc2-a5-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0b6 / vllm-ascend 0.30.0rc2 |
-
-### Latest Beta Version MindIE-Motor 3.2.0b5
-
-The following are all images of MindIE-Motor 3.2.0b5 published on AscendHub, released to pair with the vLLM-Ascend v0.30.0rc1 images. For historical tags, see [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md)
-
-| Tag | Dockerfile | Architecture | Image Contents |
-|---|---|---|---|
-| `3.2.0b5-vllm_ascend0.30.0rc1-a2-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0b5 / vllm-ascend 0.30.0rc1 |
-| `3.2.0b5-vllm_ascend0.30.0rc1-a2-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0b5 / vllm-ascend 0.30.0rc1 |
-| `3.2.0b5-vllm_ascend0.30.0rc1-a3-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0b5 / vllm-ascend 0.30.0rc1 |
-| `3.2.0b5-vllm_ascend0.30.0rc1-a3-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0b5 / vllm-ascend 0.30.0rc1 |
-| `3.2.0b5-vllm_ascend0.30.0rc1-a5-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0b5 / vllm-ascend 0.30.0rc1 |
-| `3.2.0b5-vllm_ascend0.30.0rc1-a5-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0b5 / vllm-ascend 0.30.0rc1 |
+| `3.2.0-vllm_ascend0.30.0-a2-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0 / vllm-ascend 0.30.0 |
+| `3.2.0-vllm_ascend0.30.0-a2-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0 / vllm-ascend 0.30.0 |
+| `3.2.0-vllm_ascend0.30.0-a3-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0 / vllm-ascend 0.30.0 |
+| `3.2.0-vllm_ascend0.30.0-a3-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0 / vllm-ascend 0.30.0 |
+| `3.2.0-vllm_ascend0.30.0-a5-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0 / vllm-ascend 0.30.0 |
+| `3.2.0-vllm_ascend0.30.0-a5-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.2.0 / vllm-ascend 0.30.0 |
 
 ## Quick Start
 
@@ -105,7 +81,7 @@ See the [quick start guide](https://gitcode.com/Ascend/MindIE-Motor/blob/master/
 Each Dockerfile clones the pinned branch and commit during the build, then runs `build.sh` to install `motor` and `ccae_reporter`. **No local source tree or build context is required.** Replace `<tag>` with the desired combination and run from the repository root:
 
 ```bash
-TAG="3.2.0b6-vllm_ascend0.30.0rc2-a2-ubuntu22.04-py3.12"
+TAG="3.2.0-vllm_ascend0.30.0-a2-ubuntu22.04-py3.12"
 
 docker build --network=host \
     --platform=linux/arm64 \

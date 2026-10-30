@@ -4,13 +4,26 @@ A full list of MindIE-Motor tags published on [AscendHub](https://www.hiascend.c
 
 The official image name is `mindie-motor`. Each tag is a multi-arch image (`arm64` / `x86_64`).
 
-## MindIE-Motor 3.2.0b6
+## MindIE-Motor 3.2.0
 
-Released to pair with the vllm-ascend v0.30.0rc2 images.
+配套vllm-ascend v0.30.0商发版本发布
 
 Current published tag format: `<MotorVersion>-vllm_ascend<EngineVersion>-<ChipSeries>-<OperatingSystem>-<PythonVersion>`
 
 Dedicated image tag format: `vllm_ascend_<ModelName>-<ChipSeries>-<OperatingSystem>-<PythonVersion>`
+
+| Tag | Dockerfile | Architecture |
+|---|---|---|
+| `3.2.0-vllm_ascend0.30.0-a2-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 |
+| `3.2.0-vllm_ascend0.30.0-a2-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 |
+| `3.2.0-vllm_ascend0.30.0-a3-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 |
+| `3.2.0-vllm_ascend0.30.0-a3-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 |
+| `3.2.0-vllm_ascend0.30.0-a5-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 |
+| `3.2.0-vllm_ascend0.30.0-a5-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 |
+
+## MindIE-Motor 3.2.0b6
+
+Released to pair with the vllm-ascend v0.30.0rc2 images.
 
 | Tag | Dockerfile | Architecture |
 |---|---|---|
@@ -173,6 +186,7 @@ Dedicated images for Kimi K3.
 
 | Version | Description | Notes |
 |---|---|---|
+| 3.2.0 | 配套vllm-ascend v0.30.0商发版本发布 | 2026/10/30: vllm-ascend 0.30.0, chips a2 / a3 / a5. Source `https://gitcode.com/Ascend/MindIE-Motor.git` branch `v3.2.0`, commit `8dc4d50ba2a55f6e324e03f8a6bddb29d88c010e` |
 | 3.2.0b6 | Released to pair with the vllm-ascend v0.30.0rc2 images. | vllm-ascend 0.30.0rc2, chips a2 / a3 / a5. Source `https://gitcode.com/Ascend/MindIE-Motor.git` branch `master`, commit `25c34ef0e16315910a876a58ba9478514a400f1d` |
 | 3.2.0b5 | Released to pair with the vllm-ascend v0.30.0rc1 images. | vllm-ascend 0.30.0rc1, chips a2 / a3 / a5. Source `https://gitcode.com/Ascend/MindIE-Motor.git` branch `master`, commit `25c34ef0e16315910a876a58ba9478514a400f1d` |
 | 3.2.0b4 | Released to pair with the vllm-ascend v0.27.1rc1 images | vllm-ascend 0.27.1rc1, chips a2 / a3 / a5. Source `https://gitcode.com/Ascend/MindIE-Motor.git` branch `master`, commit `4ba458a2d6f9c3862b95d9fbf1d02d819d14b9da` |
