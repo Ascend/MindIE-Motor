@@ -6,7 +6,7 @@
 
 本目录仅提供部署所需的脚本与示例配置。**完整的部署流程、环境要求、配置说明及故障排查请参考以下文档：**
 
-👉 **[PD Disaggregation 完整部署指南](../../docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md)**
+👉 **[PD Disaggregation 完整部署指南](../../docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation)**
 
 Ascend 950PR&950DT系列产品的 RoCE 现场改法见 **[950系列服务器跨超节点场景memcache池化后端服务部署指导](../../docs/zh/user_guide/features/kv_cache_store/backend/memcache_950.md)**。按文件清单改部署副本，不直接合入主干。
 

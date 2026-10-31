@@ -42,6 +42,41 @@
 2. 准备配置文件。
 
      MindIE Motor已提供常用模型（deepseek_v4_flash、deepseek_v4_pro、GLM 5.1等）的[PD分离配置示例](../../../../../../model_configs/vllm/models/README.md)，基于模型和服务器类型选择配置示例，并**将配置文件拷贝至/home/examples/config目录**下。
+
+      <table>
+        <tr><th style="font-size:18px" align="center" colspan="4">常用模型</th></tr>
+        <tr>
+          <th align="left">模型</th>
+          <th align="center">Atlas 800I A2</th>
+          <th align="center">Atlas 800I A3 超节点</th>
+          <th align="center">Atlas 950系列服务器</th>
+        </tr>
+        <tr><td>DeepSeek-V4.1-Flash </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>GLM-5.3-Flash </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>GLM-5.2 </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>GLM-5.3 </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>DeepSeek-V4-Flash </td><td align="center"><a href="../../../../../../model_configs/vllm/models/deepseek_v4_flash/A2">A2</a></td><td align="center"><a href="../../../../../../model_configs/vllm/models/deepseek_v4_flash/A3">A3</a></td><td align="center"><a href="../../../../../../model_configs/vllm/models/deepseek_v4_flash/A5">A5</a></td></tr>
+        <tr><td>GLM-5.1 </td><td align="center"><a href="../../../../../../model_configs/vllm/models/glm_5.1/A2">A2</a></td><td align="center"><a href="../../../../../../model_configs/vllm/models/glm_5.1/A3">A3</a></td><td align="center"><a href="../../../../../../model_configs/vllm/models/glm_5.1/A5">A5</a></td></tr>
+        <tr><td>DeepSeek-V3.1</td><td align="center"><a href="../../../../../../model_configs/vllm/models/deepseek_v3.1/A2">A2</a></td><td align="center"><a href="../../../../../../model_configs/vllm/models/deepseek_v3.1/A3">A3</a></td><td align="center"><a href="../../../../../../model_configs/vllm/models/deepseek_v3.1/A5">A5</a></td></tr>
+        <tr><td>DeepSeek-V4-Pro</td><td align="center"><a href="../../../../../../model_configs/vllm/models/deepseek_v4_pro/A2">A2</a></td><td align="center"><a href="../../../../../../model_configs/vllm/models/deepseek_v4_pro/A3">A3</a></td><td align="center"><a href="../../../../../../model_configs/vllm/models/deepseek_v4_pro/A5">A5</a></td></tr>
+        <tr><td>GLM-5</td><td align="center"><a href="../../../../../../model_configs/vllm/models/glm_5/A2">A2</a></td><td align="center"><a href="../../../../../../model_configs/vllm/models/glm_5/A3">A3</a></td><td align="center"><a href="../../../../../../model_configs/vllm/models/glm_5/A5">A5</a></td></tr>
+        <tr><td>Qwen3-235B</td><td align="center"><a href="../../../../../../model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="../../../../../../model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td></tr>
+      </table>
+
+      对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+
+3. 保存配置文件
+
+   进入examples目录下，将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下，再修改后保存：
+
+   ```bash
+   cd /home/examples
+   mkdir -p ./config
+   # 将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下
+   vim ./config/user_config.json
+   vim ./config/env.json
+   ```
+
      >[!NOTE]说明
      >上述Motor配置仅给出一种可行的模型切分示例，**用户可根据实际情况调整模型划分策略**，关注以下表中参数即可，但必须满足以下公式的限制：
      >
@@ -58,7 +93,7 @@
       | data_parallel_size | int | ≥1 | 数据并行（DP）数 |
       | tensor_parallel_size | int | ≥1 | 张量并行（TP）数 |
 
-3. <a id="step0003"></a>同步启动脚本配置。
+4. <a id="step0003"></a>同步启动脚本配置。
 
     将整个/home/examples目录，**拷贝至所有服务器的相同路径**下。
 
@@ -157,12 +192,12 @@ docker exec -it <容器名> bash
 
 默认情况下，一台服务器仅部署一个Prefill/Decode推理容器，如需**一台服务器部署多个P/D推理实例（仅用于小模型）**，请参考[同一容器部署多个推理实例](#同一容器部署多个推理实例)。
 
-进入容器后，在`examples/deployer`目录下执行以下命令部署服务。
+进入容器后，执行以下命令部署服务。
 
 1. 部署Controller（任意容器执行）。
 
    ```bash
-   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
+   python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config \
      --start --container-name motor-ctrl --role controller \
      --pod-ip <本机IP> --nic-name <网卡名> \
      --coordinator-ip <Coordinator所在IP>
@@ -171,7 +206,7 @@ docker exec -it <容器名> bash
 2. 部署Coordinator（任意容器执行）。
 
    ```bash
-   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
+   python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config \
      --start --container-name motor-coord --role coordinator \
      --pod-ip <本机IP> --nic-name <网卡名> \
      --controller-ip <Controller所在IP>
@@ -180,7 +215,7 @@ docker exec -it <容器名> bash
 3. 部署Prefill（每个prefill容器仅执行一次）。
 
    ```bash
-   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
+   python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config \
      --start \
      --container-name motor-p0 \
      --role prefill --instance-name <实例名称，需与容器数量规划一致，例如：p0> \
@@ -192,7 +227,7 @@ docker exec -it <容器名> bash
 4. 部署Decode（每个decode容器仅执行一次）。
 
    ```bash
-   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
+   python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config \
      --start \
      --container-name motor-d0-0 \
      --role decode --instance-name <实例名称，需与容器数量规划一致，例如：d0> \
@@ -206,7 +241,7 @@ docker exec -it <容器名> bash
    **未开启池化时请跳过此步骤**。
 
    ```bash
-   python3 docker_deploy.py --config_dir ../../model_configs/vllm \
+   python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config \
      --start \
      --container-name motor-kvs \
      --role kv_store \
@@ -272,7 +307,7 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 
 ```text
 容器内服务已终止，可执行以下命令重新部署服务。
-python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --start --container-name motor-ctrl --role coordinator,controller --pod-ip <本机IP地址> --nic-name <本机主网卡名称>
+python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config --start --container-name motor-ctrl --role coordinator,controller --pod-ip <本机IP地址> --nic-name <本机主网卡名称>
 运行日志：examples/motor_workspace/motor-ctrl/ctrl/log/docker-coordinator-controller-<时间戳>.log
 ```
 

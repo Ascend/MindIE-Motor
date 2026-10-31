@@ -121,7 +121,7 @@ Linux seccomp 在拦截创建线程/进程相关的 syscall（如 `clone3`）。
 `show_log.sh` 在启动 `log_monitor.py` **之前**会读取 `log_collect/log_config.ini` 的 `[LogSetting]`，校验 **`name_space` 非空**。**若未配置或留空**（仓库默认模板中 `name_space` 为空，须自行填写），脚本**不会**后台拉起 Python，而是在**当前终端**输出英文说明（例如提示设置 `name_space`）并以非零状态退出。**若已填写但与真实命名空间不一致**，`show_log.sh` 仍会启动采集进程，但 `kubectl get pods` / `kubectl logs` 会针对错误命名空间执行，可能出现无 Pod、拉不到目标组件日志、或 `output.log` / 落盘日志内容不符合预期等问题。
 
 **解决方案**
-若启动阶段即失败：根据终端上的英文提示，编辑 `examples/deployer/log_collect/log_config.ini`，在 `[LogSetting]` 下将 `name_space` 设置为与 `kubectl get pods -n <命名空间>` 中一致的值（与 PD 分离部署文档中的 `<job_id>` / 实际 workload 命名空间相同），保存后重新执行 `bash show_log.sh`。若进程已启动但行为异常，可查看 `log_collect/output.log` 与 `kubectl get pods -n <你的命名空间>` 核对命名空间与 Pod 名称。部署与日志采集的更多说明见 [PD 分离部署](../deployment/k8s/pd_disaggregation_deployment.md) 文档中「查看日志」小节。
+若启动阶段即失败：根据终端上的英文提示，编辑 `examples/deployer/log_collect/log_config.ini`，在 `[LogSetting]` 下将 `name_space` 设置为与 `kubectl get pods -n <命名空间>` 中一致的值（与 PD 分离部署文档中的 `<job_id>` / 实际 workload 命名空间相同），保存后重新执行 `bash show_log.sh`。若进程已启动但行为异常，可查看 `log_collect/output.log` 与 `kubectl get pods -n <你的命名空间>` 核对命名空间与 Pod 名称。部署与日志采集的更多说明见 [PD 分离部署](../deployment/README.md#k8s-pd-disaggregation) 文档中「查看日志」小节。
 
 ## show_log.sh 日志中出现 failed to create fsnotify watcher: too many open files
 

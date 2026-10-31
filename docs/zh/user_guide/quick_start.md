@@ -2,7 +2,7 @@
 
 本文档通过**简单快速**的部署案例，以Atlas 800I A2推理服务器（8卡）、Qwen3-8B模型、P/D实例各1个的场景为例，指导开发者体验基于MindIE Motor的PD分离服务部署流程。
 
-如需详细的PD分离部署指导，请参考[PD 分离部署指导](./deployment/k8s/pd_disaggregation_deployment.md)。
+如需详细的PD分离部署指导，请参考[PD 分离部署指导](./deployment/README.md#k8s-pd-disaggregation)。
 
 ## 什么是PD分离？
 

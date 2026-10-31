@@ -1,19 +1,13 @@
 # PD分离服务部署（基于vLLM推理引擎）
 
-本文皆在指导开发者基于MindIE Motor的vLLM推理引擎完成Kubernetes环境下的PD分离部署，并提供生成环境配置优化实践指导。若底层推理引擎为SGLang，请参考[PD分离服务部署（基于SGLang推理引擎）](./pd_disaggregation_sglang.md)。
+本文旨在指导开发者基于MindIE Motor的vLLM推理引擎完成Kubernetes环境下的PD分离部署，并提供生产环境配置优化实践指导。
 
-## 环境预检查
+---
 
-使用Ascend 950PR&950DT系列产品部署推理服务时，需要准备**hixlep配置路径**。（其他硬件产品忽略此步骤）
-
-请在每台服务器检查/lib/route.conf、/etc/hccl_rootinfo.json配置文件以及/etc/hixlep目录（UB链路拓扑结构）是否存在且正确；若不存在或不正确，请参考[hixlep配置文件生成文档](https://gitcode.com/cann/hixl/wiki/A5%20LocalCommRes%E9%85%8D%E7%BD%AE%E6%8C%87%E5%8D%97.md)生成对应内容，在生成/etc/hixlep时使用“D2D场景”即可。
-
-## 获取启动脚本
+## 前置准备
 
 1. 按照以下要求准备环境。
-   - 准备足够存放模型权重的推理服务器。
    - 所有服务器均已完成[环境准备](../../environment_preparation.md)。
-   - 已下载模型权重，并保存至服务器可访问的路径。
 
 2. 准备镜像。
 
@@ -51,49 +45,57 @@
         IMAGE="<镜像名或镜像ID>"
         # 创建一个未启动的临时容器，并记录容器ID
         cid=$(docker create "$IMAGE")
-        # 把容器中/tmp/motor/examples目录复制到宿主机的当前目录
-        docker cp "$cid:/tmp/motor/examples" ./examples
+        # 把容器中/tmp/motor/examples目录复制到宿主机的 /examples
+        docker cp "$cid:/tmp/motor/examples" /examples
         # 删除以上创建的临时容器$cid，清理资源，避免残留无用容器
         docker rm "$cid"
         ```
 
    - 方式二：在已有镜像中安装MindIE Motor
 
-     git clone代码仓后，启动脚本位于`MindIE-Motor/examples`目录。
+     git clone代码仓后，启动脚本位于`/examples`目录。
 
-    examples目录结构如下所示：
+## 配置获取
 
-    ```text
-    examples/
-    ├── deployer/                  # 部署工具目录
-    │   ├── deploy.py              # 部署入口脚本
-    │   ├── delete.sh              # 卸载脚本
-    │   ├── show_log.sh            # 日志查看脚本
-    │   ├── README.md              # 部署工具使用说明
-    │   ├── yaml_template/         # K8s YAML 模板
-    │   ├── startup/               # 启动脚本
-    │   ├── probe/                 # 探针脚本
-    │   ├── log_collect/           # 日志采集
-    │   └── output_yamls/          # 生成的 YAML 输出目录
-    └── model_configs/             # 各引擎配置示例
-        └── vllm/                  # vLLM 引擎配置
-            ├── user_config.json   # 用户配置
-            ├── env.json           # 环境变量配置
-            └── models/            # 特定模型配置
-    ```
+   1. MindIE Motor已在下表中提供了常用模型的配置示例(deepseek_v4.1_flash、glm 5.2、glm 5.3等)，**用户修改少量配置后可直接使用**。
 
-    >[!NOTE] 说明
-    >
-    >- 配置文件位于examples/model_configs目录下，按引擎类型和模型选择对应配置。
-    >- 部署工具用法详见examples/deployer/README.md。
+      <table>
+        <tr><th style="font-size:18px" align="center" colspan="4">常用模型</th></tr>
+        <tr>
+          <th align="left">模型</th>
+          <th align="center">Atlas 800I A2</th>
+          <th align="center">Atlas 800I A3 超节点</th>
+          <th align="center">Atlas 950系列服务器</th>
+        </tr>
+        <tr><td>DeepSeek-V4.1-Flash </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>GLM-5.3-Flash </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>GLM-5.2 </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>GLM-5.3 </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>DeepSeek-V4-Flash </td><td align="center"><a href="../../../../../model_configs/vllm/models/deepseek_v4_flash/A2">A2</a></td><td align="center"><a href="../../../../../model_configs/vllm/models/deepseek_v4_flash/A3">A3</a></td><td align="center"><a href="../../../../../model_configs/vllm/models/deepseek_v4_flash/A5">A5</a></td></tr>
+        <tr><td>GLM-5.1 </td><td align="center"><a href="../../../../../model_configs/vllm/models/glm_5.1/A2">A2</a></td><td align="center"><a href="../../../../../model_configs/vllm/models/glm_5.1/A3">A3</a></td><td align="center"><a href="../../../../../model_configs/vllm/models/glm_5.1/A5">A5</a></td></tr>
+        <tr><td>DeepSeek-V3.1</td><td align="center"><a href="../../../../../model_configs/vllm/models/deepseek_v3.1/A2">A2</a></td><td align="center"><a href="../../../../../model_configs/vllm/models/deepseek_v3.1/A3">A3</a></td><td align="center"><a href="../../../../../model_configs/vllm/models/deepseek_v3.1/A5">A5</a></td></tr>
+        <tr><td>DeepSeek-V4-Pro</td><td align="center"><a href="../../../../../model_configs/vllm/models/deepseek_v4_pro/A2">A2</a></td><td align="center"><a href="../../../../../model_configs/vllm/models/deepseek_v4_pro/A3">A3</a></td><td align="center"><a href="../../../../../model_configs/vllm/models/deepseek_v4_pro/A5">A5</a></td></tr>
+        <tr><td>GLM-5</td><td align="center"><a href="../../../../../model_configs/vllm/models/glm_5/A2">A2</a></td><td align="center"><a href="../../../../../model_configs/vllm/models/glm_5/A3">A3</a></td><td align="center"><a href="../../../../../model_configs/vllm/models/glm_5/A5">A5</a></td></tr>
+        <tr><td>Qwen3-235B</td><td align="center"><a href="../../../../../model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="../../../../../model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td></tr>
+      </table>
 
-## 生成配置文件
+      对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
-请参考[MindIE Motor配置自动生成指导](../../../../../model_configs/vllm/models/README.md)，自动生成user_config.json与env.json配置文件。
+   2. 保存配置至服务器
+
+      进入examples目录下，将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下，再修改后保存：
+
+      ```bash
+      cd /examples
+      mkdir -p ./config
+      # 将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下
+      vim ./config/user_config.json
+      vim ./config/env.json
+      ```
 
 ## 服务部署与验证
 
-以下操作均在K8s集群的master节点执行。
+以下操作均在**K8s集群的master节点**执行。
 
 1. 使用以下命令启动服务。
 
@@ -101,25 +103,15 @@
     # 创建命名空间：<namespace>必须与user_config.json中job_id一致，默认为mindie-motor
     kubectl create namespace <namespace>
 
-    # 进入部署工具目录
-    cd examples/deployer
-    # 拉起PD分离服务：--config_dir指定含user_config.json与env.json的目录
-    python3 deploy.py --config_dir ../../model_configs/vllm
+    # 进入部署脚本并启动服务
+    cd /examples/deployer
+    python3 deploy.py --config_dir ../config/
     ```
-
-    >[!NOTE] 说明
-    >- 镜像与权重：确保image_name在集群内可正常拉取；weight_mount_path在宿主机上存在。
-    >- 部署失败：可先按步骤5的终止命令卸载当前服务，排查并修改配置后重新部署。
-    >- 加载权重超时：部分vLLM版本权重加载超过约10分钟可能报`timeout`，通常不影响程序运行；以所用镜像/引擎版本说明为准。
-    >- 实例重调度约束：实例重调度能力依赖MindCluster；P/D实例含多个Pod时，直接删除其中一个Pod不会触发实例重调度。
-    >- Prefix Cache对性能测试的影响：Prefix Cache默认开启。若需基线性能，可在engine_config参数配置块中增加以下内容：
-    >   - vLLM推理引擎："no-enable-prefix-caching": true
-    >   - SGLang推理引擎："disable_radix_cache": true
 
 2. 使用以下命令查看服务状态。
 
    ```bash
-   # 查看Pod状态：<namespace> 与上文job_id一致
+   # 查看Pod状态：<namespace> 与上文job_id一致，默认为mindie-motor
    kubectl get pods -n <namespace> -o wide
    ```
 
@@ -137,9 +129,9 @@
 3. 使用以下命令查看日志。
 
    ```bash
-   # 编辑 log_collect/log_config.ini：将 name_space 改为与 job_id 相同的命名空间
+   # 编辑 log_collect/log_config.ini：将 name_space 改为与 job_id 相同的名称（默认为mindie-motor）
    vim log_collect/log_config.ini
-   # 采集并持续跟踪日志：输出目录 log_collect/log/
+   # 持续跟踪并收集日志
    bash show_log.sh
    ```
 
@@ -163,13 +155,15 @@
 5. 使用以下命令终止服务。
 
    ```bash
-   # 卸载服务：<namespace>与上文job_id一致
+   # 卸载服务：<namespace>与上文job_id一致，默认为mindie-motor
    bash delete.sh <namespace>
    ```
 
+---
+
 ## 特性配置
 
-[生成配置文件](#生成配置文件)中生成的user_config.json与env.json配置文件已默认开启主备倒换、异常实例重启、服务限流、KV 亲和性调度、KV 池化等能力。若只需调整某项能力，可参照本节内容做最小配置修改。
+[配置获取](#配置获取)中获取的user_config.json与env.json是基础部署配置。若要开启或调整主备倒换、异常实例重启、服务限流、KV 亲和性调度、KV 池化等能力，可参照本节内容做最小配置修改。
 
 ### 主备倒换
 

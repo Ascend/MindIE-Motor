@@ -6,7 +6,7 @@
 
 PD混部将Prefill与Decode实例部署在同一类原生引擎实例中。部署时不再分别拉起prefill、decode两类角色，而是由union角色承载完整推理能力；Coordinator以single_node调度模式将请求分发到可用的union实例。
 
-与[PD服务分离部署](./pd_disaggregation_deployment.md)相比，PD混部减少了P/D角色拆分和KV跨角色传输配置，适用于快速验证、中小规模服务、资源规模较小或暂不需要独立规划P/D实例比例的场景。若业务需要针对Prefill、Decode两阶段分别规划资源、独立扩缩容或使用PD分离相关能力，建议使用PD分离服务部署。
+与[PD服务分离部署](../README.md#k8s-pd-disaggregation)相比，PD混部减少了P/D角色拆分和KV跨角色传输配置，适用于快速验证、中小规模服务、资源规模较小或暂不需要独立规划P/D实例比例的场景。若业务需要针对Prefill、Decode两阶段分别规划资源、独立扩缩容或使用PD分离相关能力，建议使用PD分离服务部署。
 
 ### 部署入口与流程
 

@@ -24,14 +24,14 @@ Yuanrong 提供了异构数据对象抽象，支持 key/value 读写，并构建
 
 | 硬件 | 依赖 | 说明 |
 |------|------|------|
-| Atlas 800I A3超节点服务器 | <ul><li>HDK >= 25.2 </li><li>CANN >= 8.5.0</li></ul> | Worker 启动配置与 A2 使用同一格式；引擎通信环境需按实际链路（RoCE/HCCS）及所用 vllm-ascend 版本配置，参见 [KV Pool 部署指南](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_pool.html)。 |
+| Atlas 800I A3超节点服务器 | <ul><li>HDK >= 25.2 </li><li>CANN >= 8.5.0</li></ul> | Worker 启动配置与 A2 使用同一格式；引擎通信环境需按实际链路（RoCE/HCCS）及所用 vllm-ascend 版本配置，参见 [KV Pool 部署指南](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_cache_pool_ascend_store.html)。 |
 | Atlas 800I A2推理服务器 | <ul><li>HDK >= 25.2</li><li>CANN >= 8.5.0</li></ul> | 无需额外环境变量，通用必配项即可。 |
 
 ## 特性使用
 
 ### 环境准备
 
-- 已使用 MindIE Motor 完成 PD 分离基础推理服务部署，服务运行正常。参考 [PD 分离服务部署](../../../deployment/k8s/pd_disaggregation_deployment.md)。
+- 已使用 MindIE Motor 完成 PD 分离基础推理服务部署，服务运行正常。参考 [PD 分离服务部署](../../../deployment/README.md#k8s-pd-disaggregation)。
 - 已部署外部 ETCD，并保证其客户端地址在 P/D Pod 容器网络内可达。ETCD 部署方式可参考 [Yuanrong 部署指南](https://pages.openeuler.openatom.cn/openyuanrong-datasystem/docs/zh-cn/latest/deployment/deploy.html#etcd)。
 
    ```bash

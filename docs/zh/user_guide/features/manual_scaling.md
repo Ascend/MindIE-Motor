@@ -18,7 +18,7 @@
 
 ### 环境准备
 
-- 已参见[PD混部服务部署](../deployment/k8s/pd_aggregation_deployment.md)、[PD分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md)或[SGLang PD分离服务部署](../deployment/k8s/pd_disaggregation_sglang.md)完成环境部署。
+- 已参见[PD混部服务部署](../deployment/k8s/pd_aggregation_deployment.md)、[PD分离服务部署](../deployment/README.md#k8s-pd-disaggregation)或[SGLang PD分离服务部署](../deployment/README.md#k8s-pd-disaggregation-sglang)完成环境部署。
 - 已成功完成至少一次全量部署（集群内会存在ConfigMap `motor-config`，其中含当前已部署的user_config，作为基线）。
 - 具备K8s集群管理员的kubectl权限。
 

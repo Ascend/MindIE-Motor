@@ -1,0 +1,145 @@
+{
+    "version": "v2.0",
+    "motor_deploy_config": {
+      "p_instances_num": 2,
+      "d_instances_num": 1,
+      "single_p_instance_pod_num": 1,
+      "single_d_instance_pod_num": 1,
+      "p_pod_npu_num": 16,
+      "d_pod_npu_num": 16,
+      "image_name": "docker.io/library/mindie-motor-sglang:3.2.0-sglang_v0.5.21-a3-ubuntu22.04-py3.12-aarch64",
+      "job_id": "mindie-motor-c00951058",
+      "hardware_type": "800I_A3",
+      "weight_mount_path": "/mnt/weight/",
+      "deploy_mode": "multi_deployment",
+      "coordinator_infer_node_port": 31035,
+      "coordinator_obs_node_port": 31036,
+      "controller_observability_node_port": 31037
+    },
+    "motor_controller_config": {
+      "logging_config": {
+        "log_level": "INFO"
+      },
+      "fault_tolerance_config": {
+        "enable_fault_tolerance": true,
+        "enable_scale_p2d": false
+      },
+      "standby_config": {
+        "enable_master_standby": false
+      }
+    },
+    "motor_coordinator_config": {
+      "logging_config": {
+        "log_level": "INFO"
+      },
+      "standby_config": {
+        "enable_master_standby": false
+      },
+      "request_limit": {
+        "single_node_max_requests": 4096,
+        "max_requests": 10000
+      },
+      "scheduler_config": {
+        "scheduler_type": "kv_cache_affinity",
+        "enable_pd_separation_fallback_to_hybrid": false,
+        "kv_affinity": {
+          "mode": "unified",
+          "w_npu": 1.0,
+          "w_cpu": 0.0,
+          "w_disk": 0.0
+        }
+      },
+      "exception_config": {
+        "reschedule_config": {
+          "enable": false
+        },
+        "max_retry": 5,
+        "transport_max_retry": null,
+        "retry_delay": 0.2
+      }
+    },
+    "motor_nodemanger_config": {
+      "logging_config": {
+        "log_level": "INFO"
+      }
+    },
+    "motor_engine_prefill_config": {
+      "engine_type": "sglang",
+      "enable_multi_endpoints": false,
+      "engine_config": {
+        "served-model-name": "deepseek-v4-flash",
+        "model-path": "/mnt/weight/DeepSeek-V4-Flash-DSpark-w4a8",
+        "page-size": 128,
+        "tp-size": 16,
+        "trust-remote-code": true,
+        "device": "npu",
+        "attention-backend": "dsv4",
+        "watchdog-timeout": 9000,
+        "disaggregation-bootstrap-port": 8998,
+        "disaggregation-transfer-backend": "ascend",
+        "mem-fraction-static": 0.55,
+        "prefill-max-requests": 32,
+        "max-prefill-tokens": 67000,
+        "chunked-prefill-size": 65536,
+        "max-running-requests": 32,
+        "dp-size": 16,
+        "enable-dp-attention": true,
+        "moe-a2a-backend": "deepep",
+        "deepep-mode": "normal",
+        "quantization": "modelslim",
+        "enable-dp-lm-head": true,
+        "kv-cache-dtype": "bfloat16",
+        "disable-cuda-graph": true,
+        "load-balance-method": "round_robin",
+        "nnodes": 1,
+        "log-level": "info",
+        "kv-events-config": {
+          "publisher": "zmq",
+          "enable_kv_cache_events": true,
+          "endpoint": "tcp://*:5557",
+          "replay_endpoint": "tcp://*:6667",
+          "topic": "kv-events"
+        }
+      }
+    },
+    "motor_engine_decode_config": {
+      "engine_type": "sglang",
+      "enable_multi_endpoints": false,
+      "engine_config": {
+        "served-model-name": "deepseek-v4-flash",
+        "model-path": "/mnt/weight/DeepSeek-V4-Flash-DSpark-w4a8",
+        "page-size": 128,
+        "tp-size": 16,
+        "trust-remote-code": true,
+        "device": "npu",
+        "attention-backend": "dsv4",
+        "watchdog-timeout": 9000,
+        "mem-fraction-static": 0.62,
+        "disaggregation-transfer-backend": "ascend",
+        "max-running-requests": 128,
+        "dp-size": 16,
+        "enable-dp-attention": true,
+        "moe-a2a-backend": "deepep",
+        "deepep-mode": "low_latency",
+        "quantization": "modelslim",
+        "enable-dp-lm-head": true,
+        "kv-cache-dtype": "bfloat16",
+        "load-balance-method": "round_robin",
+        "cuda-graph-bs-decode": [1, 2, 4, 8],
+        "speculative-algorithm": "DSPARK",
+        "speculative-draft-model-path": "/mnt/weight/DeepSeek-V4-Flash-DSpark-w4a8",
+        "speculative-draft-model-quantization": "unquant",
+        "speculative-draft-attention-backend": "ascend",
+        "speculative-num-draft-tokens": 6,
+        "speculative-dspark-block-size": 5,
+        "nnodes": 1,
+        "log-level": "info"
+      }
+    },
+    "kv_conductor_config": {
+      "http_server_port": 13333,
+      "block_size": 128,
+      "engine_type": "sglang",
+      "model_path": "/mnt/weight/DeepSeek-V4-Flash-DSpark-w4a8"
+    }
+  }
