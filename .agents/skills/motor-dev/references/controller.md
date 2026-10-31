@@ -192,6 +192,15 @@ and does not submit the same reconfiguration again.
   configured deadline, ScaleP2D treats recovery as incomplete and proceeds to evaluate Prefill capacity. Superseded
   instance ids still block strategies that could stop replacement NodeManagers, but do not block ScaleP2D: it resolves
   the latest D by job name and either observes its ACTIVE recovery or releases Prefill capacity for it.
+- Successful ScaleP2D Prefill preemption is acknowledged separately from DP scale-down: each physical node stores
+  handled Decode `job_name`s for its continuous L3+ hardware fault episode. Submission and execution both check
+  this acknowledgement; same-job workers share a non-blocking guard across replacement instance ids. Only pending
+  nodes count toward further Prefill capacity release. Additional codes on an already handled node do not rearm it.
+  ConfigMap and Node-status updates rearm only after all L3+ hardware evidence (including Node reboot) clears;
+  an episode token rejects late acknowledgements after recovery/refault. These fields follow existing node ETCD
+  persistence, including resets on orphaned nodes. Missing hardware snapshots retain baseline behavior, and failed
+  preemption is not acknowledged. Real hardware faults, health/isolation and other strategy fallbacks stay unchanged;
+  ScaleP2D never writes DP `handled_hardware_faults` as a substitute for actual hardware recovery.
 
 **A2 PD-disagg isolation** (`A2_PD_ISOLATION_FAULT_CODES` in `fault_types.py`; currently `0x81078603` / `CardNetworkUnhealthy` → `PreSeparateNPU`):
 

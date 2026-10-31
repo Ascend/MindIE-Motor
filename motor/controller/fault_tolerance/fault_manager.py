@@ -11,6 +11,7 @@ import concurrent.futures
 import threading
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from motor.config.controller import ControllerConfig
 from motor.common.logger import get_logger
@@ -18,7 +19,7 @@ from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.common.resources import InsStatus, Instance, ReadOnlyInstance
 from motor.common.etcd.etcd_client import EtcdClient
 from motor.controller.core import Observer, ObserverEvent, InstanceManager
-from motor.controller.fault_tolerance.strategy import generate_strategy_map
+from motor.controller.fault_tolerance.strategy import generate_strategy_map, ScaleP2DStrategy
 from motor.controller.fault_tolerance.k8s.resource_monitor import ResourceMonitor
 from motor.controller.fault_tolerance.k8s.k8s_client import K8sClient
 from motor.controller.fault_tolerance.dp_scale_down import (
@@ -95,6 +96,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
         self.nodes: dict[str, NodeMetadata] = {}
         self.instances: dict[int, InstanceMetadata] = {}
         self.lock = threading.Lock()
+        self._scale_p2d_job_locks: dict[str, Any] = {}
 
         # Version control for data persistence
         self._data_version = 0
@@ -349,6 +351,45 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 result[node_name] = max(hw_max, sw_max)
 
             return result
+
+    def get_scale_p2d_lock(self, job_name: str) -> Any:
+        """Serialize only ScaleP2D workers for the same logical Decode job."""
+        with self.lock:
+            return self._scale_p2d_job_locks.setdefault(job_name, threading.Lock())
+
+    def get_pending_scale_p2d_nodes(self, instance_id: int, job_name: str | None = None) -> dict[str, str] | None:
+        """Return pending node -> episode tokens, independently of DP fault acknowledgement.
+
+        None means no actionable hardware snapshot is available (keep legacy
+        behavior); an empty dict means all observed faulty nodes were handled.
+        Caller must not hold InstanceMetadata.lock.
+        """
+        with self.lock:
+            faulty_nodes = [
+                node
+                for node in self.nodes.values()
+                if instance_id in node.instance_ids
+                and any(fault.fault_level >= FaultLevel.L3 for fault in node.hardware_fault_infos.values())
+            ]
+            if not faulty_nodes:
+                return None
+            return {
+                node.node_name: node.scale_p2d_fault_generation
+                for node in faulty_nodes
+                if (job_name or node.instance_job_names.get(instance_id, "")) not in node.scale_p2d_handled_jobs
+            }
+
+    def mark_scale_p2d_nodes_handled(self, job_name: str, node_generations: dict[str, str]) -> None:
+        """Acknowledge successful preemption without clearing real fault evidence."""
+        with self.lock:
+            for node_name, generation in node_generations.items():
+                node = self.nodes.get(node_name)
+                if node is not None and node.scale_p2d_fault_generation == generation:
+                    node.scale_p2d_handled_jobs.add(job_name)
+        with self.config_lock:
+            enable_persistence = self.etcd_config.enable_etcd_persistence
+        if enable_persistence:
+            self.persist_data()
 
     def _resolve_software_fault_target(
         self,
@@ -1048,6 +1089,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
         plan_started = False
         with ins_metadata.lock:
             has_fault = ins_metadata.fault_level != FaultLevel.HEALTHY
+        scale_p2d_pending = self.get_pending_scale_p2d_nodes(ins_id) if has_fault else None
         scale_down_context = ScaleDownContext()
         if has_fault and not superseded:
             scale_down_context = self._build_scale_down_context(ins_id)
@@ -1083,8 +1125,6 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 # it resolves the current D by job name and only releases
                 # Prefill capacity, so it can verify whether reconfiguration
                 # actually recovered the replacement D.
-                from motor.controller.fault_tolerance.strategy import ScaleP2DStrategy
-
                 generated_strategy_cls = (
                     self.strategies[fault_level](fault_code, ins_id, self.config)
                     if fault_level >= FaultLevel.L4
@@ -1142,7 +1182,8 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 new_strategy_cls, strategy_context = plan.strategy, plan.context
                 if new_strategy_cls is None and plan.evidence.engine_fault_observed:
                     get_ft_runtime_store().transition(ins_id, phase=FtPhase.WAITING_ENGINE_FAULT)
-                plan_log = logger.info if new_strategy_cls is not None else logger.debug
+                repeated_scale_p2d = new_strategy_cls is ScaleP2DStrategy and scale_p2d_pending == {}
+                plan_log = logger.info if new_strategy_cls is not None and not repeated_scale_p2d else logger.debug
                 plan_log(
                     "Instance %d recovery plan: source=%s, strategy=%s, fallback=%s, "
                     "removed_ranks=%s, all_unhealthy=%s, collection_complete=%s, "
@@ -1159,6 +1200,11 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 )
             else:
                 new_strategy_cls = None
+
+            if new_strategy_cls is ScaleP2DStrategy and scale_p2d_pending == {}:
+                # Only suppress repeated Prefill preemption, not fault levels,
+                # isolation or any other recovery strategy.
+                return
 
             if new_strategy_cls is not None:
                 new_strategy = new_strategy_cls()
@@ -1220,6 +1266,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 )
                 if (
                     not ins_metadata.prev_strategy_failed
+                    and not isinstance(strategy, ScaleP2DStrategy)
                     and isinstance(completed_context, ScaleDownContext)
                     and completed_context.fault_keys
                 ):

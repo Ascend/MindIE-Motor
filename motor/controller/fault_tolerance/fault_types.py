@@ -18,6 +18,7 @@ fault tolerance management subsystem.
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -399,10 +400,25 @@ class NodeMetadata(BaseModel):
         default_factory=dict,
         description="Hardware faults keyed by fault_code and device identity",
     )
+    scale_p2d_fault_generation: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    scale_p2d_handled_jobs: set[str] = Field(
+        default_factory=set,
+        description="Decode jobs with successful Prefill preemption in this node's continuous hardware fault episode",
+    )
     software_fault_infos: dict[int | str, FaultInfo] = Field(
         default_factory=dict,
         description="Software faults keyed by fault_code and engine identity",
     )
+
+    def reset_scale_p2d_if_faults_cleared(self) -> bool:
+        """Rearm on cleared L3+ hardware evidence; return whether an acknowledgement was removed."""
+        if not any(fault.fault_level >= FaultLevel.L3 for fault in self.hardware_fault_infos.values()):
+            had_handled_jobs = bool(self.scale_p2d_handled_jobs)
+            self.scale_p2d_handled_jobs.clear()
+            # Also invalidate in-flight acknowledgements from the previous episode.
+            self.scale_p2d_fault_generation = uuid.uuid4().hex
+            return had_handled_jobs
+        return False
 
 
 def pre_separate_fault_affects_instance(

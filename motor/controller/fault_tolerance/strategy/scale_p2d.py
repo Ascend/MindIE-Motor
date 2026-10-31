@@ -45,6 +45,7 @@ class RecoveryContext:
     num_node_per_instance_D: int = 1
     num_required_node: int = 1
     selected_p_instances: list[Instance] = field(default_factory=list)
+    fault_node_generations: dict[str, str] = field(default_factory=dict)
     current_state: RecoveryState = RecoveryState.INIT
     last_error: str | None = None
     start_time: float = field(default_factory=time.time)
@@ -87,6 +88,7 @@ class ScaleP2DStrategy(StrategyBase):
             instance_id: ID of the Decode instance to recover.
         """
         self.context = None
+        job_lock = None
         try:
             d_instance = InstanceManager().get_instance(instance_id)
             if d_instance is None:
@@ -99,16 +101,31 @@ class ScaleP2DStrategy(StrategyBase):
                 )
                 return
 
+            from motor.controller.fault_tolerance.fault_manager import FaultManager  # pylint: disable=cyclic-import
+
+            fault_manager = FaultManager()
+            candidate_lock = fault_manager.get_scale_p2d_lock(d_instance.job_name)
+            if not candidate_lock.acquire(blocking=False):
+                return
+            job_lock = candidate_lock
+            pending = fault_manager.get_pending_scale_p2d_nodes(d_instance.id, d_instance.job_name)
+            if pending == {}:
+                return
+
             logger.info(
                 "ScaleP2D strategy started. instance_id=%d, job_name=%s",
                 d_instance.id,
                 d_instance.job_name,
             )
             self.context = RecoveryContext(d_instance_id=d_instance.id, d_instance_job_name=d_instance.job_name)
+            self.context.fault_node_generations.update(pending or {})
 
             success = self._execute_recovery_flow()
             if success:
                 self.context.current_state = RecoveryState.SUCCESS
+                fault_manager.mark_scale_p2d_nodes_handled(
+                    self.context.d_instance_job_name, self.context.fault_node_generations
+                )
                 logger.info(
                     "ScaleP2D recovery succeeded. instance_id=%d, job_name=%s, killed_p_count=%d",
                     self.context.d_instance_id,
@@ -140,6 +157,8 @@ class ScaleP2DStrategy(StrategyBase):
                 self.context.last_error = str(e)
 
         finally:
+            if job_lock is not None:
+                job_lock.release()
             with self._lock:
                 self._is_finished = True
             if self.context is not None:
@@ -269,11 +288,16 @@ class ScaleP2DStrategy(StrategyBase):
 
     def _get_faulty_node_count(self, d_instance: Instance) -> int:
         """
-        Count Decode nodes that need replacement (L3+ faults).
+        Count unhandled L3+ hardware-fault nodes for this Decode job.
 
-        Delegates to FaultManager.get_node_fault_levels() which returns the
-        highest fault level per node for the given instance.
-        Nodes not tracked by FaultManager are conservatively counted as faulty.
+        Prefer FaultManager.get_pending_scale_p2d_nodes() and record the pending
+        nodes' fault-episode tokens. An empty result means all observed faulty
+        nodes were already handled, so no further Prefill capacity is needed.
+
+        If the hardware snapshot is unavailable (None), retain the legacy
+        fallback: count L3+ levels from FaultManager.get_node_fault_levels().
+        If no per-node data is available or a lookup fails, conservatively
+        count all instance nodes as faulty.
         """
         node_managers = d_instance.get_node_managers()
         if not node_managers:
@@ -284,7 +308,13 @@ class ScaleP2DStrategy(StrategyBase):
             # fault_tolerance/__init__ → fault_manager → strategy/__init__ → scale_p2d
             from motor.controller.fault_tolerance.fault_manager import FaultManager  # pylint: disable=cyclic-import
 
-            node_fault_levels = FaultManager().get_node_fault_levels(d_instance.id)
+            fault_manager = FaultManager()
+            pending = fault_manager.get_pending_scale_p2d_nodes(d_instance.id, d_instance.job_name)
+            if pending is not None:
+                self.context.fault_node_generations.update(pending)
+                return len(pending)
+
+            node_fault_levels = fault_manager.get_node_fault_levels(d_instance.id)
 
             if not node_fault_levels:
                 logger.warning(
