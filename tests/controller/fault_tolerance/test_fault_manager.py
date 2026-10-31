@@ -3227,6 +3227,98 @@ def test_superseded_decode_still_checks_replacement_with_scale_p2d(fault_manager
     assert isinstance(manager.instances[1].strategy, ScaleP2DStrategy)
 
 
+def test_scale_p2d_success_is_per_job_and_node_not_fault_code(fault_manager_with_instances):
+    """A replacement id or extra code on A must not release more P capacity."""
+    manager = fault_manager_with_instances
+    node = manager.nodes["node_0"]
+    node.hardware_fault_infos = {0x2000: FAULT_DEVICE_L3.model_copy()}
+    pending = manager.get_pending_scale_p2d_nodes(1, "job1")
+    manager.mark_scale_p2d_nodes_handled("job1", pending)
+    with patch.object(manager, "_refresh_instance_fault_level"):
+        manager._handle_fault_info_update([FAULT_DEVICE_L3.model_copy(), FAULT_NODE_L3.model_copy()], "node_0")
+    node.instance_ids.add(4)
+    node.instance_job_names[4] = "job1"
+    manager.instances[4] = InstanceMetadata(instance_id=4)
+
+    assert manager.get_pending_scale_p2d_nodes(4, "job1") == {}
+    assert manager.get_pending_scale_p2d_nodes(4, "other-decode") == pending
+    manager.nodes["node_1"].hardware_fault_infos = {0x3000: FAULT_NODE_L3.model_copy()}
+    assert set(manager.get_pending_scale_p2d_nodes(1, "job1")) == {"node_1"}
+    assert len(node.hardware_fault_infos) == 2
+    assert not manager.instances[1].handled_hardware_faults
+    restored = NodeMetadata.model_validate(node.model_dump(mode="json"))
+    assert restored.scale_p2d_handled_jobs == {"job1"}
+
+
+@pytest.mark.parametrize("superseded", [False, True])
+def test_scale_p2d_handled_node_is_not_resubmitted(fault_manager_with_instances, superseded):
+    """The submission gate must cover both normal and stale D-instance rounds."""
+    manager = fault_manager_with_instances
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L6
+    manager.nodes["node_0"].hardware_fault_infos = {0x2000: FAULT_DEVICE_L3.model_copy()}
+    manager.mark_scale_p2d_nodes_handled("job1", manager.get_pending_scale_p2d_nodes(1, "job1"))
+    manager.strategies[FaultLevel.L6] = lambda *_: ScaleP2DStrategy
+    with (
+        patch.object(manager, "_is_superseded_instance", return_value=superseded),
+        patch.object(manager, "_build_scale_down_context", return_value=ScaleDownContext()),
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        manager._process_instance_strategy(1)
+        manager._process_instance_strategy(1)
+    submit.assert_not_called()
+    assert metadata.fault_level == FaultLevel.L6
+
+
+@pytest.mark.parametrize("source", ["configmap", "node"])
+def test_scale_p2d_rearms_only_after_all_actionable_hardware_clears(fault_manager_with_instances, source):
+    """CM removal alone is not recovery while the Node still reports NOT_READY."""
+    manager = fault_manager_with_instances
+    manager.etcd_config.enable_etcd_persistence = True
+    node = manager.nodes["node_0"]
+    with patch.object(manager, "_refresh_instance_fault_level"):
+        manager._handle_fault_info_update([FAULT_DEVICE_L3.model_copy()], "node_0")
+        manager._handle_node_status_update(NodeStatus.NOT_READY, "node_0")
+        old_pending = manager.get_pending_scale_p2d_nodes(1, "job1")
+        manager.mark_scale_p2d_nodes_handled("job1", old_pending)
+        if source == "configmap":
+            manager._handle_fault_info_update([], "node_0")
+        else:
+            manager._handle_node_status_update(NodeStatus.READY, "node_0")
+        assert manager.get_pending_scale_p2d_nodes(1, "job1") == {}
+        with patch.object(manager, "persist_data") as persist_reset:
+            manager._handle_fault_info_update([], "node_0")
+            manager._handle_node_status_update(NodeStatus.READY, "node_0")
+        persist_reset.assert_called_once()
+        assert not node.scale_p2d_handled_jobs
+        manager._handle_fault_info_update([FAULT_DEVICE_L3.model_copy()], "node_0")
+    # A late success from the old round must not consume a new fault episode.
+    manager.mark_scale_p2d_nodes_handled("job1", old_pending)
+    assert manager.get_pending_scale_p2d_nodes(1, "job1")
+
+
+def test_scale_p2d_missing_snapshot_is_not_already_handled(fault_manager):
+    assert fault_manager.get_pending_scale_p2d_nodes(999, "decode") is None
+
+
+def test_scale_p2d_completion_does_not_acknowledge_dp_faults(fault_manager_with_instances):
+    """ScaleP2D completion must not turn persistent hardware evidence healthy."""
+    manager = fault_manager_with_instances
+    metadata = manager.instances[1]
+    fault = FAULT_DEVICE_L3.model_copy(update={"fault_level": FaultLevel.L6})
+    manager.nodes["node_0"].hardware_fault_infos = {0x2000: fault}
+    key = hardware_fault_identity("node_0", fault)
+    strategy = ScaleP2DStrategy()
+    strategy.bind_context(ScaleDownContext(fault_keys=(key,)))
+    strategy._is_finished = True
+    metadata.strategy = strategy
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager"):
+        assert manager._complete_finished_strategy(1, metadata)
+    assert not metadata.handled_hardware_faults
+    assert metadata.fault_level == FaultLevel.L6
+    assert metadata.strategy is None
+
+
 # -- Non-A2 linkdown handling -------------------------------------------------
 
 

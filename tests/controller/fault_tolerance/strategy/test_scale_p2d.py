@@ -26,8 +26,9 @@ import pytest
 
 from motor.common.resources import InsStatus, NodeManagerInfo, PDRole
 from motor.common.resources.instance import Instance
+from motor.config.controller import ControllerConfig
 from motor.controller.fault_tolerance.fault_manager import FaultManager
-from motor.controller.fault_tolerance.fault_types import FaultLevel
+from motor.controller.fault_tolerance.fault_types import FaultInfo, FaultLevel, HardwareFaultType, NodeMetadata
 from motor.controller.fault_tolerance.strategy.scale_p2d import (
     RecoveryContext,
     RecoveryState,
@@ -77,14 +78,25 @@ def recovery_context() -> RecoveryContext:
 
 
 @pytest.fixture(autouse=True)
-def clear_fault_manager_singleton():
-    """Avoid FaultManager singleton leakage across DT cases."""
+def fault_manager():
+    """Isolate external clients and FaultManager state for every DT case."""
     from motor.common.utils.singleton import ThreadSafeSingleton
 
-    yield
-    if FaultManager in ThreadSafeSingleton._instances:
-        ThreadSafeSingleton._instances[FaultManager].stop()
-        del ThreadSafeSingleton._instances[FaultManager]
+    previous = ThreadSafeSingleton._instances.pop(FaultManager, None)
+    if previous is not None:
+        previous.stop()
+        previous.executor.shutdown(wait=True)
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.K8sClient"),
+        patch("motor.controller.fault_tolerance.fault_manager.EtcdClient"),
+    ):
+        config = ControllerConfig()
+        config.etcd_config.enable_etcd_persistence = False
+        manager = FaultManager(config)
+        yield manager
+        manager.stop()
+        manager.executor.shutdown(wait=True)
+        ThreadSafeSingleton._instances.pop(FaultManager, None)
 
 
 @pytest.fixture
@@ -146,6 +158,59 @@ def test_execute_fails_when_d_instance_still_active(strategy):
     assert strategy.context.current_state == RecoveryState.FAILED
 
 
+@pytest.mark.parametrize("stop_succeeds", [True, False])
+def test_execute_deduplicates_only_successful_preemption(strategy, fault_manager, stop_succeeds):
+    """A successful stop is one-shot; a failed stop keeps the original retry path."""
+    manager = fault_manager
+    manager.nodes["node-a"] = NodeMetadata(
+        node_name="node-a",
+        instance_ids={1},
+        instance_job_names={1: "decode-1"},
+        hardware_fault_infos={
+            1: FaultInfo(fault_type=HardwareFaultType.NODE_UNHEALTHY, fault_code=1, fault_level=FaultLevel.L6)
+        },
+    )
+    d_inst = _decode_instance(node_managers=[NodeManagerInfo(pod_ip="1.1.1.1", port="8080")])
+    with (
+        patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as im_cls,
+        patch.object(ScaleP2DStrategy, "_check_d_instance_status", return_value=True),
+        patch(
+            "motor.controller.fault_tolerance.strategy.scale_p2d.NodeManagerApiClient.stop", return_value=stop_succeeds
+        ) as stop,
+        patch.object(ScaleP2DStrategy, "_report_scale_p2d_event"),
+    ):
+        im_cls.return_value.get_instance.return_value = d_inst
+        im_cls.return_value.get_instance_by_job_name.return_value = d_inst
+        im_cls.return_value.get_instances_by_role.return_value = [_prefill_instance(2), _prefill_instance(3)]
+        strategy.execute(1)
+        assert stop.call_count == 1
+        assert strategy.context.current_state == (RecoveryState.SUCCESS if stop_succeeds else RecoveryState.FAILED)
+        d_inst.id = 4
+        manager.nodes["node-a"].instance_ids.add(4)
+        retry = ScaleP2DStrategy()
+        retry.execute(4)
+    assert stop.call_count == (1 if stop_succeeds else 2)
+    assert manager.nodes["node-a"].scale_p2d_handled_jobs == ({"decode-1"} if stop_succeeds else set())
+    assert not strategy.is_failed()  # Do not introduce an EngineRelaunch fallback.
+    assert not retry.is_failed()
+
+
+def test_execute_does_not_preempt_when_same_decode_job_already_running(strategy, fault_manager):
+    """Old and replacement instance ids share the same preemption guard."""
+    manager = fault_manager
+    with (
+        manager.get_scale_p2d_lock("decode-1"),
+        patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as im_cls,
+        patch.object(strategy, "_execute_recovery_flow") as flow,
+    ):
+        im_cls.return_value.get_instance.return_value = _decode_instance(instance_id=4)
+        strategy.execute(4)
+    flow.assert_not_called()
+    assert strategy.is_finished()
+    assert manager.get_scale_p2d_lock("decode-1").acquire(blocking=False)
+    manager.get_scale_p2d_lock("decode-1").release()
+
+
 # =============================================================================
 # 2. _get_d_instance / _get_faulty_node_count
 # =============================================================================
@@ -180,6 +245,7 @@ def test_get_faulty_node_count_counts_l3_fault(bind_context):
 
     with patch("motor.controller.fault_tolerance.fault_manager.FaultManager") as mock_fm_cls:
         mock_fm = mock_fm_cls.return_value
+        mock_fm.get_pending_scale_p2d_nodes.return_value = None
         mock_fm.get_node_fault_levels.return_value = {"node-0": FaultLevel.L3}
         assert bind_context._get_faulty_node_count(d_inst) == 1
 
@@ -189,6 +255,7 @@ def test_get_faulty_node_count_healthy_nodes_not_counted(bind_context):
 
     with patch("motor.controller.fault_tolerance.fault_manager.FaultManager") as mock_fm_cls:
         mock_fm = mock_fm_cls.return_value
+        mock_fm.get_pending_scale_p2d_nodes.return_value = None
         mock_fm.get_node_fault_levels.return_value = {"node-0": FaultLevel.L2}
         assert bind_context._get_faulty_node_count(d_inst) == 0
 
@@ -198,6 +265,7 @@ def test_get_faulty_node_count_falls_back_when_no_node_data(bind_context):
 
     with patch("motor.controller.fault_tolerance.fault_manager.FaultManager") as mock_fm_cls:
         mock_fm = mock_fm_cls.return_value
+        mock_fm.get_pending_scale_p2d_nodes.return_value = None
         mock_fm.get_node_fault_levels.return_value = {}
         assert bind_context._get_faulty_node_count(d_inst) == 1
 

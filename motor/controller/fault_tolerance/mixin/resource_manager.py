@@ -579,6 +579,7 @@ class _ResourceManagerMixin:
 
             if node_reboot_fault:
                 node_metadata.hardware_fault_infos[node_reboot_key] = node_reboot_fault
+            scale_p2d_reset = node_metadata.reset_scale_p2d_if_faults_cleared()
             stored_fault_count = len(node_metadata.hardware_fault_infos) - int(node_reboot_fault is not None)
 
         logger.info(
@@ -608,6 +609,13 @@ class _ResourceManagerMixin:
             if actionable_keys:
                 self._record_hardware_fault_event(instance_id, actionable_keys)
             self._refresh_instance_fault_level(instance_id)
+
+        # Orphaned faulty nodes may have no live instance to persist this reset.
+        if scale_p2d_reset:
+            with self.config_lock:
+                enable_persistence = self.etcd_config.enable_etcd_persistence
+            if enable_persistence:
+                self.persist_data()
 
         # Wake the strategy center — hardware fault data changed
         with self.work_condition:
@@ -653,10 +661,18 @@ class _ResourceManagerMixin:
                     else:
                         logger.debug("Node reboot fault not found for node %s", node_name)
 
+            scale_p2d_reset = node_metadata.reset_scale_p2d_if_faults_cleared()
+
         # Refresh fault levels for ALL instances on this node
         affected_ids = list(node_metadata.instance_ids)
         for instance_id in affected_ids:
             self._refresh_instance_fault_level(instance_id)
+
+        if scale_p2d_reset:
+            with self.config_lock:
+                enable_persistence = self.etcd_config.enable_etcd_persistence
+            if enable_persistence:
+                self.persist_data()
 
         # Wake the strategy center — node status changed
         with self.work_condition:
