@@ -49,7 +49,7 @@ MindIE Motor 使用 `MultiConnector` 组合 P/D 传输 Connector 与 Store Conne
 
 ### 环境准备
 
-- 已按照[PD 分离服务部署](../../deployment/k8s/pd_disaggregation_deployment.md) 完成P/D分离推理服务部署，并且服务运行正常。KV池化在该服务基础上开启，不会改变Controller和Coordinator的部署方式。
+- 已按照[PD 分离服务部署](../../deployment/README.md#k8s-pd-disaggregation) 完成P/D分离推理服务部署，并且服务运行正常。KV池化在该服务基础上开启，不会改变Controller和Coordinator的部署方式。
 - KV池化的通用约束请参见[vllm-ascend kv_pool](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_cache_pool_ascend_store.html)。启用UCM功能时，还需满足[UCM 部署文档](../../features/kv_cache_store/backend/ucm.md) 中的要求。
 - 开启前请先参考[MindIE Motor 快速开始](../../quick_start.md)，确保基础P/D分离服务可以正常部署。
 - 后续所有操作只在K8s集群的管理节点（master节点）执行。

@@ -54,7 +54,7 @@ Taking the motor_engine_prefill_config field as an example, specify "sglang" thr
 
 >[!NOTE]NOTE
 >
->- For details about PD disaggregation deployment based on the SGLang engine framework, see [SGLang PD Disaggregation Service Deployment Guide](../deployment/k8s/pd_disaggregation_sglang.md). For typical example configurations, see the `model_configs/sglang/` directory (for example, `models/glm5.1/A3/` and `models/qwen_8b/A2/`).
+>- For details about PD disaggregation deployment based on the SGLang engine framework, see [SGLang PD Disaggregation Service Deployment Guide](../../../zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang). For typical example configurations, see the `model_configs/sglang/` directory (for example, `models/glm5.1/A3/` and `models/qwen_8b/A2/`).
 >- When the SGLang engine is used in PD disaggregation service deployment, the bootstrap port is configured per Pod/NodeManager in `engine_config.disaggregation_bootstrap_port` (the native CLI style `disaggregation-bootstrap-port` is also supported). NodeManager registers this port as `bootstrap_port` metadata, and the SGLang Adapter of the Coordinator uses it for Prefill/Decode connection. It is different from the inference service port `endpoint_config.service_ports`. If this field is not configured, no bootstrap metadata is generated.
 
 After the configuration is complete, start the MindIE Motor service. Keywords such as `engine_type: sglang` and `SGLang engine initialized successfully` should appear in the logs, indicating that the SGLang engine is connected successfully.

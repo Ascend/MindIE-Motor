@@ -32,7 +32,7 @@ Both strategies support `hit_rate_threshold`; for the configuration method, see 
   If the Controller / Node Manager is not deployed, use the [Coordinator standalone deployment](../deployment/standalone.md).
 
 - The configuration examples in this document target vLLM; for the SGLang baseline and cache switches, see
-  [SGLang PD disaggregation deployment](../deployment/k8s/pd_disaggregation_sglang.md).
+  [SGLang PD disaggregation deployment](../../../zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang).
 
 - The engine must publish usable KV events and provide the corresponding cache reuse capability. The P/U event ports must be reachable from the network where the conductor resides.
 
@@ -154,7 +154,7 @@ Both strategies support `hit_rate_threshold`; for the configuration method, see 
     | Scenario | Description |
     |------|----------|
     | Standalone deployment or external conductor | Configure a reachable `conductor_service` and the actual HTTP port; if they cannot be read from the engine configuration, add `model_path` and `endpoint`. |
-    | Using SGLang | Set `kv_conductor_config.engine_type` to `sglang`, and configure the engine according to the [SGLang deployment guide](../deployment/k8s/pd_disaggregation_sglang.md). |
+    | Using SGLang | Set `kv_conductor_config.engine_type` to `sglang`, and configure the engine according to the [SGLang deployment guide](../../../zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang). |
     | Using CPU/Disk pooling | Connect the events on both sides as described in [Pooling affinity configuration](#pool-affinity), and configure the subscription address of the corresponding backend. |
     | Re-registration or historical event replay required | For periodic re-registration, set a positive `re_register_interval_sec` (disabled by default); for historical replay, configure `kv-events-config.replay_endpoint` of the engine. Confirm the recovery capability boundary before enabling it. |
     | Interworking with an old conductor that supports only JSON | Set `kv_conductor_config.query_encoding` to `json`; see [Query exception troubleshooting](#coordinator-cannot-query-the-conductor). |
@@ -337,7 +337,7 @@ Basic inference requests can be completed, but after repeatedly sending long-pre
    With the default `w_disk=0`, the threshold comparison requires the weighted hit rate to be strictly greater than the threshold.
 
 If basic inference itself or the P/D transfer is abnormal, first troubleshoot according to the corresponding [vLLM PD deployment](../deployment/k8s/pd_disaggregation_deployment.md)
-or [SGLang PD deployment](../deployment/k8s/pd_disaggregation_sglang.md) guide.
+or [SGLang PD deployment](../../../zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang) guide.
 For the vLLM PD Connector that uses `kv-transfer-config`, check whether `kv_role` is consistent with the P/D role and the Connector requirements,
 and check the allocation and connectivity of `kv_port`.
 

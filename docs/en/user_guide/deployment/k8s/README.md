@@ -15,7 +15,7 @@ The business topology determines the service functions and runtime form, and mus
 
 ### PD Disaggregation
 
-Prefill and Decode belong to different instances, which is suitable for scenarios that require independent planning of P/D resources and pursue higher throughput. For detailed steps, see [PD Disaggregation Deployment](./pd_disaggregation_deployment.md). If the underlying engine is SGLang, see [SGLang PD Disaggregation Deployment](./pd_disaggregation_sglang.md).
+Prefill and Decode belong to different instances, which is suitable for scenarios that require independent planning of P/D resources and pursue higher throughput. For detailed steps, see [PD Disaggregation Deployment](./pd_disaggregation_deployment.md). If the underlying engine is SGLang, see [SGLang PD Disaggregation Deployment](../../../../zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang).
 
 ### PD aggregation
 

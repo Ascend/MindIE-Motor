@@ -30,7 +30,7 @@
      docker images
      ```
 
-4. 镜像准备完成，可参考[PD分离部署指导](../deployment/k8s/pd_disaggregation_deployment.md)或[PD混部部署指导](../deployment/k8s/pd_aggregation_deployment.md)部署服务。
+4. 镜像准备完成，可参考[PD分离部署指导](../deployment/README.md#k8s-pd-disaggregation)或[PD混部部署指导](../deployment/k8s/pd_aggregation_deployment.md)部署服务。
 
 ## 基于vllm-ascend/sglang镜像安装MindIE Motor
 
@@ -279,7 +279,7 @@ docker pull quay.io/ascend/vllm-ascend:v0.13.0
      docker load -i /mnt/motor-vllm-ascend.tar
      ```
 
-9. 镜像准备完成，可参考[PD分离部署指导](../deployment/k8s/pd_disaggregation_deployment.md)或[PD混部部署指导](../deployment/k8s/pd_aggregation_deployment.md)部署服务。
+9. 镜像准备完成，可参考[PD分离部署指导](../deployment/README.md#k8s-pd-disaggregation)或[PD混部部署指导](../deployment/k8s/pd_aggregation_deployment.md)部署服务。
 
 ## MindIE Motor升级
 

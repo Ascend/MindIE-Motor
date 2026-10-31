@@ -1,6 +1,6 @@
 # PD 分离（特性说明）
 
-**Prefill / Decode 分离**指将预填充与解码阶段调度到不同实例协同完成。部署配置与 KV 传输参数见 [PD 分离服务部署](../user_guide/deployment/k8s/pd_disaggregation_deployment.md)。
+**Prefill / Decode 分离**指将预填充与解码阶段调度到不同实例协同完成。部署配置与 KV 传输参数见 [PD 分离服务部署](../user_guide/deployment/README.md#k8s-pd-disaggregation)。
 
 ## 自动识别拓扑
 

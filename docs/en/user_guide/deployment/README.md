@@ -6,7 +6,7 @@ MindIE Motor supports the following deployment methods, which can be selected ba
 
 It is suitable for scenarios where a Kubernetes cluster already exists. Resource files are generated and applied with one click through the deployer tool, supporting multiple deployment forms such as PD disaggregation and PD aggregation, and providing complete service discovery, load balancing, and self-healing capabilities.
 
-→ Start from [Deployment Mode Description](k8s/README.md); for the SGLang engine, see [SGLang PD Disaggregation Deployment](k8s/pd_disaggregation_sglang.md)
+→ Start from [Deployment Mode Description](k8s/README.md); for the SGLang engine, see [SGLang PD Disaggregation Deployment](../../../zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang)
 
 If the deployer needs to be executed in the cluster through a Job, use [Cloud-Native Deployment and Helm Chart](../../../../examples/cloud_native_deploy/README.md). The community Chart supports direct `helm install/upgrade`.
 

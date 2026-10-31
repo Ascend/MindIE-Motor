@@ -18,7 +18,7 @@ The manual scaling feature adjusts the number of engine instances on a cluster t
 
 ### Environment Preparation
 
-- Environment deployment has been completed by referring to [PD Aggregation Service Deployment](../deployment/k8s/pd_aggregation_deployment.md), [PD Disaggregation Service Deployment](../deployment/k8s/pd_disaggregation_deployment.md), or [SGLang PD Disaggregation Service Deployment](../deployment/k8s/pd_disaggregation_sglang.md).
+- Environment deployment has been completed by referring to [PD Aggregation Service Deployment](../deployment/k8s/pd_aggregation_deployment.md), [PD Disaggregation Service Deployment](../deployment/k8s/pd_disaggregation_deployment.md), or [SGLang PD Disaggregation Service Deployment](../../../zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang).
 - At least one full deployment has been completed successfully (a ConfigMap `motor-config` exists in the cluster, containing the currently deployed user_config as the baseline).
 - You have the kubectl permission of the K8s cluster administrator.
 

@@ -38,7 +38,7 @@ D2D权重加载特性的工作原理大致分为以下三步：
 
 ### 环境准备
 
-已按照 [PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md) 或 [PD 混部服务部署](../deployment/k8s/pd_aggregation_deployment.md) 完成服务部署，并且服务运行正常。后续所有操作只在 K8s 集群的管理节点（master 节点）执行。
+已按照 [PD 分离服务部署](../deployment/README.md#k8s-pd-disaggregation) 或 [PD 混部服务部署](../deployment/k8s/pd_aggregation_deployment.md) 完成服务部署，并且服务运行正常。后续所有操作只在 K8s 集群的管理节点（master 节点）执行。
 
 ### 使用场景
 
@@ -98,7 +98,7 @@ D2D权重加载特性通过user_config.json配置文件中的`engine_config`字�
 
 2. 部署首个实例。
 
-   按照 [PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md) 相关文档获取 P/D 分离推理服务部署配置，在对应的user_config.json中按步骤1添加`model_loader_extra_config`（Prefill / Decode / Union按实际角色分别配置）。
+   按照 [PD 分离服务部署](../deployment/README.md#k8s-pd-disaggregation) 相关文档获取 P/D 分离推理服务部署配置，在对应的user_config.json中按步骤1添加`model_loader_extra_config`（Prefill / Decode / Union按实际角色分别配置）。
 
    执行以下命令部署首个实例，等待实例进入ACTIVE状态：
 

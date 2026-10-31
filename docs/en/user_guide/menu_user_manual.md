@@ -12,7 +12,7 @@
 
   - [K8s-based vLLM PD Disaggregation Deployment](./deployment/k8s/pd_disaggregation_deployment.md)
 
-  - [K8s-based SGLang PD Disaggregation Deployment](./deployment/k8s/pd_disaggregation_sglang.md)
+  - [K8s-based SGLang PD Disaggregation Deployment](../../zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang)
 
   - [Single-Container Docker-only PD Disaggregation Deployment](./deployment/docker/single_container.md)
 

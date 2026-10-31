@@ -26,11 +26,11 @@ kv-conductor 维护缓存索引，Coordinator 使用索引结果估计剩余 pre
 
 ### 环境准备
 
-- 先完成 [PD 分离部署](../deployment/k8s/pd_disaggregation_deployment.md)或
+- 先完成 [PD 分离部署](../deployment/README.md#k8s-pd-disaggregation)或
   [PD 混部部署](../deployment/k8s/pd_aggregation_deployment.md)，确认基础推理正常。
   不部署 Controller / Node Manager 时，使用 [Coordinator 独立部署](../deployment/standalone.md)。
 - 本文配置示例面向 vLLM；SGLang 的基线及缓存开关见
-  [SGLang PD 分离部署](../deployment/k8s/pd_disaggregation_sglang.md)。
+  [SGLang PD 分离部署](../deployment/README.md#k8s-pd-disaggregation-sglang)。
 - 引擎需要发布可用的 KV 事件，并具备对应的缓存复用能力。P/U 的事件端口需从 conductor 所在网络可达。
 - Coordinator 必须能得到与引擎一致的 token IDs。默认从引擎配置推导 `model_path`，本地 tokenizer
   需要可访问对应模型目录；Render 产生的 token IDs 可复用，配置见
@@ -149,7 +149,7 @@ kv-conductor 维护缓存索引，Coordinator 使用索引结果估计剩余 pre
     | 场景 | 说明 |
     |------|----------|
     | 独立部署或外接 conductor | 配置可访问的 `conductor_service` 与实际 HTTP 端口；无法从引擎配置读取时，补充 `model_path` 和 `endpoint`。 |
-    | 使用 SGLang | 将 `kv_conductor_config.engine_type` 设为 `sglang`，并按 [SGLang 部署指导](../deployment/k8s/pd_disaggregation_sglang.md)配置引擎。 |
+    | 使用 SGLang | 将 `kv_conductor_config.engine_type` 设为 `sglang`，并按 [SGLang 部署指导](../deployment/README.md#k8s-pd-disaggregation-sglang)配置引擎。 |
     | 使用 CPU/Disk 池化 | 按[池化亲和配置](#pool-affinity)接通两侧事件，并配置对应后端的订阅地址。 |
     | 需要重注册或历史事件回放 | 周期补注册设置正数 `re_register_interval_sec`（默认关闭）；历史回放配置引擎 `kv-events-config.replay_endpoint`。启用前确认[恢复能力边界](../../design/kv_conductor.md#registration-lifecycle)。 |
     | 对接仅支持 JSON 的旧 conductor | 将 `kv_conductor_config.query_encoding` 设为 `json`，见[查询异常排查](#coordinator无法查询conductor)。 |
@@ -332,8 +332,8 @@ curl --fail "$CONDUCTOR_URL/workers"
 4. 若 Conductor 已返回原始命中但实际 `policy=load_balance`，检查介质权重和 `hit_rate_threshold`。
    默认 `w_disk=0`，门槛判断要求加权命中率严格大于阈值。
 
-若基础推理本身或 P/D 传输异常，先按对应的 [vLLM PD 部署](../deployment/k8s/pd_disaggregation_deployment.md)
-或 [SGLang PD 部署](../deployment/k8s/pd_disaggregation_sglang.md)指导排查。
+若基础推理本身或 P/D 传输异常，先按对应的 [vLLM PD 部署](../deployment/README.md#k8s-pd-disaggregation)
+或 [SGLang PD 部署](../deployment/README.md#k8s-pd-disaggregation-sglang)指导排查。
 对于使用 `kv-transfer-config` 的 vLLM PD Connector，核对 `kv_role` 与 P/D 角色及 Connector 要求
 是否一致，并检查 `kv_port` 的分配和连通性。
 

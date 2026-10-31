@@ -994,7 +994,7 @@ Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两
 | additional_annotations | object | 可选；Prefill/Decode Engine工作负载及其Pod模板的自定义Annotations。 |
 | additional_labels | object | 可选；Prefill/Decode Engine工作负载及其Pod模板的自定义Labels。 |
 | image_name | string | 可选；Prefill/Decode 引擎容器镜像。不填则使用 `motor_deploy_config.image_name`。**仅 Kubernetes 部署生效**；Docker 部署统一使用 `motor_deploy_config.image_name`。 |
-| npu_chip_name | string | 仅 `motor_engine_prefill_config`。可选；填写后在 Prefill `nodeSelector` 增加 `huawei.com/npu.chip.name`，例如 `Ascend950PR`。不填不加该条。**仅 Kubernetes 部署生效**，Docker 部署下不生效（Docker 无调度器，由人工按机器形态分配容器，见 [宿主机部署：PD 分离](../deployment/docker/host/pd_disaggregation_deployment.md)）。见 [PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md)。 |
+| npu_chip_name | string | 仅 `motor_engine_prefill_config`。可选；填写后在 Prefill `nodeSelector` 增加 `huawei.com/npu.chip.name`，例如 `Ascend950PR`。不填不加该条。**仅 Kubernetes 部署生效**，Docker 部署下不生效（Docker 无调度器，由人工按机器形态分配容器，见 [宿主机部署：PD 分离](../deployment/docker/host/pd_disaggregation_deployment.md)）。见 [PD 分离服务部署](../deployment/README.md#k8s-pd-disaggregation)。 |
 | npu_chip_name | string | 仅 `motor_engine_decode_config`。可选；填写后在 Decode `nodeSelector` 增加 `huawei.com/npu.chip.name`，例如 `Ascend950DT`。不填不加该条。**仅 Kubernetes 部署生效**，Docker 部署下不生效。 |
 | **engine_config字段** | - | `engine_config` 直接映射所选引擎的原生启动参数；请参阅对应 vLLM/SGLang 版本的官方参数文档。 |
 | engine_config.served_model_name | string/array | vLLM 可选服务名；显式配置为空时使用 `engine_config.model`。字段缺失时保留旧版 `model_config.model_name` 兼容，旧配置也未提供时使用 `engine_config.model`。 |
@@ -1116,7 +1116,7 @@ Deployer 只读取顶层配置决定 conductor 服务是否启用及服务端口
 旧 `prefill_kv_event_config` 迁移仅覆盖 `conductor_service`、`http_server_port`、`engine_type`、
 `model_path`、`block_size`、`endpoint`、`replay_endpoint` 和 `re_register_interval_sec`，
 不包含 `query_encoding` 及介质端口等新增字段。
-Coordinator 会根据实例角色自动识别 P/D 分离或 union 混部拓扑，并根据 `engine_type` 选择 vLLM handoff 或 SGLang bootstrap Adapter。vLLM Connector 白名单、`MultiConnector` 取 `connectors[0]` 的规则，以及未知 Connector 在启动期 fail-closed 的处理，详情请参见[PD 分离特性说明](../../design/pd_disaggregation.md#vllm-connector-识别白名单)与[PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md)。
+Coordinator 会根据实例角色自动识别 P/D 分离或 union 混部拓扑，并根据 `engine_type` 选择 vLLM handoff 或 SGLang bootstrap Adapter。vLLM Connector 白名单、`MultiConnector` 取 `connectors[0]` 的规则，以及未知 Connector 在启动期 fail-closed 的处理，详情请参见[PD 分离特性说明](../../design/pd_disaggregation.md#vllm-connector-识别白名单)与[PD 分离服务部署](../deployment/README.md#k8s-pd-disaggregation)。
 
 **表9** kv_conductor_config 自动推导来源
 

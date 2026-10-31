@@ -1,6 +1,6 @@
 # PD Disaggregation Deployment Guide
 
-This document uses a **complete and detailed** deployment case to guide developers through deploying the Motor-based PD disaggregation service, and provides guidance on configuration optimization practices for production environments. If the underlying engine is **SGLang**, refer to [SGLang PD Disaggregation Deployment Guide](./pd_disaggregation_sglang.md) first.
+This document uses a **complete and detailed** deployment case to guide developers through deploying the Motor-based PD disaggregation service, and provides guidance on configuration optimization practices for production environments. If the underlying engine is **SGLang**, refer to [SGLang PD Disaggregation Deployment Guide](../../../../zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang) first.
 
 ## Pre-check for 950PR&950DT products (Can Be Omitted for Other Server Series)
 

@@ -17,8 +17,8 @@ MindIE Motor支持两种业务拓扑结构和三种服务部署方式，本文�
 
 Prefill与Decode分属不同实例，适用于需要独立规划P/D资源、追求更高吞吐的场景。
 
-- vLLM推理引擎：详情请参考[PD分离服务部署（基于vLLM推理引擎）](./pd_disaggregation_deployment.md)。
-- SGLang推理引擎：详情请参考[PD分离服务部署（基于SGLang推理引擎）](./pd_disaggregation_sglang.md)。
+- vLLM推理引擎：详情请参考[PD分离服务部署（基于vLLM推理引擎）](../README.md#k8s-pd-disaggregation)。
+- SGLang推理引擎：详情请参考[PD分离服务部署（基于SGLang推理引擎）](../README.md#k8s-pd-disaggregation-sglang)。
 
 **PD混部**
 
