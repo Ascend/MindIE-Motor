@@ -17,8 +17,8 @@
 ## ✨ 最新消息
 
 - [2026.10.28]: 🚀 3.2.0 发布
-- [2026.10.28]: 🚀 优化 Docker only 一键部署，部署流程大幅简化
-- [2026.10.28]: 🚀 支持跨950系列服务器超节点部署服务
+- [2026.10.28]: 🚀 优化 Docker only 部署方案，部署流程大幅简化
+- [2026.10.28]: 🚀 支持950系列服务器部署跨超节点的推理服务
 - [2026.10.28]: 🚀 支持故障场景下的卡级缩容，故障卡退出服务，其余卡继续推理
 - [2026.10.28]: 🚀 支持基于 HPA 的自动扩缩容，按业务流量调整 Prefill 与 Decode 实例配比
 - [2026.08.19]: 🚀 3.1.0 发布，代码仓由 MindIE PyMotor 更名为 MindIE Motor
@@ -31,7 +31,7 @@
 
 ## ℹ️ 简介
 
-MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提供一键式 PD 分离与 PD 混部部署。它基于云原生插件化架构，对接 [vLLM-Ascend](https://github.com/vllm-project/vllm-ascend) 与 [SGLang](https://github.com/sgl-project/sglang) 原生引擎，结合高性能调度与负载均衡，构建高可用、可扩展的大规模推理服务。组件说明见 [架构](./docs/zh/architecture.md)。
+MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提供一键式 PD 分离与 PD 混部部署。它基于云原生插件化架构，对接 [vLLM-Ascend](https://github.com/vllm-project/vllm-ascend) 与 [SGLang](https://github.com/sgl-project/sglang) 原生引擎，结合高性能调度与负载均衡，构建高可用、可扩展的大规模推理服务。
 
 <img src="./docs/zh/imgs/MindIE-Motor-architecture-zh.png" alt="MindIE Motor 架构" width="100%"/>
 
