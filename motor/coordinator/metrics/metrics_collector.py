@@ -224,7 +224,7 @@ def parse_metric_text(metrics_str: str) -> list[Metric] | None:
     return metric_array
 
 
-# Mooncake Master -> a few kv_store_* families with labels (cpu/ssd/all, usage/total/rate).
+# Mooncake Master -> motor:mooncake_* families (summary with cpu/ssd/all labels, plus selected passthrough).
 _BYTES_PER_GB = 1024**3
 _KVSTORE_METRIC_ALLOWLIST = frozenset(
     {
@@ -243,6 +243,29 @@ _KVSTORE_FAMILY_HELP: dict[str, str] = {
     "kv_store_keys": "KV store number of stored keys",
     "kv_store_eviction": "KV store eviction counters (stat=success|attempts)",
 }
+_KVSTORE_PREFIX = "kv_store_"
+# Mooncake summary families use the same layout under this prefix.
+_MOONCAKE_PREFIX = "motor:mooncake_"
+# Mooncake Master metrics passed through (renamed) in addition to the summary families.
+# Names that are absent from the Master /metrics output are simply not emitted.
+_MOONCAKE_PASSTHROUGH_NAMES = frozenset(
+    {
+        "master_active_clients",
+        "master_put_start_discarded_staging_size",
+        "master_evicted_key_count",
+        "master_evicted_size_bytes",
+        "mem_cache_hit_nums_",
+        "file_cache_hit_nums_",
+        "valid_get_nums_",
+        "total_get_nums_",
+    }
+)
+_MOONCAKE_FAILURES_RE = re.compile(r"^master_.+_failures_total$")
+# Shorter output names for a few passthrough metrics; everything else only has the
+# leading ``master_`` and trailing ``_`` stripped.
+_MOONCAKE_RENAME = {
+    "master_evicted_key_count": "evicted_keys",
+}
 _SAMPLE_VALUE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{.*\})?\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)")
 _PROM_SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(.*)\})?\s+(\S+)$")
 _PROM_LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"')
@@ -253,12 +276,16 @@ def _emit_labeled(
     emitted_help: set[str],
     name: str,
     value: float,
+    prefix: str = _KVSTORE_PREFIX,
     **labels: str,
 ) -> None:
+    """Emit one ``<prefix><family>`` sample; *name* is the family with the ``kv_store_`` prefix."""
     if value < 0:
         return
+    help_text = _KVSTORE_FAMILY_HELP[name]
+    name = prefix + name[len(_KVSTORE_PREFIX) :]
     if name not in emitted_help:
-        lines.append(f"# HELP {name} {_KVSTORE_FAMILY_HELP[name]}")
+        lines.append(f"# HELP {name} {help_text}")
         lines.append(f"# TYPE {name} gauge")
         emitted_help.add(name)
     if labels:
@@ -274,9 +301,14 @@ def _emit_layer_size(
     layer: str,
     usage_bytes: float,
     total_bytes: float,
+    prefix: str = _KVSTORE_PREFIX,
 ) -> None:
-    _emit_labeled(lines, emitted_help, "kv_store_size", usage_bytes / _BYTES_PER_GB, layer=layer, stat="usage")
-    _emit_labeled(lines, emitted_help, "kv_store_size", total_bytes / _BYTES_PER_GB, layer=layer, stat="total")
+    _emit_labeled(
+        lines, emitted_help, "kv_store_size", usage_bytes / _BYTES_PER_GB, prefix=prefix, layer=layer, stat="usage"
+    )
+    _emit_labeled(
+        lines, emitted_help, "kv_store_size", total_bytes / _BYTES_PER_GB, prefix=prefix, layer=layer, stat="total"
+    )
 
 
 def _emit_layer_rate(
@@ -285,9 +317,10 @@ def _emit_layer_rate(
     layer: str,
     usage_bytes: float,
     total_bytes: float,
+    prefix: str = _KVSTORE_PREFIX,
 ) -> None:
     usage_rate = usage_bytes / total_bytes if total_bytes > 0 else 0.0
-    _emit_labeled(lines, emitted_help, "kv_store_ratio", usage_rate, layer=layer, stat="usage_rate")
+    _emit_labeled(lines, emitted_help, "kv_store_ratio", usage_rate, prefix=prefix, layer=layer, stat="usage_rate")
 
 
 def _filter_kvstore_metrics(raw: str, backend: str = "") -> str:
@@ -310,19 +343,20 @@ def _emit_kv_store_prometheus(
     keys: float,
     eviction_success: float,
     eviction_attempts: float,
+    prefix: str = _KVSTORE_PREFIX,
 ) -> str:
-    """Emit kv_store_* Prometheus text from pre-parsed backend values."""
+    """Emit ``<prefix>*`` Prometheus text from pre-parsed backend values."""
     out: list[str] = []
     emitted_help: set[str] = set()
-    _emit_layer_size(out, emitted_help, "cpu", cpu_usage, cpu_total)
-    _emit_layer_size(out, emitted_help, "ssd", ssd_usage, ssd_total)
-    _emit_layer_size(out, emitted_help, "all", cpu_usage + ssd_usage, cpu_total + ssd_total)
-    _emit_layer_rate(out, emitted_help, "cpu", cpu_usage, cpu_total)
-    _emit_layer_rate(out, emitted_help, "ssd", ssd_usage, ssd_total)
-    _emit_layer_rate(out, emitted_help, "all", cpu_usage + ssd_usage, cpu_total + ssd_total)
-    _emit_labeled(out, emitted_help, "kv_store_keys", keys)
-    _emit_labeled(out, emitted_help, "kv_store_eviction", eviction_success, stat="success")
-    _emit_labeled(out, emitted_help, "kv_store_eviction", eviction_attempts, stat="attempts")
+    _emit_layer_size(out, emitted_help, "cpu", cpu_usage, cpu_total, prefix)
+    _emit_layer_size(out, emitted_help, "ssd", ssd_usage, ssd_total, prefix)
+    _emit_layer_size(out, emitted_help, "all", cpu_usage + ssd_usage, cpu_total + ssd_total, prefix)
+    _emit_layer_rate(out, emitted_help, "cpu", cpu_usage, cpu_total, prefix)
+    _emit_layer_rate(out, emitted_help, "ssd", ssd_usage, ssd_total, prefix)
+    _emit_layer_rate(out, emitted_help, "all", cpu_usage + ssd_usage, cpu_total + ssd_total, prefix)
+    _emit_labeled(out, emitted_help, "kv_store_keys", keys, prefix=prefix)
+    _emit_labeled(out, emitted_help, "kv_store_eviction", eviction_success, prefix=prefix, stat="success")
+    _emit_labeled(out, emitted_help, "kv_store_eviction", eviction_attempts, prefix=prefix, stat="attempts")
     if not out:
         return ""
     return "\n".join(out) + "\n"
@@ -388,22 +422,48 @@ def _filter_memcache_metrics(raw: str) -> str:
     return out
 
 
+def _mooncake_passthrough_name(name: str) -> str | None:
+    """Output name (``motor:mooncake_*``) for a passthrough Master metric, or None if not passed."""
+    if name not in _MOONCAKE_PASSTHROUGH_NAMES and not _MOONCAKE_FAILURES_RE.match(name):
+        return None
+    short = _MOONCAKE_RENAME.get(name) or name.removeprefix("master_").rstrip("_")
+    return _MOONCAKE_PREFIX + short
+
+
 def _filter_mooncake_metrics(raw: str) -> str:
-    """Parse Mooncake Master metrics (``master_*`` with allowlist)."""
+    """Parse Mooncake Master metrics.
+
+    Emits the summary families (size / ratio / keys / eviction) under the
+    ``motor:mooncake_`` prefix and passes selected Master metrics through with
+    the same prefix (original labels and values kept).
+    """
     values: dict[str, float] = {}
+    pass_through: list[str] = []
     for line in raw.splitlines():
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            parts = stripped.split(None, 3)
+            if len(parts) >= 3 and parts[1] in ("HELP", "TYPE"):
+                new_name = _mooncake_passthrough_name(parts[2])
+                if new_name:
+                    parts[2] = new_name
+                    pass_through.append(" ".join(parts))
             continue
         sample = _SAMPLE_VALUE_RE.match(stripped)
         if not sample:
             continue
         old = sample.group(1)
+        new_name = _mooncake_passthrough_name(old)
+        if new_name:
+            pass_through.append(new_name + stripped[len(old) :])
+            continue
         if old not in _KVSTORE_METRIC_ALLOWLIST:
             continue
         values[old] = values.get(old, 0.0) + float(sample.group(2))
 
-    return _emit_kv_store_prometheus(
+    summary = _emit_kv_store_prometheus(
         values.get("master_allocated_bytes", 0.0),
         values.get("master_total_capacity_bytes", 0.0),
         values.get("master_allocated_file_size_bytes", 0.0),
@@ -411,7 +471,11 @@ def _filter_mooncake_metrics(raw: str) -> str:
         values.get("master_key_count", 0.0),
         values.get("master_successful_evictions_total", 0.0),
         values.get("master_attempted_evictions_total", 0.0),
+        _MOONCAKE_PREFIX,
     )
+    if pass_through:
+        summary += "\n".join(pass_through) + "\n"
+    return summary
 
 
 class MetricsCollector(ThreadSafeSingleton):

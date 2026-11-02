@@ -1131,16 +1131,63 @@ def test_filter_kvstore_metrics_mooncake():
         "master_ping_requests_total 5\n"
     )
     out = _filter_kvstore_metrics(raw, "")
-    assert 'kv_store_size{layer="all",stat="total"} 10.0' in out
-    assert 'kv_store_size{layer="all",stat="usage"} 2.0' in out
-    assert 'kv_store_ratio{layer="all",stat="usage_rate"} 0.2' in out
-    assert 'kv_store_ratio{layer="cpu",stat="usage_rate"} 0.125' in out
-    assert 'kv_store_eviction{stat="success"} 12.0' in out
+    assert 'motor:mooncake_size{layer="all",stat="total"} 10.0' in out
+    assert 'motor:mooncake_size{layer="all",stat="usage"} 2.0' in out
+    assert 'motor:mooncake_ratio{layer="all",stat="usage_rate"} 0.2' in out
+    assert 'motor:mooncake_ratio{layer="cpu",stat="usage_rate"} 0.125' in out
+    assert 'motor:mooncake_eviction{stat="success"} 12.0' in out
     assert "master_ping_requests_total" not in out
-    assert 'kv_store_keys 0.0' in out
-    assert "kv_store_query" not in out
+    assert "motor:mooncake_keys 0.0" in out
+    assert "kv_store_" not in out
     assert "hit_rate" not in out
     assert out.count("# HELP ") == 4
+
+
+def test_filter_kvstore_metrics_mooncake_passthrough():
+    raw = (
+        "# HELP master_active_clients Number of active clients\n"
+        "# TYPE master_active_clients gauge\n"
+        "master_active_clients 2\n"
+        "# TYPE master_put_start_failures_total counter\n"
+        "master_put_start_failures_total 3\n"
+        "master_evicted_key_count 7\n"
+        'master_evicted_size_bytes{segment="a"} 4096\n'
+        "# TYPE mem_cache_hit_nums_ counter\n"
+        "mem_cache_hit_nums_ 9\n"
+        "master_ping_requests_total 5\n"
+        "master_allocated_bytes 1073741824\n"
+    )
+    out = _filter_kvstore_metrics(raw, "mooncake")
+    assert "# HELP motor:mooncake_active_clients Number of active clients" in out
+    assert "# TYPE motor:mooncake_active_clients gauge" in out
+    assert "motor:mooncake_active_clients 2" in out
+    # failures_total rule: master_ prefix dropped, TYPE kept
+    assert "# TYPE motor:mooncake_put_start_failures_total counter" in out
+    assert "motor:mooncake_put_start_failures_total 3" in out
+    # explicit rename, trailing underscore dropped, labels kept
+    assert "motor:mooncake_evicted_keys 7" in out
+    assert 'motor:mooncake_evicted_size_bytes{segment="a"} 4096' in out
+    assert "motor:mooncake_mem_cache_hit_nums 9" in out
+    # not in the passthrough set -> dropped; raw names never leak
+    assert "ping_requests" not in out
+    assert "master_" not in out
+    # summary families still emitted
+    assert 'motor:mooncake_size{layer="cpu",stat="usage"} 1.0' in out
+
+
+def test_filter_kvstore_metrics_mooncake_passthrough_absent_names_not_emitted():
+    out = _filter_kvstore_metrics("master_allocated_bytes 1073741824\n", "mooncake")
+    assert "motor:mooncake_size" in out
+    assert "motor:mooncake_active_clients" not in out
+    assert "failures_total" not in out
+    assert "evicted" not in out
+
+
+def test_filter_kvstore_metrics_memcache_keeps_kv_store_prefix():
+    raw = 'memcache_total_capacity_bytes{medium="dram"} 1073741824\n'
+    out = _filter_kvstore_metrics(raw, "memcache")
+    assert 'kv_store_size{layer="cpu",stat="total"} 1.0' in out
+    assert "motor:mooncake_" not in out
 
 
 def test_filter_kvstore_metrics_memcache():
