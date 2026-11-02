@@ -417,7 +417,8 @@ Hot-reload is driven by a process-local `ConfigWatcher` in the **Inference Worke
 ``` text
 Controller detects instance change
   → POST /instances/refresh (InsEventMsg: ADD/DEL/SET + instance list)
-    → Mgmt refresh lock: duplicate IDs / identity conflicts fail closed (400 / 409)
+    → Mgmt refresh lock: duplicate IDs / role mapping / identity conflicts
+      fail closed (400 / 409) before any pool mutation
       → apply_refresh: InstanceManager + schema-4 SHM membership snapshot
         (stable slots; do not store over in-flight tokens)
       → PUB socket: INSTANCE_CHANGE_TOPIC (+ delta frame for ADD/DEL)
@@ -437,6 +438,17 @@ identity. An
 endpoint-based DEL validates the role plus the order-independent physical endpoint multiset (`ip`, business/bootstrap
 ports, and `headless`) while ignoring order-derived endpoint IDs and endpoint map keys. An explicit ID-only DEL remains
 available for administrative removal.
+
+ADD, SET and RESUME resolve every submitted `role` to a `PDRole` in `_validate_refresh_instances`, i.e. **before** the
+list is applied. Role resolution otherwise happens while inserting into the role pool (`_add_instance_to_available_pool`
+→ `_role_to_pdrole`), so a single unmappable role would leave the earlier entries of the same request registered while
+the caller only received a bare 400 — the client cannot tell whether it is registered or not. RESUME belongs to the same
+class because it re-inserts the instance into a role pool. A request is therefore all-or-nothing with respect to role
+validity, matching the External Deployer protocol, which resolves roles earlier still
+(`ExternalInsEventMsg.to_internal()`). The rejection names the offending `instance.id` and the rejected value, so a
+batch caller can fix the right entry. Role validity is not checked for DEL or PAUSE, which write no role pool (the role
+only participates in the DEL identity comparison). `_resume_instances` also restores the entry to the paused pool when
+the re-insert fails, so a failed RESUME never leaves an instance in none of the pools.
 
 Standalone `motor.coordinator.register` IDs occupy signed-int32 range `0x40000000..0x7fffffff` and hash the role plus
 the sorted complete endpoint group. The same normalization also determines job names and endpoint IDs, so CLI input

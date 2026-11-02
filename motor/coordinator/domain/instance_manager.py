@@ -465,6 +465,15 @@ class InstanceManager:
         if len(instance_ids) != len(set(instance_ids)):
             raise ValueError("duplicate instance IDs in one request")
 
+        if event_type in (EventType.ADD, EventType.SET, EventType.RESUME):
+            # Reject unmappable roles up front. The role is otherwise resolved in
+            # _add_instance_to_available_pool, i.e. while the list is being applied, so a
+            # single bad entry used to leave the earlier entries of the same request in
+            # the pools while the caller only saw a bare 400. RESUME re-inserts into a role
+            # pool as well, so it takes part in the same all-or-nothing check.
+            for instance in instances:
+                self._resolve_refresh_role(instance)
+
         if event_type == EventType.ADD:
             for instance in instances:
                 existing = self._find_instance_by_id(instance.id)
@@ -477,6 +486,21 @@ class InstanceManager:
                     continue
                 if not _same_delete_identity(existing, instance):
                     raise InstanceIdConflictError(f"instance ID {instance.id} does not match the registered instance")
+
+    def _resolve_refresh_role(self, instance: Instance) -> PDRole:
+        """Resolve a submitted role to a role-pool key, failing with the offending instance ID.
+
+        ``_role_to_pdrole`` returns non-``str`` values unchanged, so a value that never came from
+        JSON (e.g. ``None``) would otherwise slip through to ``_add_instance_to_available_pool``,
+        which only logs ``Unknown role`` and reports success to the caller.
+        """
+        try:
+            role = _role_to_pdrole(instance.role)
+        except ValueError as exc:
+            raise ValueError(f"instance ID {instance.id} has an invalid role {instance.role!r}: {exc}") from exc
+        if not isinstance(role, PDRole) or role not in self._available_role_pools:
+            raise ValueError(f"instance ID {instance.id} has an invalid role {instance.role!r}")
+        return role
 
     def _register_kv_instance(self, instances: list[Instance], is_register: bool = True) -> None:
         """Only the Mgmt process registers KV instances (Scheduler/Obs are mirrors)."""
@@ -779,9 +803,15 @@ class InstanceManager:
             if instance.id not in self._paused_pool:
                 logger.warning("Instance ID %d not in paused pool, cannot resume", instance.id)
                 continue
-            del self._paused_pool[instance.id]
+            paused = self._paused_pool.pop(instance.id)
             if not self._add_instance_to_available_pool(instance):
-                logger.error("Failed to add instance ID %d back to available pool", instance.id)
+                # Never drop an instance out of every pool: put the paused entry back so the
+                # caller can retry instead of ending up with an instance that no pool tracks.
+                self._paused_pool[instance.id] = paused
+                logger.error(
+                    "Failed to add instance ID %d back to available pool, restored it to paused pool",
+                    instance.id,
+                )
                 continue
             modified = True
             logger.info(
