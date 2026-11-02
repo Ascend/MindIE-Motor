@@ -186,7 +186,7 @@
 
 <a id="docker-pd-disaggregation"></a>
 
-# 基于docker的PD分离服务部署（vLLM）
+# 基于Docker only的PD分离服务部署（vLLM）
 
 本文档指导用户基于docker组件部署PD分离服务。用户在**宿主机执行一条指令创建容器并部署服务**，但容器的生命周期需要用户手动管理。
 
