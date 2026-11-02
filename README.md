@@ -18,7 +18,7 @@
 
 **3.2.0**（2026.10.28）对接 SGLang 原生引擎，提供 PD 分离推理服务。部署上支持 Docker only 一键部署，以及基于 Slurm + Apptainer 的部署；服务可以跨超节点、做 PD 异构，并在推理大 EP 场景下做 DP 域缩容。扩缩容基于 HPA，Prefill 与 Decode 可分别配置调度策略。
 
-**3.1.0**（2026.08.19）代码仓由 MindIE PyMotor 更名为 MindIE Motor，对接 vLLM-Ascend。这一版补上 PD 混部，部署时可以配置 CP/PP，并按业务繁忙程度自动增减推理实例。Ascend 950 系列可以部署推理服务；Atlas 800I A3 超节点服务器在 IPv6 单栈下可以部署 vLLM 推理服务。
+**3.1.0**（2026.08.19）代码仓由 MindIE PyMotor 更名为 MindIE Motor。这一版补上 PD 混部，部署时可以配置 CP/PP，并按业务繁忙程度自动增减推理实例。Ascend 950 系列可以部署推理服务；Atlas 800I A3 超节点服务器在 IPv6 单栈下可以部署 vLLM 推理服务。
 
 **2026.03** MindIE Motor 正式开源。
 
