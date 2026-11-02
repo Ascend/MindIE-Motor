@@ -16,6 +16,14 @@ ids). The engine must therefore accept ``existing_dp_ranks`` and
 ``data_parallel_master_rank`` from the HTTP body instead of assuming new
 ranks are appended at the high end, or that the original master is still
 alive.
+
+Leftover: do **not** auto-apply on every vLLM 0.30.0 image. That version
+covers official trees without Elastic EP, FT branches that already hole-fill
+via ``_ft_active_dp_ranks``, and trees that still append new ranks at the
+high end. Default is skip. Apply only when
+``MOTOR_APPLY_VLLM_EEP_SCALE_PATCH`` is on and the HTTP handler does not
+already forward ``existing_dp_ranks``. Revisit later: image fingerprint,
+``enable_dp_scale_up``, or engine-side capability probe.
 """
 
 import ast
@@ -35,6 +43,8 @@ except ImportError:  # noqa: PERF203
     vllm = None
 
 TARGET_VLLM_VERSIONS = ("0.30.0",)
+APPLY_ENV = "MOTOR_APPLY_VLLM_EEP_SCALE_PATCH"
+API_ROUTER_REL = "entrypoints/serve/elastic_ep/api_router.py"
 
 PATCH_SPECS = [
     (
@@ -60,10 +70,36 @@ def normalize_vllm_version(version: str) -> str:
     return version.split("+")[0].split("-")[0]
 
 
+def _env_enabled(name: str) -> bool:
+    """Return True only for an explicit opt-in value."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _http_already_forwards_membership(vllm_root: str) -> bool:
+    """Return True when ``/scale_elastic_ep`` already reads ``existing_dp_ranks``."""
+    path = os.path.join(vllm_root, API_ROUTER_REL)
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return False
+    return "existing_dp_ranks" in text
+
+
 def should_apply_patch() -> bool:
-    """Return True when the installed vLLM base version should be patched."""
+    """Return True when this image opted in and still lacks the HTTP membership fields.
+
+    Leftover: version ``0.30.0`` is not a sufficient condition. Keep this
+    conservative until a stable image / config fingerprint exists.
+    """
     if vllm is None:
         logger.info("Skip Elastic EP scale patch: vLLM is not installed")
+        return False
+    if not _env_enabled(APPLY_ENV):
+        logger.info(
+            "Skip Elastic EP scale patch: %s is not enabled (leftover: do not auto-apply)",
+            APPLY_ENV,
+        )
         return False
     try:
         version = md.version("vllm")
@@ -75,6 +111,16 @@ def should_apply_patch() -> bool:
             "Skip Elastic EP scale patch: vLLM %s is not in %s",
             version,
             TARGET_VLLM_VERSIONS,
+        )
+        return False
+    vllm_root = vllm.__path__[0]
+    api_router = os.path.join(vllm_root, API_ROUTER_REL)
+    if not os.path.isfile(api_router):
+        logger.info("Skip Elastic EP scale patch: %s not found", api_router)
+        return False
+    if _http_already_forwards_membership(vllm_root):
+        logger.info(
+            "Skip Elastic EP scale patch: /scale_elastic_ep already forwards existing_dp_ranks"
         )
         return False
     logger.info("Applying Elastic EP scale patch for vLLM %s", version)
