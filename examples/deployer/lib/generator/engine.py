@@ -360,6 +360,7 @@ def apply_pd_heterogeneous_node_selector(pod_spec, user_config, node_type):
 # the inference service.
 def apply_engine_node_selector_overrides(pod_spec, deploy_config, node_type):
     selector_key = {
+        C.NODE_TYPE_E: C.ENCODE_NODE_SELECTOR,
         C.NODE_TYPE_P: C.PREFILL_NODE_SELECTOR,
         C.NODE_TYPE_D: C.DECODE_NODE_SELECTOR,
     }.get(node_type)
