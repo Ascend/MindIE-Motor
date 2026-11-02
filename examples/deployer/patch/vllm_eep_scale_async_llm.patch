@@ -1,0 +1,60 @@
+--- a/vllm/v1/engine/async_llm.py
++++ b/vllm/v1/engine/async_llm.py
+@@ -1183,14 +1183,29 @@
+             raise
+ 
+     async def scale_elastic_ep(
+-        self, new_data_parallel_size: int, drain_timeout: int = 300
++        self,
++        new_data_parallel_size: int,
++        drain_timeout: int = 300,
++        *,
++        existing_dp_ranks: list[int] | None = None,
++        data_parallel_master_rank: int | None = None,
+     ):
+         """Scale the elastic EP data parallel size."""
+         async with self._elastic_ep_lock:
+-            await self._scale_elastic_ep(new_data_parallel_size, drain_timeout)
++            await self._scale_elastic_ep(
++                new_data_parallel_size,
++                drain_timeout,
++                existing_dp_ranks=existing_dp_ranks,
++                data_parallel_master_rank=data_parallel_master_rank,
++            )
+ 
+     async def _scale_elastic_ep(
+-        self, new_data_parallel_size: int, drain_timeout: int
++        self,
++        new_data_parallel_size: int,
++        drain_timeout: int,
++        *,
++        existing_dp_ranks: list[int] | None = None,
++        data_parallel_master_rank: int | None = None,
+     ) -> None:
+         parallel_config = self.vllm_config.parallel_config
+         old_data_parallel_size = parallel_config.data_parallel_size
+@@ -1202,10 +1217,23 @@
+             return
+ 
+         target_dp_rank = parallel_config.data_parallel_rank
++        if data_parallel_master_rank is not None:
++            # motor-patch: honor Motor surviving master rank
++            parallel_config._data_parallel_master_rank = int(
++                data_parallel_master_rank
++            )
++        if existing_dp_ranks is None:
++            existing_dp_ranks = (
++                self._ft_active_dp_ranks.copy()
++                if getattr(self, "_ft_active_dp_ranks", None) is not None
++                else None
++            )
++        else:
++            existing_dp_ranks = [int(x) for x in existing_dp_ranks]
+         if parallel_config.data_parallel_external_lb:
+             await self.engine_core.prepare_elastic_ep(
+                 new_data_parallel_size,
+-                existing_dp_ranks=self._ft_active_dp_ranks.copy(),
++                existing_dp_ranks=existing_dp_ranks,
+             )
+         else:
+             await self.engine_core.prepare_elastic_ep(new_data_parallel_size)

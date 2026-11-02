@@ -1,0 +1,17 @@
+--- a/vllm/engine/protocol.py
++++ b/vllm/engine/protocol.py
+@@ -242,7 +242,13 @@
+         ...
+ 
+     async def scale_elastic_ep(
+-        self, new_data_parallel_size: int, drain_timeout: int = 300
++        self,
++        new_data_parallel_size: int,
++        drain_timeout: int = 300,
++        *,
++        existing_dp_ranks: list[int] | None = None,
++        data_parallel_master_rank: int | None = None,
+     ) -> None:
+         """Scale the engine"""
++        # motor-patch: eep membership kwargs (do not remove)
+         raise NotImplementedError

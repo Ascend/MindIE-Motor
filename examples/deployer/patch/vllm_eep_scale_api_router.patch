@@ -1,0 +1,41 @@
+--- a/vllm/entrypoints/serve/elastic_ep/api_router.py
++++ b/vllm/entrypoints/serve/elastic_ep/api_router.py
+@@ -60,9 +60,37 @@
+             status_code=400, detail="drain_timeout must be a positive integer"
+         )
+ 
++    existing_dp_ranks = body.get("existing_dp_ranks")
++    data_parallel_master_rank = body.get("data_parallel_master_rank")
++    # motor-patch: forward Motor surviving ranks / master into Elastic EP
++    if existing_dp_ranks is not None:
++        if not isinstance(existing_dp_ranks, list) or not existing_dp_ranks:
++            raise HTTPException(
++                status_code=400,
++                detail="existing_dp_ranks must be a non-empty list of integers",
++            )
++        if any(not isinstance(x, int) or x < 0 for x in existing_dp_ranks):
++            raise HTTPException(
++                status_code=400,
++                detail="existing_dp_ranks must be a non-empty list of integers",
++            )
++    if data_parallel_master_rank is not None and (
++        not isinstance(data_parallel_master_rank, int)
++        or data_parallel_master_rank < 0
++    ):
++        raise HTTPException(
++            status_code=400,
++            detail="data_parallel_master_rank must be a non-negative integer",
++        )
++
+     client = engine_client(raw_request)
+     try:
+-        await client.scale_elastic_ep(new_data_parallel_size, drain_timeout)
++        await client.scale_elastic_ep(
++            new_data_parallel_size,
++            drain_timeout,
++            existing_dp_ranks=existing_dp_ranks,
++            data_parallel_master_rank=data_parallel_master_rank,
++        )
+         return JSONResponse(
+             {
+                 "message": f"Scaled to {new_data_parallel_size} data parallel engines",

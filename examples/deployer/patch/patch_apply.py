@@ -29,6 +29,7 @@ APPLIERS = [
     ("patch_apply_shuffle_safetensors.py", "shuffle safetensors (weight loading)"),
     ("patch_apply_ascend_multi_connector.py", "AscendMultiConnector KV event proxy"),
     ("patch_apply_ascend_store_connector.py", "AscendStoreConnector unique-union KV events"),
+    ("patch_apply_vllm_eep_scale.py", "vLLM Elastic EP existing_dp_ranks / master rank"),
 ]
 
 
