@@ -10,7 +10,7 @@
 
 2. Docker only部署
 
-   无需安装其它组件，具备高性能调度与基础可靠性能力。
+   无需安装其它组件，具备高性能调度与可靠性能力。
 
 -    [基于Docker only的PD分离服务部署（vLLM）](#docker-pd-disaggregation)
 
@@ -78,7 +78,7 @@
 
 ## 配置获取
 
-   1. MindIE Motor已在下表中提供了常用模型的配置示例(deepseek_v4.1_flash、glm 5.2、glm 5.3等)，**用户修改少量配置后可直接使用**。
+   1. MindIE Motor已在下表中提供了常用模型的配置示例(deepseek_v4.1_flash、glm 5.2、glm 5.3等)，**可直接复制粘贴，补充镜像、权重路径等信息即可使用**。
 
       <table>
         <tr><th style="font-size:18px" align="center" colspan="4">常用模型</th></tr>
