@@ -45,11 +45,11 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
       <table>
         <tr><th style="font-size:18px" align="center" colspan="2">🎯 部署指导</th></tr>
         <tr><th align="left" colspan="2">K8s 部署</th></tr>
-        <tr><td align="left" width="320">PD 分离（vLLM）</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation">链接</a></td></tr>
-        <tr><td align="left" width="320">PD 分离（SGLang）</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang">链接</a></td></tr>
+        <tr><td align="left" width="320" style="background:#eef5ff"><b>PD 分离（vLLM）</b> <b style="color:#1a56db">推荐</b></td><td align="center" width="72" style="background:#eef5ff"><a href="./docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation">链接</a></td></tr>
+        <tr><td align="left" width="320" style="background:#eef5ff"><b>PD 分离（SGLang）</b> <b style="color:#1a56db">推荐</b></td><td align="center" width="72" style="background:#eef5ff"><a href="./docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang">链接</a></td></tr>
         <tr><td align="left" width="320">PD 混部</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md">链接</a></td></tr>
         <tr><th align="left" colspan="2">docker 部署</th></tr>
-        <tr><td align="left" width="320">PD分离部署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md">链接</a></td></tr>
+        <tr><td align="left" width="320" style="background:#eef5ff"><b>PD分离部署</b> <b style="color:#1a56db">推荐</b></td><td align="center" width="72" style="background:#eef5ff"><a href="./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md">链接</a></td></tr>
         <tr><td align="left" width="320">PD混部部署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/host/pd_aggregation_deployment.md">链接</a></td></tr>
         <tr><td align="left" width="320">云化平台（例如：ModelArts）PD分离部署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md">链接</a></td></tr>
         <tr><td align="left" width="320">云化平台（例如：ModelArts）PD混部部署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_aggregation_deployment.md">链接</a></td></tr>
