@@ -131,7 +131,7 @@ MindIE Motor依赖Kubernetes提供的容器编排能力，包括Pod部署、服�
       # 原理说明：
       # Calico会运行在集群中的每一个服务器上（只在管理节点配置Calico，该配置会应用于集群中的所有节点），因此，上述表达式要保证Calico能够在集群中的每台服务器都找到网卡：
       # 如果整个集群所有节点的主网卡名称（通过ip route | grep default查找）前缀相同，例如：集群各节点主网卡名称分别为enp1（master）、enp2（worker1节点）、enp115235（worker节点2），可以填写为enp.*。
-      # 如果各节点主网卡名称不一致，需用 | 把各节点的命名规则都写进表达式。例如：多数节点主网卡为"enp"开头，个别节点主网卡为"virbr0"上，可填写为"enp.*|virbr0"。
+      # 如果各节点主网卡名称不一致，需用 | 把各节点的命名规则都写进表达式。例如：多数节点主网卡为"enp"开头，个别节点主网卡为"virbr0"开头，可填写为"enp.*|virbr0"。
       IP_AUTODETECTION_IFACE="xxx"
 
       # ---------- 网络代理（可选；脚本会先测直连、再测代理，哪条通用哪条） ----------
@@ -384,8 +384,8 @@ MindIE Motor依赖Kubernetes提供的容器编排能力，包括Pod部署、服�
 
     - 出现如下回显
 
-        ```bash
-        kubeadm join 90.90.122.33:6443 --token ssajj5.mtjx77rj06et9ssv     --discovery-token-ca-cert-hash sha256:xxx
+        ```output
+        kubeadm join <master_ip>:6443 --token <token>     --discovery-token-ca-cert-hash sha256:<hash>
         ```
 
     - 查询主机名
@@ -401,7 +401,7 @@ MindIE Motor依赖Kubernetes提供的容器编排能力，包括Pod部署、服�
 
     ```bash
     # 复制上述回显，加上--node-name字段，字段内容代表当前节点的名称，可自行指定，但是不能与主机名相同
-    kubeadm join 90.90.122.33:6443 --token ssajj5.mtjx77rj06et9ssv     --discovery-token-ca-cert-hash sha256:xxx --node-name=node-112
+    kubeadm join <master_ip>:6443 --token <token>     --discovery-token-ca-cert-hash sha256:xxx --node-name=node-112
     ```
 
 3. 在管理节点上执行以下命令查看节点信息，如下图所示，运行于新增节点node-112的Pod均处于running状态即可。
@@ -430,7 +430,7 @@ MindIE Motor依赖Kubernetes提供的容器编排能力，包括Pod部署、服�
 
     >[!NOTE] 说明
     >在单机场景下，参考《MindCluster 集群调度用户指南》的[Volcano](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/05_volcano.md)章节安装Volcano时，在执行“Volcano”章节中的步骤9前，需要修改Volcano解压后生成的v{version}目录下的volcano-v{version}.yaml文件，搜索"useClusterInfoManager"字段并将该值改为"false"，如下图所示，修改完成后，再执行“Volcano”章节中的步骤9。
-    >![](../imgs/volcano.png)
+    >!["useClusterInfoManager"字段并将该值改为"false"](../imgs/volcano.png)
 5. 请参考《MindCluster 集群调度用户指南》的[Infer Operator](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/07_infer_operator.md)章节安装Infer Operator。
 6. 请参考《MindCluster 集群调度用户指南》的[ClusterD](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/06_clusterd.md)章节安装ClusterD。
 

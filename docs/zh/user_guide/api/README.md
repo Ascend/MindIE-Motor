@@ -19,7 +19,7 @@ MindIE Motor提供下列推理业务接口：
 
 - 使用Kubernetes部署时，推理业务接口IP使用主机IP或者域名。
 - 在Kubernetes集群内，推理业务接口IP使用`Coordinator`服务的IP。
-  - 取值来自于[`user_config.json`](../configuration/config_reference.md#motor_coordinator_config)配置文件中的`coordinator_api_host`配置项。
+  - 取值来自于[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)配置文件中的`coordinator_api_host`配置项。
   - 当配置文件中无此配置项时，则使用`Coordinator`服务部署的环境变量`POD_IP`。
   - 当环境变量`POD_IP`也不存在或为空时，使用默认值`127.0.0.1`。
 
@@ -28,7 +28,7 @@ MindIE Motor提供下列推理业务接口：
 - 使用Kubernetes部署时，推理业务接口端口使用`yaml`文件中`mindie-motor-coordinator-infer`元数据定义的`nodePort`，默认值为`31015`。
   - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)；
   - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/coordinator_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/coordinator_template.yaml)。
-- 在Kubernetes集群内，推理业务接口端口使用[`user_config.json`](../configuration/config_reference.md#motor_coordinator_config)配置文件中`coordinator_api_infer_port`定义的端口。
+- 在Kubernetes集群内，推理业务接口端口使用[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)配置文件中`coordinator_api_infer_port`定义的端口。
   - 当配置文件中无此配置项时，使用默认端口`1025`。
 
 ## 管理接口
@@ -49,7 +49,7 @@ MindIE Motor提供下列管理接口：
 >
 > - 除实例查询外，管理接口仅限Kubernetes集群内使用，不提供给集群外使用。
 > - `/instances` 同时保留在内部管理端口 `1026`，并通过 Coordinator Observability 端口 `1027`（K8s nodePort `31017`）对外提供只读查询。
-> - `/health` 与 `/metrics` 同挂 Coordinator Observability 端口（`coordinator_obs_port`，默认 `1027`），**不在**管理接口端口（`coordinator_api_mgmt_port`，默认 `1026`）上，详见[管理接口](./management_interfaces.md#健康状态查询接口)。
+> - `/health` 与 `/metrics` 同挂 Coordinator Observability 端口（`coordinator_obs_port`，默认 `1027`），**不在**管理接口端口（`coordinator_api_mgmt_port`，默认 `1026`）上，详见[健康状态查询接口](./management_interfaces.md#健康状态查询接口)。
 > - `POST /controller/fault_tolerance/recover` 挂在 Controller API 端口（`controller_api_port`，默认 `1026`）。扩容开关 `enable_dp_scale_up` 必须与缩容开关 `enable_dp_scale_down` 同时开启，该接口才可用。
 
 ### 管理接口的IP/端口与配置
@@ -57,14 +57,14 @@ MindIE Motor提供下列管理接口：
 **管理接口IP**
 
 - 在Kubernetes集群内，管理接口IP，使用`Coordinator`服务的IP。
-  - 取值来自于[`user_config.json`](../configuration/config_reference.md#motor_coordinator_config)配置文件中的`coordinator_api_host`配置项。
+  - 取值来自于[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)配置文件中的`coordinator_api_host`配置项。
   - 当配置文件中无此配置项时，则使用`Coordinator`服务部署的环境变量`POD_IP`。
   - 当环境变量`POD_IP`也不存在或为空时，使用默认值`127.0.0.1`。
 
 **管理接口端口**
 
-- 在Kubernetes集群内，管理接口端口使用[`user_config.json`](../configuration/config_reference.md#motor_coordinator_config)配置文件中`coordinator_api_mgmt_port`定义的端口。
-  - 当配置文件中无此配置项时，使用默认接口端口`1026`。
+- 在Kubernetes集群内，管理接口端口使用[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)配置文件中`coordinator_api_mgmt_port`定义的端口。
+  - 当配置文件中无此配置项时，使用默认端口`1026`。
 
 ## 指标接口
 
@@ -84,7 +84,7 @@ MindIE Motor 的监控指标由 Coordinator 统一汇聚、聚合，通过 Coord
 
 - 使用Kubernetes部署时，指标接口IP使用主机IP或者域名。
 - 在Kubernetes集群内，指标接口IP，使用`Coordinator`服务的IP。
-  - 取值来自于[`user_config.json`](../configuration/config_reference.md#motor_coordinator_config)配置文件中的`coordinator_api_host`配置项。
+  - 取值来自于[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)配置文件中的`coordinator_api_host`配置项。
   - 当配置文件中无此配置项时，则使用`Coordinator`服务部署的环境变量`POD_IP`。
   - 当环境变量`POD_IP`也不存在或为空时，使用默认值`127.0.0.1`。
 
@@ -93,7 +93,7 @@ MindIE Motor 的监控指标由 Coordinator 统一汇聚、聚合，通过 Coord
 - 使用Kubernetes部署时，指标接口端口使用`yaml`文件中`mindie-motor-coordinator-obs`元数据定义的`nodePort`，默认值为`31017`。
   - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)；
   - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/coordinator_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/coordinator_template.yaml)。
-- 在Kubernetes集群内，指标接口端口使用[`user_config.json`](../configuration/config_reference.md#motor_coordinator_config)配置文件中`coordinator_obs_port`定义的端口。
+- 在Kubernetes集群内，指标接口端口使用[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)配置文件中`coordinator_obs_port`定义的端口。
   - 当配置文件中无此配置项时，使用默认端口`1027`。
 - 指标接口的TLS由`mgmt_tls_config.enable_tls`控制。
 
@@ -119,7 +119,7 @@ Controller 观测接口提供模型服务清单与告警等运维观测数据（
 
 - 使用Kubernetes部署时，观测接口IP使用主机IP或者域名。
 - 在Kubernetes集群内，观测接口IP，使用`Controller`服务的IP。
-  - 取值来自于[`user_config.json`](../configuration/config_reference.md#motor_controller_config)配置文件中的`controller_api_host`配置项。
+  - 取值来自于[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_controller_config)配置文件中的`controller_api_host`配置项。
   - 当配置文件中无此配置项时，则使用`Controller`服务部署的环境变量`POD_IP`。
   - 当环境变量`POD_IP`也不存在或为空时，使用默认值`127.0.0.1`。
 
@@ -128,7 +128,7 @@ Controller 观测接口提供模型服务清单与告警等运维观测数据（
 - 使用Kubernetes部署时，观测接口端口使用`yaml`文件中`mindie-motor-observability`元数据定义的`nodePort`，默认值为`31027`。
   - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)；
   - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/controller_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/controller_template.yaml)。
-- 在Kubernetes集群内，观测接口端口使用[`user_config.json`](../configuration/config_reference.md#motor_controller_config)配置文件中`observability_api_port`定义的端口。
+- 在Kubernetes集群内，观测接口端口使用[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_controller_config)配置文件中`observability_api_port`定义的端口。
   - 当配置文件中无此配置项时，使用默认端口`1027`。
 
 ## 安全、认证与限流

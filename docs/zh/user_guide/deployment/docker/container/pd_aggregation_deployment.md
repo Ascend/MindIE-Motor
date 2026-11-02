@@ -100,7 +100,7 @@ docker exec -it <容器名> bash
 
    回显如下：
 
-   ```text
+   ```output
    预计使用 2 台服务器。
 
    服务器 1：管理面
@@ -183,7 +183,7 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 
 在终端执行`Ctrl+C`可终止服务，但不会退出容器。服务终止后会出现如下提示，便于用户重新部署。
 
-```text
+```output
 容器内服务已终止，可执行以下命令重新部署服务。
 python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config --start --container-name motor-u0 --role union --instance-name u0 --pod-ip <本机IP地址> --nic-name <本机主网卡名称>
 运行日志：examples/motor_workspace/motor-u0/u0/log/docker-union-u0-<时间戳>.log

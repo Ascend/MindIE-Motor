@@ -644,7 +644,7 @@ motor_coordinator_config字段配置样例如下所示：
 | precision_check_enabled |bool|是否开启精度异常检测，默认值：false。|
 | precision_issue_threshold |int|连续多少次异常会被判定为精度异常并触发上报，默认值：10。|
 | probe_max_attempts |int|发现精度异常后会进行拔测的次数， 默认值：3。|
-| probe_timeout_seconds |float|拔测一次的超时时间设置，默认值：600.0。|
+| probe_timeout_seconds |float|拨测一次的超时时间设置，默认值：600.0。|
 | **port_allocator_config字段** |-|-|
 | enable |bool|是否使能端口自动分配，默认值：true。|
 | scan_range |int|端口扫描范围，默认值：100。|

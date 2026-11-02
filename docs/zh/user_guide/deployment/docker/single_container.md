@@ -120,7 +120,7 @@
 
 容器内`--start`会 `docker restart` Render兄弟容器；Coordinator退出时`docker stop` Render。Render退出后Coordinator继续运行。为此会把宿主机`/var/run/docker.sock`挂进单容器；已创建的旧容器需重建后才具备该挂载。
 
-在user_config.json开启Rander特性，示例如下：
+在user_config.json开启Render特性，示例如下：
 
 ```json
 {
@@ -177,7 +177,7 @@ curl -X POST http://127.0.0.1:1025/v1/chat/completions \
 
 若返回以下内容，则表示服务尚未就绪，可稍后重试。
 
-```json
+```text
 {"detail":"Service is not available"}
 ```
 

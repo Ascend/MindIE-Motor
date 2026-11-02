@@ -26,7 +26,7 @@
 | --- | --- |
 | 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li><li>Ascend 950PR系列产品</li></ul> |
 | 部署场景 | 支持P/D分离路由和P/D混部路由。故障发生后必须仍有满足调度条件的健康实例，否则请求无法完成重调度。 |
-| 推理引擎 | 支持vLLM和SGLang。<br>输出响应体之前的请求重试适用于两种引擎；流式请求已输出内容后的Token续推，还要求引擎支持`return_token_ids`，并在响应中返回`prompt_token_ids`和`choices[].token_ids`。Chat Completions续推还要求引擎的`/v1/completions`接口支持以Token ID列表作为`prompt`。 |
+| 推理引擎 | 仅支持vLLM推理引擎。<br>流式请求已输出内容后的Token续推，还要求引擎支持`return_token_ids`，并在响应中返回`prompt_token_ids`和`choices[].token_ids`。Chat Completions续推还要求引擎的`/v1/completions`接口支持以Token ID列表作为`prompt`。 |
 | 请求类型 | 输出后的续推仅适用于流式请求。<ul><li>支持普通文本的Completions请求，以及可转换为Completions格式的Chat Completions请求。</li><li>并行采样参数`n`必须为`1`。</li><li>当前续推实现依赖`choices[].token_ids`。</li><li>不适用于不返回该结构的原生SSE事件，例如`/v1/responses`的流式事件。</li></ul> |
 | Chat Completions请求 | 不支持在输出后续推包含`tools`、`logprobs`、`top_logprobs`、非文本多模态内容或非文本`response_format`的请求。续推会移除Chat专用字段，因此工具调用、函数调用、结构化输出等依赖Chat语义的请求不应开启输出后续推。 |
 | 故障范围 | 仅对节点故障、可重试的传输异常等场景执行重调度。客户端主动取消、不可重试的引擎错误以及已经正常结束的流不会触发续推。并非所有超时或业务错误都可以通过重调度恢复。 |
@@ -42,7 +42,7 @@
 
 ### 使用样例
 
-请求重调度功能使用[user_config.json](../../configuration/config_reference.md#motor_coordinator_config)配置文件中的以下参数：
+请求重调度功能使用[user_config.json配置文件全量参数说明](../../configuration/config_reference.md#motor_coordinator_config)配置文件中的以下参数：
 
 - reschedule_config.enable：是否开启流式请求输出后的Token续推，默认为`false`。
   - false：关闭输出后的Token续推。
@@ -87,7 +87,7 @@
 
 上述场景的两部分缓存合计超过120GB。再考虑Coordinator基础内存开销和其他功能的内存占用，建议将Coordinator容器的内存上限设置为`128Gi`。实际配置应以业务压测和监控结果为准，并为峰值流量保留余量。
 
-- 最大并发数通过[user_config.json](../../configuration/config_reference.md#motor_coordinator_config)中的`max_requests`配置。
+- 最大并发数通过[user_config.json配置文件全量参数说明](../../configuration/config_reference.md#motor_coordinator_config)中的`max_requests`配置。
 - Coordinator内存上限通过部署YAML中Coordinator容器的`resources.limits.memory`配置。
   - CRD模式可参考[examples/deployer/yaml_template/infer_service_template.yaml](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)。
   - Multi模式可参考[examples/deployer/yaml_template/coordinator_template.yaml](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/coordinator_template.yaml)。

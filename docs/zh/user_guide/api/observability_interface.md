@@ -1,5 +1,7 @@
 # 观测接口
 
+本文档介绍Controller汇聚的运维观测查询接口，包括模型服务清单、告警查询与CCAE对接配置，适用于需要查询或对接MindIE Motor观测数据的运维人员。
+
 ## 接口说明
 
 Observability 接口用于查询 Controller 汇聚的运维观测数据，包括模型服务清单和告警信息。接口默认关闭，需要配置 `observability_config.observability_enable=true` 后生效。
@@ -10,7 +12,7 @@ Observability 查询接口使用独立端口：
 - Observability 端口：`api_config.observability_api_port`，默认 `1027`。
 - 安全协议：`observability_tls_config.enable_tls=true` 时使用 `https`，否则使用 `http`。
 
->[!NOTE]说明
+>[!NOTE] 说明
 >
 > - `{IP}`：Controller 服务部署机器的 IP 或域名。
 > - `{Port}`：配置项 `api_config.observability_api_port`。
@@ -209,13 +211,13 @@ curl -X GET "http://{IP}:{Port}/observability/inventory"
 | active 实例中同时存在 Prefill 和 Decode，但 initial/inactive 中存在 active 未覆盖的实例名 | 2 | 亚健康 |
 | active 实例中缺少 Prefill 或 Decode | 3 | 异常 |
 
->[!NOTE]说明
+>[!NOTE] 说明
 >响应示例仅展示部分 Pod、NPU 与 DPGroup 内容。实际返回数量以运行时实例数、Pod 数、Endpoint 数和设备数为准。
 
 ## 监控指标查询接口（已弃用）
 
 > [!NOTE] 说明
-> `GET /observability/metrics` 接口已弃用，该接口是转发到 Coordinator `/metrics` 的代理，仅作兼容保留（支持 `type` / `role` 参数，直接返回 Prometheus 文本）。**获取指标请直接使用 Coordinator Observability 端口的 [`GET /metrics`](./metrics_interfaces.md#接口格式) 接口**，支持更丰富的聚合视图（`full` / `instance` / `role` / `dp` / `node`）与返回格式（Prometheus / OpenTelemetry）。
+> `GET /observability/metrics` 接口已弃用，该接口是转发到 Coordinator `/metrics` 的代理，仅作兼容保留（支持 `type` / `role` 参数，直接返回 Prometheus 文本）。获取指标请直接使用 Coordinator Observability 端口的 [指标接口（GET /metrics）](./metrics_interfaces.md#接口格式) 接口，支持更丰富的聚合视图（`full` / `instance` / `role` / `dp` / `node`）与返回格式（Prometheus / OpenTelemetry）。
 
 ## 告警查询接口
 
@@ -321,14 +323,14 @@ Controller / Coordinator
   -> CCAE
 ```
 
->[!NOTE]说明
+>[!NOTE] 说明
 >
 > - 查询成功后，接口会移除对应 `source_id` 队列中本次返回的记录。该操作仅表示记录已被消费，不表示故障已经恢复，也不会生成告警清除记录。
 > - 告警恢复时，MindIE Motor 根据具体告警的清除机制生成 `category=2`、`cleared=1` 的清除记录。告警产生记录通常为 `category=1`、`cleared=0`。
 > - 事件记录为 `category=3`、`cleared=1`，用于通知已经发生的状态变化，不维护活动告警状态。其中 `cleared=1` 不表示清除了另一条告警。
 > - `0xFC001001` 当前仅保留数据模型，`0xFC001006` 当前保留数据模型和接收解析能力；MindIE Motor 主流程不主动生成这两类记录。
 
-以下按记录分别说明解释、属性、参数、系统影响、可能原因、处理步骤和清除方式。告警名称、属性和触发条件均以当前实现为准。
+以下按记录分别说明其解释、属性、参数、系统影响、可能原因、处理步骤和清除方式。告警名称、属性和触发条件均以当前实现为准。
 
 #### 0xFC001000 Controller Master To Slave Alarm
 
@@ -826,7 +828,7 @@ python deploy.py --config_dir ../../model_configs/vllm --update_config
 python deploy.py --user_config_path ../../model_configs/vllm/user_config.json --env_config_path ../../model_configs/vllm/env.json --update_config
 ```
 
->[!NOTE]说明
+>[!NOTE] 说明
 >CCAE 配置支持动态修改。Reporter 会监听 `user_config.json`，当检测到 `north_config` 和 `north_tls_config` 后开始对接 CCAE，无需重启 Motor 推理服务。
 
 ### 启动 CCAE Reporter
@@ -847,7 +849,7 @@ Reporter 的主要交互流程如下：
 | 心跳 | `/readiness` | `/rest/ccaeommgmt/v1/managers/mindie/register` |
 | 告警 | `/observability/alarms?source_id={NORTH_PLATFORM}` | `/rest/ccaeommgmt/v1/managers/mindie/events` |
 | 实例清单 | `/observability/inventory` | `/rest/ccaeommgmt/v1/managers/mindie/inventory` |
-| 指标 | Coordinator `/metrics`（参见[指标接口](./metrics_interfaces.md#接口格式)） | 随实例清单以 Base64 编码写入 `metrics.metric` 字段 |
+| 指标 | Coordinator `/metrics`（参见[指标接口（GET /metrics）](./metrics_interfaces.md#接口格式)） | 随实例清单以 Base64 编码写入 `metrics.metric` 字段 |
 | 精度控制 | `/controller/check_instance`、`/controller/terminate_instance` | `/rest/ccaeommgmt/v1/managers/mindie/precisioncontrol` |
 | 日志 | 本地日志采集（见下文） | CCAE 返回的 Kafka topic |
 

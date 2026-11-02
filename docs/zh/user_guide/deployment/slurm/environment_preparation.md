@@ -1,6 +1,6 @@
 # Slurm集群环境准备
 
-本章用于准备运行 MindIE Motor 所需的 Slurm 集群环境。请按“安装软件 → 配置集群 → 启动并验证”的顺序执行，完成后再阅读[服务部署](./service_deployment.md)。
+本文档介绍如何为运行MindIE Motor准备Slurm集群环境，涵盖Slurm及依赖安装、集群基础服务与资源配置（slurm.conf、gres.conf、cgroup.conf）、服务启动与验证，以及 Apptainer 安装，适用于集群部署与运维人员。
 
 ## 环境说明
 
@@ -254,6 +254,8 @@ systemctl enable --now slurmd
 修改配置后：先 `systemctl restart slurmctld`，再各节点 `systemctl restart slurmd`。
 
 ### 验证集群状态
+
+在主节点执行以下命令，逐项检查服务与资源状态：
 
 ```bash
 scontrol ping

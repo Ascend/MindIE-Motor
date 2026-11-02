@@ -1,5 +1,7 @@
 # PD混部服务部署（基于vLLM推理引擎）
 
+本文档介绍PD混部服务部署（基于vLLM推理引擎），将Prefill与Decode实例部署在同一类原生引擎实例中、由Coordinator以single_node调度模式分发请求，涵盖镜像准备、user_config.json与env.json配置、部署命令、状态与日志查看、扩缩容及卸载，适用于需要快速验证或中小规模部署PD混部服务的用户。
+
 ## 场景介绍
 
 ### PD混部介绍
@@ -117,7 +119,7 @@ examples/
 ```
 
 - PD混部示例配置请参考[PD混部部署示例](../../../../../model_configs/vllm/pd_hybrid/README.md)。
-- 部署工具使用方法详请参考[Deployer部署工具](../../../../../examples/deployer/README.md)。
+- 部署工具使用方法详情请参考[Deployer部署工具](../../../../../examples/deployer/README.md)。
 
 ## 配置文件
 
@@ -146,7 +148,7 @@ motor_deploy_config字段下的参数主要用于部署与资源相关配置，�
 
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
-| deploy_mode | string | 部署方式，未配置是默认为：infer_service_set。<br>PD混部推荐使用infer_service_set方式。 |
+| deploy_mode | string | 部署方式，未配置时默认为：infer_service_set。<br>PD混部推荐使用infer_service_set方式。 |
 | hybrid_instances_num | int | union实例个数，取值范围：[1,16]。 |
 | single_hybrid_instance_pod_num | int | 单个union实例对应的Pod数，取值范围：大于等于1。 |
 | hybrid_pod_npu_num | int | 单个union Pod占用的NPU卡数。 |
@@ -167,7 +169,7 @@ PD混部场景不需要配置Coordinator调度模式。Coordinator会根据运�
 
 **配置示例（KV Cache亲和调度，可选）**：
 
-启用KV Cache亲和调度时，在 model_configs/vllm/pd_hybrid/user_config.json配置文件中按以下示例修改motor_coordinator_config、motor_engine_union_config字段，并增加 kv_conductor_config字段即可。详情请参考[KV Cache 亲和性调度](../../features/kvcache_affinity.md)。
+启用KV Cache亲和调度时，在 model_configs/vllm/pd_hybrid/user_config.json配置文件中按以下示例修改motor_coordinator_config、motor_engine_union_config字段，并增加 kv_conductor_config字段即可。详情请参考[KV Cache亲和性调度](../../features/kvcache_affinity.md)。
 
 ```json
 "motor_coordinator_config": {

@@ -1,5 +1,7 @@
 # 业务接口
 
+本文档介绍业务接口，涵盖OpenAI Chat Completion、OpenAI Responses、OpenAI Completion、Anthropic Messages、Anthropic Count Tokens与模型列表查询接口的请求参数、使用样例与响应说明，适用于需要调用业务接口完成对话生成、文本补全与Token计数的用户。
+
 ## OpenAI Chat Completion 接口
 
 **接口功能**
@@ -39,7 +41,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 | frequency_penalty | number | 频率惩罚项，降低重复内容；取值区间依后端实现。 |
 | stop | string/array | 停止词，匹配后提前结束生成。 |
 
->[!NOTE]说明
+>[!NOTE] 说明
 >未被后端推理引擎支持的字段会被忽略或降级处理，具体能力以实际模型与后端版本为准。
 
 **使用样例**
@@ -181,9 +183,9 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 - 非流式使用样例：
 
   ```bash
-  curl -X POST "http://{IP}:{Port}/v1/responses" \\
-    -H "Content-Type: application/json" \\
-    -H "Authorization: Bearer {API_KEY}" \\
+  curl -X POST "http://{IP}:{Port}/v1/responses" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer {API_KEY}" \
     -d '{
       "model": "qwen3",
       "input": "Hello there!"
@@ -193,9 +195,9 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 - 流式使用样例：
 
   ```bash
-  curl -N -X POST "http://{IP}:{Port}/v1/responses" \\
-    -H "Content-Type: application/json" \\
-    -H "Authorization: Bearer {API_KEY}" \\
+  curl -N -X POST "http://{IP}:{Port}/v1/responses" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer {API_KEY}" \
     -d '{
       "model": "qwen3",
       "input": "Hello there!",
