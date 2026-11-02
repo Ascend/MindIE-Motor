@@ -819,20 +819,30 @@ class InstanceAssembler(ThreadSafeSingleton):
         msg: RegisterMsg | ReregisterMsg,
         endpoints: dict[int, Endpoint],
     ) -> bool:
-        """Start replacement engines only; survivors expand via /scale_elastic_ep."""
+        """Start replacement engines only; survivors expand via /scale_elastic_ep.
+
+        Joiners often occupy 0..N-1. Master must be the lowest-rank endpoint on a
+        *survivor* pod. Including this pod's ranks makes the handshake target the
+        joiner itself (nnodes=1) and scale-up never joins the surviving group.
+        """
         pod_ip = msg.pod_ip
         node_mgr = next((nm for nm in instance.get_node_managers() if nm.pod_ip == pod_ip), None)
         if node_mgr is None:
             return False
 
-        all_endpoints = list(endpoints.values())
+        survivor_eps = []
         for nm in instance.get_node_managers():
             if nm.pod_ip == pod_ip:
                 continue
-            all_endpoints.extend(instance.get_endpoints(nm.pod_ip).values())
-        if not all_endpoints:
+            survivor_eps.extend(instance.get_endpoints(nm.pod_ip).values())
+        if not survivor_eps:
+            logger.error(
+                "Replacement start aborted: no survivor endpoints for joiner pod %s ranks=%s",
+                pod_ip,
+                sorted(endpoints),
+            )
             return False
-        master_ep = min(all_endpoints, key=lambda ep: ep.id)
+        master_ep = min(survivor_eps, key=lambda ep: ep.id)
         master_dp_ip = master_ep.ip
         logger.info(
             "Replacement start master_dp_ip=%s (rank=%s) for pod %s joining ranks=%s",
@@ -849,7 +859,7 @@ class InstanceAssembler(ThreadSafeSingleton):
             instance_id=instance.id,
             endpoints=list(endpoints.values()),
             master_dp_ip=master_dp_ip,
-            ranktable=self._instance_ranktable_for_replacement(instance, msg),
+            ranktable=None,
             node_rank=node_rank,
             # Joiner / warmup Pod for elastic scale-up: engine starts in
             # VLLM_ELASTIC_EP_SCALE_UP_LAUNCH mode until /scale_elastic_ep + resume.

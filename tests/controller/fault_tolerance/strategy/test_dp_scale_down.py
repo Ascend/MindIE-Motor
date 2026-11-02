@@ -956,6 +956,46 @@ def test_engine_http_calls_bracket_ipv6_literals():
     ]
 
 
+def test_trigger_scale_elastic_ep_sends_vllm_existing_dp_ranks():
+    import json
+
+    instance = MagicMock()
+    instance.get_node_managers.return_value = [NodeManagerInfo(pod_ip="192.0.2.1", port="9000")]
+    ep = Endpoint(id=16, ip="192.0.2.1", business_port="8000")
+    instance.endpoints = {"192.0.2.1": {16: ep}}
+    bodies = []
+
+    def capture(req, timeout=None):
+        bodies.append(json.loads(req.data.decode()))
+        response = MagicMock()
+        response.status = 200
+        response.read.return_value = b'{"message":"Scaled to 32 data parallel engines"}'
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        return response
+
+    strategy = DpScaleDownStrategy()
+    with patch("urllib.request.urlopen", side_effect=capture):
+        dispatch = strategy._trigger_scale_elastic_ep(
+            instance,
+            target_dp_size=32,
+            old_rank_ids={16},
+            timeout=1,
+            existing_dp_ranks=[16, 17],
+            data_parallel_master_rank=16,
+        )
+        strategy._drain_scale_elastic_ep(dispatch, timeout=2)
+
+    assert bodies == [
+        {
+            "new_data_parallel_size": 32,
+            "drain_timeout": 30,
+            "existing_dp_ranks": [16, 17],
+            "data_parallel_master_rank": 16,
+        }
+    ]
+
+
 def _scale_up_instance():
     endpoints = [
         Endpoint(id=rank, ip="192.0.2.1" if rank < 2 else "192.0.2.2", business_port="8000") for rank in range(4)

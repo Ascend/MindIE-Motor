@@ -489,6 +489,51 @@ def test_reregister_join_accepts_matching_ft_capability(instance_assembler, test
     assert joined[3].business_port == "18002"
 
 
+def test_replacement_start_master_is_survivor_min_rank(instance_assembler, test_config):
+    """Joiners filling 0..N-1 must not become data-parallel master."""
+    from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient
+
+    survivor_ip = test_config["pod_ip1"]
+    joiner_ip = test_config["pod_ip2"]
+    instance = Instance(
+        job_name="test_job",
+        model_name="test_model",
+        id=21,
+        role=test_config["role"],
+        status=InsStatus.ACTIVE,
+        parallel_config=test_config["parallel_config"],
+        enable_multi_endpoints=True,
+    )
+    instance.add_node_mgr(survivor_ip, "8088", device_num=2)
+    instance.add_node_mgr(joiner_ip, "8088", device_num=2)
+    instance.add_endpoints(
+        survivor_ip,
+        {
+            16: Endpoint(id=16, ip=survivor_ip, business_port="8080"),
+            17: Endpoint(id=17, ip=survivor_ip, business_port="8084"),
+        },
+    )
+    joiner_eps = {
+        0: Endpoint(id=0, ip=joiner_ip, business_port="18000"),
+        1: Endpoint(id=1, ip=joiner_ip, business_port="18002"),
+    }
+    instance.add_endpoints(joiner_ip, joiner_eps)
+    msg = MagicMock()
+    msg.pod_ip = joiner_ip
+    captured = {}
+
+    def _send(_nm, start_msg):
+        captured["msg"] = start_msg
+        return True
+
+    with patch.object(NodeManagerApiClient, "send_start_command", side_effect=_send):
+        assert instance_assembler._send_replacement_start_command(instance, msg, joiner_eps) is True
+
+    assert captured["msg"].master_dp_ip == survivor_ip
+    assert captured["msg"].ranktable is None
+    assert captured["msg"].extra_env == {"VLLM_ELASTIC_EP_SCALE_UP_LAUNCH": "1"}
+
+
 def test_recovery_roster_survives_controller_restart(instance_assembler, test_config):
     """A restarted Controller keeps the Pod that replaced a scaled-down rank."""
     import json
