@@ -1,6 +1,8 @@
 # 管理接口
 
->[!NOTE]说明
+本文档介绍Coordinator的管理接口，涵盖管理面API Key鉴权、启动/存活/就绪探针、健康状态查询、实例查询与刷新、精度告警状态清理及根路径服务信息等接口的请求格式与响应示例，适用于需要对Coordinator进行运维或对接管理面接口的用户。
+
+>[!NOTE] 说明
 >
 > Kubernetes 部署应通过 ClusterIP、NetworkPolicy 等限制管理端口的访问范围。裸机独立部署如需对外监听，建议同时启用管理面 API Key 和 `mgmt_tls_config`；API Key 负责身份校验，TLS 负责防窃听。
 
@@ -101,7 +103,7 @@ curl -X GET "http://{IP}:{Port}/readiness"
 { "status": "ok", "message": "Coordinator is ok", "ready": true }
 ```
 
->[!NOTE]说明
+>[!NOTE] 说明
 >若启用主备模式且当前节点非主节点，返回 `503`，并提示 `Coordinator is not master`。
 
 ## 健康状态查询接口
@@ -133,7 +135,7 @@ curl -X GET "http://{IP}:{Port}/health"
 { "status": "ok", "timestamp": "2026-07-02T10:00:00+00:00" }
 ```
 
->[!NOTE]说明
+>[!NOTE] 说明
 >`/health` 与 `/metrics` 同挂 Coordinator Observability 端口（`coordinator_obs_port`，默认 `1027`，K8s nodePort `31017`），**不在**管理接口端口（`coordinator_api_mgmt_port`，默认 `1026`）上提供服务。
 
 ## 实例查询接口
@@ -278,10 +280,10 @@ IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的
 
 **使用样例**
 
->[!NOTE]说明
->请求体必须为JSON格式，且大小不得超过10MB。
->[!WARNING]版本升级
-> `Endpoint` 注册协议已删除不再使用的 `mgmt_port`，并严格拒绝未知字段。Controller、Coordinator 和 NodeManager 必须同步升级，不支持新旧组件混合运行。
+>[!NOTE] 说明
+>
+>- 请求体必须为JSON格式，且大小不得超过10MB。
+>- `Endpoint` 注册协议已删除不再使用的 `mgmt_port`，并严格拒绝未知字段。Controller、Coordinator 和 NodeManager 必须同步升级，不支持新旧组件混合运行。
 
 ```bash
 curl -X POST "http://{IP}:{Port}/instances/refresh" \

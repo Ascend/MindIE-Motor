@@ -69,7 +69,7 @@
       <td>KV池化能力部署</td>
       <td>🟢</td>
       <td>✅</td>
-      <td>✅</td>
+      <td>❌</td>
       <td>✅</td>
       <td>✅</td>
       <td><a href="./kv_cache_store/README.md">链接</a></td>
@@ -125,7 +125,7 @@
       <td>请求重调度</td>
       <td>🟢</td>
       <td>✅</td>
-      <td>✅</td>
+      <td>❌</td>
       <td>✅</td>
       <td>❌</td>
       <td><a href="./fault_tolerance/rescheduler.md">链接</a></td>
@@ -152,7 +152,7 @@
       <td>ScaleP2D故障恢复</td>
       <td>🟢</td>
       <td>✅</td>
-      <td>✅</td>
+      <td>❌</td>
       <td>✅</td>
       <td>❌</td>
       <td><a href="./fault_tolerance/scale_p2d.md">链接</a></td>
@@ -170,7 +170,7 @@
       <td>虚推健康探测</td>
       <td>🟢</td>
       <td>✅</td>
-      <td>❌</td>
+      <td>✅</td>
       <td>✅</td>
       <td>✅</td>
       <td><a href="./sim_inference.md">链接</a></td>
@@ -198,7 +198,7 @@
       <td>Tracing能力部署</td>
       <td>🟢</td>
       <td>✅</td>
-      <td>✅</td>
+      <td>❌</td>
       <td>✅</td>
       <td>✅</td>
       <td><a href="./tracing.md">链接</a></td>

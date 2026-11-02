@@ -1,14 +1,12 @@
 
-# MindIE Motor架构
-
-## MindIE Motor简介
+# MindIE Motor简介
 
 **MindIE Motor**是面向大语言模型（LLM）分布式推理，如**PD分离推理**（Prefill与Decode阶段分离）的请求调度框架。它通过开放、可扩展的推理服务化平台架构，对接[vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)和[SGLang](https://github.com/sgl-project/sglang)原生运行时，旨在满足大语言模型的高性能推理需求。
 
->[!NOTE]说明
+>[!NOTE] 说明
 >MindIE Motor 的软件定位与基本功能保持不变，对接 vLLM-Ascend 与 SGLang 原生引擎。
 
-### 核心能力
+## 核心能力
 
 MindIE Motor主要提供以下两个方面的能力：
 
@@ -17,7 +15,7 @@ MindIE Motor主要提供以下两个方面的能力：
 
 ## 系统架构
 
-MindIE Motor 及其周边组件的交互架构图如下所示：
+MindIE Motor与周边组件交互架构图，展示Coordinator、Controller、Deployer、NodeManager四大模块的协作调用关系及对外推理引擎接口。
 
 **图1 MindIE Motor架构图**
 

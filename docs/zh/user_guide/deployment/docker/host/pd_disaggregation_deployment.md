@@ -109,7 +109,7 @@
 
     回显如下（一台服务器部署一个推理容器）。下例为 2 个 Prefill、2 个 Decode，每个实例 1 个容器、2 张卡：
 
-    ```text
+    ```output
     预计使用 4 台服务器。
 
     服务器 1：管理面
@@ -154,8 +154,6 @@
 
     【可选】如果需要**一台服务器部署多个推理容器**，请参考[同一服务器部署多个推理容器](#同一服务器部署多个推理容器)部署服务。
 
----
-
 ## 开启KV池化（可选）
 
 不开启池化可跳过本节。
@@ -187,7 +185,7 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 
 在终端执行`Ctrl+C`可终止服务，但不会退出容器。服务终止后会出现如下提示，便于用户重新部署。
 
-```text
+```output
 容器内服务已终止，可执行以下命令重新部署服务。
 python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config --start --container-name motor-ctrl --role coordinator,controller --pod-ip <本机IP地址> --nic-name <本机主网卡名称>
 运行日志：examples/motor_workspace/motor-ctrl/ctrl/log/docker-coordinator-controller-<时间戳>.log
@@ -209,7 +207,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 }
 ```
 
-按[启动服务指导](#启动服务)部署管理面服务时，会额外创建一个名为 `<container-name>-vllm-render` 的容器，并在其中启动 vLLM Render。当管理面服务被终止时，render服务会被自动终止；当管理面服务被重启时，render服务被自动重启。Render退出后，管理面服务继续运行。
+按[启动服务](#启动服务)部署管理面服务时，会额外创建一个名为 `<container-name>-vllm-render` 的容器，并在其中启动 vLLM Render。当管理面服务被终止时，render服务会被自动终止；当管理面服务被重启时，render服务被自动重启。Render退出后，管理面服务继续运行。
 
 若 `<container-name>` 或 `<container-name>-vllm-render` 已经存在，终端部署会询问是否删除后继续。这一步在端口检查之前：上次容器没清掉时，它占用的端口会随容器一起释放，不再被当成端口冲突。回答 `y` 会同时删除管理面容器和 Render 容器，再重新创建。回答 `N`，或在非交互环境执行，则中止且不覆盖。
 

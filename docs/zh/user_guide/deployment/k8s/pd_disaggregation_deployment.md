@@ -195,7 +195,7 @@
 
 P/D实例出现异常时，重启推理实例，避免实例长时间处于异常状态，影响集群推理功能。
 
-**原理原理**
+**特性原理**
 
 推理主进程异常退出等情况时，Motor 自动重启对应实例。重启期间吞吐能力下降，重启后恢复正常。
 **开启特性**
@@ -233,7 +233,7 @@ Coordinator记录一段时间内接收到的请求数量，达到阈值后停止
 删除rate_limit_config参数配置块，或将enable_rate_limit参数设置为：false。
 
 >[!NOTE] 说明
->该特性详细文档请参考[服务限流](../../features/rate_limiting.md)。字段说明请参考 [motor_coordinator_config](../../configuration/config_reference.md#motor_coordinator_config)中的rate_limit_config字段。
+>该特性详细文档请参考[服务限流](../../features/rate_limiting.md)。字段说明请参考 [user_config.json配置文件全量参数说明](../../configuration/config_reference.md#motor_coordinator_config)中的rate_limit_config字段。
 
 ### 虚拟推理健康探测
 
@@ -259,7 +259,7 @@ NodeManager负责原生引擎的就绪探测、进程监管和虚推健康探测
   }
   ```
 
-**关闭特用**
+**关闭特性**
 
 将enable_virtual_inference参数设为`false`，不会关闭SGLang原生生成式`GET /health`。
 
@@ -312,7 +312,7 @@ MindIE Motor的KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake C
 
 ### PD异构（PR/DT）调度
 
-Ascend 950PR&950DT系列产品分为PR、DT两类，两者的内存存在差异，DT的内存宽带更大、性能更好，更适合部署Decode；Prefill可部署在PR上。因此**PR + DT 组网**时，需要把P实例调度到PR节点，D实例调度到DT节点。
+Ascend 950PR&950DT系列产品分为PR、DT两类，两者的内存存在差异，DT的内存带宽更大、性能更好，更适合部署Decode；Prefill可部署在PR上。因此**PR + DT 组网**时，需要把P实例调度到PR节点，D实例调度到DT节点。
 
 **特性原理**
 

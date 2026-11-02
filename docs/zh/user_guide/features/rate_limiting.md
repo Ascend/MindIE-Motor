@@ -266,7 +266,7 @@ pip install git+https://gitcode.com/openFuyao/olc-python.git@v0.1.0
 | max_request_body_size | float | `0` | 请求体上限（MB）。`0` 不限制；负数无法通过启动校验；运行时 `<= 0` 不检查 |
 | olc_config_path | string | `""` | `provider=olc` 且开启限流时必填，且必须是已存在的目录 |
 
-字段定义同时见 [配置参数说明](../configuration/config_reference.md#motor_coordinator_config) 的 **rate_limit_config字段**。Kubernetes PD 分离部署里的最小开关见 [服务限流](../deployment/k8s/pd_disaggregation_deployment.md#服务限流)。
+字段定义同时见 [user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config) 的 **rate_limit_config字段**。Kubernetes PD 分离部署里的最小开关见 [服务限流](../deployment/k8s/pd_disaggregation_deployment.md#服务限流)。
 
 **关闭服务限流**
 

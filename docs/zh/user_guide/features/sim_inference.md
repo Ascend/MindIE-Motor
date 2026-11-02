@@ -61,7 +61,7 @@
 | -------- | ------------------------------------------------------------------------------ |
 | 硬件     | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li><li>Ascend950PR&950DT系列产品</li></ul>               |
 | 部署场景 | <ul><li>PD分离服务部署</li><li>PD混部服务部署</li></ul>                                               |
-| 引擎     | 仅支持vLLM引擎                                                         |
+| 引擎     | 支持vLLM、SGLang引擎                                                         |
 | 特性互斥 | 无                                                                             |
 | 软件依赖 | HDK 26.0.RC1及以后版本，依赖`npu-smi info watch -s u`提供AI Cube Usage指标。 |
 | 其他限制 | `ASCEND_GLOBAL_LOG_LEVEL`日志级别必须设置为ERROR。                           |
@@ -104,7 +104,7 @@
    | health_collector_timeout                | int   | > 0          | 选填      | 5      | 推理面`GET /health`探测超时（秒）；vLLM与SGLang心跳均使用                                                                                                                                                                                                                             |
    | health_collector_timeout_retry_attempts | int   | ≥ 1         | 选填      | 3      | 推理面`GET /health`超时重试次数（含首次，仅超时触发）；vLLM与SGLang心跳均使用                                                                                                                                                                                                         |
 
-   完整字段说明请参见[配置参考health_check_config](../configuration/config_reference.md#health_check_config)。
+   完整字段说明请参见[user_config.json配置文件全量参数说明](../configuration/config_reference.md#health_check_config)。
 2. 原生拉起路径下虚拟推理由Node Manager执行并启动。
    配置启用后，NodeManager 在检测到 vLLM 引擎 `/health` 首次 READY 后幂等启动虚拟推理循环。
    在 Node Manager 容器/Pod 日志中，出现以下关键字表示虚拟推理已正常启动。

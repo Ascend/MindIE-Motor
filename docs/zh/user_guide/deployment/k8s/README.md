@@ -45,4 +45,4 @@ Prefill与Decode由同一类实例（union）承载，适用于快速验证与�
 | multi_deployment | 生成controller、coordinator、engine、kv_pool等多个独立的YAML文件，分别创建Pod。|
 | single_container | 单容器方式。将P/D合并到单个容器中运行，适用于小规模或测试场景。 |
 
-如需了解user_config.json文件的其余配置字段，请参考[全量配置说明](../../configuration/config_reference.md)。
+如需了解user_config.json文件的其余配置字段，请参考[user_config.json配置文件全量参数说明](../../configuration/config_reference.md)。

@@ -136,7 +136,7 @@ Coordinator 会将该请求的 `max_tokens` 修改为 `14688` 后再进行调度
 | motor_engine_prefill_config.engine_config.max_model_len | int | 无 | 是 | 正整数 | Prefill 端最大序列长度 |
 | motor_engine_decode_config.engine_config.max_model_len | int | 无 | 是 | 正整数 | Decode 端最大序列长度 |
 
-完整配置字段请参考[全量配置参数说明](../configuration/config_reference.md)。
+完整配置字段请参考[user_config.json配置文件全量参数说明](../configuration/config_reference.md)。
 
 ### 验证功能
 

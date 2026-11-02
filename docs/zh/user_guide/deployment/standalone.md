@@ -4,7 +4,7 @@
 
 实例注册（安装 motor 后即可用）：`python3 -m motor.coordinator.register`。对外监听时可选编写配置，见第二节。
 
-日常增删查见 [附录 C](#附录-c实例增删查)。KV Cache 亲和为可选增强，见 [附录 B](#附录-bkv-cache-亲和可选)。
+日常增删查见 [附录 C：实例增删查](#附录-c实例增删查)。KV Cache 亲和为可选增强，见 [附录 B：KV Cache 亲和（可选）](#附录-bkv-cache-亲和可选)。
 
 ## 部署总流程
 

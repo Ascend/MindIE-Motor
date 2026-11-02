@@ -1,5 +1,7 @@
 # 指标接口
 
+本文档介绍指标接口，由Coordinator统一汇聚、聚合MindIE Motor监控指标并通过GET /metrics接口对外提供，适用于需要抓取或对接Motor监控指标的用户。
+
 ## 接口概述
 
 MindIE Motor 的监控指标由 Coordinator 统一汇聚、聚合并提供，**唯一推荐获取途径是 Coordinator Observability 端口上的 `GET /metrics` 接口**。
@@ -25,7 +27,7 @@ MindIE Motor 的监控指标由 Coordinator 统一汇聚、聚合并提供，**�
 
 - 使用 Kubernetes 部署时，IP 使用主机 IP 或域名。
 - 在 Kubernetes 集群内，IP 使用 `Coordinator` 服务的 IP：
-  - 取值来自 [`user_config.json`](../configuration/config_reference.md#motor_coordinator_config) 配置文件的 `coordinator_api_host` 配置项；
+  - 取值来自 [user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config) 配置文件的 `coordinator_api_host` 配置项；
   - 未配置时使用环境变量 `POD_IP`；
   - 环境变量不存在或为空时，使用默认值 `127.0.0.1`。
 

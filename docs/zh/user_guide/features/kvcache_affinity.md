@@ -154,7 +154,7 @@ kv-conductor 维护缓存索引，Coordinator 使用索引结果估计剩余 pre
     | 需要重注册或历史事件回放 | 周期补注册设置正数 `re_register_interval_sec`（默认关闭）；历史回放配置引擎 `kv-events-config.replay_endpoint`。启用前确认[恢复能力边界](../../design/kv_conductor.md#registration-lifecycle)。 |
     | 对接仅支持 JSON 的旧 conductor | 将 `kv_conductor_config.query_encoding` 设为 `json`，见[查询异常排查](#coordinator无法查询conductor)。 |
 
-    完整参数定义见[配置参考](../configuration/config_reference.md#motor_coordinator_config)，自动推导及旧配置迁移见[自动推导与兼容](../configuration/config_reference.md#kv_conductor_config-自动推导与兼容)。
+    完整参数定义见[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)，自动推导及旧配置迁移见[自动推导与兼容](../configuration/config_reference.md#kv_conductor_config-自动推导与兼容)。
 3. 部署服务。
 
     ```bash
