@@ -379,7 +379,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 <a id="k8s-pd-disaggregation-sglang"></a>
 
-# PD分离服务部署（基于SGLang推理引擎）
+# PD分离服务部署（SGLang）
 
 本文指导开发者基于 MindIE Motor 的 SGLang 推理引擎，完成 Kubernetes 环境下的 PD 分离部署。
 
