@@ -235,6 +235,7 @@ DEFAULT_SCALING_TARGET_TYPE = 'Value'
 SCALING_TARGET_TYPES = ('Value', 'AverageValue')
 DEFAULT_PREFILL_SCALING_METRIC = 'motor_prefill_utilization'
 DEFAULT_DECODE_SCALING_METRIC = 'motor_decode_utilization'
+ENCODE_NODE_SELECTOR = "encode_node_selector"
 PREFILL_NODE_SELECTOR = "prefill_node_selector"
 DECODE_NODE_SELECTOR = "decode_node_selector"
 CONTROLLER_NODE_SELECTOR = "controller_node_selector"

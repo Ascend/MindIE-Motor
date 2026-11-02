@@ -24,6 +24,7 @@ data:
         "coordinator_infer_node_port": "-",
         "controller_node_selector": {},
         "coordinator_node_selector": {},
+        "encode_node_selector": {},
         "prefill_node_selector": {
           "node-role.kubernetes.io/prefill": "true"
         },

@@ -122,6 +122,20 @@ def test_apply_node_selector_override_merges_and_validates():
         apply_node_selector_override({}, {C.PREFILL_NODE_SELECTOR: "label1=value1"}, C.PREFILL_NODE_SELECTOR)
 
 
+def test_apply_node_selector_override_encode_merges_and_validates():
+    """encode_node_selector 应与 prefill_node_selector 行为一致：合并并校验类型。"""
+    pod_spec = {C.NODE_SELECTOR: {C.ACCELERATOR_TYPE: C.ACCELERATOR_TYPE_A3}}
+    apply_node_selector_override(pod_spec, {C.ENCODE_NODE_SELECTOR: {"label1": "value1"}}, C.ENCODE_NODE_SELECTOR)
+
+    assert pod_spec[C.NODE_SELECTOR] == {
+        C.ACCELERATOR_TYPE: C.ACCELERATOR_TYPE_A3,
+        "label1": "value1",
+    }
+
+    with pytest.raises(ValueError, match="encode_node_selector"):
+        apply_node_selector_override({}, {C.ENCODE_NODE_SELECTOR: "label1=value1"}, C.ENCODE_NODE_SELECTOR)
+
+
 def test_prune_metadata_annotations_keeps_other_annotations():
     metadata = {C.ANNOTATIONS: {C.SP_BLOCK: "16", C.VOLCANO_QUEUE_ANNOTATION: "queue-a"}}
 

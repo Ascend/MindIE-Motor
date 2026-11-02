@@ -160,6 +160,7 @@ model_configs/
 | `controller_observability_node_port` | Controller 可观测性 Service 的 NodePort。缺省时保留模板中的 `nodePort`（当前模板默认 `31027`）；配置 `"-"` 时由 Kubernetes 自动分配；也可配置具体端口数字。 |
 | `controller_node_selector` | Controller Pod 的自定义 `nodeSelector`。 |
 | `coordinator_node_selector` | Coordinator Pod 的自定义 `nodeSelector`。 |
+| `encode_node_selector` | Encode Pod 的自定义 `nodeSelector`。 |
 | `prefill_node_selector` | Prefill Pod 的自定义 `nodeSelector`。 |
 | `decode_node_selector` | Decode Pod 的自定义 `nodeSelector`。 |
 | `kv_pool_node_selector` | KV Pool Pod 的自定义 `nodeSelector`。 |
@@ -175,6 +176,7 @@ Node selector 字段均为 JSON 对象。自定义标签会与 deployer 根据 `
     "controller_observability_node_port": 31027,
     "controller_node_selector": {"label1": "value1"},
     "coordinator_node_selector": {"label1": "value1"},
+    "encode_node_selector": {"label1": "value1"},
     "prefill_node_selector": {"label1": "value1"},
     "decode_node_selector": {"label1": "value1"},
     "kv_pool_node_selector": {"label1": "value1"},
