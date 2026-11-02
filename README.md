@@ -127,6 +127,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 ## 🚀 快速入门
 
+- **镜像获取**：单击 [链接](https://www.hiascend.com/developer/ascendhub/detail/f1690465f39847a8b0a1f9e5b36a03c4)，切换至“镜像下载”页签，即可获取官方完整的 MindIE Motor 镜像。
 - **环境准备**：安装前的软硬件准备见 [环境准备](./docs/zh/user_guide/environment_preparation.md)。
 - **快速部署**：启动服务、接口调用、精度与性能测试、停止服务见 [快速部署](./docs/zh/user_guide/quick_start.md)。
 
