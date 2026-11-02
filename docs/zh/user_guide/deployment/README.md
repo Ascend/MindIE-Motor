@@ -1,22 +1,21 @@
 # 部署方式说明
 
-推荐部署方案如下，两种方案**均可以基于 Motor 优秀的调度算法获得性能收益**：
+1. 基于k8s部署
 
-1. k8s部署
+   需安装k8s、MindCluster等对应组件，具备高性能调度与高阶可靠性能力。
 
-   推荐已**具备K8s 环境、且对高阶可靠性有较强诉求**的用户使用。
+-    [基于k8s平台的PD分离服务部署（vLLM）](#k8s-pd-disaggregation)
 
-   [基于k8s平台的PD分离服务部署（vLLM）](#k8s-pd-disaggregation)
+-    [基于k8s平台的PD分离服务部署（SGLang）](#k8s-pd-disaggregation-sglang)
 
-   [基于k8s平台的PD分离服务部署（SGLang）](#k8s-pd-disaggregation-sglang)
+2. Docker only部署
 
-2. docker only部署
+   无需安装其它组件，具备高性能调度与基础可靠性能力。
 
-   推荐**不具备 K8s 部署环境**的用户使用，该方案仅具备**基础可靠性能力**。
+-    [基于Docker only的PD分离服务部署（vLLM）](#docker-pd-disaggregation)
 
-   [基于docker的PD分离服务部署（vLLM）](#docker-pd-disaggregation)
-
-除推荐方案外，Motor还提供了 PD 混部、云平台部署、Slurm 流水线的部署方案，请参考[**全量部署方案**](#all-deployments)。
+\
+此外，Motor还提供了 PD 混部、云平台部署、Slurm 流水线的部署方案，请参考[**全量部署方案**](#all-deployments)。
 
 ---
 
