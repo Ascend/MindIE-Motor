@@ -37,6 +37,8 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 ## 🖥️ 服务部署
 
+部署方式怎么选，见 [部署方式说明](./docs/zh/user_guide/deployment/README.md)。下表是各方案的直接入口。
+
 <table>
   <tr>
     <td valign="top">
@@ -47,7 +49,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
         <tr><td align="left" width="320" style="background:#eef5ff">【推荐】PD 分离（SGLang）</td><td align="center" width="72" style="background:#eef5ff"><a href="./docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang">链接</a></td></tr>
         <tr><td align="left" width="320">PD 混部</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md">链接</a></td></tr>
         <tr><th align="left" colspan="2">docker 部署</th></tr>
-        <tr><td align="left" width="320" style="background:#eef5ff">【推荐】PD分离部署</td><td align="center" width="72" style="background:#eef5ff"><a href="./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md">链接</a></td></tr>
+        <tr><td align="left" width="320" style="background:#eef5ff">【推荐】PD分离部署</td><td align="center" width="72" style="background:#eef5ff"><a href="./docs/zh/user_guide/deployment/README.md#docker-pd-disaggregation">链接</a></td></tr>
         <tr><td align="left" width="320">PD混部部署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/host/pd_aggregation_deployment.md">链接</a></td></tr>
         <tr><td align="left" width="320">云平台（例如：ModelArts）PD分离部署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md">链接</a></td></tr>
         <tr><td align="left" width="320">云平台（例如：ModelArts）PD混部部署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_aggregation_deployment.md">链接</a></td></tr>
