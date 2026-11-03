@@ -447,7 +447,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
     ```bash
     # namespace 须与 user_config.json 中的 job_id 一致
     kubectl create namespace mindie-motor-sglang
- 
+
     # --config_dir指定配置文件所在目录
     cd examples/deployer
     python3 deploy.py --config_dir ../../model_configs/sglang/models/deepseek_v4_flash_0731/A3
@@ -484,7 +484,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
     # <infer_port>：user_config.json 中的 coordinator_infer_node_port
     # <model>：engine_config 中的 served-model-name
     curl -s http://<node_ip>:<infer_port>/v1/models
- 
+
     curl -X POST http://<node_ip>:<infer_port>/v1/chat/completions \
       -H "Content-Type: application/json" \
       -d '{
