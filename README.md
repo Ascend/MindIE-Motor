@@ -37,6 +37,8 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 ## 🖥️ 服务部署
 
+推荐部署方案，见【[链接](https://mindie-motor.readthedocs.io/zh-cn/v3.2.0/user_guide/deployment/)】。全量部署方案见下表：
+
 <table>
   <tr>
     <td valign="top">
