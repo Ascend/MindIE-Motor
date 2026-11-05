@@ -33,7 +33,7 @@ Coordinator的请求处理链路会发生以下变化：
 | 约束维度 | 要求 |
 |----------|------|
 | 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li><li>Ascend950 PR&950 DT系列产品</li></ul> |
-| 部署场景 | <ul><li>仅**支持** PD 分离、CDP/Hybrid 等经过 Coordinator Router 转发 Decode 请求的部署形态；</li><li>**不支持**未经过 Coordinator Router 的直连推理请求。</li></ul> |
+| 部署场景 | <ul><li>仅**支持** PD分离、CDP/Hybrid 等经过 Coordinator Router 转发 Decode 请求的部署形态；</li><li>**不支持**未经过 Coordinator Router 的直连推理请求。</li></ul> |
 | 引擎 | 当前仅支持 vLLM 引擎。`user_config.json` 中 `motor_engine_*_config.engine_type` 须为 `vllm`；引擎须接受 `logprobs`、`top_logprobs`、`return_token_ids` 请求参数，并在响应中返回可对齐的 token id 与 logprob。 |
 | 特性互斥 | 用户主动请求 logprobs 时，采样仍会强制 return_tokens_as_token_ids=true，可能改变 token 的表示形式；需要依赖原始文本 token 的客户端须验证兼容性。 |
 | 软件依赖 | 运行环境须安装 msprobe，且 msprobe.response_anomaly.detector.ILLDetector 可导入。 |

@@ -18,8 +18,6 @@
 
 除推荐方案外，Motor还提供了 PD 混部、云平台部署、Slurm 流水线的部署方案，请参考[**全量部署方案**](#all-deployments)。
 
----
-
 <a id="k8s-pd-disaggregation"></a>
 
 # 基于k8s平台的PD分离服务部署（vLLM）
@@ -185,8 +183,6 @@
     ```
 
 如需查阅常用特性的开启方式，请参见[PD分离服务部署常用特性使用指导](./k8s/pd_disaggregation_deployment.md#特性配置)。
-
----
 
 <a id="docker-pd-disaggregation"></a>
 
@@ -379,8 +375,6 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 要开启特性（如 KV 池化、Render），或查看调优指导，请参见[基于Docker的多容器PD分离服务部署](./docker/host/pd_disaggregation_deployment.md)。
 
----
-
 <a id="k8s-pd-disaggregation-sglang"></a>
 
 # PD分离服务部署（基于SGLang推理引擎）
@@ -505,8 +499,6 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
     # 在 examples/deployer 目录执行，命名空间与 job_id 一致
     bash delete.sh mindie-motor-sglang
     ```
-
----
 
 <a id="all-deployments"></a>
 
