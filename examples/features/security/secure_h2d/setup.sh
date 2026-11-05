@@ -13,7 +13,7 @@ CERT_FILE="${ROOT_CERT_PATH}/Huawei Equipment Root CA.pem"
 KMS_USER="HwHiAiUser"
 HOST_DOWNLOAD_DIR="${HOST_DOWNLOAD_DIR:-/tmp/secure_h2d_deploy}"
 OP_PLUGIN_REPO="${OP_PLUGIN_REPO:-https://gitcode.com/Ascend/op-plugin.git}"
-MOTOR_REPO="${MOTOR_REPO:-https://gitcode.com/Ascend/MindIE-PyMotor.git}"
+MOTOR_REPO="${MOTOR_REPO:-https://gitcode.com/Ascend/MindIE-Motor.git}"
 
 log() {
     echo "[secure_h2d_deploy] $*"
@@ -194,14 +194,14 @@ else
     log "host op-plugin already exists, skip clone"
 fi
 
-# 在宿主机下载 MindIE-PyMotor
-if [[ ! -d "${HOST_DOWNLOAD_DIR}/MindIE-PyMotor/.git" ]]; then
-    run rm -rf "${HOST_DOWNLOAD_DIR}/MindIE-PyMotor"
+# 在宿主机下载 MindIE-Motor
+if [[ ! -d "${HOST_DOWNLOAD_DIR}/MindIE-Motor/.git" ]]; then
+    run rm -rf "${HOST_DOWNLOAD_DIR}/MindIE-Motor"
     run git clone \
         "${MOTOR_REPO}" \
-        "${HOST_DOWNLOAD_DIR}/MindIE-PyMotor"
+        "${HOST_DOWNLOAD_DIR}/MindIE-Motor"
 else
-    log "host MindIE-PyMotor already exists, skip clone"
+    log "host MindIE-Motor already exists, skip clone"
 fi
 
 # 在容器中创建工作目录
@@ -210,7 +210,7 @@ run docker exec "${NAME}" mkdir -p /workspace
 # 删除容器中的旧目录，避免 docker cp 形成嵌套目录
 run docker exec "${NAME}" rm -rf \
     /workspace/op-plugin \
-    /workspace/MindIE-PyMotor
+    /workspace/MindIE-Motor
 
 # 从宿主机复制到容器
 run docker cp \
@@ -218,18 +218,18 @@ run docker cp \
     "${NAME}:/workspace/op-plugin"
 
 run docker cp \
-    "${HOST_DOWNLOAD_DIR}/MindIE-PyMotor" \
-    "${NAME}:/workspace/MindIE-PyMotor"
+    "${HOST_DOWNLOAD_DIR}/MindIE-Motor" \
+    "${NAME}:/workspace/MindIE-Motor"
 
 # 检查复制结果
 container_exec '
 set -euo pipefail
 
 test -d /workspace/op-plugin
-test -d /workspace/MindIE-PyMotor
+test -d /workspace/MindIE-Motor
 
 echo "[secure_h2d_deploy] op-plugin copied to /workspace/op-plugin"
-echo "[secure_h2d_deploy] MindIE-PyMotor copied to /workspace/MindIE-PyMotor"
+echo "[secure_h2d_deploy] MindIE-Motor copied to /workspace/MindIE-Motor"
 '
 
     log "7~8. check python version and backup torch_npu/dynamo"
@@ -303,7 +303,7 @@ fi
     container_exec '
 set -euo pipefail
 
-SRC=/workspace/MindIE-PyMotor/examples/features/security/secure_h2d/CryptoKernelNpuOpApi.cpp
+SRC=/workspace/MindIE-Motor/examples/features/security/secure_h2d/CryptoKernelNpuOpApi.cpp
 DST=/workspace/op-plugin/op_plugin/ops/opapi/CryptoKernelNpuOpApi.cpp
 
 if [[ ! -f "${SRC}" ]]; then
@@ -353,7 +353,7 @@ fi
     container_exec '
 set -euo pipefail
 
-SECURE_DIR=/workspace/MindIE-PyMotor/examples/features/security/secure_h2d
+SECURE_DIR=/workspace/MindIE-Motor/examples/features/security/secure_h2d
 
 if [[ -f /workspace/cann-env-9.1.0/cann/set_env.sh ]]; then
     source /workspace/cann-env-9.1.0/cann/set_env.sh
@@ -367,7 +367,7 @@ bash ./build.sh
     container_exec '
 set -euo pipefail
 
-SECURE_DIR=/workspace/MindIE-PyMotor/examples/features/security/secure_h2d
+SECURE_DIR=/workspace/MindIE-Motor/examples/features/security/secure_h2d
 
 PY_SITE=$(python - <<'"'"'PY'"'"'
 import site
