@@ -37,6 +37,7 @@
   - [主备倒换特性](./features/fault_tolerance/standby.md)
   - [Tracing能力部署](./features/tracing.md)
   - [ScaleP2D故障恢复](./features/fault_tolerance/scale_p2d.md)
+  - [DP域缩容](./features/fault_tolerance/dp_scale_down.md)
   - [容器快照](./features/container_snapshot.md)
   - [D2D 权重加载](./features/startup_acceleration.md)
   - [虚推健康探测](./features/sim_inference.md)
