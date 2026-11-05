@@ -580,7 +580,39 @@ class ScaleP2DStrategy(StrategyBase):
                     stale_inactive_ids,
                 )
 
-            self.context.num_node_per_instance_P = len(operational_p_instances[0].get_node_managers())
+            # A P instance that has not reported its node managers yet (for example one
+            # still INITIAL during startup) yields an empty list. Keeping such an instance
+            # in the pool would make num_node_per_instance_P 0 when it happens to be the
+            # representative (operational_p_instances[0]) and poison the node accounting
+            # below; a P instance without nodes cannot free any node anyway, so drop it.
+            p_instances_with_nodes: list[tuple[Instance, int]] = []
+            skipped_no_node_ids: list[int] = []
+            for inst in operational_p_instances:
+                node_count = len(inst.get_node_managers())
+                if node_count <= 0:
+                    skipped_no_node_ids.append(inst.id)
+                    continue
+                p_instances_with_nodes.append((inst, node_count))
+            if skipped_no_node_ids:
+                logger.warning(
+                    "Skipped P instances without reported node managers. instance_id=%d, "
+                    "skipped_ids=%s, reason=no_node_managers",
+                    self.context.d_instance_id,
+                    skipped_no_node_ids,
+                )
+            if not p_instances_with_nodes:
+                self.context.last_error = "No operational Prefill instance has reported node managers"
+                logger.error(
+                    "No operational Prefill instance with node managers. instance_id=%d, "
+                    "total_p_count=%d, skipped_ids=%s, reason=all_candidates_without_node_managers",
+                    self.context.d_instance_id,
+                    len(all_p_instances),
+                    skipped_no_node_ids,
+                )
+                return False
+
+            operational_p_instances = [inst for inst, _ in p_instances_with_nodes]
+            self.context.num_node_per_instance_P = p_instances_with_nodes[0][1]
 
             # num_required_node was set in _get_d_instance() via _get_faulty_node_count().
             # Reserve one Prefill instance; the rest contribute available nodes.
@@ -658,8 +690,22 @@ class ScaleP2DStrategy(StrategyBase):
             self.context.d_instance_id,
         )
 
-        required_num_instance_P = self.context.num_required_node // self.context.num_node_per_instance_P
-        if self.context.num_required_node % self.context.num_node_per_instance_P != 0:
+        node_per_instance = self.context.num_node_per_instance_P
+        if node_per_instance <= 0:
+            # Defensive: the caller filters out 0-node instances, but a 0/0 division here
+            # would be swallowed by the outer `except` and surface only as a silent
+            # recovery failure, so fail explicitly and early.
+            logger.error(
+                "Cannot compute required P instance count: nodes_per_instance=%d, "
+                "required_nodes=%d. instance_id=%d, reason=non_positive_nodes_per_instance",
+                node_per_instance,
+                self.context.num_required_node,
+                self.context.d_instance_id,
+            )
+            return []
+
+        required_num_instance_P = self.context.num_required_node // node_per_instance
+        if self.context.num_required_node % node_per_instance != 0:
             required_num_instance_P += 1
 
         # Prefer INITIAL over ACTIVE, then sort by ID; production code should sort by cost score.
