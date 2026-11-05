@@ -8,15 +8,21 @@
 
 - [Service Deployment]()
 
-  - [K8s-based vLLM PD Aggregation Deployment](./deployment/k8s/pd_aggregation_deployment.md)
+  - [Deployment Method Description](./deployment/README.md)
 
-  - [K8s-based vLLM PD Disaggregation Deployment](./deployment/k8s/pd_disaggregation_deployment.md)
+  - [K8s Deployment]()
 
-  - [K8s-based SGLang PD Disaggregation Deployment](../../zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang)
+    - [K8s-based vLLM PD Aggregation Deployment](./deployment/k8s/pd_aggregation_deployment.md)
 
-  - [Single-Container Docker-only PD Disaggregation Deployment](./deployment/docker/single_container.md)
+    - [K8s-based vLLM PD Disaggregation Deployment](./deployment/k8s/pd_disaggregation_deployment.md)
 
-  - [Multi-Container Docker-only PD Disaggregation Deployment](./deployment/docker/multi_container.md)
+    - [K8s-based SGLang PD Disaggregation Deployment](../../zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang)
+
+  - [Docker Deployment]()
+
+    - [Single-Container Docker-only PD Disaggregation Deployment](./deployment/docker/single_container.md)
+
+    - [Multi-Container Docker-only PD Disaggregation Deployment](./deployment/docker/multi_container.md)
 
   - [Slurm Deployment]()
 
@@ -111,3 +117,5 @@
   - [Usage Instructions](./error_code/usage_instruction.md)
 
   - [MindIE Motor Error Code Reference](./error_code/error_code_reference.md)
+
+- [Communication Matrix](communication_matrix_motor.md)

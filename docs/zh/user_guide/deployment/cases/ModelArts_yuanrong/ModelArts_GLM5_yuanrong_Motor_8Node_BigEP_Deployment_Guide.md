@@ -168,7 +168,7 @@ python -m http.server 1025
 
     > ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image20.png)
 
-13. 选择"服务"标签，确认已生成"etcd-client-service"、"etcd-headless"等两个服务
+13. 选择"服务"标签，确认已生成"etcd-client-service"、"etcd-headless"两个服务
 
     > ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image21.png)
 
@@ -382,7 +382,7 @@ sleep 36000000
 
 - \[  ]中内容需要根据实际环境补充；
 
-- 脚本结尾sleep字段为MA推理1.0场景下必需保留；
+- 脚本结尾sleep字段为MA推理1.0场景下必须保留；
 
 ### 元戎多级缓存自动化部署脚本
 
@@ -734,7 +734,7 @@ echo "yr worker start finished"
 
 - motor requirements.txt中的依赖
 
-- libzmp
+- libzmq
 
 - pciutils
 
@@ -1940,7 +1940,7 @@ echo "=========================================================="
 
 5. 相同健康检查实现，在GLM模型服务可正常使用，切换至deepseek或其他模型服务MA报错健康检查失败：
 
-   通过Post访问vllm的/v1/chat/completion接口获取正常返回值来判断服务健康状况时，要注意请求体、返回格式与特定模型的匹配，如：DeepSeek的思考模式为content中"\<think\>xxxx\<\\think\>"格式，而GLM5等模型的思考过程在reasoning_content字段中。建议在部署GLM系列模型的健康探针请求体中，增加\"chat_template_kwargs\":{\"enable_thinking\": False}字段，关闭思考模式，确保返回内容在"content"字段中。
+   通过Post访问vllm的/v1/chat/completions接口获取正常返回值来判断服务健康状况时，要注意请求体、返回格式与特定模型的匹配，如：DeepSeek的思考模式为content中"\<think\>xxxx\<\\think\>"格式，而GLM5等模型的思考过程在reasoning_content字段中。建议在部署GLM系列模型的健康探针请求体中，增加\"chat_template_kwargs\":{\"enable_thinking\": False}字段，关闭思考模式，确保返回内容在"content"字段中。
 
 6. 创建MA模型服务新版本，拷贝其他页面健康检查指令后，服务启动报错：
 

@@ -4,9 +4,9 @@
 
 虚拟推理用于定时主动向推理面发送轻量请求，结合NPU AI Cube利用率判断推理引擎是否可用（引擎进程存活、`/health`正常但实际无法推理的场景，如NPU卡死、驱动异常等静默故障）。
 
-原生拉起（Native Launch）路径下，虚推由 Node Manager 直接执行（motor/node_manager/core/services/native_engine/virtual_inference/），不再依赖 Engine Server 的 mgmt 面：
+原生拉起（Native Launch）路径下，虚推由 NodeManager 直接执行（motor/node_manager/core/services/native_engine/virtual_inference/），不再依赖 Engine Server 的 mgmt 面：
 
-- Node Manager 每个实例维护单个虚推 monitor（仅 vLLM），初始绑定 DP0，DP 缩容提交后自动迁移到新的 DP Master；周期性探测原生引擎 GET /health，首次观察到当前 target READY 后幂等启动虚推循环。
+- NodeManager 每个实例维护单个虚推 monitor（仅 vLLM），初始绑定 DP0，DP 缩容提交后自动迁移到新的 DP Master；周期性探测原生引擎 GET /health，首次观察到当前 target READY 后幂等启动虚推循环。
 - 虚推请求直接发往 vLLM 引擎推理面 POST /v1/completions。
 - 虚推达到失败阈值时，仅使 endpoint 呈现 UNHEALTHY/ABNORMAL，不终止进程、不重启引擎。
 - HeartbeatManager 将运行时 `UNHEALTHY` 映射为心跳 `ABNORMAL`；Daemon 连续 5 次观察到 abnormal 后触发 Pod 自杀重调度（k8s 重启容器）。虚推本身不直接杀进程；若开启引擎 relaunch，Controller 还可能收到 abnormal 上报并触发引擎原地重启。
@@ -59,7 +59,7 @@
 
 | 维度     | 说明                                                                       |
 | -------- | ------------------------------------------------------------------------------ |
-| 硬件     | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li><li>Ascend950PR&950DT系列产品</li></ul>               |
+| 硬件     | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li><li>Ascend 950PR&950DT系列产品</li></ul>               |
 | 部署场景 | <ul><li>PD分离服务部署</li><li>PD混部服务部署</li></ul>                                               |
 | 引擎     | 支持vLLM、SGLang引擎                                                         |
 | 特性互斥 | 无                                                                             |
@@ -105,9 +105,9 @@
    | health_collector_timeout_retry_attempts | int   | ≥ 1         | 选填      | 3      | 推理面`GET /health`超时重试次数（含首次，仅超时触发）；vLLM与SGLang心跳均使用                                                                                                                                                                                                         |
 
    完整字段说明请参见[user_config.json配置文件全量参数说明](../configuration/config_reference.md#health_check_config)。
-2. 原生拉起路径下虚拟推理由Node Manager执行并启动。
+2. 原生拉起路径下虚拟推理由NodeManager执行并启动。
    配置启用后，NodeManager 在检测到 vLLM 引擎 `/health` 首次 READY 后幂等启动虚拟推理循环。
-   在 Node Manager 容器/Pod 日志中，出现以下关键字表示虚拟推理已正常启动。
+   在 NodeManager 容器/Pod 日志中，出现以下关键字表示虚拟推理已正常启动。
 
    ```text
    AI Cube usage check thread started for endpoint 0
@@ -116,7 +116,7 @@
    Virtual inference warmup completed successfully for endpoint 0
    ```
 
-   当引擎被判定异常时，日志中可观察到如下日志。
+   当引擎被判定异常时，可观察到如下日志。
 
    ```text
    WARNING: Reach maximum failure count for endpoint 0, set abnormal status
@@ -139,7 +139,7 @@ npu-smi info watch -s u
 
 #### 验证方法二：检查虚拟推理请求日志
 
-检查 Node Manager 容器/Pod 日志，确认虚拟推理循环正常运行：
+检查 NodeManager 容器/Pod 日志，确认虚拟推理循环正常运行：
 
 ```bash
 kubectl logs <node-manager-pod> | grep -E "Virtual inference|AI Cube usage|marked endpoint.*abnormal|status change from"
@@ -154,7 +154,7 @@ WARNING: AI Cube usage (2%) < threshold (3%), virtual request failed, and no req
 WARNING: Current failure count: 1/6 for endpoint 0
 ```
 
-虚拟推理 HTTP 请求细节（含 `X-Request-Id`）仅在 DEBUG 级别输出；需要时可临时调高 Node Manager 日志级别后检索 `_virtual`。
+虚拟推理 HTTP 请求细节（含 `X-Request-Id`）仅在 DEBUG 级别输出；需要时可临时调高 NodeManager 日志级别后检索 `_virtual`。
 
 ## 常见问题
 

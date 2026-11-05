@@ -57,7 +57,7 @@ NodeManager 侧:
   ├── HTTP 轮询 → GET {endpoint.business_port}/fault_tolerance/status (vLLM FT API)
   ├── 状态去重 → 仅上报 dead/unhealthy 变更
   ├── 连续 max_poll_failures 次轮询失败 → 按 dead 上报
-  ├── 引擎重拉期间由 Daemon 暂停/恢复（重拉后清空轮询状态启启动宽限）
+  ├── 引擎重拉期间由 Daemon 暂停/恢复（重拉后清空轮询状态启动宽限）
   └── HTTP POST → Controller /controller/report_software_fault
 ```
 

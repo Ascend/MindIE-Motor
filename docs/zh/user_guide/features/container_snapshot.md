@@ -58,7 +58,7 @@
       cd /root/rpmbuild/SOURCES/
       rpmbuild -bp criu.spec
       cd /root/rpmbuild/BUILD/criu-3.19
-      vi criu/include/pipes.h # 单个容器内DP数较大时，制作快照时会发生pipe OOM, 需要修改增大pipes.h中的宏NR_PIPES_WITH_DATA至2048
+      vi criu/include/pipes.h # 单个容器内DP数较大时，制作快照时会发生pipe OOM, 需要增大pipes.h中的宏NR_PIPES_WITH_DATA至2048
       make GRUS=1 -j
       make npu_plugin -j
       cp /root/rpmbuild/BUILD/criu-3.19/criu/criu /usr/sbin/

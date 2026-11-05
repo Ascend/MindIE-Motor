@@ -1,4 +1,4 @@
-# MindIE Motor Communication Matrix
+# Communication Matrix
 
 This table is compiled based on the MindIE Motor 3.2.0 implementation and uses Kubernetes deployment as an example to record the network connections initiated by Motor components and the ports listened on externally. In the table, the "source device" is the party that establishes the connection; the data flow of messages or events may be opposite to the connection direction. Source ports are assigned by the operating system, and no fixed ephemeral port range is guaranteed.
 

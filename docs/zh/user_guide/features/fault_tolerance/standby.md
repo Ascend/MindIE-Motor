@@ -215,7 +215,7 @@
     server.pem
     ```
 
-    通过以上的操作，生成了CA证书、Server端证书和一份Client端证书。（CA证书用于认证，Server证书用于ETCD集群部署，Client证书用于Controller/Coordinator主备份）
+    通过以上的操作，生成了CA证书、Server端证书和一份Client端证书。（CA证书用于认证，Server证书用于ETCD集群部署，Client证书用于Controller/Coordinator主备倒换）
 
     >[!NOTE] 说明
     > 如果需要多份Client端证书，使用同一CA证书，重复执行以下操作：

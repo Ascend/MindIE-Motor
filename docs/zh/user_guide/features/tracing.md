@@ -180,7 +180,7 @@ MindIE Motor开启Tracing能力需修改env.json配置文件和user_config.json�
    ./jaeger --set receivers.otlp.protocols.http.endpoint=0.0.0.0:4318 --set receivers.otlp.protocols.grpc.endpoint=0.0.0.0:4317 &
    ```
 
-   启动后通过浏览器打开对应IP的16686端口网页，可查看服务调用链效果，效果如下：
+   启动后通过浏览器打开对应IP的16686端口网页，可查看服务调用链，效果如下：
 
    ![Snipaste_2026-03-31_20-59-16.jpg](https://raw.gitcode.com/user-images/assets/9428015/e2338b5c-646f-4349-b62b-1dae9c95b217/Snipaste_2026-03-31_20-59-16.jpg 'Snipaste_2026-03-31_20-59-16.jpg')
 

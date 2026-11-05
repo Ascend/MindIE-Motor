@@ -389,7 +389,7 @@ Connect compute nodes to the management node by following the steps below to for
     - Output
 
         ```bash
-        kubeadm join 90.90.122.33:6443 --token ssajj5.mtjx77rj06et9ssv     --discovery-token-ca-cert-hash sha256:xxx
+        kubeadm join 90.90.122.33:6443 --token <bootstrap_token>     --discovery-token-ca-cert-hash sha256:xxx
         ```
 
     - Querying the host name
@@ -404,7 +404,7 @@ Connect compute nodes to the management node by following the steps below to for
 
     ```bash
     # Copy the output above and add the --node-name field. The value of this field specifies the name of the current node and can be customized, but it must differ from the hostname
-    kubeadm join 90.90.122.33:6443 --token ssajj5.mtjx77rj06et9ssv     --discovery-token-ca-cert-hash sha256:xxx --node-name=node-112
+    kubeadm join 90.90.122.33:6443 --token <bootstrap_token>     --discovery-token-ca-cert-hash sha256:xxx --node-name=node-112
     ```
 
 3. On the management node, run the following command to view node information. As shown in the following figure, all Pods running on the newly added node node-112 are in the running status.
