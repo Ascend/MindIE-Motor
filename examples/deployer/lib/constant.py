@@ -443,12 +443,12 @@ VOLCANO_QUEUE_ANNOTATION = "scheduling.volcano.sh/queue-name"
 # Edit these literals to change host devices and binds. Do not add --rm.
 # Host binds /root/ascend/log, /root/.cache, /var/coredump, /data match K8s hostPath
 # (plog-path / cache-path / coredump / data). docker_deploy.py mkdir -p these before create.
-# Engine / single-container templates use --shm-size=4g to match K8s dshm emptyDir sizeLimit 4Gi.
+# Engine / single-container templates use --shm-size=256g to match K8s dshm emptyDir sizeLimit 256Gi.
 # CTRL / KVS YAML has no dshm volume, so those templates omit --shm-size.
 # motor_deploy_config.dshm_size overrides an existing --shm-size line only (does not insert one).
 ENTER_DOCKER_RUN_A2 = """docker run -it --name "$NAME" -u root \\
   --net=host \\
-  --shm-size=4g \\
+  --shm-size=256g \\
   -e ASCEND_RUNTIME_OPTIONS=NODRV \\
   -e LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver \\
   -e NAME="$NAME" \\
@@ -482,7 +482,7 @@ ENTER_DOCKER_RUN_A2 = """docker run -it --name "$NAME" -u root \\
 
 ENTER_DOCKER_RUN_A3 = """docker run -it --name "$NAME" -u root \\
   --net=host \\
-  --shm-size=4g \\
+  --shm-size=256g \\
   -e ASCEND_RUNTIME_OPTIONS=NODRV \\
   -e LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver \\
   -e NAME="$NAME" \\
@@ -524,7 +524,7 @@ ENTER_DOCKER_RUN_A3 = """docker run -it --name "$NAME" -u root \\
 
 ENTER_DOCKER_RUN_A5 = """docker run -it --name "$NAME" -u root \\
   --net=host \\
-  --shm-size=4g \\
+  --shm-size=256g \\
   -e ASCEND_RUNTIME_OPTIONS=NODRV \\
   -e LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver \\
   -e NAME="$NAME" \\
@@ -563,7 +563,7 @@ ENTER_DOCKER_RUN_A5 = """docker run -it --name "$NAME" -u root \\
 
 ENTER_DOCKER_RUN_A5_POD16 = """docker run -it --name "$NAME" -u root \\
   --net=host \\
-  --shm-size=4g \\
+  --shm-size=256g \\
   -e ASCEND_RUNTIME_OPTIONS=NODRV \\
   -e LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver \\
   -e NAME="$NAME" \\

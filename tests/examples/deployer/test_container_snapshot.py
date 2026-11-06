@@ -148,7 +148,7 @@ def test_common_template_renders_snapshot_deltas_and_a3_device(tmp_path, dshm_si
         assert volumes["npu-smi"][C.HOST_PATH] == {C.PATH: "/usr/local/bin/npu-smi"}
         assert mounts["dshm"][C.MOUNT_PATH] == "/dev/shm"
         active_role = (role_name == C.ROLE_UNION) == hybrid
-        expected_size = dshm_size if active_role and dshm_size is not None else "4Gi"
+        expected_size = dshm_size if active_role and dshm_size is not None else "256Gi"
         assert volumes["dshm"]["emptyDir"] == {"medium": "Memory", "sizeLimit": expected_size}
         for removed_name in ("data", "coredump", "plog-path", "cache-path"):
             assert removed_name not in mounts
