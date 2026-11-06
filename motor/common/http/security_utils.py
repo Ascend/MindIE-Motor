@@ -188,6 +188,11 @@ def log_audit_event(request: Request, event_type: str, resource_name: str, event
 
 def validate_and_sanitize_path(path: str) -> str:
     """Validate and sanitize URL path, prevent path traversal and SSRF attacks"""
+    # reject protocol-relative paths before stripping leading slashes
+    if path.startswith('//'):
+        logger.warning(f"Detected dangerous path pattern in URL: {path}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid path format")
+
     # remove leading slash
     sanitized = path.lstrip('/')
 
