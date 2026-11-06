@@ -17,7 +17,7 @@ MindIE Motor主要提供以下两个方面的能力：
 
 MindIE Motor与周边组件交互架构图，展示Coordinator、Controller、Deployer、NodeManager四大模块的协作调用关系及对外推理引擎接口。
 
-**图1 MindIE Motor架构图**
+**图1 MindIE Motor 架构图**
 
 ![架构图](./imgs/MindIE_Motor_Architecture.png)
 
