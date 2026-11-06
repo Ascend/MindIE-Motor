@@ -257,10 +257,9 @@ After MemCache pooling is enabled, short requests can be inferred normally, but 
 
 **Cause Analysis**
 
-The `/dev/shm` of the engine pod is only `4Gi` by default. MemCache pooling requires larger shared memory in long-sequence scenarios, and the Decode side crashes due to insufficient shm when the capacity is insufficient.
+The `/dev/shm` of the engine pod defaults to `256Gi` (Docker deployments default to `--shm-size=256g`). If a long-sequence MemCache workload still exceeds that capacity, the Decode side crashes due to insufficient shm.
 
 **Solution**
 
-1. Configure `"dshm_size": "32Gi"` in `motor_deploy_config` of `user_config.json` (or increase it further based on the actual load).
+1. Set `dshm_size` above `256Gi` (for example, `"512Gi"`) in `motor_deploy_config` of `user_config.json`.
 2. Redeploy for the `sizeLimit` of the `dshm` emptyDir (or `--shm-size` for Docker deployment) to take effect.
-3. Verify by stress testing: the service still runs normally with 128 requests (80k-1k) at `32Gi`.

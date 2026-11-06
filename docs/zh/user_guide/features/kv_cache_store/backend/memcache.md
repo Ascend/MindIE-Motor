@@ -256,10 +256,9 @@ conf 中填写了 `/dev/nvme0n1` 或 `/dev/loop0`，容器内 LocalService 找�
 
 **原因分析**
 
-引擎 Pod 的 `/dev/shm` 默认仅为 `4Gi`。MemCache 池化在长序列场景下需要更大的共享内存，容量不足时 Decode 侧会因 shm 不足崩溃。
+引擎 Pod 的 `/dev/shm` 默认是 `256Gi`（Docker 部署默认 `--shm-size=256g`）。若 MemCache 池化的长序列负载超过该容量，Decode 侧仍会因 shm 不足崩溃。
 
 **解决步骤**
 
-1. 在 `user_config.json` 的 `motor_deploy_config` 中配置 `"dshm_size": "32Gi"`（或按现场负载继续增大）。
+1. 在 `user_config.json` 的 `motor_deploy_config` 中把 `dshm_size` 调到大于 `256Gi`（例如 `"512Gi"`）。
 2. 重新部署使 `dshm` emptyDir `sizeLimit`（Docker 部署时为 `--shm-size`）生效。
-3. 压测验证：128 条请求（80k-1k）在 `32Gi` 下服务仍可正常运行。
