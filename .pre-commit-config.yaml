@@ -12,7 +12,9 @@ repos:
     rev: v4.6.0
     hooks:
       - id: trailing-whitespace
+        exclude: ^examples/deployer/patch/.*\.patch$
       - id: end-of-file-fixer
+        exclude: ^examples/deployer/patch/.*\.patch$
       - id: check-yaml
         args: ["--allow-multiple-documents"]
         exclude: mkdocs\.yml$  # !!python/name: tags incompatible with safe_load
@@ -73,6 +75,8 @@ repos:
     hooks:
       - id: typos
         args: ["--force-exclude", "--config", "pre-commit/typos.toml"]
+        # Patch context may contain truncated identifiers and upstream spelling.
+        exclude: ^examples/deployer/patch/.*\.patch$
 
   # C++ core checks
   - repo: https://gitcode.com/pre-commit-clang/mirrors-clang-format

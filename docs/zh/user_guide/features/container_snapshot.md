@@ -17,7 +17,7 @@
 |------|----------|
 | 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li></ul>Atlas 800I A2推理服务器容器的快照只能在相同芯片代际的机器间共享。 |
 | 自动管理模式 | 仅支持使用 containerd 容器运行时的默认 K8s + MindCluster CRD 部署模式。 |
-| 推理引擎 | 必须支持 Device 快照保存与恢复，并提供 suspend 和 resume 接口，目前仅支持vLLM。 |
+| 推理引擎 | 必须支持 Device 快照保存与恢复，并提供 suspend 和 resume 接口，当前容器快照功能仅支持 vLLM 0.30.0 与 vLLM-Ascend 0.30.0 的配套组合。 |
 | 特性互斥 | 启用容器快照后不支持与 Node Manager 配置热更新、[DP域缩容](./fault_tolerance/dp_scale_down.md)、KV 池化、P2P 权重直传特性叠加。 |
 | 操作系统 | 支持 openEuler 24.03 及之后版本和 HCE 3.0，需预装openEuler定制版 CRIU 3.19。 |
 | 存储 | 容器 Host 快照镜像保存目录不能挂载到容器内。运行时模型权重目录必须挂载到容器内，并在制作和恢复阶段保持可访问。 |
@@ -76,7 +76,26 @@
 
 2. 在默认 K8s + MindCluster 部署模式下，确认集群使用 containerd，并已安装支持容器快照的 MindCluster 组件及相关 CRD。MindCluster 侧的环境要求、组件部署和使用流程请参见[容器快照部署及使用](https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/04_usage/10_infer_operator_best_practice/06_container_snapshot_usage.md)。
 3. 准备保存容器 Host 快照镜像和运行时模型权重所需的宿主机存储目录。需要跨节点恢复时，请确保目标节点能够访问这些目录。
-4. 使用其他部署模式时，需由部署平台或用户准备 Host 侧 CRIU 工具，例如GRUS、快照元数据文件及相应的容器挂载。
+4. 使用其他部署模式时，需由部署平台或用户准备 Host 侧 CRIU 工具，例如 GRUS，并准备快照元数据文件及相应的容器挂载。
+5. 当前容器快照功能仅支持 vLLM-Ascend 0.30.0，使用前需应用 Motor deployer 中提供的容器快照补丁。请在 `deployer/startup/boot.sh` 中找到原有的 `source "$SCRIPT_DIR/engine.sh"` 命令，并在该命令之前插入以下补丁命令和通信环境变量配置。补丁命令需在已安装 vLLM 和 vLLM-Ascend 的 Python 环境中执行。
+
+   ```bash
+   # 应用容器快照补丁
+   bash /path/to/deployer/patch/0.30.0/apply_patches.sh \
+       /path/to/deployer/patch/0.30.0/container_snapshot/vllm_v0.30.0_container_snapshot.patch \
+       /path/to/deployer/patch/0.30.0/container_snapshot/vllm_ascend_v0.30.0_container_snapshot.patch
+
+   # 配置通信地址和网卡
+   export HCCL_IF_IP="${POD_IP:-}"
+   export GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-eth0}"
+   export TP_SOCKET_IFNAME="${TP_SOCKET_IFNAME:-eth0}"
+   export HCCL_SOCKET_IFNAME="${HCCL_SOCKET_IFNAME:-eth0}"
+
+   ```
+
+   将 `/path/to/deployer` 替换为容器内 deployer 的实际路径，并确保补丁脚本和两个补丁文件均可访问。示例使用 `POD_IP` 设置通信 IP，通信网卡默认使用 `eth0`；请确保 `POD_IP` 已设置，并根据实际网络环境调整网卡配置。
+
+   补丁脚本默认通过 `python3` 定位已安装的包。如需使用其他 Python 解释器，可在 `bash` 命令前添加 `PYTHON=/path/to/python3`。若同时使用容错补丁，请先应用容错补丁，再应用容器快照补丁。
 
 ### 使用场景
 
@@ -109,7 +128,7 @@
 | 配置项 | 类型 | 必填 | 默认值 | 说明 |
 |--------|------|------|--------|------|
 | enable_snapshot | bool | 是 | `false` | 容器快照总开关。设置为 `false` 时，其余字段不生效。 |
-| host_snapshot_image_path | string | 是 | 无 | 容器 Host 快照镜像的宿主机保存目录，必须为绝对路径。快照在该目录下以当前服务的 namespace 命名。该目录不能挂载到容器内，也不能与 `mnt_mount_path` 相同或互为父子目录。 |
+| host_snapshot_image_path | string | 是 | 无 | 容器 Host 快照镜像的宿主机保存目录，必须为共享存储中的绝对路径。快照在该目录下以当前服务的 namespace 命名。该目录不能挂载到容器内，也不能与 `mnt_mount_path` 相同或互为父子目录。 |
 | mnt_mount_path | string | 是 | 无 | `mnt` 卷的宿主机路径及容器挂载路径，必须为绝对路径，并且不能与 `host_snapshot_image_path` 有交集。 |
 | device_snapshot_weight_path | string | 是 | 无 | Device 运行时模型权重的宿主机保存目录，必须为绝对路径。快照权重在该目录下以模型权重名称、DP 数和 TP 数组合命名；容器内固定挂载到 `/snapshot/weight`。 |
 
@@ -140,7 +159,7 @@
 
 #### 场景二：其他部署模式
 
-其他部署模式不会通过 `deploy.py` 自动生成部署 YAML 模板，也不会由该脚本执行 checkpoint、restore 或管理快照文件。部署平台需集成以下流程；部署平台未提供自动管理能力时，由用户自行完成，以下基于使用GRUS工具演示。
+Motor 通过挂载到容器内的快照元数据文件维护 checkpoint 和 restore 所需的参数，并提供状态查询接口，用于判断实例是否已达到可执行 checkpoint 的稳态点，以及从快照恢复后是否已重新就绪。其他部署平台可通过维护快照元数据文件、查询实例状态并编排快照制作与恢复流程，集成容器快照功能。具体流程如下。
 
 1. 创建快照元数据文件，并将其挂载到实例容器内。该文件必须是合法的 JSON 对象，初始内容可以为空。
 
@@ -177,19 +196,13 @@
    }
    ```
 
-4. 实例冷启动后，查询 Node Manager 状态，确认实例是否到达可执行 checkpoint 的稳态点。
+4. 实例冷启动后，在实例的每个 Pod 中运行 Motor deployer 提供的 readiness 探针，确认所有 Pod 均已达到可执行 checkpoint 的稳态点。根据 Pod 的角色，将下列命令中的 `<role>` 替换为 `decode`、`prefill` 或 `union`。
 
    ```bash
-   curl http://{instance-ip}:{node-manager-management-port}/node-manager/status
+   bash /path/to/deployer/probe/probe.sh readiness <role>
    ```
 
-   当接口返回 HTTP 200 且响应为 `{"status": true}` 时，使用 GRUS 执行 Host 侧 checkpoint，并保存容器 Host 快照镜像：
-
-   ```bash
-   curl -sS -N --unix-socket /var/run/grus/grus.sock \
-     -X POST "http://localhost/checkpoint" \
-     -d "container_id={container-id}&location={host-snapshot-image-path}"
-   ```
+   当所有 Pod 的 readiness 探针均执行成功（退出码为 `0`）时，表示实例已达到稳态点。此时可对实例各 Pod 中的目标容器分别执行 Host 侧 checkpoint，保存对应的 Host 快照镜像。
 
 5. checkpoint 完成后，在快照元数据文件中将 `checkpoint` 设置为 `"done"`。推理引擎检测到该状态后解除 Device 锁定，实例恢复提供推理服务。
 
@@ -200,23 +213,7 @@
    }
    ```
 
-6. 需要从快照恢复容器时，在待恢复实例的 YAML 中配置 GRUS RuntimeClass、容器 Host 快照镜像路径和恢复标记。以下仅展示相关配置。
-
-   ```yaml
-   spec:
-     template:
-       spec:
-         runtimeClassName: grus
-         containers:
-         - name: <container-name>
-           env:
-           - name: GRUS_SNAPSHOT_IMAGE_PATH
-             value: "/path/to/host-snapshot-image"
-           - name: GRUS_SNAPSHOT_RESTORED_FLAG
-             value: "true"
-   ```
-
-7. 执行 restore 前，在快照元数据文件中补充恢复所需的信息。
+6. 从 Host 快照镜像恢复实例前，在快照元数据文件中补充推理引擎恢复所需的配置信息。若所需配置尚未补齐，推理引擎将持续重试，直至配置完整后继续恢复。
 
    ```json
    {
@@ -231,13 +228,13 @@
 
    `namespace` 和 `controller_ip` 根据 Controller 通信方式选择配置：使用集群内 Controller DNS 时配置 `namespace`；使用 IP 通信时，将上述示例中的 `namespace` 替换为 `"controller_ip": "<controller-ip>"`。`data_parallel_master_ip` 可以省略，由 Node Manager 在收到 Controller 下发的地址后写入。
 
-8. 容器恢复后，查询 Node Manager 状态。
+7. 由部署平台使用对应的 Host 快照镜像执行 restore。实例各 Pod 中的容器恢复后，在每个 Pod 中运行 readiness 探针，确认实例是否已恢复就绪。`<role>` 的取值与步骤 4 相同。
 
    ```bash
-   curl http://{instance-ip}:{node-manager-management-port}/node-manager/status
+   bash /path/to/deployer/probe/probe.sh readiness <role>
    ```
 
-   当接口返回 HTTP 200 且响应为 `{"status": true}` 时，表示实例已恢复就绪。
+   当所有 Pod 的 readiness 探针均执行成功（退出码为 `0`）时，表示实例已恢复就绪。
 
    > [!NOTE] 说明
    > checkpoint 期间实例无法提供推理服务。在 `checkpoint` 更新为 `"done"` 前，Node Manager 不会上报正常心跳。
