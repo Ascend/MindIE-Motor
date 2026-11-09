@@ -1,0 +1,121 @@
+diff --git a/vllm/entrypoints/serve/elastic_ep/api_router.py b/vllm/entrypoints/serve/elastic_ep/api_router.py
+--- a/vllm/entrypoints/serve/elastic_ep/api_router.py
++++ b/vllm/entrypoints/serve/elastic_ep/api_router.py
+@@ -60,9 +60,37 @@
+             status_code=400, detail="drain_timeout must be a positive integer"
+         )
+ 
++    existing_dp_ranks = body.get("existing_dp_ranks")
++    data_parallel_master_rank = body.get("data_parallel_master_rank")
++    # motor-patch: forward Motor surviving ranks / master into Elastic EP
++    if existing_dp_ranks is not None:
++        if not isinstance(existing_dp_ranks, list) or not existing_dp_ranks:
++            raise HTTPException(
++                status_code=400,
++                detail="existing_dp_ranks must be a non-empty list of integers",
++            )
++        if any(not isinstance(x, int) or x < 0 for x in existing_dp_ranks):
++            raise HTTPException(
++                status_code=400,
++                detail="existing_dp_ranks must be a non-empty list of integers",
++            )
++    if data_parallel_master_rank is not None and (
++        not isinstance(data_parallel_master_rank, int)
++        or data_parallel_master_rank < 0
++    ):
++        raise HTTPException(
++            status_code=400,
++            detail="data_parallel_master_rank must be a non-negative integer",
++        )
++
+     client = engine_client(raw_request)
+     try:
+-        await client.scale_elastic_ep(new_data_parallel_size, drain_timeout)
++        await client.scale_elastic_ep(
++            new_data_parallel_size,
++            drain_timeout,
++            existing_dp_ranks=existing_dp_ranks,
++            data_parallel_master_rank=data_parallel_master_rank,
++        )
+         return JSONResponse(
+             {
+                 "message": f"Scaled to {new_data_parallel_size} data parallel engines",
+diff --git a/vllm/engine/protocol.py b/vllm/engine/protocol.py
+--- a/vllm/engine/protocol.py
++++ b/vllm/engine/protocol.py
+@@ -242,7 +242,13 @@
+         ...
+ 
+     async def scale_elastic_ep(
+-        self, new_data_parallel_size: int, drain_timeout: int = 300
++        self,
++        new_data_parallel_size: int,
++        drain_timeout: int = 300,
++        *,
++        existing_dp_ranks: list[int] | None = None,
++        data_parallel_master_rank: int | None = None,
+     ) -> None:
+         """Scale the engine"""
++        # motor-patch: eep membership kwargs (do not remove)
+         raise NotImplementedError
+diff --git a/vllm/v1/engine/async_llm.py b/vllm/v1/engine/async_llm.py
+--- a/vllm/v1/engine/async_llm.py
++++ b/vllm/v1/engine/async_llm.py
+@@ -1183,14 +1183,29 @@
+             raise
+ 
+     async def scale_elastic_ep(
+-        self, new_data_parallel_size: int, drain_timeout: int = 300
++        self,
++        new_data_parallel_size: int,
++        drain_timeout: int = 300,
++        *,
++        existing_dp_ranks: list[int] | None = None,
++        data_parallel_master_rank: int | None = None,
+     ):
+         """Scale the elastic EP data parallel size."""
+         async with self._elastic_ep_lock:
+-            await self._scale_elastic_ep(new_data_parallel_size, drain_timeout)
++            await self._scale_elastic_ep(
++                new_data_parallel_size,
++                drain_timeout,
++                existing_dp_ranks=existing_dp_ranks,
++                data_parallel_master_rank=data_parallel_master_rank,
++            )
+ 
+     async def _scale_elastic_ep(
+-        self, new_data_parallel_size: int, drain_timeout: int
++        self,
++        new_data_parallel_size: int,
++        drain_timeout: int,
++        *,
++        existing_dp_ranks: list[int] | None = None,
++        data_parallel_master_rank: int | None = None,
+     ) -> None:
+         parallel_config = self.vllm_config.parallel_config
+         old_data_parallel_size = parallel_config.data_parallel_size
+@@ -1202,10 +1217,23 @@
+             return
+ 
+         target_dp_rank = parallel_config.data_parallel_rank
++        if data_parallel_master_rank is not None:
++            # motor-patch: honor Motor surviving master rank
++            parallel_config._data_parallel_master_rank = int(
++                data_parallel_master_rank
++            )
++        if existing_dp_ranks is None:
++            existing_dp_ranks = (
++                self._ft_active_dp_ranks.copy()
++                if getattr(self, "_ft_active_dp_ranks", None) is not None
++                else None
++            )
++        else:
++            existing_dp_ranks = [int(x) for x in existing_dp_ranks]
+         if parallel_config.data_parallel_external_lb:
+             await self.engine_core.prepare_elastic_ep(
+                 new_data_parallel_size,
+-                existing_dp_ranks=self._ft_active_dp_ranks.copy(),
++                existing_dp_ranks=existing_dp_ranks,
+             )
+         else:
+             await self.engine_core.prepare_elastic_ep(new_data_parallel_size)

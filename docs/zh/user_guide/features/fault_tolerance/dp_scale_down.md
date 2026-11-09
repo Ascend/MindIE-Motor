@@ -74,6 +74,9 @@ Motor 负责故障收集、缩容门禁（FtGate）、向 NodeManager 下发 FT 
   bash /path/to/deployer/patch/0.30.0/apply_patches.sh \
       /path/to/deployer/patch/0.30.0/fault_tolerance/vllm_v0.30.0_ft.patch \
       /path/to/deployer/patch/0.30.0/fault_tolerance/vllm_ascend_v0.30.0_ft.patch
+  # 卡级填洞扩容：把 Motor 的 existing_dp_ranks 送进 /scale_elastic_ep（不自动打）
+  bash /path/to/deployer/patch/0.30.0/apply_patches.sh \
+      /path/to/deployer/patch/0.30.0/fault_tolerance/vllm_v0.30.0_eep_scale.patch
   ```
 
   将 `/path/to/deployer` 替换为容器内 `examples/deployer` 的实际挂载路径。可通过环境变量 `PYTHON` 指定用于 `pip show` 定位安装目录的解释器，默认 `python3`。若同时使用容器快照补丁，须**先应用容错补丁，再应用快照补丁**。
