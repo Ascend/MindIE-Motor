@@ -26,9 +26,11 @@ kv-conductor 维护缓存索引，Coordinator 使用索引结果估计剩余 pre
 
 ### 环境准备
 
-- 先完成 [PD 分离部署](../deployment/README.md#k8s-pd-disaggregation)或
-  [PD 混部部署](../deployment/k8s/pd_aggregation_deployment.md)，确认基础推理正常。
+- 先完成 [PD 分离部署](../deployment/README.md#k8s-pd-disaggregation)、
+  [PD 混部部署](../deployment/k8s/pd_aggregation_deployment.md) 或
+  [Docker 多容器 PD 分离](../deployment/docker/host/pd_disaggregation_deployment.md)，确认基础推理正常。
   不部署 Controller / Node Manager 时，使用 [Coordinator 独立部署](../deployment/standalone.md)。
+  Docker 单容器不支持 KV 亲和；必须单独拉起 `motor-kvc`。
 - 本文配置示例面向 vLLM；SGLang 的基线及缓存开关见
   [SGLang PD 分离部署](../deployment/README.md#k8s-pd-disaggregation-sglang)。
 - 引擎需要发布可用的 KV 事件，并具备对应的缓存复用能力。P/U 的事件端口需从 conductor 所在网络可达。
@@ -166,16 +168,37 @@ kv-conductor 维护缓存索引，Coordinator 使用索引结果估计剩余 pre
     python deploy.py --config_dir ../../model_configs/vllm/pd_hybrid
     ```
 
+    Docker only 使用多容器宿主机部署，不要走单容器：
+
+    ```bash
+    python3 docker_deploy.py --config_dir /home/examples/config --show-commands
+    ```
+
+    回显在服务器 1 增加容器名 `motor-kvc` 的 `--role kv_conductor` 命令，管理面和 Prefill/Decode/混部命令增加 `--kv-conductor-ip`。
+    未填写 `kv_conductor_config.http_server_port` 时命令生成会直接失败。部署步骤见
+    [开启KV亲和（可选）](../deployment/docker/host/pd_disaggregation_deployment.md#开启kv亲和可选)。
+
     部署后按[验证结果](#验证特性)检查注册、缓存命中和实际选点。
 
 ### 验证特性
 
-以下命令在能访问服务的环境执行，替换命名空间和地址为实际值：
+以下命令在能访问服务的环境执行，替换命名空间和地址为实际值。
+
+K8s：
 
 ```bash
 NAMESPACE=mindie-motor
 CONDUCTOR_URL=http://kv-conductor:13333
 kubectl -n "$NAMESPACE" get pods,services -o wide
+curl --fail "$CONDUCTOR_URL/health"
+curl --fail "$CONDUCTOR_URL/workers"
+```
+
+Docker only（host 网络，conductor 在服务器 1 的 `motor-kvc`）：
+
+```bash
+CONDUCTOR_URL=http://<服务器1 IP>:13333
+docker ps --filter name=motor-kvc
 curl --fail "$CONDUCTOR_URL/health"
 curl --fail "$CONDUCTOR_URL/workers"
 ```

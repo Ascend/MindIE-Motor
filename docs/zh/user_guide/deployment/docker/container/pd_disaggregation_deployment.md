@@ -168,6 +168,12 @@
 
 开启后，P/D通过`MultiConnector`同时做Prefill→Decode直传和KV入池；还需要单独部署一个**kv_store**容器（请参考[5.（可选）部署KV Cache Store](#step002)），更多详细内容请参考[KV池化能力](../../../features/kv_cache_store/README.md)文档来修改user_config.json配置文件。
 
+## 开启KV亲和（可选）
+
+不开启 KV 亲和可跳过本节。单容器部署不支持该特性。
+
+在 `user_config.json` 中设置 `prefill_scheduler_type` 为 `kv_cache_affinity`，并在顶层填写 `kv_conductor_config.http_server_port`（例如 `13333`）。缺端口会直接报错。完整字段见 [KV Cache亲和性调度](../../../features/kvcache_affinity.md)。还需要单独部署一个 **kv_conductor** 容器（请参考[6.（可选）部署 KV Conductor](#step-kvc)）。
+
 ## 创建容器
 
 按照规划在集群内的服务器上创建容器，一共需要创建三类容器：
@@ -177,6 +183,7 @@
 | 管理容器 | [ENTER_DOCKER_RUN_CTRL](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L611-L622) | 容器名`motor-ctrl`，创建在服务器 1。 |
 | P/D实例推理容器 | Atlas 800I A2：[ENTER_DOCKER_RUN_A2](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L448-L480)<br>Atlas 800I A3：[ENTER_DOCKER_RUN_A3](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L482-L522)<br>Ascend 950（8卡）：[ENTER_DOCKER_RUN_A5](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L524-L561)<br>Ascend 950（16卡）：[ENTER_DOCKER_RUN_A5_POD16](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L563-L609) | 1 个实例只占 1 个 容器时，容器名为`motor-p0`、`motor-d0`。1 个实例拆成多个容器时，容器名为`motor-p0-0`、`motor-p0-1`。每台服务器仅创建一个容器。 |
 | kv_store | [ENTER_DOCKER_RUN_KVS](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L624-L638) | 开启池化时创建，容器名`motor-kvs`，放在服务器 1。 |
+| kv_conductor | [ENTER_DOCKER_RUN_CTRL](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L611-L622) | 开启 KV 亲和时创建，容器名`motor-kvc`，放在服务器 1，不挂 NPU。 |
 
 创建时请满足以下条件：
 
@@ -252,9 +259,24 @@ docker exec -it <容器名> bash
 
    上述命令执行后，将启动kv_store（Mooncake后端会启动`mooncake_master`，默认监听**50088**）。
 
+6. <a id="step-kvc"></a>（可选）部署 KV Conductor，仅开启 KV 亲和时需要执行该步骤。
+
+   **未开启 KV 亲和时请跳过此步骤**。
+
+   ```bash
+   python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config \
+     --start \
+     --container-name motor-kvc \
+     --role kv_conductor \
+     --pod-ip <本机IP> --nic-name <网卡名> \
+     --coordinator-ip <管理面IP> \
+     --controller-ip <管理面IP>
+   ```
+
 >[!NOTE] 说明
 >
 >- 开启池化时，部署管理面（coordinator/controller）和Prefill/Decode时需额外增加`--kv-store-ip <kv_store所在服务器的IP地址>`。`--role kv_store`可省略，默认使用`--pod-ip`。
+>- 开启 KV 亲和时，部署管理面和 Prefill/Decode 时需额外增加`--kv-conductor-ip <kv_conductor所在服务器的IP地址>`。`--role kv_conductor`可省略，默认使用`--pod-ip`。
 >- 同一容器部署多个推理实例时，每条`--start`使用不同的`--devices`和端口，请参考[同一容器部署多个推理实例](#同一容器部署多个推理实例)。
 >- 混部角色将`--role`改为`union`，`--instance-name`与容器数量规划一致（例如`u0`）。
 
@@ -265,12 +287,13 @@ docker exec -it <容器名> bash
 | --start | 在当前容器内启动服务，不创建容器。 |
 | --config_dir | user_config.json和env.json所在目录。 |
 | --container-name | 容器名，可自定义，须与创建容器时的名称一致。 |
-| --role | 容器中运行服务的角色。<ul><li>管理服务：coordinator,controller；</li><li>推理服务：prefill或decode；</li><li>池化：kv_store。</li></ul> |
+| --role | 容器中运行服务的角色。<ul><li>管理服务：coordinator,controller；</li><li>推理服务：prefill或decode；</li><li>池化：kv_store；</li><li>KV 亲和：kv_conductor。</li></ul> |
 | --instance-name | 推理实例名，如：p0、d0。<br>用于标识当前容器启动的服务归属于哪一个实例。同一实例的多个容器使用相同名称，详情请参考[容器数量规划](#容器数量规划)。 |
 | --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`src`字段后面是`--pod-ip`值。 |
 | --nic-name | 当前服务器对应`--pod-ip`的网卡名。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`dev`字段后面是`--nic-name`值。 |
-| --coordinator-ip/--controller-ip | Coordinator/Controller所在服务器的IP。部署推理服务、kv_store时填写。分容器部署管理服务时，Controller填写`--coordinator-ip`，Coordinator填写`--controller-ip`。 |
+| --coordinator-ip/--controller-ip | Coordinator/Controller所在服务器的IP。部署推理服务、kv_store、kv_conductor时填写。分容器部署管理服务时，Controller填写`--coordinator-ip`，Coordinator填写`--controller-ip`。 |
 | --kv-store-ip | kv_store所在服务器的IP地址。开启池化后，部署管理面（coordinator/controller）和Prefill/Decode时必填。`--role kv_store`可省略，默认使用`--pod-ip`。 |
+| --kv-conductor-ip | kv_conductor所在服务器的IP地址。开启 KV 亲和后，部署管理面和 Prefill/Decode 时必填。`--role kv_conductor`可省略，默认使用`--pod-ip`。 |
 
 上述命令执行后，窗口将启动对应服务，用户在屏幕上可观察到日志打印。
 

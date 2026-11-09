@@ -124,8 +124,13 @@
    | --nic-name | 当前服务器对应的主网卡名。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`dev`字段后面是`--nic-name`值。 |
    | --coordinator-ip/--controller-ip | 服务器 1 的 IP。管理面部署在服务器 1。 |
    | --kv-store-ip | 服务器 1 的 IP。开启池化时 kv_store 也部署在服务器 1，与管理面同机。 |
+   | --kv-conductor-ip | 服务器 1 的 IP。开启 KV 亲和时 kv_conductor 也部署在服务器 1，与管理面同机。 |
 
    【可选】如果需要**一台服务器部署多个推理容器**，请参考[同一服务器部署多个推理容器](#同一服务器部署多个推理容器)部署服务。
+
+## 开启KV亲和（可选）
+
+不开启 KV 亲和可跳过本节。配置与验收同 PD 分离：[开启KV亲和（可选）](pd_disaggregation_deployment.md#开启kv亲和可选)。`--show-commands` 会在服务器 1 增加 `motor-kvc`，混部命令增加 `--kv-conductor-ip`。
 
 ---
 

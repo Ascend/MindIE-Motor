@@ -151,6 +151,7 @@
     | --nic-name | 当前服务器对应的主网卡名。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`dev`字段后面是`--nic-name`值。 |
     | --coordinator-ip/--controller-ip | 服务器 1 的 IP。管理面部署在服务器 1。 |
     | --kv-store-ip | 服务器 1 的 IP。开启池化时 kv_store 也部署在服务器 1，与管理面同机。 |
+    | --kv-conductor-ip | 服务器 1 的 IP。开启 KV 亲和时 kv_conductor 也部署在服务器 1，与管理面同机。 |
 
     【可选】如果需要**一台服务器部署多个推理容器**，请参考[同一服务器部署多个推理容器](#同一服务器部署多个推理容器)部署服务。
 
@@ -161,6 +162,16 @@
 不开启池化可跳过本节。
 
 开启后，还需要单独部署一个 kv_store 容器。执行[启动服务](#启动服务)中的 `--show-commands` 后，回显会在服务器 1 增加容器名为 `motor-kvs` 的 kv_store 命令，管理面和 Prefill、Decode 命令增加 `--kv-store-ip`。user_config.json 的池化配置见 [KV池化能力](../../../features/kv_cache_store/README.md)。
+
+## 开启KV亲和（可选）
+
+不开启 KV 亲和可跳过本节。单容器部署不支持该特性。
+
+在 `user_config.json` 中设置 `prefill_scheduler_type` 为 `kv_cache_affinity`，并在顶层填写 `kv_conductor_config.http_server_port`（例如 `13333`）。缺端口会直接报错，不会静默回退到负载均衡。完整字段与引擎事件配置见 [KV Cache亲和性调度](../../../features/kvcache_affinity.md)。
+
+开启后，还需要单独部署一个 **kv_conductor** 容器（host 网络、不挂 NPU）。执行[启动服务](#启动服务)中的 `--show-commands` 后，回显会在服务器 1 增加容器名为 `motor-kvc` 的命令，管理面和 Prefill、Decode 命令增加 `--kv-conductor-ip`。`--role kv_conductor` 可省略该参数，默认使用 `--pod-ip`。
+
+同时开启池化时，`motor-kvs` 与 `motor-kvc` 都放在服务器 1；池化亲和在两者都起来后自动接通，无需再改 Docker 命令。
 
 ## 推理验证
 
@@ -251,7 +262,22 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
       --controller-ip "<本机IP>"
     ```
 
-3. Prefill 推理容器启动命令
+3. kv_conductor 启动命令
+
+    未开启 KV 亲和时，回显没有这条命令。开启后无需修改，按回显执行。容器名 `motor-kvc`，使用无 NPU 的 CTRL 模板。
+
+    ```bash
+    python3 /home/examples/deployer/docker_deploy.py \
+      --config_dir /home/examples/config \
+      --container-name motor-kvc \
+      --role kv_conductor \
+      --pod-ip "<本机IP>" \
+      --nic-name "<本机网卡>" \
+      --coordinator-ip "<本机IP>" \
+      --controller-ip "<本机IP>"
+    ```
+
+4. Prefill 推理容器启动命令
 
     额外添加以下五个参数。
 
@@ -293,7 +319,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
       --kv-port 22000                   # KV 传输起始端口，会再占用后续一段端口。同一台服务器上错开，例如 21000、22000
     ```
 
-4. Decode 推理容器启动命令
+5. Decode 推理容器启动命令
 
     额外添加以下五个参数。
 
