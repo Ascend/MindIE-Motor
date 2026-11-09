@@ -161,7 +161,7 @@ Both strategies support `hit_rate_threshold`; for the configuration method, see 
     | Re-registration or historical event replay required | For periodic re-registration, set a positive `re_register_interval_sec` (disabled by default); for historical replay, configure `kv-events-config.replay_endpoint` of the engine. Confirm the recovery capability boundary before enabling it. |
     | Interworking with an old conductor that supports only JSON | Set `kv_conductor_config.query_encoding` to `json`; see [Query exception troubleshooting](#coordinator-cannot-query-the-conductor). |
 
-    For the complete parameter definitions, see [Configuration Reference](../configuration/config_reference.md#motor_coordinator_config); for automatic derivation and migration of old configurations, see [Automatic Derivation and Compatibility](../configuration/config_reference.md#kv_conductor_config-automatic-derivation-and-compatibility).
+    For the complete parameter definitions, see [Configuration Reference](../configuration/config_reference.md#motor_coordinator_config); for automatic derivation and migration of old configurations, see [Automatic Derivation and Compatibility](../configuration/config_reference.md#automatic-derivation-and-compatibility-of-kv_conductor_config).
 3. Deploy the service.
 
     ```bash
