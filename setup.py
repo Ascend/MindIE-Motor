@@ -54,7 +54,7 @@ setup(
     name="motor",
     version=_read_version(),
     description="A Python package named motor.",
-    packages=find_packages(),
+    packages=find_packages(exclude=["tests", "tests.*"]),
     python_requires=">=3.11",
     install_requires=[],
     package_data=_package_data,

@@ -24,4 +24,4 @@ else
 fi
 
 # Execute probe
-python3 $CONFIGMAP_PATH/probe.py $role $probe_type
+python3 "$CONFIGMAP_PATH/probe.py" "$role" "$probe_type"

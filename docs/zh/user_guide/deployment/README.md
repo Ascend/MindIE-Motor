@@ -4,21 +4,19 @@
 
 1. k8s部署
 
-   推荐已**具备K8s 环境、且对高阶可靠性有较强诉求**的用户使用。
+    推荐已**具备K8s 环境、且对高阶可靠性有较强诉求**的用户使用。
 
-   [基于k8s平台的PD分离服务部署（vLLM）](#k8s-pd-disaggregation)
+    [基于k8s平台的PD分离服务部署（vLLM）](#k8s-pd-disaggregation)
 
-   [基于k8s平台的PD分离服务部署（SGLang）](#k8s-pd-disaggregation-sglang)
+    [基于k8s平台的PD分离服务部署（SGLang）](#k8s-pd-disaggregation-sglang)
 
 2. docker only部署
 
-   推荐**不具备 K8s 部署环境**的用户使用，该方案仅具备**基础可靠性能力**。
+    推荐**不具备 K8s 部署环境**的用户使用，该方案仅具备**基础可靠性能力**。
 
-   [基于docker的PD分离服务部署（vLLM）](#docker-pd-disaggregation)
+    [基于docker的PD分离服务部署（vLLM）](#docker-pd-disaggregation)
 
 除推荐方案外，Motor还提供了 PD 混部、云平台部署、Slurm 流水线的部署方案，请参考[**全量部署方案**](#all-deployments)。
-
----
 
 <a id="k8s-pd-disaggregation"></a>
 
@@ -29,18 +27,20 @@
 ## 前置准备
 
 1. 按照以下要求准备环境。
-   - 所有服务器均已完成[环境准备](../environment_preparation.md)。
+
+    - 所有服务器均已完成[环境准备](../environment_preparation.md)。
 
 2. 准备镜像。
 
-   通过以下方式获取镜像，并将镜像加载至K8s集群的所有节点：
+    通过以下方式获取镜像，并将镜像加载至K8s集群的所有节点：
 
-   - 方式一：下载官方完整的MindIE Motor镜像
+    - 方式一：下载官方完整的MindIE Motor镜像
 
-      进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框输入`motor`，单击“mindie-motor”卡片，在“镜像下载”页签根据设备型号下载对应的MindIE Motor镜像。
-   - 方式二：在已有镜像中安装MindIE Motor
+        进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框输入`motor`，单击“mindie-motor”卡片，在“镜像下载”页签根据设备型号下载对应的MindIE Motor镜像。
 
-      基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于vllm-ascend/sglang镜像安装MindIE Motor](../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor) 额外安装MindIE Motor。
+    - 方式二：在已有镜像中安装MindIE Motor
+
+        基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于vllm-ascend/sglang镜像安装MindIE Motor](../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor) 额外安装MindIE Motor。
 
     获取镜像后，请使用以下命令将镜像加载至服务器：
 
@@ -58,9 +58,9 @@
 
     请将examples目录上传至K8s集群的master节点。examples可使用以下两种方式获取：
 
-   - 方式一：下载官方完整的MindIE Motor镜像
+    - 方式一：下载官方完整的MindIE Motor镜像
 
-      镜像内路径为`/tmp/motor/examples`，可执行以下命令获取：
+        镜像内路径为`/tmp/motor/examples`，可执行以下命令获取：
 
         ```bash
         # 自定义一个存镜像名或镜像ID的变量IMAGE
@@ -73,9 +73,9 @@
         docker rm "$cid"
         ```
 
-   - 方式二：在已有镜像中安装MindIE Motor
+    - 方式二：在已有镜像中安装MindIE Motor
 
-     git clone代码仓后，启动脚本位于`/examples`目录。
+        git clone代码仓后，启动脚本位于`/examples`目录。
 
 ## 配置获取
 
@@ -132,58 +132,57 @@
 
 2. 使用以下命令查看服务状态。
 
-   ```bash
-   # 查看Pod状态：<namespace> 与上文job_id一致，默认为mindie-motor
-   kubectl get pods -n <namespace> -o wide
-   ```
+    ```bash
+    # 查看Pod状态：<namespace> 与上文job_id一致，默认为mindie-motor
+    kubectl get pods -n <namespace> -o wide
+    ```
 
-   回显中各Pod/Deployment的命名可能随模板与engine_type变化，可按以下方式识别：
+    回显中各Pod/Deployment的命名可能随模板与engine_type变化，可按以下方式识别：
 
-   | 运行时类型 | 说明 |
-   | --- | --- |
-   | mindie-motor-controller-xxxxx | 服务管理Pod，监控各实例健康状态。 |
-   | mindie-motor-coordinator-xxxx | 请求调度Pod，业务请求入口。 |
-   | vllm-dx-xxxx | D实例Pod，负责Decode推理。 |
-   | vllm-px-xxxx | P实例Pod，负责Prefill推理。 |
+    | 运行时类型 | 说明 |
+    | --- | --- |
+    | mindie-motor-controller-xxxxx | 服务管理Pod，监控各实例健康状态。 |
+    | mindie-motor-coordinator-xxxx | 请求调度Pod，业务请求入口。 |
+    | vllm-dx-xxxx | D实例Pod，负责Decode推理。 |
+    | vllm-px-xxxx | P实例Pod，负责Prefill推理。 |
 
-   Pod状态为`Running`仅表示已成功调度并启动，是否业务就绪仍需结合日志进一步确认。
+    Pod状态为`Running`仅表示已成功调度并启动，是否业务就绪仍需结合日志进一步确认。
 
 3. 使用以下命令查看日志。
 
-   ```bash
-   # 编辑 log_collect/log_config.ini：将 name_space 改为与 job_id 相同的名称（默认为mindie-motor）
-   vim log_collect/log_config.ini
-   # 持续跟踪并收集日志
-   bash show_log.sh
-   ```
+    ```bash
+    # 编辑 log_collect/log_config.ini：将 name_space 改为与 job_id 相同的名称（默认为mindie-motor）
+    vim log_collect/log_config.ini
+    # 持续跟踪并收集日志
+    bash show_log.sh
+    ```
 
 4. 使用以下命令验证服务。
 
-   ```bash
-   # 替换占位符：<master_node_ip>为master节点IP，<served_model_name>为user_config.json中served_model_name字段值
-   curl -X POST http://<master_node_ip>:31015/v1/chat/completions \
-     -H "Content-Type: application/json" \
-     -d '{
-       "model": "<served_model_name>",
-       "messages": [{"role": "user", "content": "who are you?"}],
-       "max_tokens": 36,
-       "stream": true
-     }'
-   ```
+    ```bash
+    # 替换占位符：<master_node_ip>为master节点IP，<served_model_name>为user_config.json中served_model_name字段值
+    curl -X POST http://<master_node_ip>:31015/v1/chat/completions \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "<served_model_name>",
+        "messages": [{"role": "user", "content": "who are you?"}],
+        "max_tokens": 36,
+        "stream": true
+      }'
+    ```
 
-   - 返回{"detail":"Service is not available"}：表示服务尚未就绪，多为P/D或Coordinator尚未完全就绪，等待后重试，并查看各Pod日志。
-   - 返回流式JSON：推理正常。更多接口请参考[业务接口](../api/service_interfaces.md)。
+    - 返回{"detail":"Service is not available"}：表示服务尚未就绪，多为P/D或Coordinator尚未完全就绪，等待后重试，并查看各Pod日志。
+
+    - 返回流式JSON：推理正常。更多接口请参考[业务接口](../api/service_interfaces.md)。
 
 5. 使用以下命令终止服务。
 
-   ```bash
-   # 卸载服务：<namespace>与上文job_id一致，默认为mindie-motor
-   bash delete.sh <namespace>
-   ```
+    ```bash
+    # 卸载服务：<namespace>与上文job_id一致，默认为mindie-motor
+    bash delete.sh <namespace>
+    ```
 
 如需查阅常用特性的开启方式，请参见[PD分离服务部署常用特性使用指导](./k8s/pd_disaggregation_deployment.md#特性配置)。
-
----
 
 <a id="docker-pd-disaggregation"></a>
 
@@ -197,11 +196,11 @@
 
 - 方式一：下载官方完整的MindIE Motor镜像
 
-  进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框输入`motor`，单击“mindie-motor”卡片，在“镜像下载”页签根据设备型号下载对应的MindIE Motor镜像。
+    进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框输入`motor`，单击“mindie-motor”卡片，在“镜像下载”页签根据设备型号下载对应的MindIE Motor镜像。
 
 - 方式二：在已有镜像中安装MindIE Motor
 
-  基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于已有镜像安装MindIE Motor](../maintenance/build_motor_image_from_vllm_ascend.md) 额外安装MindIE Motor。
+    基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于已有镜像安装MindIE Motor](../maintenance/build_motor_image_from_vllm_ascend.md) 额外安装MindIE Motor。
 
 获取镜像后，请使用以下命令**将镜像加载至每一台服务器**：
 
@@ -215,18 +214,18 @@
 
 1. 获取启动脚本。
 
-   执行以下命令，从镜像内部拷贝`examples`目录至宿主机（以/home/examples路径为例）：
+    执行以下命令，从镜像内部拷贝`examples`目录至宿主机（以/home/examples路径为例）：
 
-   ```bash
-   # 填写上一步加载的镜像名称
-   IMAGE="<镜像名或镜像ID>"
-   # 创建一个临时容器并记录容器ID
-   cid=$(docker create "$IMAGE")
-   # 拷贝examples文件夹至宿主机
-   docker cp "$cid:/tmp/motor/examples" /home/examples
-   # 删除临时容器
-   docker rm "$cid"
-   ```
+    ```bash
+    # 填写上一步加载的镜像名称
+    IMAGE="<镜像名或镜像ID>"
+    # 创建一个临时容器并记录容器ID
+    cid=$(docker create "$IMAGE")
+    # 拷贝examples文件夹至宿主机
+    docker cp "$cid:/tmp/motor/examples" /home/examples
+    # 删除临时容器
+    docker rm "$cid"
+    ```
 
 2. 准备配置文件。
 
@@ -256,15 +255,15 @@
 
 3. 保存配置文件
 
-   进入examples目录下，将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下，再修改后保存：
+    进入examples目录下，将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下，再修改后保存：
 
-   ```bash
-   cd /home/examples
-   mkdir -p ./config
-   # 将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下
-   vim ./config/user_config.json
-   vim ./config/env.json
-   ```
+    ```bash
+    cd /home/examples
+    mkdir -p ./config
+    # 将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下
+    vim ./config/user_config.json
+    vim ./config/env.json
+    ```
 
      >[!NOTE]说明
      >上述Motor配置仅给出一种可行的模型切分示例，**用户可根据实际情况调整模型划分策略**，关注以下表中参数即可，但必须满足以下公式的限制：
@@ -376,8 +375,6 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 要开启特性（如 KV 池化、Render），或查看调优指导，请参见[基于Docker的多容器PD分离服务部署](./docker/host/pd_disaggregation_deployment.md)。
 
----
-
 <a id="k8s-pd-disaggregation-sglang"></a>
 
 # PD分离服务部署（基于SGLang推理引擎）
@@ -392,19 +389,19 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 - 基本检查
 
-  1、部署节点已完成[环境准备](../environment_preparation.md)。
+    1、部署节点已完成[环境准备](../environment_preparation.md)。
 
-  2、确保模型权重路径可读取，且 NPU 卡数满足标准配置要求。
+    2、确保模型权重路径可读取，且 NPU 卡数满足标准配置要求。
 
 - 下载镜像
 
-  1、进入[昇腾镜像仓库](https://www.hiascend.com/developer/ascendhub)，打开 **mindie-motor** 镜像仓。
+    1、进入[昇腾镜像仓库](https://www.hiascend.com/developer/ascendhub)，打开 **mindie-motor** 镜像仓。
 
-  2、打开**镜像下载**页签，在右侧搜索框搜索 `sglang` ，选择镜像版本：`3.2.0-sglang0.5.21-a3-ubuntu22.04-py3.12`。
+    2、打开**镜像下载**页签，在右侧搜索框搜索 `sglang` ，选择镜像版本：`3.2.0-sglang0.5.21-a3-ubuntu22.04-py3.12`。
 
-  3、按操作系统架构选择 ARM 或 x86 对应镜像并下载。
+    3、按操作系统架构选择 ARM 或 x86 对应镜像并下载。
 
-  4、下载后，请确认 Kubernetes 集群各工作节点都能使用该镜像。
+    4、下载后，请确认 Kubernetes 集群各工作节点都能使用该镜像。
 
 ## 准备配置文件
 
@@ -412,24 +409,24 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 1. 克隆仓库并进入仓库根目录：
 
-   ```bash
-   git clone https://gitcode.com/Ascend/MindIE-Motor.git
-   cd MindIE-Motor
-   ```
+    ```bash
+    git clone https://gitcode.com/Ascend/MindIE-Motor.git
+    cd MindIE-Motor
+    ```
 
 2. 配置文件位于 `model_configs/sglang/models/deepseek_v4_flash_0731/A3`，即该目录下的 `env.json` 与 `user_config.json`。
 
 3. 按实际环境修改 `user_config.json` 中的以下字段：
 
-   **`image_name`**：填写上一节下载的镜像名。
+    **`image_name`**：填写上一节下载的镜像名。
 
-   **`weight_mount_path`**：模型权重在容器内的挂载目录。
+    **`weight_mount_path`**：模型权重在容器内的挂载目录。
 
-   **`model-path`**：位于 Prefill、Decode 的 `engine_config` 中，填写挂载目录下的模型权重路径。
+    **`model-path`**：位于 Prefill、Decode 的 `engine_config` 中，填写挂载目录下的模型权重路径。
 
-   **`served-model-name`**：本示例为 `deepseek-v4-flash`。
+    **`served-model-name`**：本示例为 `deepseek-v4-flash`。
 
-   **`job_id`**：本示例为 `mindie-motor-sglang`，后续将作为 Kubernetes 命名空间。
+    **`job_id`**：本示例为 `mindie-motor-sglang`，后续将作为 Kubernetes 命名空间。
 
 ## 服务部署与验证
 
@@ -437,73 +434,71 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 1. 获取启动脚本
 
-   克隆仓库时已包含启动脚本，直接使用即可。脚本位于 `MindIE-Motor/examples/deployer`。
+    克隆仓库时已包含启动脚本，直接使用即可。脚本位于 `MindIE-Motor/examples/deployer`。
 
 2. 启动服务
 
-   ```bash
-   # namespace 须与 user_config.json 中的 job_id 一致
-   kubectl create namespace mindie-motor-sglang
+    ```bash
+    # namespace 须与 user_config.json 中的 job_id 一致
+    kubectl create namespace mindie-motor-sglang
 
-   # --config_dir指定配置文件所在目录
-   cd examples/deployer
-   python3 deploy.py --config_dir ../../model_configs/sglang/models/deepseek_v4_flash_0731/A3
-   ```
+    # --config_dir指定配置文件所在目录
+    cd examples/deployer
+    python3 deploy.py --config_dir ../../model_configs/sglang/models/deepseek_v4_flash_0731/A3
+    ```
 
 3. 查看状态
 
-   ```bash
-   kubectl get pods -n mindie-motor-sglang -o wide
-   ```
+    ```bash
+    kubectl get pods -n mindie-motor-sglang -o wide
+    ```
 
-   | 服务 Pod 名称                    | 说明                |
-   | ---------------------------- | ----------------- |
-   | `mindie-motor-controller-*`  | 服务管理              |
-   | `mindie-motor-coordinator-*` | 请求调度与业务入口         |
-   | `mf-store`                   | KV Cache 传输       |
-   | `sglang-p*`                  | Prefill 实例        |
-   | `sglang-d*`                  | Decode 实例         |
-   | `kv-conductor-*`             | KV 亲和调度（未开启则不会出现） |
+    | 服务 Pod 名称                    | 说明                |
+    | ---------------------------- | ----------------- |
+    | `mindie-motor-controller-*`  | 服务管理              |
+    | `mindie-motor-coordinator-*` | 请求调度与业务入口         |
+    | `mf-store`                   | KV Cache 传输       |
+    | `sglang-p*`                  | Prefill 实例        |
+    | `sglang-d*`                  | Decode 实例         |
+    | `kv-conductor-*`             | KV 亲和调度（未开启则不会出现） |
 
 4. 查看日志
 
-   ```bash
-   # 将 name_space 改为 mindie-motor-sglang
-   vim log_collect/log_config.ini
-   # 采集日志并落盘
-   bash show_log.sh
-   ```
+    ```bash
+    # 将 name_space 改为 mindie-motor-sglang
+    vim log_collect/log_config.ini
+    # 采集日志并落盘
+    bash show_log.sh
+    ```
 
 5. 验证服务
 
-   ```bash
-   # <node_ip>：暴露 Coordinator Infer NodePort 的节点 IP
-   # <infer_port>：user_config.json 中的 coordinator_infer_node_port
-   # <model>：engine_config 中的 served-model-name
-   curl -s http://<node_ip>:<infer_port>/v1/models
+    ```bash
+    # <node_ip>：暴露 Coordinator Infer NodePort 的节点 IP
+    # <infer_port>：user_config.json 中的 coordinator_infer_node_port
+    # <model>：engine_config 中的 served-model-name
+    curl -s http://<node_ip>:<infer_port>/v1/models
 
-   curl -X POST http://<node_ip>:<infer_port>/v1/chat/completions \
-     -H "Content-Type: application/json" \
-     -d '{
-       "model": "<model>",
-       "messages": [{"role": "user", "content": "你是谁？"}],
-       "max_tokens": 360,
-       "stream": true
-     }'
-   ```
+    curl -X POST http://<node_ip>:<infer_port>/v1/chat/completions \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "<model>",
+        "messages": [{"role": "user", "content": "你是谁？"}],
+        "max_tokens": 360,
+        "stream": true
+      }'
+    ```
 
-   返回 `{"detail":"Service is not available"}`：服务尚未就绪，请等待 Prefill、Decode 与 MF Store 就绪后重试。
+    返回 `{"detail":"Service is not available"}`：服务尚未就绪，请等待 Prefill、Decode 与 MF Store 就绪后重试。
 
-   返回流式 JSON：推理正常。更多接口见[业务接口](../api/service_interfaces.md)。
+    返回流式 JSON：推理正常。更多接口见[业务接口](../api/service_interfaces.md)。
 
 6. 终止服务
 
-   ```bash
-   # 在 examples/deployer 目录执行，命名空间与 job_id 一致
-   bash delete.sh mindie-motor-sglang
-   ```
-
----
+    ```bash
+    # 在 examples/deployer 目录执行，命名空间与 job_id 一致
+    bash delete.sh mindie-motor-sglang
+    ```
 
 <a id="all-deployments"></a>
 

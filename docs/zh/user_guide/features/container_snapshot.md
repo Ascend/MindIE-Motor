@@ -18,7 +18,7 @@
 | 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li></ul>Atlas 800I A2推理服务器容器的快照只能在相同芯片代际的机器间共享。 |
 | 自动管理模式 | 仅支持使用 containerd 容器运行时的默认 K8s + MindCluster CRD 部署模式。 |
 | 推理引擎 | 必须支持 Device 快照保存与恢复，并提供 suspend 和 resume 接口，目前仅支持vLLM。 |
-| 特性互斥 | 启用容器快照后不支持Node Manager配置热更新。 |
+| 特性互斥 | 启用容器快照后不支持与 Node Manager 配置热更新、[DP域缩容](./fault_tolerance/dp_scale_down.md)、KV 池化、P2P 权重直传特性叠加。 |
 | 操作系统 | 支持 openEuler 24.03 及之后版本和 HCE 3.0，需预装openEuler定制版 CRIU 3.19。 |
 | 存储 | 容器 Host 快照镜像保存目录不能挂载到容器内。运行时模型权重目录必须挂载到容器内，并在制作和恢复阶段保持可访问。 |
 
@@ -58,7 +58,7 @@
       cd /root/rpmbuild/SOURCES/
       rpmbuild -bp criu.spec
       cd /root/rpmbuild/BUILD/criu-3.19
-      vi criu/include/pipes.h # 单个容器内DP数较大时，制作快照时会发生pipe OOM, 需要修改增大pipes.h中的宏NR_PIPES_WITH_DATA至2048
+      vi criu/include/pipes.h # 单个容器内DP数较大时，制作快照时会发生pipe OOM, 需要增大pipes.h中的宏NR_PIPES_WITH_DATA至2048
       make GRUS=1 -j
       make npu_plugin -j
       cp /root/rpmbuild/BUILD/criu-3.19/criu/criu /usr/sbin/

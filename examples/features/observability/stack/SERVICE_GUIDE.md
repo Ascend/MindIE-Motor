@@ -41,7 +41,7 @@ cp -n .env.example .env   # launch.sh 在无 .env 时也会自动从 .env.exampl
 |------|------|
 | `REGISTRY_PREFIX` | 镜像前缀，与内网 Harbor 一致；留空则从 Docker Hub 拉取 |
 | `GRAFANA_VERSION` / `PROMETHEUS_VERSION` / `TEMPO_VERSION` / `OTEL_COLLECTOR_VERSION` / `LOKI_VERSION` | 各组件镜像版本 |
-| `OBS_STACK_MODE` | 栈模式，默认 `full`；也可在命令行用 `--minimal` / `--full` 覆盖 |
+| `OBS_STACK_MODE` | 栈模式，默认 `minimal`；也可在命令行用 `--minimal` / `--full` 覆盖 |
 | `GF_SECURITY_ADMIN_USER` / `GF_SECURITY_ADMIN_PASSWORD` | Grafana 管理员账号 / 密码（默认 `motor` / `motor`） |
 | `GRAFANA_PORT` / `PROMETHEUS_PORT` / `TEMPO_QUERY_PORT` / `OTEL_GRPC_PORT` / `OTEL_HTTP_PORT` / `LOKI_PORT` | 主机侧服务端口 |
 | `MOTOR_PORT_FORWARD_BASE` | Docker 需要 PodIP 桥接转发时使用的起始主机端口（默认 `19000`） |
@@ -53,12 +53,12 @@ cp -n .env.example .env   # launch.sh 在无 .env 时也会自动从 .env.exampl
 
 | 观测能力 | 是否需改 MindIE Motor 配置 | 需要的配置 |
 |----------|----------------------|-----------|
-| Coordinator 基础指标（指标总览 / KV 缓存的请求数、KV、吞吐、延迟等） | **否** | Coordinator 默认在管理端口暴露 `/metrics`、`/instance/metrics`，无需额外配置；只需保证该端口可被观测机或主机端口转发访问 |
-| Engine / vLLM 指标 | **否**（默认开启） | 原生引擎在业务端口暴露 `/metrics`；Coordinator 使用 `infer_tls_config` 直接采集，需保证业务端口可达 |
+| Coordinator 基础指标（指标总览 / KV 缓存的请求数、KV、吞吐、延迟等） | **否** | Coordinator 在 Obs 端口（默认 `1027`）暴露 `/metrics`，可用 `?type=instance` / `role` / `dp` / `node` 取不同视图；无需额外配置，只需保证该端口可被观测机或主机端口转发访问（`/instance/metrics` 已废弃并返回 HTTP 410） |
+| Engine / vLLM 指标 | **否**（默认开启） | 原生引擎在业务端口（默认 `10000`）暴露 `/metrics`；`launch.sh` 默认直接抓取该端点，可用 `MOTOR_ENGINE_BUSINESS_PORT` 调整 |
 | Tracing（Tempo 链路） | **是** | 见下方「1.4.1 Tracing 接入」 |
 | 引擎性能剖析（`vllm_profiling_*`） | **是** | 需安装并开启 `ms_service_metric`，见下方「1.4.2 Profiling 接入」 |
 
-> 说明：当前方案**不使用 Controller 的 metrics 接口**，因此 Controller observability 相关配置（如 `observability_enable`、`1027` 端口）无需调整，可忽略。
+> 说明：Prometheus 指标栈不采集 Controller metrics，无需为此调整 Controller observability；若启用 CCAE 告警与实例清单上报，仍需按主 README §1.4 开启 Controller observability。
 
 #### 1.4.1 Tracing 接入（让 Tempo 链路看板有数据）
 
@@ -73,7 +73,7 @@ cp -n .env.example .env   # launch.sh 在无 .env 时也会自动从 .env.exampl
   - `motor_engine_prefill_config.engine_config.otlp-traces-endpoint = http://<obs-host>:4318/v1/traces`
   - `motor_engine_decode_config.engine_config.otlp-traces-endpoint = http://<obs-host>:4318/v1/traces`
 
-> `4318` 为栈内 OTel Collector 的 OTLP HTTP 端口。完整片段见 `config/tracing.example.json`，详细部署见 `docs/zh/user_guide/tracing_deployment.md`。
+> `4318` 为栈内 OTel Collector 的 OTLP HTTP 端口。完整片段见 `config/tracing.example.json`，详细部署见 `docs/zh/user_guide/features/tracing.md`。
 
 #### 1.4.2 Profiling 接入（让「引擎性能剖析」看板有数据）
 
@@ -155,9 +155,10 @@ docker compose up -d --pull missing --no-build
 | `grafana/grafana:11.3.0` | Grafana 看板 |
 | `prom/prometheus:v2.55.1` | 指标存储与查询 |
 | `grafana/tempo:2.6.1` | Trace 存储 |
+| `grafana/loki:3.3.0` | 日志存储 |
 | `otel/opentelemetry-collector-contrib:0.115.1` | OTLP 接入 |
 
-**full** 模式额外拉起（默认 `full`，对应 Compose `--profile full`）：`grafana/loki`、`prom/node-exporter`、`gcr.io/cadvisor/cadvisor`；可选 `--profile npu` 使用 Ascend `npu-exporter` 镜像。
+**full** 模式在 minimal 基础上额外拉起（对应 Compose `--profile full`）：`prom/node-exporter`、`gcr.io/cadvisor/cadvisor`；可选 `--profile npu` 使用 Ascend `npu-exporter` 镜像。
 
 ### 2.2 代理分工（需区分阶段）
 
@@ -293,7 +294,7 @@ cd examples/features/observability/stack
 # 最常用：指定 namespace，minimal 栈（联调推荐）
 MOTOR_NAMESPACE=<namespace> ./launch.sh --minimal
 
-# 完整栈（含 Loki、node-exporter、cAdvisor 等）
+# 完整栈（minimal 基础上额外含 node-exporter、cAdvisor）
 MOTOR_NAMESPACE=<namespace> ./launch.sh --full
 
 # 指定 NodePort 访问 IP（可选）
@@ -303,6 +304,12 @@ MOTOR_NAMESPACE=<namespace> ./launch.sh --minimal --node-ip <node-ip>
 MOTOR_NAMESPACE=<namespace> ./launch.sh --native
 ```
 
+> **native 架构限制**：`start-native.sh` 当前按 `linux-amd64` 下载 Prometheus / Grafana / Tempo / OTel Collector。
+> arm64 环境推荐使用 Docker；无 Docker 时，可先在各组件官方 release 下载 arm64 包，将可执行文件预置为
+> `.native-runtime/bin/{prometheus,tempo,otelcol-contrib}`，并将 Grafana 解压到
+> `.native-runtime/grafana-v<GRAFANA_VERSION>/`（默认 `grafana-v11.3.0`），再执行相同的 `./launch.sh --native`。
+> 安装器检测到预置文件后不会重复下载。
+
 ### 3.2 命令行参数说明
 
 | 参数 | 说明 |
@@ -310,8 +317,8 @@ MOTOR_NAMESPACE=<namespace> ./launch.sh --native
 | `--namespace <ns>` | Kubernetes namespace / job_id，等同环境变量 `MOTOR_NAMESPACE` |
 | `--node-ip <ip>` | NodePort 访问使用的节点 IP，等同 `MOTOR_NODE_IP` |
 | `--user-config <path>` | MindIE Motor `user_config.json` 路径，等同 `MOTOR_USER_CONFIG` |
-| `--minimal` | 启动 minimal Docker 栈（Prometheus / Grafana / Tempo / OTel） |
-| `--full` | 启动 full Docker 栈（额外含 Loki / node-exporter / cAdvisor） |
+| `--minimal` | 启动 minimal Docker 栈（Prometheus / Grafana / Tempo / OTel / Loki，默认） |
+| `--full` | 启动 full Docker 栈（在 minimal 基础上额外含 node-exporter / cAdvisor） |
 | `--discover-only` | 只运行目标发现，写出 `generated/*`，不启动栈 |
 | `--dry-run` | 发现并打印生成的 `generated/prometheus.yml`（前 240 行），不启动栈 |
 | `--native` | 跳过 Docker Compose，直接运行原生二进制 runtime |
@@ -325,7 +332,8 @@ export MOTOR_NODE_IP=<node-ip>              # NodePort 访问 IP
 export MOTOR_USER_CONFIG=/path/user_config.json
 export MOTOR_ENGINE_BUSINESS_PORT=10000     # 原生引擎 /metrics 业务端口，默认 10000
 export OBS_HOST=<obs-host>                  # MindIE Motor 上报 tracing / OTLP 的观测主机
-export OBS_STACK_MODE=minimal|full          # 未传 --minimal/--full 时生效
+export OBS_STACK_MODE=minimal|full          # 未传 --minimal/--full 时生效，默认 minimal
+export OBS_FORCE_NATIVE_FALLBACK=1          # 可选：Docker 启动或健康检查失败时回退 native
 export PROXY_SH=/path/to/pymotor-proxy.env  # native runtime 下载二进制（dotenv 格式，可选；见 §2.4）
 ```
 
@@ -333,12 +341,12 @@ export PROXY_SH=/path/to/pymotor-proxy.env  # native runtime 下载二进制（d
 
 | 模式 | 命令 / 参数 | 行为 |
 |------|-------------|------|
-| **默认 Docker · full** | `./launch.sh` 或 `./launch.sh --full` | 发现 → `start.sh --full` 启动完整 Compose profile |
-| **Docker · minimal** | `./launch.sh --minimal` | 发现 → `start.sh --minimal`；生成 minimal provisioning / Prometheus / OTel；启动主机 port-forward helper |
+| **默认 Docker · minimal** | `./launch.sh` 或 `./launch.sh --minimal` | 发现 → `start.sh --minimal` 启动核心栈（含 Loki） |
+| **Docker · full** | `./launch.sh --full` | 发现 → `start.sh --full`；额外启动 node-exporter / cAdvisor |
 | **仅发现** | `./launch.sh --discover-only` | 只运行 `discover-targets.py`，写出 `generated/*`，不启动栈 |
 | **发现 + 预览配置** | `./launch.sh --dry-run` | 发现并打印 `generated/prometheus.yml`，不启动栈 |
-| **强制 native** | `./launch.sh --native` | 跳过 Docker，直接 `scripts/start-native.sh`（本地下载二进制运行 Prometheus / Grafana / Tempo 等） |
-| **Docker 失败回退** | `./launch.sh`（未加 `--native`） | Docker 启动非 0 退出时，**自动** fallback 到 native（日志会提示） |
+| **强制 native** | `./launch.sh --native` | 跳过 Docker，直接 `scripts/start-native.sh`（运行 Prometheus / Grafana / Tempo / OTel，不含 Loki 与 infra exporters） |
+| **Docker 失败回退** | `OBS_FORCE_NATIVE_FALLBACK=1 ./launch.sh` | 仅显式设置该变量为 `1` 时，Docker 启动或核心栈健康检查失败才回退 native；默认直接报错 |
 
 ### 3.5 内部调用链（便于排障）
 
@@ -350,7 +358,7 @@ launch.sh
   └─ [默认] start.sh --minimal|--full
         ├─ scripts/run-k8s-port-forwards-host.sh（存在 discovered.env 时）
         ├─ ensure_compose_images + docker compose up --pull missing
-        └─ [失败] launch.sh 自动回退 scripts/start-native.sh
+        └─ [失败且 OBS_FORCE_NATIVE_FALLBACK=1] launch.sh 回退 scripts/start-native.sh
 ```
 
 兼容入口：`./start-real.sh [options]` 等价于 `./launch.sh [options]`，仅做转发。
@@ -359,8 +367,8 @@ launch.sh
 
 - **Namespace**：`--namespace` / `MOTOR_NAMESPACE` → `user_config.json` 的 `motor_deploy_config.job_id` → 扫描含 Coordinator observability NodePort 的 namespace。
 - **Node IP**：`--node-ip` / `MOTOR_NODE_IP` → Coordinator Pod `hostIP` → Kubernetes Node `InternalIP`。
-- **Coordinator**：自动发现 observability NodePort（默认服务端口 `1027`），生成 `/metrics` 及 `type=instance|role|dp|node` 等指标端点。
-- **Engine**：优先原生引擎 metrics NodePort；无 NodePort 时回退 PodIP + `MOTOR_ENGINE_BUSINESS_PORT`（默认 `10000`），识别 `vllm-p0` / `vllm-d0` 等命名并推断 `pd_role` 与 `instance_id`。
+- **Coordinator**：优先发现 Running 的 Coordinator Pod（HA 时选 READY N/N 的主 Pod），抓取其 `1027` 端口；找不到 Pod 时回退 observability NodePort。生成 `/metrics` 及 `type=instance|role|dp|node` 等指标端点。
+- **Engine**：Docker runtime 优先使用 PodIP + `MOTOR_ENGINE_BUSINESS_PORT`（默认 `10000`）并启动主机端口转发；无可用 Pod 目标时回退 Service NodePort。Native runtime 优先 Service NodePort，再回退 PodIP 直连。根据 `vllm-p0` / `vllm-d0` 等命名推断 `pd_role` 与 `instance_id`。
 - **Tracing**：写入 `OBS_HOST`、`OTLP_HTTP_ENDPOINT=http://<obs-host>:4318/v1/traces`、`OTLP_GRPC_ENDPOINT=http://<obs-host>:4317`。
 
 ### 3.7 默认端口
@@ -372,9 +380,10 @@ launch.sh
 | Tempo | `3200` | Trace 查询 API |
 | OTel Collector gRPC | `4317` | OTLP gRPC 上报 |
 | OTel Collector HTTP | `4318` | OTLP HTTP `/v1/traces` |
-| Loki（仅 full） | `3100` | 日志数据源 |
+| Loki | `3100` | 日志数据源（Docker minimal / full 包含；native 不含） |
 | Coordinator observability | `1027` | Coordinator typed metrics |
-| Engine management metrics | `10001` | Engine `/metrics` |
+| Engine business `/metrics` | `10000` | `launch.sh` 默认抓取端口 |
+| Engine management `/metrics` | `10001` | 静态 Prometheus 模板使用的端口 |
 
 ## 4. 拉起后验收
 
@@ -392,7 +401,7 @@ curl -sG http://localhost:9090/api/v1/query \
 ### 4.2 Grafana
 
 - 访问地址：`http://localhost:3000`（默认账号 `motor` / `motor`）。
-- 看板变量：`source=real`，`cluster=<当前 namespace>`。
+- 看板变量因看板而异（`cluster` / `source` / `role` / `pd_role` 等），按各看板顶部变量栏选择；不要套用到所有看板。
 - Prometheus Targets 中 `motor-coordinator`、`motor-engine` 应为 **UP**。
 - 页面布局与看板指标扩展详见 [GRAFANA_GUIDE.md](GRAFANA_GUIDE.md)。
 
@@ -419,7 +428,7 @@ cd examples/features/observability/stack
 `stop.sh` 行为：
 
 1. 先执行 `scripts/stop-k8s-port-forwards-host.sh` 清理主机侧 port-forward。
-2. 若 `docker compose` 可用，执行 `docker compose --profile npu down`（带 `--purge` 时追加 `-v` 删除数据卷）。
+2. 若 `docker compose` 可用，按 `OBS_STACK_MODE`、`OBS_WITH_MOCK`、`OBS_COMPOSE_PROFILES` 组合 profile，并追加 `--profile npu` 后执行 `docker compose ... down`（带 `--purge` 时追加 `-v` 删除数据卷），确保 full / mock / 自定义 profile 也能被清理。
 3. 停止 native runtime 进程（Grafana / Prometheus / OTel / Tempo 的 pid），`--purge` 时删除 `.native-runtime/{data,logs,run}`。
 
 ## 6. 常见问题总结

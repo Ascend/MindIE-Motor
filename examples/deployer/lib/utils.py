@@ -18,8 +18,7 @@ import re
 import shutil
 import subprocess
 import time
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, timezone
 import uuid
 
 import lib.constant as C
@@ -380,7 +379,7 @@ def set_env_to_shell(user_config, env_config_path, deploy_mode):
 
     service_id = (
         f"{get_json_by_path(user_config, 'motor_deploy_config.job_id')}_"
-        f"{datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d%H%M%S')}"
+        f"{datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d%H%M%S')}"
     )
     env_config[C.MOTOR_COMMON_ENV][C.ENV_SERVICE_ID] = service_id
     logger.info(f"Set {C.ENV_SERVICE_ID} environment variable to: {service_id}")

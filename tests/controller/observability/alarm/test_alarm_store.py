@@ -11,9 +11,14 @@
 import pytest
 
 from motor.common.alarm.coordinator_exception_alarm import COORDINATOR_EXCEPTION_ALARM_ID
+from motor.common.alarm.deserialize import deserialize_incoming_record
 from motor.common.alarm.enums import Category, Cleared
 from motor.common.alarm.instance_exception_alarm import INSTANCE_EXCEPTION_ALARM_ID
-from motor.common.alarm.precision_issue_alarm import PRECISION_ISSUE_ALARM_ID
+from motor.common.alarm.precision_issue_alarm import (
+    PRECISION_ISSUE_ALARM_ID,
+    PrecisionIssueAlarm,
+    build_precision_issue_clear_alarm,
+)
 from motor.common.alarm.record import Record
 from motor.controller.observability.alarm.alarm_store import AlarmStore
 
@@ -153,6 +158,61 @@ def test_find_active_precision_alarm_matches_pd_group(alarm_store):
     found = alarm_store.find_active_precision_alarm(1, 2)
     assert found is record_no
     assert alarm_store.find_active_precision_alarm(2, 2) is None
+
+
+def test_precision_alarm_without_prefill_tracks_raise_duplicate_and_clear(alarm_store, monkeypatch):
+    monkeypatch.setenv("SERVICE_ID", "prefill-store-test")
+    monkeypatch.setenv("POD_IP", "192.0.2.20")
+    moi = "service name=Coordinator, service ip=192.0.2.20, instanceId=3"
+    raised = PrecisionIssueAlarm(
+        p_instance_id=None,
+        d_instance_id=3,
+        precision_issue_count=1,
+        probe_failure_count=0,
+    )
+    duplicate = PrecisionIssueAlarm(
+        p_instance_id=None,
+        d_instance_id=3,
+        precision_issue_count=2,
+        probe_failure_count=1,
+    )
+
+    assert raised.moi == moi
+    assert raised.p_instance_id == ""
+    assert alarm_store.add_alarm(raised) is True
+    assert alarm_store.add_alarm(duplicate) is True
+    assert alarm_store.find_active_precision_alarm(None, 3) is raised
+
+    emitted = alarm_store.get_alarms("np1")
+    assert len(emitted) == 1
+    assert len(emitted[0]) == 1
+    assert emitted[0][0]["pInstanceId"] == ""
+    assert emitted[0][0]["additionalInformation"] == (
+        "precision_issue_count=1, probe_failure_count=0, p_instance_id=, d_instance_id=3, pod id=prefill-store-test"
+    )
+
+    clear_payload = build_precision_issue_clear_alarm(
+        p_instance_id=None,
+        d_instance_id=3,
+        alarm_moi=moi,
+    )
+    cleared_record = deserialize_incoming_record(clear_payload)
+    assert cleared_record.moi == moi
+    assert cleared_record.p_instance_id == ""
+    assert cleared_record.additional_information == (
+        "precision_issue_count=0, probe_failure_count=0, p_instance_id=, d_instance_id=3"
+    )
+    assert alarm_store.add_alarm(cleared_record) is True
+    assert alarm_store.find_active_precision_alarm(None, 3) is None
+
+    cleared = alarm_store.get_alarms("np1")
+    assert len(cleared) == 1
+    assert len(cleared[0]) == 1
+    assert cleared[0][0]["cleared"] == Cleared.YES.value
+    assert cleared[0][0]["pInstanceId"] == ""
+    assert cleared[0][0]["additionalInformation"] == (
+        "precision_issue_count=0, probe_failure_count=0, p_instance_id=, d_instance_id=3, pod id=prefill-store-test"
+    )
 
 
 def test_add_alarms_batches_raise_and_clear_in_one_fetch(alarm_store):

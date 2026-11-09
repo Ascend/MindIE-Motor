@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import json
 import os
 import subprocess
 import sys
@@ -550,12 +551,26 @@ def main():
         logger.error("No configuration provided. Use --config_dir <dir> or run in a terminal for interactive mode.")
         sys.exit(1)
 
-    user_config_path, env_config_path = resolve_config_paths(
-        args.config_dir, args.user_config_path, args.env_config_path
-    )
+    try:
+        user_config_path, env_config_path = resolve_config_paths(
+            args.config_dir, args.user_config_path, args.env_config_path
+        )
+    except (FileNotFoundError, ValueError):
+        # resolve_config_paths logs the actionable message before raising; a
+        # configuration typo must not end in a stack trace.
+        sys.exit(1)
 
     set_user_config_path(user_config_path)
-    user_config = read_json(user_config_path)
+    try:
+        user_config = read_json(user_config_path)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.error(f"Failed to read user config {user_config_path}: {exc}")
+        sys.exit(1)
+    if not isinstance(user_config, dict):
+        logger.error(
+            f"Invalid user config {user_config_path}: expected a JSON object, got {type(user_config).__name__}"
+        )
+        sys.exit(1)
     if not args.skip_check and not is_security_configured(user_config):
         print(_DEPLOYMENT_PRECHECK_MESSAGE, file=sys.stderr)
         sys.exit(1)

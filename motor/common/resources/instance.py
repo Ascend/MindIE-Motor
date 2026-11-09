@@ -30,6 +30,16 @@ DEFAULT_ACTIVE_HEARTBEAT_TIMEOUT = 10
 
 
 class InsStatus(str, Enum):
+    """Lifecycle states used by the controller for inference instances.
+
+    Attributes:
+        INITIAL: The instance is initializing and is not yet ready.
+        INACTIVE: The instance is not ready to serve requests.
+        ACTIVE: The instance is ready to serve requests.
+        PAUSED: The instance is temporarily paused.
+        DELETED: The instance is marked for removal from the controller.
+    """
+
     INITIAL = "initial"
     INACTIVE = "inactive"
     ACTIVE = "active"
@@ -41,6 +51,16 @@ class InsStatus(str, Enum):
 
 
 class PDRole(str, Enum):
+    """Inference roles assigned to an instance.
+
+    Attributes:
+        ROLE_E: Encode role.
+        ROLE_P: Prefill role.
+        ROLE_D: Decode role.
+        ROLE_U: Union role combining prefill and decode. The historical
+            ``"both"`` value is also accepted and resolves to this member.
+    """
+
     ROLE_E = "encode"
     ROLE_P = "prefill"
     ROLE_D = "decode"
@@ -59,6 +79,17 @@ class PDRole(str, Enum):
 
 # Instance condition event
 class InsConditionEvent(str, Enum):
+    """Condition events consumed by the controller's instance state machine.
+
+    Attributes:
+        INSTANCE_INIT: Instance initialization is in progress.
+        INSTANCE_HEARTBEAT_TIMEOUT: An endpoint heartbeat has timed out.
+        INSTANCE_NORMAL: The instance is healthy and ready.
+        INSTANCE_ABNORMAL: The instance has abnormal endpoints.
+        INSTANCE_PAUSED: The instance has entered a paused condition.
+        INSTANCE_RESUMED: The instance has recovered from a paused condition.
+    """
+
     INSTANCE_INIT = "instance_init"
     INSTANCE_HEARTBEAT_TIMEOUT = "instance_heartbeat_timeout"
     INSTANCE_NORMAL = "instance_normal"
@@ -71,6 +102,14 @@ class InsConditionEvent(str, Enum):
 
 
 class NodeManagerInfo(BaseModel):
+    """Node manager registration data stored on an instance.
+
+    Attributes:
+        pod_ip: IP address of the node manager pod.
+        port: Node manager service port, represented as a string.
+        device_num: Number of devices on the node; defaults to zero.
+    """
+
     pod_ip: str = Field(..., description="Node manager pod ip")
     port: str = Field(..., description="Node manager port")
     device_num: int = Field(default=0, description="Number of devices in this node")
@@ -96,6 +135,26 @@ class FtCapabilitySnapshot(BaseModel):
 
 
 class ParallelConfig(BaseModel):
+    """Parallelism sizes and distributed-process group settings.
+
+    Zero or omitted world sizes are derived from the parallelism sizes.
+    Passing ``enable_ep=True`` to the constructor sets ``ep_size`` to the
+    resulting ``world_size``; otherwise it uses ``ep_size`` or defaults to one.
+
+    Attributes:
+        dp_size: Data parallel size; defaults to one.
+        pcp_size: Prefill context parallel size; defaults to one.
+        tp_size: Tensor parallel size; defaults to one.
+        ep_size: Expert parallel size; does not enter the world-size products.
+        pp_size: Pipeline parallel size; defaults to one.
+        world_size: Process count, derived as
+            ``dp_size * pcp_size * tp_size * pp_size`` when zero or omitted.
+        local_world_size: Local process count, derived as
+            ``pcp_size * tp_size * pp_size`` when zero or omitted.
+        dp_master_port: Data parallel store port in the range 1 to 65535;
+            defaults to 29500.
+    """
+
     dp_size: int = Field(default=1, description="Data parallel size")
     pcp_size: int = Field(default=1, description="Prefill context parallel size")
     tp_size: int = Field(default=1, description="Tensor parallel size")
@@ -195,6 +254,19 @@ class Instance(BaseModel):
         self._cached_endpoints_version: int | None = None  # Version at cache time
 
     def add_node_mgr(self, pod_ip: str, port: str, device_num: int = 0) -> None:
+        """Add node manager metadata unless an identical record already exists.
+
+        Records are compared using all ``NodeManagerInfo`` fields, including
+        ``device_num``. A missing pod IP or port leaves the list unchanged.
+
+        Args:
+            pod_ip: IP address of the node manager pod.
+            port: Node manager service port, represented as a string.
+            device_num: Number of devices on the node; defaults to zero.
+
+        Returns:
+            None.
+        """
         if pod_ip is None or port is None:
             logger.warning("Invalid pod_ip: %s or port: %s", pod_ip, port)
             return
@@ -208,6 +280,17 @@ class Instance(BaseModel):
                 logger.info("Node manager %s:%s already in instance:%s", pod_ip, port, self.job_name)
 
     def del_node_mgr(self, pod_ip: str, port: str) -> None:
+        """Remove the first node manager matching a pod IP and service port.
+
+        A missing pod IP, missing port, or absent match leaves the list unchanged.
+
+        Args:
+            pod_ip: IP address of the node manager pod to remove.
+            port: Service port of the node manager to remove.
+
+        Returns:
+            None.
+        """
         if pod_ip is None or port is None:
             logger.warning("Invalid pod_ip: %s or port: %s", pod_ip, port)
             return
@@ -221,6 +304,15 @@ class Instance(BaseModel):
             logger.info("Node manager %s:%s not in instance:%s", pod_ip, port, self.job_name)
 
     def has_node_mgr(self, pod_ip: str) -> bool:
+        """Check whether any registered node manager has the given pod IP.
+
+        Args:
+            pod_ip: Pod IP to look up; the service port is not considered.
+
+        Returns:
+            True if a matching record exists, or False if none exists or
+            ``pod_ip`` is None.
+        """
         if pod_ip is None:
             return False
         with self._lock:
@@ -230,6 +322,19 @@ class Instance(BaseModel):
             return False
 
     def add_endpoints(self, pod_ip: str, endpoints: dict[int, Endpoint]) -> None:
+        """Replace a pod's endpoint mapping and invalidate the endpoint cache.
+
+        The supplied dictionary is stored directly, replacing any mapping for
+        the same pod IP. None or non-dictionary input is ignored.
+
+        Args:
+            pod_ip: IP address of the pod that owns the endpoints.
+            endpoints: Endpoint lookup dictionary for the pod. Values contain
+                the ``Endpoint.id`` used by heartbeat and status checks.
+
+        Returns:
+            None.
+        """
         if endpoints is None or not isinstance(endpoints, dict):
             logger.warning("Invalid endpoints for pod_ip: %s", pod_ip)
             return
@@ -255,6 +360,15 @@ class Instance(BaseModel):
         )
 
     def del_endpoints(self, pod_ip: str):
+        """Remove a pod's endpoints and invalidate the endpoint cache if present.
+
+        Args:
+            pod_ip: IP address of the pod whose endpoint mapping is removed.
+                An absent pod leaves the mappings unchanged.
+
+        Returns:
+            None.
+        """
         current_endpoint_num = self.get_endpoints_num()
         with self._lock:
             if pod_ip in self.endpoints:
@@ -328,6 +442,19 @@ class Instance(BaseModel):
         active_timeout: float | None = None,
         ignored_endpoint_ids: set[int] | None = None,
     ) -> bool:
+        """Check endpoint heartbeat ages and report timed-out endpoints as alarms.
+
+        Args:
+            active_timeout: Heartbeat timeout in seconds for ACTIVE instances.
+                None uses ``DEFAULT_ACTIVE_HEARTBEAT_TIMEOUT``. Other instance
+                states always use ``CLEAR_INSTANCE_TIMEOUT``.
+            ignored_endpoint_ids: Endpoint IDs to skip, or None to check all
+                endpoints. IDs refer to ``Endpoint.id``, not mapping keys.
+
+        Returns:
+            False if any checked endpoint has timed out, otherwise True.
+            Returns True when there are no endpoints to check.
+        """
         timestamp = time.time()
 
         if self.status == InsStatus.ACTIVE:
@@ -375,6 +502,16 @@ class Instance(BaseModel):
         Headless PCP workers expose no HTTP readiness endpoint. Their
         ``WAIT2START`` status confirms process liveness without advertising a
         routable service; the non-headless master remains the readiness gate.
+
+        Args:
+            ignored_endpoint_ids: Endpoint IDs to skip, or None to check all
+                endpoints. IDs refer to ``Endpoint.id``, not mapping keys.
+
+        Returns:
+            True if at least one checked endpoint is non-headless, every checked
+            non-headless endpoint is NORMAL, and every checked headless endpoint
+            is NORMAL or WAIT2START. Returns False for an empty checked set or
+            one containing only headless endpoints.
         """
         ignored_endpoint_ids = ignored_endpoint_ids or set()
         with self._lock:
@@ -482,6 +619,23 @@ class Instance(BaseModel):
         status: dict[int, EndpointStatus],
         ignored_endpoint_ids: set[int] | None = None,
     ) -> bool:
+        """Update a pod's heartbeat only when its endpoint ID sets match exactly.
+
+        Args:
+            ip: IP address of a pod already registered in ``endpoints``.
+            timestamp: Heartbeat timestamp, in seconds since the Unix epoch,
+                to store on each non-ignored endpoint.
+            status: Status values keyed by ``Endpoint.id`` (global DP rank),
+                not by the keys of the pod's endpoint dictionary. Keys must
+                exactly match the pod's non-ignored endpoint IDs.
+            ignored_endpoint_ids: Endpoint IDs to exclude from the update.
+                Excluded endpoints retain their timestamp and status.
+
+        Returns:
+            True if the pod exists and the ID sets match, including when both
+            sets are empty. False if the pod is absent or the ID sets differ;
+            in either case no endpoint timestamp or status is updated.
+        """
         with self._lock:
             if ip in self.endpoints:
                 ignored_endpoint_ids = ignored_endpoint_ids or set()

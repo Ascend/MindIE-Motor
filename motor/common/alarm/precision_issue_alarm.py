@@ -90,7 +90,7 @@ class PrecisionIssueAlarm(Alarm):
         self.additional_information = (
             f"precision_issue_count={precision_issue_count}, "
             f"probe_failure_count={probe_failure_count}, "
-            f"p_instance_id={p_instance_id}, d_instance_id={d_instance_id}"
+            f"p_instance_id={self.p_instance_id}, d_instance_id={d_instance_id}"
         )
         self.update_time()
 

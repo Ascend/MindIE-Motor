@@ -116,10 +116,10 @@ Coordinator 的 `/readiness` 不只是"我是 master 吗"，它综合判断以�
 时序说明：
 
 1. **初始选主**：Pod A 和 Pod B 同时向 ETCD 抢锁，Pod B 获锁成功成为 Master，Pod A 保持 Standby。
-2. **就绪探测**：K8s Readiness Probe 周期性探测两个 Pod 的 `/readiness`。Pod B（Master）返回 200，Pod A（Standby）返回 503。Kube Proxy 仅将业务流量路由到 Pod B。
+2. **就绪探测**：K8s Readiness Probe 周期性探测两个 Pod 的 `/readiness`。Pod B（Master）返回 200，Pod A（Standby）返回 503。kube-proxy 仅将业务流量路由到 Pod B。
 3. **Master 故障**：Pod B 发生故障，HTTP 服务不可达，K8s Readiness Probe 探测超时/连接拒绝，将 Pod B 移出 Service Endpoint。
 4. **备升主**：ETCD Lease TTL 超时后锁自动释放。Pod A 在下一轮抢锁中成功获取锁，升为新 Master，`/readiness` 返回 200。
-5. **流量切换**：K8s Readiness Probe 探测到 Pod A 就绪后，将其加入 Service Endpoint，Kube Proxy 将业务流量切换到 Pod A，服务恢复。
+5. **流量切换**：K8s Readiness Probe 探测到 Pod A 就绪后，将其加入 Service Endpoint，kube-proxy 将业务流量切换到 Pod A，服务恢复。
 6. **原 Master 恢复**：Pod B 重调度后重新启动，以 Standby 角色运行，尝试抢锁失败（新 Master 已持锁），作为新的备节点等待下次切换。
 
 ## 4. 关键设计决策

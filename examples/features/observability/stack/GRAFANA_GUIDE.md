@@ -20,15 +20,16 @@
 
 ### 2.1 数据源（Datasources）
 
-数据源由 `grafana/provisioning/datasources/datasources.yml` 预置，无需手动添加：
+Docker 模式会自动预置数据源：minimal 使用 `datasources-minimal.yml`，full 使用 `datasources.yml`；
+native 模式只生成 Prometheus / Tempo 数据源，不提供 Loki。
 
-| 数据源 | UID | 地址 | 用途 |
-|--------|-----|------|------|
+| 数据源 | UID | Docker 内地址 | 用途 |
+|--------|-----|---------------|------|
 | **Prometheus** | `prometheus` | `http://prometheus:9090` | 指标查询（默认数据源） |
 | **Tempo** | `tempo` | `http://tempo:3200` | 分布式追踪（Trace） |
-| **Loki** | `loki` | `http://loki:3100` | 日志（minimal / full 均包含） |
+| **Loki** | `loki` | `http://loki:3100` | 日志（Docker minimal / full 均包含） |
 
-并已配置三者间的联动跳转：
+Docker 模式已配置三者间的联动跳转：
 
 - **Trace → Log**（Tempo `tracesToLogsV2`）：按 `service.name` / `x_request_id` 关联，时间窗口前后 5 分钟。
 - **Trace → Metrics**（Tempo `tracesToMetrics`）：按 `service.name` 关联 Prometheus。
@@ -214,4 +215,4 @@ ms-service-metric status  # 查看状态
 | 新增面板 No Data | 检查 PromQL 是否带了看板变量过滤；变量 `allValue` 是否为 `.*`；指标名是否含冒号（如 `vllm:*`，本栈已开启 `--enable-feature=utf8-names`）。 |
 | UI 改动刷新后丢失 | 容器只读挂载 `grafana/dashboards`，需将 JSON Model 写回源文件（第 4 节）。 |
 | 看板报 500 / 504 | Grafana 容器经外网代理访问 `prometheus` / `tempo` 超时；确认容器内 `HTTP_PROXY` 为空（详见 [SERVICE_GUIDE.md](SERVICE_GUIDE.md) 第 6 节）。 |
-| Loki 数据源不可用 | Loki 仅在 full 模式拉起，minimal 模式无 Loki。 |
+| Loki 数据源不可用 | Docker minimal / full 均包含 Loki；native 模式不提供 Loki。Docker 下可检查 `pymotor-loki` 容器与 `http://localhost:3100/ready`。 |

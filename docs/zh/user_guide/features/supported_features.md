@@ -130,7 +130,7 @@
       <td><a href="./startup_acceleration.md">链接</a></td>
     </tr>
     <tr>
-      <td rowspan="7">故障与恢复</td>
+      <td rowspan="8">故障与恢复</td>
       <td>请求重调度</td>
       <td>🟢</td>
       <td>✅</td>
@@ -165,6 +165,15 @@
       <td>✅</td>
       <td>❌</td>
       <td><a href="./fault_tolerance/scale_p2d.md">链接</a></td>
+    </tr>
+    <tr>
+      <td>DP域缩容</td>
+      <td>🟢</td>
+      <td>✅</td>
+      <td>❌</td>
+      <td>✅</td>
+      <td>❌</td>
+      <td><a href="./fault_tolerance/dp_scale_down.md">链接</a></td>
     </tr>
     <tr>
       <td>主备倒换特性</td>
