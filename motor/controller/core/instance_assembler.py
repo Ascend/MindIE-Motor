@@ -824,18 +824,25 @@ class InstanceAssembler(ThreadSafeSingleton):
         Joiners often occupy 0..N-1. Master must be the lowest-rank endpoint on a
         *survivor* pod. Including this pod's ranks makes the handshake target the
         joiner itself (nnodes=1) and scale-up never joins the surviving group.
-        Ranktable is still rebuilt for A3 cross-server HCCL; A5 has none.
+        Same-round joiners are INITIAL; if any non-INITIAL endpoint exists, drop
+        INITIAL so min(id) stays on the live group. Otherwise keep the previous
+        "all other pods" list. Ranktable is still rebuilt for A3 cross-server
+        HCCL; A5 has none.
         """
+        from motor.common.resources.endpoint import EndpointStatus
+
         pod_ip = msg.pod_ip
         node_mgr = next((nm for nm in instance.get_node_managers() if nm.pod_ip == pod_ip), None)
         if node_mgr is None:
             return False
 
-        survivor_eps = []
+        other_eps = []
         for nm in instance.get_node_managers():
             if nm.pod_ip == pod_ip:
                 continue
-            survivor_eps.extend(instance.get_endpoints(nm.pod_ip).values())
+            other_eps.extend(instance.get_endpoints(nm.pod_ip).values())
+        live_eps = [ep for ep in other_eps if ep.status != EndpointStatus.INITIAL]
+        survivor_eps = live_eps or other_eps
         if not survivor_eps:
             logger.error(
                 "Replacement start aborted: no survivor endpoints for joiner pod %s ranks=%s",
