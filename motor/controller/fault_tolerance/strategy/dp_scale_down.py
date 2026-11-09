@@ -359,6 +359,8 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
         target_dp_size: int,
         old_rank_ids: set[int],
         timeout: float,
+        existing_dp_ranks: list[int] | None = None,
+        data_parallel_master_rank: int | None = None,
     ) -> _ScaleDispatch:
         """Fan out ``/scale_elastic_ep`` to every old-rank endpoint (external_scale.py).
 
@@ -384,12 +386,15 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
                 sorted(missing),
             )
 
-        body = _json.dumps(
-            {
-                "new_data_parallel_size": int(target_dp_size),
-                "drain_timeout": int(max(30, min(timeout, 300))),
-            }
-        ).encode()
+        payload = {
+            "new_data_parallel_size": int(target_dp_size),
+            "drain_timeout": int(max(30, min(timeout, 300))),
+        }
+        if existing_dp_ranks is not None:
+            payload["existing_dp_ranks"] = [int(x) for x in existing_dp_ranks]
+        if data_parallel_master_rank is not None:
+            payload["data_parallel_master_rank"] = int(data_parallel_master_rank)
+        body = _json.dumps(payload).encode()
 
         def _post(ep) -> str:
             url = _engine_http_url(ep, "/scale_elastic_ep")
@@ -403,8 +408,11 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
                 return f"{ep.id}@{ep.ip}:{ep.business_port} -> {resp.status} {resp.read()[:200]!r}"
 
         logger.info(
-            "DP elastic /scale_elastic_ep new_data_parallel_size=%s on old_ranks %s",
+            "DP elastic /scale_elastic_ep new_data_parallel_size=%s existing_dp_ranks=%s "
+            "data_parallel_master_rank=%s on old_ranks %s",
             target_dp_size,
+            payload.get("existing_dp_ranks"),
+            payload.get("data_parallel_master_rank"),
             sorted(ep.id for ep in targets),
         )
         pool = concurrent.futures.ThreadPoolExecutor(
@@ -794,6 +802,8 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
         survivors = {int(x) for x in survivor_rank_ids} if survivor_rank_ids is not None else set(original)
         if not survivors:
             survivors = set(original)
+        existing_dp_ranks = sorted(int(x) for x in survivors)
+        data_parallel_master_rank = min(existing_dp_ranks)
         # Mark in-progress so soft-fault collection cannot reconfig mid scale-up.
         # serving_dp_ranks is the roster Coordinator may keep using until
         # publish_restored(). Joiners are not in it, and must not be written
@@ -827,6 +837,8 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
                 target_dp_size=len(original),
                 old_rank_ids=survivors,
                 timeout=wait_sec,
+                existing_dp_ranks=existing_dp_ranks,
+                data_parallel_master_rank=data_parallel_master_rank,
             )
         except Exception as e:
             logger.error("DP scale-up scale_elastic_ep dispatch failed: %s", e)
