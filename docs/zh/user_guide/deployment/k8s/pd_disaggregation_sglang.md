@@ -78,14 +78,15 @@
    | ---------------------------- | ----------------- |
    | `mindie-motor-controller-*`  | 服务管理              |
    | `mindie-motor-coordinator-*` | 请求调度与业务入口         |
-   | `mf-store`                   | KV Cache 传输       |
+   | `mindie-motor-mf-store`                   | KV Cache 传输       |
    | `sglang-p*`                  | Prefill 实例        |
    | `sglang-d*`                  | Decode 实例         |
-   | `kv-conductor-*`             | KV 亲和调度（未开启则不会出现） |
+   | `mindie-motor-kv-conductor-*`             | KV 亲和调度（未开启则不会出现） |
 
 4. 查看日志
 
    ```bash
+   # 在 examples/deployer 目录下
    # 将 name_space 改为 mindie-motor-sglang
    vim log_collect/log_config.ini
    # 采集日志并落盘

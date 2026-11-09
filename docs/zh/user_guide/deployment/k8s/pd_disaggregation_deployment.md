@@ -119,8 +119,9 @@
 
    | 运行时类型 | 说明 |
    | --- | --- |
-   | mindie-motor-controller-xxxxx | 服务管理Pod，监控各实例健康状态。 |
-   | mindie-motor-coordinator-xxxx | 请求调度Pod，业务请求入口。 |
+   | vllm-0-motor-controller-xxxxx | 服务管理Pod，监控各实例健康状态。 |
+   | vllm-0-motor-coordinator-xxxx | 请求调度Pod，业务请求入口。 |
+   | vllm-0-kv-store-0-xxxx | 共享KV Cache Pod，供 P/D 实例复用（不参与推理计算）。 |
    | vllm-dx-xxxx | D实例Pod，负责Decode推理。 |
    | vllm-px-xxxx | P实例Pod，负责Prefill推理。 |
 
@@ -129,6 +130,7 @@
 3. 使用以下命令查看日志。
 
    ```bash
+   # 在 examples/deployer 目录下
    # 编辑 log_collect/log_config.ini：将 name_space 改为与 job_id 相同的名称（默认为mindie-motor）
    vim log_collect/log_config.ini
    # 持续跟踪并收集日志
