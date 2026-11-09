@@ -52,12 +52,14 @@ def _examples_root(deployer_dir: str) -> str:
 def _in_place_workspace_slot(role: str | None, job_name: str | None) -> str:
     if not role:
         return "single"
-    if D.engine_role_of(role) or role in ("kv_store", D.ROLE_RENDER):
+    if D.engine_role_of(role) or role in ("kv_store", D.ROLE_KV_CONDUCTOR, D.ROLE_RENDER):
         named = (job_name or "").strip()
         if named:
             return named
         if role == "kv_store":
             return "kvs"
+        if role == D.ROLE_KV_CONDUCTOR:
+            return "kvc"
         if role == D.ROLE_RENDER:
             return "render"
         return D.engine_role_of(role)
@@ -114,6 +116,7 @@ def _validate_topology(user_config: dict) -> bool:
     try:
         validate_instance_nums(user_config)
         validate_pod_layouts(user_config)
+        D.validate_docker_kv_conductor(user_config)
     except (KeyError, ValueError) as exc:
         logger.error("%s", exc)
         return False
@@ -159,6 +162,8 @@ def _ports_to_check(
             ports.extend(_controller_ports(user_config))
         if D.engine_role_of(identity.role):
             ports.extend(D.collect_engine_listen_ports(user_config, identity.role))
+        if identity.role == D.ROLE_KV_CONDUCTOR:
+            ports.append(("kv-conductor", params.kv_conductor_port))
     seen: set[int] = set()
     unique = []
     for label, port in ports:
@@ -279,6 +284,8 @@ def _prepare_and_render(args, deployer_dir: str):
             kv_store_ip=args.kv_store_ip,
             kv_store_enabled=params.kv_store_enabled,
             nic_name=getattr(args, "nic_name", None),
+            kv_conductor_ip=getattr(args, "kv_conductor_ip", None),
+            kv_conductor_enabled=params.kv_conductor_enabled,
         )
     except ValueError as exc:
         logger.error("%s", exc)
@@ -703,6 +710,9 @@ def enter_docker_run_template(role: str | None, hardware_type: str | None = None
     if engine == "kv_store":
         D.npu_docker_card_count(hardware_type)
         return C.ENTER_DOCKER_RUN_KVS
+    if engine == D.ROLE_KV_CONDUCTOR:
+        D.npu_docker_card_count(hardware_type)
+        return C.ENTER_DOCKER_RUN_CTRL
     if engine == D.ROLE_RENDER:
         D.npu_docker_card_count(hardware_type)
         return C.ENTER_DOCKER_RUN_CTRL
@@ -864,6 +874,7 @@ def build_in_place_inner_command(args, deployer_dir: str) -> str:
         ("--coordinator-ip", "coordinator_ip"),
         ("--controller-ip", "controller_ip"),
         ("--kv-store-ip", "kv_store_ip"),
+        ("--kv-conductor-ip", "kv_conductor_ip"),
     ):
         value = getattr(args, attr, None)
         if value:
@@ -925,6 +936,8 @@ def _validate_one_click_identity(args, deployer_dir: str, *, check_ports: bool =
         kv_store_ip=args.kv_store_ip,
         kv_store_enabled=params.kv_store_enabled,
         nic_name=getattr(args, "nic_name", None),
+        kv_conductor_ip=getattr(args, "kv_conductor_ip", None),
+        kv_conductor_enabled=params.kv_conductor_enabled,
     )
     engine_ports = D.engine_port_overrides_from_args(args)
     D.validate_engine_port_overrides(identity, engine_ports)
@@ -1243,7 +1256,7 @@ def parse_arguments() -> argparse.Namespace:
         "--coordinator-ip",
         type=str,
         default=None,
-        help="Coordinator IPv4. User-supplied. Required for prefill/decode/union/kv_store "
+        help="Coordinator IPv4. User-supplied. Required for prefill/decode/union/kv_store/kv_conductor "
         "and for --role controller. --role coordinator / coordinator_controller default "
         "to this container's --pod-ip.",
     )
@@ -1251,7 +1264,7 @@ def parse_arguments() -> argparse.Namespace:
         "--controller-ip",
         type=str,
         default=None,
-        help="Controller IPv4. User-supplied. Required for prefill/decode/union/kv_store "
+        help="Controller IPv4. User-supplied. Required for prefill/decode/union/kv_store/kv_conductor "
         "and for --role coordinator. --role controller / coordinator_controller default "
         "to this container's --pod-ip.",
     )
@@ -1278,7 +1291,7 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Print docker_deploy.py commands from user_config.json and exit. "
         "Does not create a container or start Motor. "
-        "One inference container is one server. Management and kv_store share an inference server. "
+        "One inference container is one server. Management, kv_store and kv_conductor share an inference server. "
         "Pass --start to print in-container commands instead of host one-click commands.",
     )
     parser.add_argument(
@@ -1301,7 +1314,8 @@ def parse_arguments() -> argparse.Namespace:
         "Dedicated management --create must pass --role coordinator,controller "
         "(or coordinator / controller) and uses ENTER_DOCKER_RUN_CTRL "
         "with no /dev/davinci* nodes. --role kv_store uses ENTER_DOCKER_RUN_KVS "
-        "(no NPU devices; binds driver, /driver, /var/log). Otherwise uses "
+        "(no NPU devices; binds driver, /driver, /var/log). "
+        "--role kv_conductor uses ENTER_DOCKER_RUN_CTRL (no NPU devices). Otherwise uses "
         "ENTER_DOCKER_RUN_A2 (davinci0-7), ENTER_DOCKER_RUN_A3 (davinci0-15), "
         "ENTER_DOCKER_RUN_A5 (davinci0-7 plus A5 UB paths), or ENTER_DOCKER_RUN_A5_POD16 (davinci0-15) from hardware_type "
         "(every card in that template, or only --devices if passed). "
@@ -1318,7 +1332,7 @@ def parse_arguments() -> argparse.Namespace:
         help="Host NPU ids, e.g. '0' or '0,1'. Engine/single create keeps only those "
         "--device /dev/davinciN lines already in the A2/A5 or A3 template and sets "
         "-e ASCEND_VISIBLE_DEVICES; omit to attach every card in that template. "
-        "Ignored for dedicated control-plane and kv_store create. "
+        "Ignored for dedicated control-plane, kv_store and kv_conductor create. "
         "On --start with --role prefill/decode/union, limits this process to those "
         "cards, exports MOTOR_START_DEVICES for NodeManager and this parent "
         "(so a second --start / Ctrl+C only reaps this instance), and writes "
@@ -1346,6 +1360,13 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="KV Cache Store host IP. Required when KV is enabled except --role kv_store "
         "(defaults to --pod-ip). Error if KV is disabled.",
+    )
+    parser.add_argument(
+        "--kv-conductor-ip",
+        type=str,
+        default=None,
+        help="KV Conductor host IP. Required when kv_conductor_config.http_server_port is set "
+        "except --role kv_conductor (defaults to --pod-ip). Error if conductor is disabled.",
     )
     parser.add_argument(
         "--node-manager-port",

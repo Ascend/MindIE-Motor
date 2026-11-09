@@ -27,9 +27,11 @@ Both strategies support `hit_rate_threshold`; for the configuration method, see 
 
 ### Environment Preparation
 
-- Complete the [PD disaggregation deployment](../deployment/k8s/pd_disaggregation_deployment.md) or the
-  [PD aggregation deployment](../deployment/k8s/pd_aggregation_deployment.md) first, and confirm that basic inference works normally.
+- Complete the [PD disaggregation deployment](../deployment/k8s/pd_disaggregation_deployment.md),
+  the [PD aggregation deployment](../deployment/k8s/pd_aggregation_deployment.md), or
+  [Docker multi-container PD disaggregation](../../../zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md) first, and confirm that basic inference works normally.
   If the Controller / Node Manager is not deployed, use the [Coordinator standalone deployment](../deployment/standalone.md).
+  Docker single-container does not support KV affinity; you must start a dedicated `motor-kvc` container.
 
 - The configuration examples in this document target vLLM; for the SGLang baseline and cache switches, see
   [SGLang PD disaggregation deployment](../../../zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang).
@@ -171,16 +173,36 @@ Both strategies support `hit_rate_threshold`; for the configuration method, see 
     python deploy.py --config_dir ../../model_configs/vllm/pd_hybrid
     ```
 
+    For Docker-only, use multi-container host deployment (not single-container):
+
+    ```bash
+    python3 docker_deploy.py --config_dir /home/examples/config --show-commands
+    ```
+
+    The output adds a `--role kv_conductor` command with container name `motor-kvc` on server 1, and adds `--kv-conductor-ip` to management and Prefill/Decode/union commands.
+    Command generation fails closed if `kv_conductor_config.http_server_port` is missing.
+
     After deployment, check registration, cache hits, and the actual endpoint selection as described in [Verifying the Feature](#verifying-the-feature).
 
 ### Verifying the Feature
 
-Run the following commands in an environment that can access the service, and replace the namespace and address with actual values:
+Run the following commands in an environment that can access the service, and replace the namespace and address with actual values.
+
+Kubernetes:
 
 ```bash
 NAMESPACE=mindie-motor
 CONDUCTOR_URL=http://kv-conductor:13333
 kubectl -n "$NAMESPACE" get pods,services -o wide
+curl --fail "$CONDUCTOR_URL/health"
+curl --fail "$CONDUCTOR_URL/workers"
+```
+
+Docker-only (host network; conductor runs in `motor-kvc` on server 1):
+
+```bash
+CONDUCTOR_URL=http://<server-1-ip>:13333
+docker ps --filter name=motor-kvc
 curl --fail "$CONDUCTOR_URL/health"
 curl --fail "$CONDUCTOR_URL/workers"
 ```

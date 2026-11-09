@@ -79,6 +79,7 @@
 | 管理面 | [ENTER_DOCKER_RUN_CTRL](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L607-L618) | 容器名`motor-ctrl`，创建在服务器 1。 |
 | 混部 | Atlas 800I A2：[ENTER_DOCKER_RUN_A2](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L444-L476)<br>Atlas 800I A3：[ENTER_DOCKER_RUN_A3](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L478-L518)<br>Ascend 950（8卡）：[ENTER_DOCKER_RUN_A5](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L520-L557)<br>Ascend 950（16卡）：[ENTER_DOCKER_RUN_A5_POD16](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L559-L605) | 1 个实例只占 1 个 容器时，容器名为`motor-u0`、`motor-u1`。1 个实例拆成多个容器时，容器名为`motor-u0-0`、`motor-u0-1`。每台服务器仅创建一个容器。 |
 | kv_store | [ENTER_DOCKER_RUN_KVS](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L620-L634) | 开启池化时创建，容器名`motor-kvs`，放在服务器 1。 |
+| kv_conductor | [ENTER_DOCKER_RUN_CTRL](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/examples/deployer/lib/constant.py#L607-L618) | 开启 KV 亲和时创建，容器名`motor-kvc`，放在服务器 1，不挂 NPU。 |
 
 创建容器时，必须把服务启动脚本文件夹挂载进容器（例如：`-v /home/examples:/home/examples`）,创建完成后进入容器：
 
@@ -137,7 +138,7 @@ docker exec -it <容器名> bash
      --controller-ip "<服务器1 IP>"
    ```
 
-   开启池化后，回显在服务器 1 增加容器名为`motor-kvs`的 kv_store 命令，管理面和混部命令增加`--kv-store-ip`。
+   开启池化后，回显在服务器 1 增加容器名为`motor-kvs`的 kv_store 命令，管理面和混部命令增加`--kv-store-ip`。开启 KV 亲和后，回显在服务器 1 增加容器名为`motor-kvc`的 kv_conductor 命令，管理面和混部命令增加`--kv-conductor-ip`。
 
 2. 执行服务启动命令
 
@@ -151,6 +152,7 @@ docker exec -it <容器名> bash
    | --nic-name | 当前服务器对应的主网卡名。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`dev`字段后面是`--nic-name`值。 |
    | --coordinator-ip/--controller-ip | 服务器 1 的 IP。管理面部署在服务器 1。 |
    | --kv-store-ip | 服务器 1 的 IP。开启池化时 kv_store 也部署在服务器 1，与管理面同机。 |
+   | --kv-conductor-ip | 服务器 1 的 IP。开启 KV 亲和时 kv_conductor 也部署在服务器 1，与管理面同机。 |
 
 ## 推理验证
 

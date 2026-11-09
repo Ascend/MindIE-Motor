@@ -20,26 +20,14 @@ import os
 import shlex
 import sys
 
+from lib.docker_utils import kv_conductor_enabled, kv_store_enabled, validate_docker_kv_conductor
+
 INSTANCE_NUM_MAX = 16
 DEPLOY_MODE_SINGLE_CONTAINER = "single_container"
 
 
 class ConfigError(ValueError):
     """user_config.json 缺少生成命令所需的字段，或字段不合法。"""
-
-
-def kv_store_enabled(user_config: dict) -> bool:
-    """与 docker_deploy 相同：MultiConnector，或写了非空的 kv_cache_store_config。"""
-    engine = user_config.get("motor_engine_prefill_config") or user_config.get("motor_engine_union_config") or {}
-    engine_config = engine.get("engine_config") if isinstance(engine, dict) else None
-    if not isinstance(engine_config, dict):
-        engine_config = {}
-    kv_transfer = engine_config.get("kv_transfer_config")
-    if not isinstance(kv_transfer, dict):
-        kv_transfer = {}
-    kv_connector = kv_transfer.get("kv_connector", "")
-    kv_store_cfg = user_config.get("kv_cache_store_config")
-    return kv_connector == "MultiConnector" or (isinstance(kv_store_cfg, dict) and bool(kv_store_cfg))
 
 
 def _positive_int(deploy: dict, key: str) -> int:
@@ -93,7 +81,7 @@ def _format(
     config_dir: str,
     shared: list[tuple[str, list[str]]] | None = None,
 ) -> str:
-    """servers 每项独占一台。shared 是管理面、kv_store，固定放在服务器 1，不另计。"""
+    """servers 每项独占一台。shared 是管理面、kv_store、kv_conductor，固定放在服务器 1，不另计。"""
     shared = list(shared or [])
     lines = [f"预计使用 {len(servers)} 台服务器。", ""]
     if shared and servers:
@@ -116,6 +104,7 @@ def _engine_entries(
     pod_num: int,
     in_container: bool,
     kv_enabled: bool,
+    kv_conductor: bool,
 ) -> list[tuple[str, list[str]]]:
     role_label = {"prefill": "Prefill", "decode": "Decode", "union": "混部"}[role]
     entries: list[tuple[str, list[str]]] = []
@@ -144,6 +133,8 @@ def _engine_entries(
             )
             if kv_enabled:
                 argv.extend(["--kv-store-ip", _SERVER1_IP])
+            if kv_conductor:
+                argv.extend(["--kv-conductor-ip", _SERVER1_IP])
             title = role_label + " " + instance_name
             if pod_num > 1:
                 title += f"（{pod_index + 1}/{pod_num}）"
@@ -163,7 +154,13 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
     if isinstance(encode_num, int) and not isinstance(encode_num, bool) and encode_num > 0:
         raise ConfigError("当前脚本不生成 encode 实例的 Docker 命令")
 
+    try:
+        validate_docker_kv_conductor(user_config)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+
     kv_enabled = kv_store_enabled(user_config)
+    kv_conductor = kv_conductor_enabled(user_config)
     if deploy.get("deploy_mode") == DEPLOY_MODE_SINGLE_CONTAINER:
         argv = ["--start"] if in_container else []
         argv.extend(["--container-name", "motor-single", "--pod-ip", _HOST_IP, "--nic-name", _NIC])
@@ -178,9 +175,11 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
     if not hybrid and not separation:
         raise ConfigError("motor_deploy_config 缺少 p_instances_num/d_instances_num 或 hybrid_instances_num")
 
-    shared = [_management_entry(in_container, kv_enabled)]
+    shared = [_management_entry(in_container, kv_enabled, kv_conductor)]
     if kv_enabled:
-        shared.append(_kv_store_entry(in_container))
+        shared.append(_kv_store_entry(in_container, kv_conductor))
+    if kv_conductor:
+        shared.append(_kv_conductor_entry(in_container, kv_enabled))
     if hybrid:
         servers = _engine_entries(
             role="union",
@@ -189,6 +188,7 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
             pod_num=_positive_int(deploy, "single_hybrid_instance_pod_num"),
             in_container=in_container,
             kv_enabled=kv_enabled,
+            kv_conductor=kv_conductor,
         )
         return _format(servers, deployer_py, config_dir, shared)
 
@@ -199,6 +199,7 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
         pod_num=_positive_int(deploy, "single_p_instance_pod_num"),
         in_container=in_container,
         kv_enabled=kv_enabled,
+        kv_conductor=kv_conductor,
     )
     servers.extend(
         _engine_entries(
@@ -208,12 +209,13 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
             pod_num=_positive_int(deploy, "single_d_instance_pod_num"),
             in_container=in_container,
             kv_enabled=kv_enabled,
+            kv_conductor=kv_conductor,
         )
     )
     return _format(servers, deployer_py, config_dir, shared)
 
 
-def _management_entry(in_container: bool, kv_enabled: bool) -> tuple[str, list[str]]:
+def _management_entry(in_container: bool, kv_enabled: bool, kv_conductor: bool) -> tuple[str, list[str]]:
     argv = ["--start"] if in_container else []
     argv.extend(
         [
@@ -229,10 +231,12 @@ def _management_entry(in_container: bool, kv_enabled: bool) -> tuple[str, list[s
     )
     if kv_enabled:
         argv.extend(["--kv-store-ip", _HOST_IP])
+    if kv_conductor:
+        argv.extend(["--kv-conductor-ip", _HOST_IP])
     return "管理面", argv
 
 
-def _kv_store_entry(in_container: bool) -> tuple[str, list[str]]:
+def _kv_store_entry(in_container: bool, kv_conductor: bool = False) -> tuple[str, list[str]]:
     argv = ["--start"] if in_container else []
     argv.extend(
         [
@@ -250,7 +254,32 @@ def _kv_store_entry(in_container: bool) -> tuple[str, list[str]]:
             _HOST_IP,
         ]
     )
+    if kv_conductor:
+        argv.extend(["--kv-conductor-ip", _HOST_IP])
     return "kv_store", argv
+
+
+def _kv_conductor_entry(in_container: bool, kv_enabled: bool) -> tuple[str, list[str]]:
+    argv = ["--start"] if in_container else []
+    argv.extend(
+        [
+            "--container-name",
+            "motor-kvc",
+            "--role",
+            "kv_conductor",
+            "--pod-ip",
+            _HOST_IP,
+            "--nic-name",
+            _NIC,
+            "--coordinator-ip",
+            _HOST_IP,
+            "--controller-ip",
+            _HOST_IP,
+        ]
+    )
+    if kv_enabled:
+        argv.extend(["--kv-store-ip", _HOST_IP])
+    return "kv_conductor", argv
 
 
 def _load_user_config(config_dir: str) -> dict:

@@ -1,6 +1,6 @@
 # 基于Docker的单容器服务部署
 
-本文档指导用户基于Docker在单机上完成推理服务的部署，1台服务器、1个容器内完成整个PD分离的部署，适用于小模型（权重小于100GB）场景，该部署方式不依赖K8s。大模型或多机部署可参见[宿主机部署：PD 分离](host/pd_disaggregation_deployment.md)。KV池化需要单独的kv_store容器，请使用宿主机部署并参考[开启KV池化（可选）](./host/pd_disaggregation_deployment.md#开启kv池化可选)。
+本文档指导用户基于Docker在单机上完成推理服务的部署，1台服务器、1个容器内完成整个PD分离的部署，适用于小模型（权重小于100GB）场景，该部署方式不依赖K8s。大模型或多机部署可参见[宿主机部署：PD 分离](host/pd_disaggregation_deployment.md)。KV池化需要单独的kv_store容器，请使用宿主机部署并参考[开启KV池化（可选）](./host/pd_disaggregation_deployment.md#开启kv池化可选)。KV 亲和需要单独的 kv_conductor 容器，请使用宿主机部署并参考[开启KV亲和（可选）](./host/pd_disaggregation_deployment.md#开启kv亲和可选)。
 
 >[!NOTE] 说明
 > 单容器部署中，Prefill与Decode在同1个容器、同1台机器上，不支持 Ascend 950PR 与 950DT 混合组网。混合组网请使用[宿主机部署：PD 分离](./host/pd_disaggregation_deployment.md#启动服务)，Prefill 命令放到 950PR 上，Decode 命令放到 950DT 上。
