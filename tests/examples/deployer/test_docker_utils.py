@@ -155,10 +155,6 @@ class DockerDeployTests(unittest.TestCase):
             _parse("--config_dir", "/mnt/motor", "--role", "coordinator,controller").role, "coordinator_controller"
         )
         self.assertEqual(_parse("--config_dir", "/mnt/motor", "--role", "render").role, "render")
-        self.assertEqual(_parse("--config_dir", "/mnt/motor", "--role", "kv_conductor").role, "kv_conductor")
-        self.assertEqual(
-            _parse("--config_dir", "/mnt/motor", "--kv-conductor-ip", "10.0.0.1").kv_conductor_ip, "10.0.0.1"
-        )
 
         with patch.object(sys, "stderr"):
             with self.assertRaises(SystemExit):
@@ -171,7 +167,6 @@ class DockerDeployTests(unittest.TestCase):
         self.assertNotIn("--device", ctrl)
         self.assertIs(docker_deploy.enter_docker_run_template("prefill", "800I_A2"), a2)
         self.assertIs(docker_deploy.enter_docker_run_template("coordinator_controller", "800I_A2"), ctrl)
-        self.assertIs(docker_deploy.enter_docker_run_template("kv_conductor", "800I_A2"), ctrl)
         self.assertIs(docker_deploy.enter_docker_run_template("render", "800I_A2"), ctrl)
         # Render is no-NPU even on 16-card A5-Pod16; engine roles must not fall through to A3.
         self.assertIs(docker_deploy.enter_docker_run_template("render", "Ascend950-Pod16"), ctrl)
@@ -216,11 +211,6 @@ class DockerDeployTests(unittest.TestCase):
         self.assertEqual(
             docker_deploy.default_in_place_workspace("/opt/examples/deployer", None, None),
             os.path.abspath("/opt/examples/motor_workspace/single"),
-        )
-        self.assertEqual(docker_deploy._in_place_workspace_slot("kv_conductor", None), "kvc")
-        self.assertEqual(
-            docker_deploy.default_in_place_workspace("/opt/examples/deployer", "kv_conductor", None, "motor-kvc"),
-            os.path.abspath("/opt/examples/motor_workspace/motor-kvc/kvc"),
         )
 
     def test_one_click_refuses_existing_name(self):
@@ -592,202 +582,6 @@ class DockerRenderLifecycleTests(unittest.TestCase):
                 )
             self.assertEqual(rc, 0)
         self.assertEqual(called, [1])
-
-
-def _affinity_pd_config(*, conductor=True, affinity=True, single=False, store=False):
-    cfg = _pd_config()
-    cfg["motor_deploy_config"]["deploy_mode"] = "single_container" if single else "infer_service_set"
-    if affinity:
-        cfg["motor_coordinator_config"]["scheduler_config"] = {"prefill_scheduler_type": "kv_cache_affinity"}
-    if conductor:
-        cfg["kv_conductor_config"] = {"http_server_port": 13333}
-    if store:
-        cfg["kv_cache_store_config"] = {"port": 50088}
-    return cfg
-
-
-class DockerKvConductorTests(unittest.TestCase):
-    def test_role_is_underscore_and_singleton(self):
-        self.assertEqual(D.ROLE_KV_CONDUCTOR, "kv_conductor")
-        self.assertIn("kv_conductor", D.DOCKER_MULTI_ROLES)
-        self.assertNotEqual(D.ROLE_KV_CONDUCTOR, C.ROLE_KV_CONDUCTOR)
-        with self.assertRaisesRegex(ValueError, "cannot be combined"):
-            D.normalize_docker_role("kv_conductor,coordinator")
-        with self.assertRaisesRegex(ValueError, "cannot be combined"):
-            D.normalize_docker_role("kv_conductor,kv_store")
-
-    def test_validate_fail_closed_without_conductor(self):
-        with self.assertRaisesRegex(ValueError, "http_server_port"):
-            D.validate_docker_kv_conductor(_affinity_pd_config(conductor=False, affinity=True))
-
-    def test_validate_rejects_single_container(self):
-        with self.assertRaisesRegex(ValueError, "single_container"):
-            D.validate_docker_kv_conductor(_affinity_pd_config(single=True))
-        with self.assertRaisesRegex(ValueError, "single_container"):
-            D.validate_docker_kv_conductor(_affinity_pd_config(conductor=True, affinity=False, single=True))
-
-    def test_validate_warns_when_scheduler_is_not_affinity(self):
-        with self.assertLogs("lib.docker_utils", level="WARNING") as captured:
-            D.validate_docker_kv_conductor(_affinity_pd_config(affinity=False))
-        self.assertTrue(any("kv_cache_affinity" in line for line in captured.output))
-
-    def test_validate_accepts_multi_container_affinity(self):
-        D.validate_docker_kv_conductor(_affinity_pd_config())
-        self.assertTrue(docker_deploy._validate_topology(_affinity_pd_config()))
-
-    def test_derive_params_reads_conductor_port(self):
-        params = D.derive_params(_affinity_pd_config())
-        self.assertTrue(params.kv_conductor_enabled)
-        self.assertEqual(params.kv_conductor_port, 13333)
-        disabled = D.derive_params(_pd_config())
-        self.assertFalse(disabled.kv_conductor_enabled)
-
-    def test_identity_requires_conductor_ip_except_own_role(self):
-        cfg = _affinity_pd_config()
-        with patch.object(D, "ip_from_nic", return_value="10.0.0.2"):
-            kvc = D.resolve_runtime_identity(
-                cfg,
-                role="kv_conductor",
-                job_name=None,
-                pod_ip="10.0.0.2",
-                coordinator_ip="10.0.0.1",
-                controller_ip="10.0.0.1",
-                kv_store_ip=None,
-                kv_store_enabled=False,
-                nic_name="eth0",
-                kv_conductor_enabled=True,
-            )
-            self.assertEqual(kvc.role, "kv_conductor")
-            self.assertEqual(kvc.kv_conductor_ip, "10.0.0.2")
-            self.assertFalse(kvc.attach_npu)
-            prefill = D.resolve_runtime_identity(
-                cfg,
-                role="prefill",
-                job_name="p0",
-                pod_ip="10.0.0.2",
-                coordinator_ip="10.0.0.1",
-                controller_ip="10.0.0.1",
-                kv_store_ip=None,
-                kv_store_enabled=False,
-                nic_name="eth0",
-                kv_conductor_ip="10.0.0.1",
-                kv_conductor_enabled=True,
-            )
-            self.assertEqual(prefill.kv_conductor_ip, "10.0.0.1")
-            with self.assertRaisesRegex(ValueError, "--kv-conductor-ip"):
-                D.resolve_runtime_identity(
-                    cfg,
-                    role="prefill",
-                    job_name="p0",
-                    pod_ip="10.0.0.2",
-                    coordinator_ip="10.0.0.1",
-                    controller_ip="10.0.0.1",
-                    kv_store_ip=None,
-                    kv_store_enabled=False,
-                    nic_name="eth0",
-                    kv_conductor_enabled=True,
-                )
-            with self.assertRaisesRegex(ValueError, "http_server_port is missing"):
-                D.resolve_runtime_identity(
-                    cfg,
-                    role="prefill",
-                    job_name="p0",
-                    pod_ip="10.0.0.2",
-                    coordinator_ip="10.0.0.1",
-                    controller_ip="10.0.0.1",
-                    kv_store_ip=None,
-                    kv_store_enabled=False,
-                    nic_name="eth0",
-                    kv_conductor_ip="10.0.0.1",
-                    kv_conductor_enabled=False,
-                )
-
-    def test_start_script_exports_conductor_service(self):
-        params = D.derive_params(_affinity_pd_config())
-        identity = D.DockerRuntimeIdentity(
-            role="kv_conductor",
-            job_name="",
-            pod_ip="10.0.0.2",
-            coordinator_ip="10.0.0.1",
-            controller_ip="10.0.0.1",
-            kv_store_ip="",
-            host_network=True,
-            attach_npu=False,
-            kv_conductor_ip="10.0.0.2",
-            nic_name="eth0",
-        )
-        with patch.object(D, "ip_from_nic", return_value="10.0.0.2"):
-            script = D.render_start_motor_sh(params, "/ws/kvc/configmap", identity=identity)
-            prefill = D.render_start_motor_sh(
-                params,
-                "/ws/p0/configmap",
-                identity=D.DockerRuntimeIdentity(
-                    role="prefill",
-                    job_name="p0",
-                    pod_ip="10.0.0.2",
-                    coordinator_ip="10.0.0.1",
-                    controller_ip="10.0.0.1",
-                    kv_store_ip="",
-                    host_network=True,
-                    attach_npu=True,
-                    kv_conductor_ip="10.0.0.2",
-                    nic_name="eth0",
-                ),
-            )
-        self.assertIn('export ROLE=kv_conductor', script)
-        self.assertIn('export KV_CONDUCTOR_SERVICE="10.0.0.2"', script)
-        self.assertIn('export KV_CONDUCTOR_PORT="13333"', script)
-        self.assertIn('export KV_CONDUCTOR_SERVICE="10.0.0.2"', prefill)
-        self.assertNotIn("KV_CONDUCTOR_PORT", prefill)
-
-    def test_control_role_skips_start_devices(self):
-        self.assertEqual(D.isolate_start_devices("kv_conductor", "0,1"), "")
-
-    def test_inner_start_forwards_conductor_ip(self):
-        args = type(
-            "A",
-            (),
-            {
-                "config_dir": "/tmp/cfg",
-                "user_config_path": "",
-                "env_config_path": "",
-                "container_name": "motor-p0",
-                "role": "prefill",
-                "job_name": "p0",
-                "pod_ip": "10.0.0.8",
-                "nic_name": "eth0",
-                "coordinator_ip": "10.0.0.1",
-                "controller_ip": "10.0.0.1",
-                "kv_store_ip": None,
-                "kv_conductor_ip": "10.0.0.1",
-                "node_manager_port": 4026,
-                "data_parallel_rpc_port": 9000,
-                "kv_port": 21000,
-                "base_port": 10000,
-                "devices": "0,1",
-            },
-        )()
-        inner = docker_deploy.build_in_place_inner_command(args, "/tmp/deployer")
-        self.assertIn(" --start ", f" {inner} ")
-        self.assertNotIn("--devices", inner)
-        self.assertIn("--kv-conductor-ip", inner)
-
-    def test_ports_include_conductor(self):
-        cfg = _affinity_pd_config()
-        params = D.derive_params(cfg)
-        identity = D.DockerRuntimeIdentity(
-            role="kv_conductor",
-            job_name="",
-            pod_ip="10.0.0.2",
-            coordinator_ip="10.0.0.1",
-            controller_ip="10.0.0.1",
-            kv_store_ip="",
-            host_network=True,
-            attach_npu=False,
-            kv_conductor_ip="10.0.0.2",
-        )
-        ports = dict(docker_deploy._ports_to_check(cfg, params, identity, in_place=True))
-        self.assertEqual(ports["kv-conductor"], 13333)
 
 
 class DockerPreflightLayoutTests(unittest.TestCase):
