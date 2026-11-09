@@ -1,10 +1,10 @@
-# Coordinator Standalone Deployment on Bare Metal
+# Coordinator Standalone Deployment
 
-Deploy the Motor Coordinator separately on a physical machine or virtual machine (without K8s) to connect to existing native vLLM Prefill / Decode engines, supporting multiple P and multiple D. The Coordinator is a pure CPU service and does not depend on the NPU, Controller, or Node Manager.
+Deploy the Motor Coordinator separately on a physical machine or virtual machine (without K8s) to connect to existing native vLLM Prefill/Decode engines, supporting multiple P and multiple D. The Coordinator is a pure CPU service and does not depend on the NPU, Controller, or Node Manager.
 
 Instance registration (available once motor is installed): `python3 -m motor.coordinator.register`. For external listening, you can optionally write a configuration file, as described in Section 2.
 
-For routine addition, deletion, and query, see [Appendix C](#appendix-c-instance-add-delete-and-query). KV cache affinity is an optional enhancement, see [Appendix B](#appendix-b-kv-cache-affinity-optional).
+For routine addition, deletion, and query, see [Appendix C](#appendix-c-instance-addition-deletion-and-query). KV Cache affinity is an optional enhancement, see [Appendix B](#optional-appendix-b-kv-cache-affinity).
 
 ## Overall Deployment Process
 
@@ -47,7 +47,7 @@ pip install --no-deps -e .
 cargo build --release --manifest-path motor/coordinator/workload_shm_rs/Cargo.toml
 ```
 
-If [KV cache affinity](#appendix-b-kv-cache-affinity-optional) is required, build kv-conductor separately (libzmq must already be available on the local machine):
+If [KV Cache affinity](#optional-appendix-b-kv-cache-affinity) is required, build kv-conductor separately (libzmq must already be available on the local machine):
 
 ```bash
 cargo build --release --manifest-path motor/kv_conductor/Cargo.toml
@@ -68,17 +68,17 @@ To explicitly skip kv-conductor, replace `bash build.sh` with `SKIP_KV_CONDUCTOR
 pip install --no-deps --force-reinstall /path/to/motor-*.whl
 ```
 
-`--no-deps`: the whl does not declare dependencies, so `requirements.txt` must be installed first. For offline scenarios, see [Appendix A](#appendix-a-offline-installation).
+`--no-deps`: the .whl does not declare dependencies, so `requirements.txt` must be installed first. For offline scenarios, see [Appendix A](#appendix-a-offline-installation).
 
-Method A: `pip install --no-deps -e .` only turns the source tree into an editable installation and does **not** compile Rust. With a working cargo in place, you must separately build two artifacts: `libmindie_workload_shm.so` (required for the Coordinator to start) and `kv-conductor` (required only for [KV cache affinity](#appendix-b-kv-cache-affinity-optional)). At run time they are loaded from the `target/release/` directory of the corresponding crate, so there is no need to copy them to `lib/` or `bin/` again. After modifying a `.rs` file, run the above `cargo build --release` again for the corresponding crate. This page does not describe the Rust toolchain installation.
+Method A: `pip install --no-deps -e .` only turns the source tree into an editable installation and does **not** compile Rust. With a working cargo in place, you must separately build two artifacts: `libmindie_workload_shm.so` (required for the Coordinator to start) and `kv-conductor` (required only for [KV Cache affinity](#optional-appendix-b-kv-cache-affinity)). At run time they are loaded from the `target/release/` directory of the corresponding crate, so there is no need to copy them to `lib/` or `bin/` again. After modifying a `.rs` file, run the above `cargo build --release` again for the corresponding crate. This page does not describe the Rust toolchain installation.
 
 Method B: When `lib/*.so` / `bin/kv-conductor` already exist, `bash build.sh` skips cargo by default; after modifying `.rs` files, use `SKIP_WORKLOAD_SHM_BUILD=0` / `SKIP_KV_CONDUCTOR_BUILD=0`. If rustup cannot be installed, use `WORKLOAD_SHM_PREBUILT=/path/to/libmindie_workload_shm.so`. The resulting wheel **must** contain `libmindie_workload_shm.so`; when the library is missing, `build.sh` refuses to emit the package and prints `refusing to emit`. When the conductor binary is missing and both cargo and libzmq are available, `kv-conductor` is included as well (`unzip -l dist/motor-*.whl | grep -E 'kv-conductor|libmindie_workload_shm.so'`).
 
-## 2. Configuration File (Optional)
+## 2. (Optional) Configuration File
 
 By default, the main procedure performs startup, registration, and verification on the machine where the Coordinator runs, and no configuration file is required. The Coordinator listens on `127.0.0.1` by default, so the subsequent commands can be copied and executed directly.
 
-If cross-host access is required, or if you deploy with Docker / Kubernetes, configure the listening address as described in [Appendix D](#appendix-d-listening-address). When the management port `1026` is exposed beyond the local machine, production environments should also enable a dedicated API key as described in [Appendix E](#appendix-e-management-plane-api-key).
+If cross-host access is required, or if you deploy with Docker/Kubernetes, configure the listening address as described in [Appendix D](#appendix-d-listening-address). When the management port `1026` is exposed beyond the local machine, production environments should also enable a dedicated API key as described in [Appendix E](#appendix-e-management-plane-api-key).
 
 ## 3. Starting the Coordinator
 
@@ -98,7 +98,7 @@ If you wrote `coordinator.json` in Section 2, run `export USER_CONFIG_PATH=...` 
 
 ## 4. Registering P/D Instances
 
-Each engine has been started with `vllm serve` and is reachable. One `--prefill` / `--decode` entry corresponds to one instance; multiple DP endpoints of the same instance are joined with commas (for a single DP, write only one `IP:PORT`). For the first deployment, use the default `set` event to replace the entire table; for later addition, deletion, and query, see [Appendix C](#appendix-c-instance-add-delete-and-query).
+Each engine has been started with `vllm serve` and is reachable. One `--prefill`/`--decode` entry corresponds to one instance; multiple DP endpoints of the same instance are joined with commas (for a single DP, write only one `IP:PORT`). For the first deployment, use the default `set` event to replace the entire table; for later addition, deletion, and query, see [Appendix C](#appendix-c-instance-addition-deletion-and-query).
 
 ```bash
 python3 -m motor.coordinator.register \
@@ -114,10 +114,9 @@ curl http://127.0.0.1:1026/readiness   # Whether scheduling is ready (a usable P
 ```
 
 The External Deployer can also send compact events directly to `POST /instances/refresh`.
-Coordinator standalone currently supports only a single model. When `model_name` is omitted, the Coordinator
-accesses `/v1/models` of the first reachable vLLM endpoint in the order of
-`instances[]`; when the interface returns only one model
-ID, that ID is adopted automatically. In multi-model scenarios, `model_name` must be explicitly carried at the top level of the request.
+Coordinator standalone currently supports only a single model. When `model_name` is omitted, the Coordinator accesses `/v1/models` of the first reachable vLLM endpoint in the order of
+`instances[]`; when the interface returns only one model ID, that ID is adopted automatically.
+In multi-model scenarios, `model_name` must be explicitly carried at the top level of the request.
 `dispatch_capabilities` and `engine_type` can also be omitted to use their default values, so each element in `instances[]`
 only needs to provide `id`, `role`, and `endpoints[]`.
 
@@ -154,7 +153,7 @@ only needs to provide `id`, `role`, and `endpoints[]`.
 }
 ```
 
-**`add` — add to the managed topology incrementally**:
+**`add` — add to management**:
 
 ```json
 {
@@ -171,7 +170,7 @@ only needs to provide `id`, `role`, and `endpoints[]`.
 }
 ```
 
-**`del` — remove from the managed topology incrementally** (`id` must be consistent with a registered instance):
+**`del` — remove from management** (`id` must be consistent with a registered instance):
 
 ```json
 {
@@ -189,7 +188,7 @@ only needs to provide `id`, `role`, and `endpoints[]`.
 ```
 
 ```bash
-# Save the set template above as topology_set.json and then run the following command
+# Save the set template above as topology_set.json and then run
 curl -X POST http://127.0.0.1:1026/instances/refresh \
      -H 'Content-Type: application/json' \
      -d @topology_set.json
@@ -247,7 +246,7 @@ HTTP 200 is expected. Set `model` to the model name actually exposed by the engi
 
 Packages that contain binary extensions must match the architecture and Python version of the target machine.
 
-## Appendix B: KV Cache Affinity (Optional)
+## (Optional) Appendix B: KV Cache Affinity
 
 Required only when `scheduler_type=kv_cache_affinity`. For the complete field list, see [KV Cache affinity](../features/kvcache_affinity.md).
 
@@ -270,7 +269,19 @@ Required only when `scheduler_type=kv_cache_affinity`. For the complete field li
 }
 ```
 
-`npu_endpoint` must be consistent with `--kv-events-config` of the P engine, and `block_size` must be consistent with `--block-size` of the engine (default 128); otherwise the hit ratio is always 0.
+`npu_endpoint` must be consistent with `--kv-events-config` of the P engine, and `block_size` must be consistent with `--block-size` of the engine (default `128`); otherwise the hit ratio is always 0.
+
+By default, the subscription port for KV events is the port of `npu_endpoint` plus the DP rank.
+When multiple Prefill instances are deployed on the same machine and the DP rank of each instance starts from 0, you can explicitly specify a different starting port for each instance;
+the parameters follow the order of the `--prefill` groups, and each DP within a group uses the starting port plus its endpoint ID:
+
+```bash
+python3 -m motor.coordinator.register add \
+    --prefill "10.10.0.11:8000" \
+    --prefill "10.10.0.11:9000" \
+    --kv-events-port 5557 \
+    --kv-events-port 6557
+```
 
 ```bash
 source /opt/motor-coord/venv/bin/activate
@@ -280,11 +291,11 @@ export MOTOR_LOG_PATH=/opt/motor-coord/logs
 nohup python3 -m motor.kv_conductor --host 0.0.0.0 --port 13333 &
 ```
 
-Restart the Coordinator after changing `conductor_service`. Send requests with the same long prefix twice; the `matched` value in the log of the second (warm) request should be greater than 0.
+Restart the Coordinator after changing `conductor_service`. Send requests with the same long prefix twice; the `matched` value in the log of the warm request should be greater than 0.
 
-## Appendix C: Instance Add, Delete, and Query
+## Appendix C: Instance Addition, Deletion, and Query
 
-`set` (the default) replaces the entire instance table; `add` / `del` incrementally add or remove instances by the same `IP:PORT`; `list` queries the current registrations. The instance `id` is derived from `role` plus the sorted complete endpoint group, so the input order of endpoints does not affect the registration result, and you do not need to remember numeric IDs for addition or deletion.
+`set` (the default) replaces the entire instance table; `add`/`del` incrementally add or remove instances by the same `IP:PORT`; `list` queries the current registrations. The instance `id` is derived from `role` plus the sorted complete endpoint group, so the input order of endpoints does not affect the registration result, and you do not need to remember numeric IDs for addition or deletion.
 
 If the management plane API key is enabled, all the following `register` commands must additionally append
 `--mgmt-api-key-file /opt/motor-coord/secrets/mgmt-api-key`; see [Appendix E](#appendix-e-management-plane-api-key).
@@ -298,7 +309,7 @@ python3 -m motor.coordinator.register list
 
 Returns `count` and `instances[]` (`id` / `role` / `job_name` / `model_name` / `status` / `pool` / `healthy` / `circuit_breaker` / `endpoints`). For the complete field list, see [Instance Query Interface](../api/management_interfaces.md#instance-query-interface).
 
-### Add
+### Addition
 
 ```bash
 python3 -m motor.coordinator.register add --prefill "10.10.0.17:8000,10.10.0.17:8001"
@@ -307,7 +318,7 @@ python3 -m motor.coordinator.register add --decode  "10.10.0.18:8000,10.10.0.18:
 
 For a single DP, simply omit the comma: `--prefill 10.10.0.17:8000`.
 
-### Delete
+### Deletion
 
 ```bash
 # The same endpoint group as used with add (the order may differ; the actual registered ID is queried before deletion)
@@ -336,7 +347,7 @@ python3 -m motor.coordinator.register --help
 
 `coordinator_api_host` applies to the inference port `1025`, the management port `1026`, and the observability port `1027` at the same time.
 
-### Cross-Host Access from Bare Metal / Virtual Machines
+### Cross-Host Access from Bare Metal/Virtual Machines
 
 `coordinator_api_host` is the local listening address on the machine where the Coordinator runs, not the address of a P/D engine or client. It is recommended to bind it to the service NIC IP of the Coordinator:
 

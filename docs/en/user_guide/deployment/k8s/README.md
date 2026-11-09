@@ -1,45 +1,48 @@
-# Deployment Mode Configuration Description
+# Business Topologies and Service Deployment Methods
 
-MindIE Motor supports two business topology structures (**affecting functionality**) and three service deployment modes (**not affecting functionality, requiring no special attention**). This document describes the related content to avoid user confusion.
+MindIE Motor supports two business topologies and three service deployment methods. This document describes these concepts to prevent confusion.
 
-Brief Description
+**Table 1** Business topologies and service deployment methods
 
 | Category | Option | Description |
 |------|------|--------------|
-| Business topology | PD disaggregation, PD colocation | Determines whether Prefill/Decode are deployed separately, **affecting inference performance**. |
-| Service deployment mode | `infer_service_set`, `multi_deployment`, `single_container` | Only affects how service resources are created. The deployment mode **has no impact on service functionality. This document only introduces the working principle, and generally you do not need to pay attention to the fields**. When not explicitly configured, `infer_service_set` is used. |
+| Business topology | <ul><li>PD disaggregation</li><li>PD aggregation</li></ul> | Determines whether Prefill/Decode are deployed separately, and affects inference performance to some extent. |
+| Service deployment method | <ul><li>`infer_service_set`</li><li>`multi_deployment`</li><li>`single_container`</li></ul> | Only affects how service resources are created. The deployment method has no impact on service functionality. This document describes only the working principles, and generally you do not need to pay attention to this field. If it is not explicitly configured, the `infer_service_set` deployment method is used by default. |
 
 ## Business Topology
 
-The business topology determines the service functions and runtime form, and must be selected according to the scenario.
+The business topology determines the service functionality and runtime form, and must be selected based on the actual scenario.
 
 ### PD Disaggregation
 
-Prefill and Decode belong to different instances, which is suitable for scenarios that require independent planning of P/D resources and pursue higher throughput. For detailed steps, see [PD Disaggregation Deployment](./pd_disaggregation_deployment.md). If the underlying engine is SGLang, see [SGLang PD Disaggregation Deployment](../../../../zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang).
+Prefill and Decode belong to different instances. This topology is suitable for scenarios that require independent planning of P/D resources and higher throughput.
 
-### PD aggregation
+- vLLM inference engine: For details, see [PD Disaggregation Service Deployment (Based on the vLLM Inference Engine)](./pd_disaggregation_deployment.md).
+- SGLang inference engine: For details, see [PD Disaggregation Service Deployment (Based on the SGLang Inference Engine)](./pd_disaggregation_sglang.md).
 
-Prefill and Decode are hosted by the same type of instance (union), which is suitable for quick verification and small- to medium-scale deployment. For detailed steps, see [PD aggregation Deployment](./pd_aggregation_deployment.md).
+### PD Aggregation
 
-## Deployment Mode
+Prefill and Decode are hosted by the same type of instance (`union`). This topology is suitable for quick verification and small- and medium-scale deployment. For details, see [PD Aggregation Service Deployment](./pd_aggregation_deployment.md).
 
-The service deployment mode only **affects how service resources are created**, and can be specified by modifying the `user_config.json` file, as shown below. If not configured, the default is `infer_service_set`.
+## Deployment Method
+
+The service deployment method only affects how service resources are created. You can specify it by modifying the `user_config.json` file. If it is not configured, the default is `infer_service_set`. The following is a configuration example.
 
 ```json
 {
   "motor_deploy_config": {
-    "deploy_mode": "multi_deployment",  // Indicates that the service is deployed through the multi_deployment mode.
+    "deploy_mode": "multi_deployment",  // Indicates that the service is deployed through the multi_deployment method.
     ...
   }
 }
 ```
 
-The configuration options are described as follows:
+**Table 2** Configuration option parameters
 
 | Value | Description |
 |------|------|
-| `infer_service_set` | Default mode. Generates a single `infer_service.yaml`, and the CRD controller uniformly starts pods such as controller, coordinator, prefill, decode (PD disaggregation), or union (PD aggregation). |
+| `infer_service_set` | Default method. Generates a single `infer_service.yaml` file, and the CRD controller uniformly starts pods such as controller, coordinator, prefill, decode (PD disaggregation), or union (PD aggregation). |
 | `multi_deployment` | Generates multiple independent YAML files such as controller, coordinator, engine, and kv_pool, and creates pods separately. |
-| `single_container` | Single-container mode. Merges P/D into a single container for running, suitable for small-scale or test scenarios. |
+| `single_container` | Single-container method. Merges P/D into a single container for running, which is suitable for small-scale or test scenarios. |
 
-For other configuration fields in the user_config.json file, see [Full Configuration Reference](../../configuration/config_reference.md).
+For other configuration fields in the `user_config.json` file, see [Full Configuration Reference](../../configuration/config_reference.md).

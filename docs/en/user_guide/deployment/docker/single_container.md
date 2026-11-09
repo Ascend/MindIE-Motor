@@ -1,24 +1,36 @@
-# Docker-Based Single-Container Service Deployment Guide
+# Docker-based Single-Container Service Deployment
 
-This document guides users to **complete the deployment of an inference service on a single machine based on Docker**, where the entire PD disaggregation deployment is completed on one server within one container. It applies to small models (weights less than 100 GB) and does not depend on K8s. For large models or multi-node deployment, see [Multi-Container Deployment Guide](multi_container.md). KV pooling requires a separate kv_store container; use multi-container deployment and see [Enabling KV Pooling](multi_container.md#enabling-kv-pooling-optional).
+This document guides users to complete the deployment of an inference service on a single machine based on Docker, where the entire PD disaggregation deployment is completed on one server within one container. It applies to small models (weights less than 100 GB) and does not depend on K8s. For large models or multi-node deployment, see [Host Deployment: PD Disaggregation](host/pd_disaggregation_deployment.md). KV pooling requires a separate kv_store container; use host deployment and refer to [(Optional) Enabling KV Pooling](./host/pd_disaggregation_deployment.md#optional-enabling-kv-pooling).
 
->[!NOTE]NOTE
-> In single-container deployment, Prefill and Decode run in the same container on the same machine, and **Ascend950 PR / DT heterogeneous deployment is not supported**. For PR + DT hybrid networking, use the "PR / DT Heterogeneous Deployment" section in the [Multi-Container Deployment Guide](multi_container.md).
+>[!NOTE] NOTE
+> In single-container deployment, Prefill and Decode run in the same container on the same machine, and mixed networking of Ascend 950PR and 950DT is not supported. For mixed networking, use [Host Deployment: PD Disaggregation](./host/pd_disaggregation_deployment.md#starting-service), place the Prefill command on the 950PR, and place the Decode command on the 950DT.
 
 ## Deployment Flowchart
 
 ![Deployment flowchart](../../../imgs/docker_deploy_flow.png)
 
+**First deployment**:
+
+- Before deployment, prepare the deployment script and configuration files;
+- Run the "container creation command". The system automatically creates the container and enters it;
+- The system automatically deploys the service inside the container, and then waits for the service deployment to complete;
+- If the user terminates the service by pressing Ctrl+C, the container is not exited; instead, the system returns to a state where redeployment is possible.
+
+**Redeployment**:
+
+- On the premise that the container already exists, the user can directly run the deployment command;
+- The system waits again for the service deployment to complete, completing a new round of deployment.
+
 ## Image Preparation
 
-Obtain the image in the following ways and load it to the local machine:
+Obtain the image in the following ways and load it to the deployment server:
 
- - **Method 1**: Download the official full MindIE Motor image
+- Method 1: Downloading the official complete MindIE Motor image
 
-     Go to the [Ascend official image repository](https://www.hiascend.com/developer/ascendhub), search for `motor`, and select the corresponding MindIE Motor image based on the device model.
- - **Method 2**: Install MindIE Motor in an existing image
+  Go to the [Ascend official image repository](https://www.hiascend.com/en-sg/developer/ascendhub), enter "motor" in the search box, click the "mindie-motor" card, and on the "Image Version" tab, download the corresponding MindIE Motor image according to the device model.
+- Method 2: Installing MindIE Motor in an existing image
 
-     The base image already has CANN, vLLM, vLLM Ascend, and other components installed. You can refer to [Building MindIE Motor Images from vLLM Ascend](../../maintenance/build_motor_image_from_vllm_ascend.md#installing-mindie-motor-based-on-the-vllm-ascendsglang-image) to additionally install MindIE Motor.
+  The base image already has CANN, vLLM, vLLM Ascend, and other components installed. Refer to [Installing MindIE Motor Based on the vLLM Ascend/SGLang Image](../../maintenance/build_motor_image_from_vllm_ascend.md#installing-mindie-motor-based-on-the-vllm-ascendsglang-image) to additionally install MindIE Motor.
 
 After obtaining the image, use the following command to load the image to the server:
 
@@ -32,32 +44,40 @@ After the image is imported, use the following command to check whether the Dock
    docker images
    ```
 
-## Preparing the Service Startup Script
+## Preparing the Service Deployment Script
 
-   Obtain the service deployment script `examples` directory:
+Obtain the service deployment script `examples` directory:
 
-   - Method 1 (using the **official full MindIE Motor image**): the path in the image is `/tmp/motor/examples`, and you can run the following commands:
+- Method 1: Downloading the official complete MindIE Motor image
+
+     The path in the image is `/tmp/motor/examples`, and you can run the following commands to obtain it:
 
      ```bash
+     # Define a variable IMAGE to store the image name or image ID
      IMAGE="<image name or image ID>"
+     # Create a temporary container that is not started, and record the container ID
      cid=$(docker create "$IMAGE")
+     # Copy the /tmp/motor/examples directory in the container to the current directory on the host
      docker cp "$cid:/tmp/motor/examples" ./examples
+     # Delete the temporary container $cid created above to clean up resources and avoid leaving useless containers
      docker rm "$cid"
      ```
 
-   - Method 2: (using an **image with MindIE Motor manually installed**): after running `git clone` for the code repository, the startup script is located in the `MindIE-Motor/examples` directory.
+- Method 2: Installing MindIE Motor in an existing image
+
+     After running `git clone` for the code repository, the deployment script is located in the `MindIE-Motor/examples` directory.
 
 ## Configuring Serving Parameters
 
-1. **Prepare configuration files**
+1. Prepare the configuration file.
 
-   MindIE Motor already provides [**PD disaggregation configuration examples**](../../../../../model_configs/vllm/models/README_EN.md) for common models (deepseek_v4_flash, deepseek_v4_pro, GLM 5.1, etc.). **Users can use them directly after modifying a small number of configurations.**
+    MindIE Motor already provides [PD disaggregation configuration examples](../../../../../model_configs/vllm/models/README.md) for common models (deepseek_v4_flash, deepseek_v4_pro, GLM 5.1, etc.). Users can use them directly after modifying a small number of configurations.
 
-   For models without a typical configuration provided, refer to the [MindIE Motor Configuration Auto-Generation Guide](../../../../../model_configs/vllm/models/README_EN.md) to automatically generate the `user_config.json` and `env.json` configuration files.
+    For models without a typical configuration provided, refer to the [MindIE Motor Configuration Auto-Generation Guide](../../../../../model_configs/vllm/models/README.md) to automatically generate the `user_config.json` and `env.json` configuration files.
 
-2. **Configure ports and deployment mode**
+2. Configure ports and deployment mode.
 
-   In a single container, the management plane and inference processes share the host network, so the deployment mode must be changed and the ports must be staggered; otherwise, conflicts occur:
+   In a single container, the management plane and inference processes share the host network, so the deployment mode must be changed and the ports must be staggered; otherwise, conflicts occur. For detailed parameter descriptions, see [Full Parameter Description of the user_config.json Configuration File](../../configuration/config_reference.md):
 
    ```json
    {
@@ -88,21 +108,19 @@ After the image is imported, use the following command to check whether the Dock
    }
    ```
 
-   `deploy_mode` must be `single_container`.
+   `deploy_mode`: must be `single_container`.
 
-3. **Synchronize the startup script configuration**
+3. Synchronize the deployment script configuration.
 
-     Store the prepared configuration files (user_config.json and env.json) in the model_configs/vllm directory of the startup script.
+    Store the prepared configuration files (`user_config.json` and `env.json`) in the `model_configs/vllm` directory of the deployment script.
 
-## Enabling the Render Feature (Optional)
+## (Optional) Enabling the Render Feature
 
-Modify the following configuration to enable the render feature. After the feature is enabled, when deploying a single-container service, `docker_deploy.py` creates an additional container named `{NAME}-vllm-render` on the host (`{NAME}` is the value of `--container-name`) and runs the vLLM Render service in it. When you terminate the service, reclaim this container. If Render fails to be created, the main container is no longer created; if the main container fails to be created, the Render started this time is deleted. In Docker scenarios, Coordinator and Render live and die together: `--start` in the container runs `docker restart` on the sibling Render container, and `docker stop` is run on Render when Coordinator exits. After Render is ready for the first time, it keeps sending heartbeats; if it fails continuously, Coordinator exits as well. For this purpose, the host `/var/run/docker.sock` is mounted into the single container; existing containers must be recreated to have this mount.
+Modify the following configuration to enable the Render feature. After the feature is enabled, when deploying a single-container service, `docker_deploy.py` creates an additional container named `{NAME}-vllm-render` on the host (`{NAME}` is the value of `--container-name`) and runs the vLLM Render service in it. When you terminate the service, remember to reclaim this container. If Render fails to be created, the main container is no longer created; if the main container fails to be created, the Render started this time is deleted.
 
-If the container already exists, the deployment script does not overwrite it. After entering the container, run:
+In the container, `--start` runs `docker restart` on the sibling Render container; when Coordinator exits, it runs `docker stop` on Render. After Render exits, Coordinator continues to run. For this purpose, the host `/var/run/docker.sock` is mounted into the single container; existing old containers must be recreated to have this mount.
 
-```bash
-python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --start --role render
-```
+Enable the Render feature in `user_config.json`. The following is an example:
 
 ```json
 {
@@ -114,9 +132,15 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_
 }
 ```
 
-## Starting the Service
+If the main container or `{NAME}-vllm-render` already exists, when you run the deployment command in the terminal, you are asked whether to delete it and continue. This step occurs before the port check to avoid treating the ports occupied by the previous container as a new conflict. Answer `y` to delete these existing containers and recreate them; answer `N`, or run in a non-interactive environment, to abort without overwriting. To keep using an existing Render container, enter that container and run:
 
-Run the following commands in the `examples/deployer` directory on the local machine:
+```bash
+python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --start --role render
+```
+
+## Starting Service
+
+Run the following command in the `examples/deployer` directory on the deployment server to start the service:
 
 ```bash
 python3 docker_deploy.py --config_dir ../../model_configs/vllm \
@@ -124,23 +148,17 @@ python3 docker_deploy.py --config_dir ../../model_configs/vllm \
   --pod-ip <IP address of the local machine> --nic-name <name of the local primary NIC>
 ```
 
-After the preceding commands are executed, the window automatically **creates the container**, **enters the container**, and **starts the service**, and users can **observe log output on the screen**. `--devices` must cover the cards used by Prefill and Decode.
+After the preceding command is executed, the window automatically creates the container, enters the container, and starts the service, and users can observe log output on the screen. `--devices` must cover the cards used by Prefill and Decode.
 
-**Startup parameter description**
+**Table 1** Startup parameter description
 
-| Parameter | Description |
+| Option | Description |
 | :--- | :--- |
-| `--config_dir` | Directory where `user_config.json` and `env.json` are located. |
-| `--container-name` | Container name, which can be customized. |
-| `--devices` | NPU card IDs mounted to this container, such as `0,1`. If this parameter is not specified, all cards on the server are mounted by default. |
-| `--pod-ip` | IP address of the **current server**. |
-| `--nic-name` | NIC name of the **current server** that corresponds to `--pod-ip`. |
-
-Run the following command to view the NIC name and the local IP address. The value after `dev` is `--nic-name`, and the value after `src` is `--pod-ip`.
-
-```bash
-ip -4 route get 1.1.1.1
-```
+| --config_dir | Directory where the `user_config.json` and `env.json` configuration files are located. |
+| --container-name | Container name, which can be customized. |
+| --devices | NPU card IDs mounted to this container, such as `0,1`. If this option is not specified, all cards on the server are mounted by default. |
+| --pod-ip | IP address of the current server.<br>You can run the `ip -4 route get 1.1.1.1` command to view it. The value after the `src` field is the `--pod-ip` value. |
+| --nic-name | Name of the NIC on the current server that corresponds to `--pod-ip`.<br>You can run the `ip -4 route get 1.1.1.1` command to view it. The value after the `dev` field is the `--nic-name` value. |
 
 ## Inference Verification
 
@@ -157,15 +175,15 @@ curl -X POST http://127.0.0.1:1025/v1/chat/completions \
   }'
 ```
 
-If the following content is returned, the service is not ready yet. Try again later.
+If the following content is returned, the service is not ready yet. Retry later.
 
 ```json
 {"detail":"Service is not available"}
 ```
 
-## Terminating the Service and Redeploying
+## Terminating and Redeploying the Service
 
-Press **Ctrl+C** in the terminal to terminate the service, but the container is not exited. After the service is terminated, the following prompt is displayed to help users redeploy the service.
+Pressing **Ctrl+C** in the terminal terminates the service but does not exit the container. After the service is terminated, the following prompt is displayed to facilitate redeployment.
 
 ```text
 The service in the container has been terminated. Run the following command to redeploy the service.

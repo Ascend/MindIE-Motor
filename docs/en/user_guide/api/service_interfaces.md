@@ -1,19 +1,19 @@
-# Business Interface
+# Service Interfaces
 
 ## OpenAI Chat Completion Interface
 
-**Interface function**
+**Interface Function**
 
 Provides a conversation generation entry compatible with OpenAI `v1/chat/completions`, for multi-turn conversations, role setting, and context continuation.
 
-**Interface format**
+**Interface Format**
 
 Request type: **POST**
 > URL: `http(s)://{IP}:{Port}/v1/chat/completions`
 
-For the IP and port, see [IP/Port and Configuration of Business Interfaces](./README.md#ipport-and-configuration-of-the-business-interface)
+For the IP and port, see [Service Interface IP/Port and Configuration](./README.md#ipport-and-configuration-of-the-business-interface).
 
-**Request parameter**
+**Request Parameters**
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -26,7 +26,7 @@ The sub-parameters of the `messages` parameter are described as follows:
 | Parameter | Type | Description |
 |---|---|---|
 | role | string | Required; the roles are as follows:<ul><li>`system`: system/rule prompt;</li><li>`user`: user input;</li><li>`assistant`: assistant output.</li></ul>In a conversation, `system` is usually the highest-priority constraint, `user` is the question content, and `assistant` is the historical answer. |
-| content | string | Required; message content. |
+| content | string/array/null | Usually required; message content. It can be omitted only when `role` is `assistant` and `tool_calls` is a non-empty array, in which case the Coordinator fills it with `null` before forwarding. When `null` is explicitly passed, the Coordinator forwards it as-is for any role without validating its validity; whether it is supported depends on the backend engine. |
 
 Other OpenAI-compatible fields (such as `max_tokens` and `temperature`) are passed through to the backend inference engine. The common parameters are described as follows:
 
@@ -42,7 +42,7 @@ Other OpenAI-compatible fields (such as `max_tokens` and `temperature`) are pass
 >[!NOTE]NOTE
 >Fields not supported by the backend inference engine are ignored or subject to degraded handling. The specific capabilities are subject to the actual model and backend version.
 
-**Usage example**
+**Usage Example**
 
 - Streaming usage example:
 
@@ -75,7 +75,7 @@ Other OpenAI-compatible fields (such as `max_tokens` and `temperature`) are pass
     }'
   ```
 
-**Response example**
+**Response Example**
 
 - Streaming response example:
 
@@ -111,7 +111,7 @@ Other OpenAI-compatible fields (such as `max_tokens` and `temperature`) are pass
   }
   ```
 
-**Output description**
+**Output Description**
 
 - Streaming response parameter description:
 
@@ -127,7 +127,7 @@ Other OpenAI-compatible fields (such as `max_tokens` and `temperature`) are pass
   | choices[].index | integer | Sequence number. |
   | choices[].delta | object | Incremental content. |
   | choices[].delta.role | string | Only the first packet may return `assistant`. |
-  | choices[].delta.content | string | Incremental text. |
+  | choices[].delta.content | string | Generated incremental text. |
   | choices[].finish_reason | string/null | End reason. It is `null` when not ended. |
 
 - Non-streaming response parameter description:
@@ -138,7 +138,7 @@ Other OpenAI-compatible fields (such as `max_tokens` and `temperature`) are pass
   | object | string | Return object type: `chat.completion`. |
   | created | integer | Creation timestamp (seconds). |
   | model | string | Model name. |
-  | choices | array | Generation result list. |
+  | choices | array | Generated result list. |
   | choices[].index | integer | Sequence number. |
   | choices[].message | object | Generated message. |
   | choices[].message.role | string | Role, fixed to `assistant`. |
@@ -156,7 +156,7 @@ It provides a text generation entry point compatible with the OpenAI Responses A
 Request type: **POST**
 > URL: `http(s)://{IP}:{Port}/v1/responses`
 
-For the IP and port, see [IP/Port and Configuration of Business Interfaces](./README.md#ipport-and-configuration-of-the-business-interface)
+For the IP and ports, see [Service Interface IP/Port and Configuration](./README.md#ipport-and-configuration-of-the-business-interface).
 
 **Request Parameters**
 
@@ -181,9 +181,9 @@ The request is forwarded by the Coordinator as-is to a backend engine that nativ
 - Non-streaming usage example:
 
   ```bash
-  curl -X POST "http://{IP}:{Port}/v1/responses" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer {API_KEY}" \
+  curl -X POST "http://{IP}:{Port}/v1/responses" \\
+    -H "Content-Type: application/json" \\
+    -H "Authorization: Bearer {API_KEY}" \\
     -d '{
       "model": "qwen3",
       "input": "Hello there!"
@@ -193,9 +193,9 @@ The request is forwarded by the Coordinator as-is to a backend engine that nativ
 - Streaming usage example:
 
   ```bash
-  curl -N -X POST "http://{IP}:{Port}/v1/responses" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer {API_KEY}" \
+  curl -N -X POST "http://{IP}:{Port}/v1/responses" \\
+    -H "Content-Type: application/json" \\
+    -H "Authorization: Bearer {API_KEY}" \\
     -d '{
       "model": "qwen3",
       "input": "Hello there!",
@@ -205,7 +205,7 @@ The request is forwarded by the Coordinator as-is to a backend engine that nativ
 
 **Response Example**
 
-```json
+```JSON
 {
   "id": "resp_xxx",
   "object": "response",
@@ -256,7 +256,7 @@ OpenAI Completion-compatible interface that supports text completion and result 
 Request type: **POST**
 > URL: `http(s)://{IP}:{Port}/v1/completions`
 
-For the IP and port, see [IP/Port and Configuration of Business Interfaces](./README.md#ipport-and-configuration-of-the-business-interface)
+For the IP and port, see [Service Interface IP/Port and Configuration](./README.md#ipport-and-configuration-of-the-business-interface)
 
 **Request Parameters**
 
@@ -341,7 +341,7 @@ Other OpenAI-compatible fields (such as `max_tokens` and `temperature`) are pass
   | model | string | Model name. |
   | choices | array | Incremental result list. |
   | choices[].index | integer | Sequence number. |
-  | choices[].text | string | Incremental text. |
+  | choices[].text | string | Generated incremental text. |
   | choices[].finish_reason | string/null | End reason. It is `null` when not finished. |
 
 - Non-streaming response parameter description:
@@ -352,7 +352,7 @@ Other OpenAI-compatible fields (such as `max_tokens` and `temperature`) are pass
   | object | string | Return object type: `text_completion`. |
   | created | integer | Creation timestamp (seconds). |
   | model | string | Model name. |
-  | choices | array | Generation result list. |
+  | choices | array | Generated result list. |
   | choices[].index | integer | Sequence number. |
   | choices[].text | string | Generated text. |
   | choices[].finish_reason | string/null | End reason, such as `stop` and `length`. |
@@ -368,7 +368,7 @@ It provides a dialogue generation entry point compatible with the Anthropic Mess
 Request type: **POST**
 > URL: `http(s)://{IP}:{Port}/v1/messages`
 
-For the IP and port, see [IP/Port and Configuration of Business Interfaces](./README.md#ipport-and-configuration-of-the-business-interface)
+For the IP and port, see [Service Interface IP/Port and Configuration](./README.md#ipport-and-configuration-of-the-business-interface)
 
 **Request Parameters**
 
@@ -376,15 +376,15 @@ For the IP and port, see [IP/Port and Configuration of Business Interfaces](./RE
 |---|---|---|
 | model | string | Required; model name. |
 | messages | array | Required; list of dialogue messages. Each message contains `role` (`user` or `assistant`) and `content` (a string or an array of content blocks). |
-| max_tokens | integer | Required; maximum number of tokens to generate. |
+| max_tokens | integer | Required; maximum number of generated tokens. |
 | stream | boolean | Optional; whether to use streaming output (SSE). The default value is `false`. |
-| system | string/array | Optional; system prompt. It supports the string format or the content block array format. |
+| system | string/array | Optional; system prompt, supporting a string or an array of content blocks. |
 | stop_sequences | array | Optional; list of stop sequences. |
-| temperature | number | Optional; sampling temperature (0–1). |
+| temperature | number | Optional; sampling temperature (0 to 1). |
 | top_p | number | Optional; nucleus sampling threshold. |
 | top_k | integer | Optional; top-k sampling parameter. |
 | tools | array | Optional; list of tool definitions. Each tool contains `name`, `description`, and `input_schema`. |
-| tool_choice | object | Optional; tool selection policy. Values of `type`: `auto`, `any`, `tool`, `none`. |
+| tool_choice | object | Optional; tool selection policy. The value of `type` can be `auto`, `any`, `tool`, or `none`. |
 
 **Usage Example**
 
@@ -403,7 +403,7 @@ For the IP and port, see [IP/Port and Configuration of Business Interfaces](./RE
     }'
   ```
 
-- Streaming dialogue:
+- Streaming conversation:
 
   ```bash
   curl -N -X POST "http://{IP}:{Port}/v1/messages" \
@@ -419,7 +419,7 @@ For the IP and port, see [IP/Port and Configuration of Business Interfaces](./RE
     }'
   ```
 
-- With a system prompt:
+- With system prompt:
 
   ```bash
   curl -X POST "http://{IP}:{Port}/v1/messages" \
@@ -435,7 +435,7 @@ For the IP and port, see [IP/Port and Configuration of Business Interfaces](./RE
     }'
   ```
 
-- With tool calls:
+- With tool call:
 
   ```bash
   curl -X POST "http://{IP}:{Port}/v1/messages" \
@@ -515,39 +515,39 @@ For the IP and port, see [IP/Port and Configuration of Business Interfaces](./RE
   | content[].type | string | Content block type: `text`, `tool_use`, `thinking`, etc. |
   | content[].text | string | Text content (when type is `text`). |
   | model | string | Model name. |
-  | stop_reason | string | End reason: `end_turn` (normal end), `max_tokens` (upper limit reached), `tool_use` (tool call). |
+  | stop_reason | string | End reason: `end_turn` (normal end), `max_tokens` (limit reached), `tool_use` (tool call). |
   | usage | object | Token statistics, including `input_tokens` and `output_tokens`. |
 
 - Streaming response event type description:
 
   | Event Type | Description |
   |---|---|
-  | `message_start` | Message start, including metadata and the initial usage. |
+  | `message_start` | Message start, including metadata and initial usage. |
   | `content_block_start` | Content block start, marking a new text / tool_use / thinking block. |
   | `content_block_delta` | Content block increment, carrying `text_delta`, `input_json_delta`, `thinking_delta`, etc. |
   | `content_block_stop` | Content block end. |
-  | `message_delta` | Message increment, including `stop_reason` and the final usage. |
+  | `message_delta` | Message increment, including `stop_reason` and final usage. |
   | `message_stop` | Message end. |
 
 ## Anthropic Count Tokens Interface
 
 **Interface Function**
 
-It provides a token counting entry point compatible with Anthropic `messages/count_tokens`, used to estimate the token consumption of input messages. The request is transparently forwarded by the Coordinator to the vLLM backend engine. It is available only in vLLM backend mode.
+Provides a token counting entry point compatible with the Anthropic `messages/count_tokens` API, used to estimate the token consumption of input messages. The request is transparently forwarded by the Coordinator to the vLLM backend engine. It is available only in vLLM backend mode.
 
 **Interface Format**
 
 Request type: **POST**
 > URL: `http(s)://{IP}:{Port}/v1/messages/count_tokens`
 
-For the IP and port, see [IP/Port and Configuration of Business Interfaces](./README.md#ipport-and-configuration-of-the-business-interface)
+For the IP and port, see [Service Interface IP/Port and Configuration](./README.md#ipport-and-configuration-of-the-business-interface)
 
 **Request Parameters**
 
 | Parameter | Type | Description |
 |---|---|---|
 | model | string | Required; model name. |
-| messages | array | Required; message list. The format is the same as that of `/v1/messages`. |
+| messages | array | Required; message list, in the same format as `/v1/messages`. |
 | system | string/array | Optional; system prompt. |
 | tools | array | Optional; tool definitions. |
 | tool_choice | object | Optional; tool selection policy. |
@@ -596,9 +596,9 @@ Returns the current AIGW model configuration and instance quantity information.
 Request type: **GET**
 > URL: `http(s)://{IP}:{Port}/v1/models`
 
-For the IP and port, see [IP/Port and Configuration of the Business Interface](./README.md#ipport-and-configuration-of-the-business-interface)
+For the IP and port, see [Service Interface IP/Port and Configuration](./README.md#ipport-and-configuration-of-the-business-interface)
 
-**Request Parameter**
+**Request Parameters**
 
 None
 
@@ -630,13 +630,13 @@ curl -X GET "http://{IP}:{Port}/v1/models"
 }
 ```
 
-**Output description**
+**Output Description**
 
-| Parameter name | Type | Description |
+| Parameter | Type | Description |
 |---|---|---|
 | object | string | Return object type: `list`. |
 | data | array | Model list. |
-| data[].id | string | Model name |
+| data[].id | string | Model name. |
 | data[].object | string | Return object type. |
 | data[].owned_by | string | Model ownership. |
 | data[].p_max_seqlen | integer | Maximum sequence length of the P instance. |
