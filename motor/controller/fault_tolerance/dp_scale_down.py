@@ -169,6 +169,10 @@ class FtRuntime:
     serving_published: bool = True
     reconfiguration_dispatched: bool = False
     last_error: str | None = None
+    # Elastic-EP DP master elected at scale-down. Scale-up/joiners reuse it
+    # until the next scale-down or a whole-instance restart clears it.
+    dp_master_rank: int | None = None
+    dp_master_ip: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
@@ -195,6 +199,8 @@ class FtRuntimeStore:
         "dead_committed",
         "fallback_strategy",
         "reconfiguration_dispatched",
+        "dp_master_rank",
+        "dp_master_ip",
     }
     _COMMITTED_PHASES = {FtPhase.POST_SCALE_CLEANUP, FtPhase.SCALED_DOWN_RUNNING}
     _INCOMPLETE_PHASES = {
@@ -263,8 +269,11 @@ class FtRuntimeStore:
     def persistent_data(self) -> dict[str, Any]:
         """Return only fields required to restore committed topology or fail an interrupted attempt."""
         with self._lock:
-            return {
-                str(instance_id): {
+            out: dict[str, Any] = {}
+            for instance_id, runtime in self._instances.items():
+                if runtime.phase in {FtPhase.DISABLED, FtPhase.NORMAL} and not runtime.dead_committed:
+                    continue
+                payload: dict[str, Any] = {
                     "instance_id": instance_id,
                     "phase": runtime.phase.value,
                     "original_dp_ranks": list(runtime.original_dp_ranks),
@@ -272,9 +281,20 @@ class FtRuntimeStore:
                     "fallback_strategy": runtime.fallback_strategy,
                     "reconfiguration_dispatched": runtime.reconfiguration_dispatched,
                 }
-                for instance_id, runtime in self._instances.items()
-                if runtime.phase not in {FtPhase.DISABLED, FtPhase.NORMAL} or runtime.dead_committed
-            }
+                if runtime.dp_master_rank is not None:
+                    payload["dp_master_rank"] = runtime.dp_master_rank
+                if runtime.dp_master_ip:
+                    payload["dp_master_ip"] = runtime.dp_master_ip
+                out[str(instance_id)] = payload
+            return out
+
+    def clear_dp_master(self, instance_id: int) -> None:
+        """Drop the scale-down elected master (whole-instance restart / reconfig)."""
+        with self._lock:
+            runtime = self._instances.get(instance_id)
+            if runtime is None or (runtime.dp_master_rank is None and not runtime.dp_master_ip):
+                return
+        self.transition(instance_id, dp_master_rank=None, dp_master_ip=None)
 
     def restore_persistent_data(self, data: dict[str, Any]) -> dict[int, str]:
         """Restore committed views and return interrupted attempts that must use their fallback."""
@@ -309,6 +329,11 @@ class FtRuntimeStore:
                 else:
                     restored_phase = phase
                     error = None
+                dp_master_rank = None
+                dp_master_ip = None
+                if restored_phase == FtPhase.SCALED_DOWN_RUNNING:
+                    dp_master_rank = self._restore_optional_rank(raw.get("dp_master_rank"))
+                    dp_master_ip = self._restore_optional_ip(raw.get("dp_master_ip"))
                 restored[instance_id] = FtRuntime(
                     instance_id=instance_id,
                     phase=restored_phase,
@@ -318,6 +343,8 @@ class FtRuntimeStore:
                     reconfiguration_dispatched=reconfiguration_dispatched,
                     serving_published=not dead_committed and restored_phase == FtPhase.NORMAL,
                     last_error=error,
+                    dp_master_rank=dp_master_rank,
+                    dp_master_ip=dp_master_ip,
                 )
             except (TypeError, ValueError, AttributeError) as error:
                 logger.warning("Ignoring invalid persisted FT runtime %s: %s", raw_id, error)
@@ -332,6 +359,22 @@ class FtRuntimeStore:
         ):
             raise ValueError("DP ranks must be a list of non-negative integers")
         return sorted(set(raw))
+
+    @staticmethod
+    def _restore_optional_rank(raw: Any) -> int | None:
+        if raw is None:
+            return None
+        if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
+            raise ValueError("dp_master_rank must be a non-negative integer")
+        return raw
+
+    @staticmethod
+    def _restore_optional_ip(raw: Any) -> str | None:
+        if raw is None or raw == "":
+            return None
+        if not isinstance(raw, str):
+            raise ValueError("dp_master_ip must be a string")
+        return raw
 
     def mark_serving_published(self, instance_ids: set[int]) -> None:
         """Atomically converge serving publication without overwriting a newer FT phase."""

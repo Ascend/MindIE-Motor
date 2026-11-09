@@ -28,6 +28,8 @@ class InstanceReconfigurationStrategy(StrategyBase):
             phase=FtPhase.RECONFIGURING,
             serving_published=False,
             reconfiguration_dispatched=False,
+            dp_master_rank=None,
+            dp_master_ip=None,
         )
 
         try:

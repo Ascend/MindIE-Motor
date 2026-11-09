@@ -819,25 +819,57 @@ class InstanceAssembler(ThreadSafeSingleton):
         msg: RegisterMsg | ReregisterMsg,
         endpoints: dict[int, Endpoint],
     ) -> bool:
-        """Start replacement engines only; survivors expand via /scale_elastic_ep."""
+        """Start replacement engines only; survivors expand via /scale_elastic_ep.
+
+        Joiners often occupy 0..N-1. Master must be the lowest-rank endpoint on a
+        *survivor* pod. Including this pod's ranks makes the handshake target the
+        joiner itself (nnodes=1) and scale-up never joins the surviving group.
+        Same-round joiners are INITIAL; if any non-INITIAL endpoint exists, drop
+        INITIAL so min(id) stays on the live group. Otherwise keep the previous
+        "all other pods" list. When card-level scale-up is on, prefer the
+        scale-down recorded DP master so later joiners/rounds do not re-elect.
+        Ranktable is still rebuilt for A3 cross-server HCCL; A5 has none.
+        """
+        from motor.common.resources.endpoint import EndpointStatus
+        from motor.controller.fault_tolerance.dp_scale_down import get_ft_runtime_store
+
         pod_ip = msg.pod_ip
         node_mgr = next((nm for nm in instance.get_node_managers() if nm.pod_ip == pod_ip), None)
         if node_mgr is None:
             return False
 
-        all_endpoints = list(endpoints.values())
-        for nm in instance.get_node_managers():
-            if nm.pod_ip == pod_ip:
-                continue
-            all_endpoints.extend(instance.get_endpoints(nm.pod_ip).values())
-        if not all_endpoints:
-            return False
-        master_ep = min(all_endpoints, key=lambda ep: ep.id)
-        master_dp_ip = master_ep.ip
+        master_dp_ip = None
+        master_rank = None
+        if self.enable_dp_scale_up:
+            recorded = get_ft_runtime_store().get(instance.id) or {}
+            recorded_ip = recorded.get("dp_master_ip")
+            recorded_rank = recorded.get("dp_master_rank")
+            if recorded_ip and instance.has_node_mgr(recorded_ip):
+                master_dp_ip = recorded_ip
+                master_rank = recorded_rank
+
+        if master_dp_ip is None:
+            other_eps = []
+            for nm in instance.get_node_managers():
+                if nm.pod_ip == pod_ip:
+                    continue
+                other_eps.extend(instance.get_endpoints(nm.pod_ip).values())
+            live_eps = [ep for ep in other_eps if ep.status != EndpointStatus.INITIAL]
+            survivor_eps = live_eps or other_eps
+            if not survivor_eps:
+                logger.error(
+                    "Replacement start aborted: no survivor endpoints for joiner pod %s ranks=%s",
+                    pod_ip,
+                    sorted(endpoints),
+                )
+                return False
+            master_ep = min(survivor_eps, key=lambda ep: ep.id)
+            master_dp_ip = master_ep.ip
+            master_rank = master_ep.id
         logger.info(
             "Replacement start master_dp_ip=%s (rank=%s) for pod %s joining ranks=%s",
             master_dp_ip,
-            master_ep.id,
+            master_rank,
             pod_ip,
             sorted(endpoints),
         )
@@ -996,6 +1028,13 @@ class InstanceAssembler(ThreadSafeSingleton):
 
     def _send_start_command(self, metadata: AssembleInstanceMetadata) -> bool:
         is_succeed = True
+
+        # Whole-instance start (cold start or reconfig): engines re-elect from
+        # rank 0 / snapshot is_master. Drop any scale-down recorded DP master.
+        if self.enable_dp_scale_up:
+            from motor.controller.fault_tolerance.dp_scale_down import get_ft_runtime_store
+
+            get_ft_runtime_store().clear_dp_master(metadata.instance.id)
 
         # If current is cold start instance, Master DP IP = first registered node (node_rank=0).
         # get_all_endpoints() filters headless slaves, confirming it's the master.
