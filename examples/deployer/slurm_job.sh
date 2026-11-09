@@ -169,4 +169,4 @@ apptainer exec \
   --env "ASCEND_RUNTIME_OPTIONS=NODRV" \
   "${RUNTIME_ENV[@]}" \
   "instance://${INSTANCE_NAME}" \
-  bash -c "source ${CONFIGMAP_PATH}/boot.sh"
+  bash -c 'source "$1/boot.sh"' _ "$CONFIGMAP_PATH"

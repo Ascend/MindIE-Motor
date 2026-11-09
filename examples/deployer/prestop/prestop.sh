@@ -19,7 +19,7 @@ exec >> /proc/1/fd/1 2>&1
 
 echo "[prestop] Timestamp: $(date -Iseconds)"
 echo "[prestop] CONFIGMAP_PATH: ${CONFIGMAP_PATH}"
-echo "[prestop] Args: $@"
+echo "[prestop] Args:" "$@"
 
 # Find NM PID before pause — NM renames itself via setproctitle to
 # "MindIE-Motor::NodeManager", so grep for NodeManager instead of the original command.
@@ -30,15 +30,15 @@ if [ -z "${NM_PID}" ]; then
 fi
 echo "[prestop] Found NM PID: ${NM_PID}"
 
-python3 "${CONFIGMAP_PATH}/prestop.py" "$@" 2>&1
-exit_code=$?
+exit_code=0
+python3 "${CONFIGMAP_PATH}/prestop.py" "$@" 2>&1 || exit_code=$?
 
 echo "[prestop] Exit code: ${exit_code}"
 echo "[prestop] Timestamp: $(date -Iseconds)"
 
 # Kill NM via SIGTERM — it has a signal handler that stops Daemon (engines),
 # HeartbeatManager (threads), and uvicorn server gracefully.
-kill -TERM ${NM_PID}
+kill -TERM "${NM_PID}"
 echo "[prestop] Sent SIGTERM to NM PID ${NM_PID}"
 
-exit ${exit_code}
+exit "${exit_code}"

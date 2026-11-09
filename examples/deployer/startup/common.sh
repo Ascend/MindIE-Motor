@@ -155,7 +155,7 @@ set_logic_superpod_id_per_node() {
 USER_CONFIG_FILE="$CONFIGMAP_PATH/user_config.json"
 export USER_CONFIG_PATH="$USER_CONFIG_FILE"
 
-mkdir "$CONFIG_PATH" -p
+mkdir -p "$CONFIG_PATH"
 chmod 750 "$CONFIG_PATH"
 
 USER_CONFIG_DST="$CONFIG_PATH/user_config.json"
@@ -434,8 +434,8 @@ gen_ranktable_config() {
 gen_kv_store_config() {
     if [ -n "$KVS_MASTER_SERVICE" ]; then
         echo "Updating kv cache pool configuration file..."
-        export MOONCAKE_CONFIG_PATH=$CONFIG_PATH/kv_cache_store_config.json
-        export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
+        export MOONCAKE_CONFIG_PATH="$CONFIG_PATH/kv_cache_store_config.json"
+        export LD_LIBRARY_PATH="/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH"
         if [ "$ROLE" = "SINGLE_CONTAINER" ]; then
             KVS_MASTER_SERVICE=$POD_IP
         fi
@@ -462,7 +462,7 @@ set_mf_store_env() {
                 RETRY_INTERVAL=10
                 RETRY_COUNT=0
                 MF_STORE_POD_IP=""
-                while [ $RETRY_COUNT -lt $MAX_RETRY ]; do
+                while [ "$RETRY_COUNT" -lt "$MAX_RETRY" ]; do
                     MF_STORE_POD_IP=$(getent hosts "$HOST" | awk '{print $1}' | head -n1)
 
                     if [ -n "$MF_STORE_POD_IP" ]; then
@@ -471,7 +471,7 @@ set_mf_store_env() {
 
                     RETRY_COUNT=$((RETRY_COUNT+1))
                     echo "resolve $HOST failed, retry $RETRY_COUNT/$MAX_RETRY ..."
-                    sleep $RETRY_INTERVAL
+                    sleep "$RETRY_INTERVAL"
                 done
 
                 if [ -z "$MF_STORE_POD_IP" ]; then
