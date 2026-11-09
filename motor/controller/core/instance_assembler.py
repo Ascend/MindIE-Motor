@@ -824,6 +824,7 @@ class InstanceAssembler(ThreadSafeSingleton):
         Joiners often occupy 0..N-1. Master must be the lowest-rank endpoint on a
         *survivor* pod. Including this pod's ranks makes the handshake target the
         joiner itself (nnodes=1) and scale-up never joins the surviving group.
+        Ranktable is still rebuilt for A3 cross-server HCCL; A5 has none.
         """
         pod_ip = msg.pod_ip
         node_mgr = next((nm for nm in instance.get_node_managers() if nm.pod_ip == pod_ip), None)
@@ -859,7 +860,7 @@ class InstanceAssembler(ThreadSafeSingleton):
             instance_id=instance.id,
             endpoints=list(endpoints.values()),
             master_dp_ip=master_dp_ip,
-            ranktable=None,
+            ranktable=self._instance_ranktable_for_replacement(instance, msg),
             node_rank=node_rank,
             # Joiner / warmup Pod for elastic scale-up: engine starts in
             # VLLM_ELASTIC_EP_SCALE_UP_LAUNCH mode until /scale_elastic_ep + resume.
