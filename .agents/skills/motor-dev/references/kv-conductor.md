@@ -407,6 +407,12 @@ hashes by taking the trailing eight bytes; do not document the typed path as rej
 
 ### Replay on Registration
 
+Coordinator resolves the configured replay endpoint pattern using IP and DP rank. An endpoint-level
+`kv_replay_port` (standalone CLI `--kv-replay-port`, one base per Prefill group) overrides the replay
+port independently of `kv_events_port`; expanded single-HTTP DPs use the same rank offset as live
+events. Without an override, replay retains the configured base + rank. An empty replay pattern
+disables replay even when a port override is supplied.
+
 When a `/register` payload includes a `replay_endpoint` (and the instance is not already registered), the conductor starts a **ZMQ DEALER → ROUTER replay** session with the engine:
 
 1. DEALER sends `[b"", start_seq: u64 BE]` (start_seq = 0)

@@ -66,6 +66,7 @@ class Endpoint(BaseModel):
     business_port: str = Field(..., description="Business port")
     bootstrap_port: int | None = Field(default=None, ge=1, le=65535, description="Native PD bootstrap port")
     kv_events_port: int | None = Field(default=None, ge=1, le=65535, description="Engine KV-events port")
+    kv_replay_port: int | None = Field(default=None, ge=1, le=65535, description="Engine KV replay port")
     status: EndpointStatus = Field(default=EndpointStatus.INITIAL, description="Endpoint status")
     device_infos: list[DeviceInfo] = Field(default_factory=list, description="List of DeviceInfo")
     hb_timestamp: float = Field(default=0, description="Last heartbeat timestamp")
@@ -84,6 +85,7 @@ class Endpoint(BaseModel):
         hb_timestamp: float | None = None,
         workload: Workload | None = None,
         headless: bool = False,
+        kv_replay_port: int | None = None,
     ) -> None:
         super().__init__(
             id=id,
@@ -91,6 +93,7 @@ class Endpoint(BaseModel):
             business_port=business_port,
             bootstrap_port=bootstrap_port,
             kv_events_port=kv_events_port,
+            kv_replay_port=kv_replay_port,
             status=status if status is not None else EndpointStatus.INITIAL,
             device_infos=device_infos if device_infos is not None else [],
             hb_timestamp=hb_timestamp if hb_timestamp is not None else time.time(),

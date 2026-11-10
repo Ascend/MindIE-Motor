@@ -968,11 +968,14 @@ class TestInstanceManager:
         assert stored.endpoints == {"10.0.0.1": {self.endpoint.id: self.endpoint}}
 
     @pytest.mark.asyncio
-    async def test_set_diff_updates_kv_events_port_and_registers_conductor(self, monkeypatch):
+    @pytest.mark.parametrize("port_field", ["kv_events_port", "kv_replay_port"])
+    async def test_set_diff_updates_kv_events_port_and_registers_conductor(self, monkeypatch, port_field):
         """SET must propagate a changed KV-events port to the conductor."""
         manager = InstanceManager(self.config, typename=TYPE_MGMT)
         existing = self._prefill_with_kv_events_port(5557)
-        updated = self._prefill_with_kv_events_port(6557)
+        updated = self._prefill_with_kv_events_port(5557)
+        setattr(existing.endpoints["10.0.0.1"][1], port_field, 5557)
+        setattr(updated.endpoints["10.0.0.1"][1], port_field, 6557)
         manager._add_instance_to_available_pool(existing)
         registered: list[list[Instance]] = []
         monkeypatch.setattr(
@@ -983,14 +986,17 @@ class TestInstanceManager:
         changed, _ = await manager.refresh_instances(EventType.SET, [updated])
 
         assert changed is True
-        assert manager._available_pool[1].endpoints["10.0.0.1"][1].kv_events_port == 6557
+        assert getattr(manager._available_pool[1].endpoints["10.0.0.1"][1], port_field) == 6557
         assert registered == [[updated]]
 
     @pytest.mark.asyncio
-    async def test_add_same_id_with_different_kv_events_port_is_conflict(self):
+    @pytest.mark.parametrize("port_field", ["kv_events_port", "kv_replay_port"])
+    async def test_add_same_id_with_different_kv_events_port_is_conflict(self, port_field):
         """ADD must not silently ignore a KV-events port change for an existing ID."""
         existing = self._prefill_with_kv_events_port(5557)
-        updated = self._prefill_with_kv_events_port(6557)
+        updated = self._prefill_with_kv_events_port(5557)
+        setattr(existing.endpoints["10.0.0.1"][1], port_field, 5557)
+        setattr(updated.endpoints["10.0.0.1"][1], port_field, 6557)
         self.instance_manager._add_instance_to_available_pool(existing)
 
         with pytest.raises(InstanceIdConflictError):
