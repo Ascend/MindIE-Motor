@@ -529,7 +529,7 @@ flowchart LR
 
 > **原生引擎故障能力边界：** 启用 EngineFtManager 时，目标引擎版本必须提供
 > `/fault_tolerance/status`。进程状态、原生 health、请求异常与熔断仍由
-> Node Manager/Coordinator 构成通用故障基线。
+> NodeManager/Coordinator 构成通用故障基线。
 
 #### 3.3.2 故障等级体系
 

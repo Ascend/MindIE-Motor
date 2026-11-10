@@ -2,7 +2,7 @@
 
 ## 特性介绍
 
-MindIE Motor Tracing能力基于第三方组件opentelemetry的能力，opentelemetry文档资料可参考[文档|OpenTelemetry](https://opentelemetry.io/zh/docs/)。
+MindIE Motor Tracing能力基于第三方组件opentelemetry，opentelemetry文档资料可参考[文档|OpenTelemetry](https://opentelemetry.io/zh/docs/)。
 
 MindIE Motor 在 Coordinator 中记录请求处理与路由 Span，并通过 W3C `traceparent` / `tracestate` 传播请求上下文。若引擎支持上下文传播与 OTLP Span 导出，可在同一 Trace 中关联 Coordinator、Prefill 和 Decode 的处理过程，用于定位请求耗时与跨组件调用。下文以 vLLM 配置项与 Jaeger 接收端为例演示；引擎 Span 的数量和属性取决于引擎实现与配置。
 
@@ -14,7 +14,7 @@ MindIE Motor 在 Coordinator 中记录请求处理与路由 Span，并通过 W3C
 | 部署场景 | Coordinator 和需要追踪的引擎都应配置可达的 OTLP 接收端；生产环境使用 TLS，配置方法见样例。 |
 | 引擎 | Motor 侧 Tracing 与引擎类型无关；完整链路要求引擎支持 W3C 上下文传播与 OTLP Span 导出。仅配置 Coordinator 时可采集其自身 Span。下文以 vLLM 为例演示 `otlp-traces-endpoint` 等配置项写法。 |
 | 特性互斥 | 无已知互斥特性。 |
-| 软件依赖 | Coordinator 和引擎环境需安装相应 OpenTelemetry SDK/exporter；接收端须支持所选 OTLP 协议。Jaeger 是本文展示示例，也可使用兼容 OTLP 的其他后端。 |
+| 软件依赖 | Coordinator 和引擎环境需安装相应 OpenTelemetry SDK/exporter；接收端须支持所选 OTLP 协议。Jaeger 是本文示例，也可使用兼容 OTLP 的其他后端。 |
 | 其他限制 | 需确保OTLP接收端口（4318/4317）与Jaeger页面端口（16686）未被占用，且部署环境与Jaeger服务之间网络互通。 |
 
 ## 特性使用

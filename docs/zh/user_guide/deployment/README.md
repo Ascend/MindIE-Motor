@@ -46,7 +46,7 @@
     docker load -i xxxx.tar
     ```
 
-    待镜像导入后，请使用以下命令查看Docker镜像是否存在：
+    镜像导入后，请使用以下命令查看Docker镜像是否存在：
 
       ```bash
       docker images

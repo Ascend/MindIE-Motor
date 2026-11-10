@@ -157,7 +157,7 @@ motor_controller_config字段配置样例如下所示：
     "remote_check_timeout_seconds": 1.0,
     "bind_host": "0.0.0.0"
   },
-  "precision_auto_recovery_enable": false,
+  "precision_auto_recovery_enabled": false,
   "additional_annotations": {
     "motor-component": "controller"
   },
@@ -237,7 +237,7 @@ motor_controller_config字段配置样例如下所示：
 | probe_timeout_seconds |float|探测超时时间，默认值：0.5。|
 | remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | bind_host |string|绑定主机地址，默认值：0.0.0.0。|
-|**precision_auto_recovery_enable**|bool|精度检测总开关。关闭时不进行额外采样注入与检测；不影响用户自己请求 logprobs。可选：`true` / `false`，默认值：`false`。|
+|**precision_auto_recovery_enabled**|bool|精度检测总开关。关闭时不进行额外采样注入与检测；不影响用户自己请求 logprobs。可选：`true` / `false`，默认值：`false`。|
 | **additional_annotations** | object | 可选；Controller工作负载及其Pod模板的自定义Annotations。 |
 | **additional_labels** | object | 可选；Controller工作负载及其Pod模板的自定义Labels。 |
 | image_name | string | 可选；Controller 容器镜像。不填则使用 `motor_deploy_config.image_name`。**仅 Kubernetes 部署生效**；Docker 部署不支持按组件指定镜像，统一使用 `motor_deploy_config.image_name`。 |
@@ -643,7 +643,7 @@ motor_coordinator_config字段配置样例如下所示：
 | logprobs_count |int|采样时需要带回多少log_prob，默认值：1。取值如下：<ul><li>1：只能检测重复。</li><li>3：可以检测重复和乱码。</li><li>5：可以检测重复、乱码和生僻字。</li></ul>|
 | precision_check_enabled |bool|是否开启精度异常检测，默认值：false。|
 | precision_issue_threshold |int|连续多少次异常会被判定为精度异常并触发上报，默认值：10。|
-| probe_max_attempts |int|发现精度异常后会进行拔测的次数， 默认值：3。|
+| probe_max_attempts |int|发现精度异常后会进行拨测的次数， 默认值：3。|
 | probe_timeout_seconds |float|拨测一次的超时时间设置，默认值：600.0。|
 | **port_allocator_config字段** |-|-|
 | enable |bool|是否使能端口自动分配，默认值：true。|

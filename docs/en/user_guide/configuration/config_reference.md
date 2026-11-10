@@ -156,7 +156,7 @@ A configuration example of the motor_controller_config field is as follows:
     "remote_check_timeout_seconds": 1.0,
     "bind_host": "0.0.0.0"
   },
-  "precision_auto_recovery_enable": false,
+  "precision_auto_recovery_enabled": false,
   "additional_annotations": {
     "motor-component": "controller"
   },
@@ -236,7 +236,7 @@ A configuration example of the motor_controller_config field is as follows:
 | probe_timeout_seconds |float|Probe timeout duration, default value: 0.5.|
 | remote_check_timeout_seconds |float|Remote detection timeout duration, default value: 1.0.|
 | bind_host |string|Bind host address, default value: 0.0.0.0.|
-|**precision_auto_recovery_enable**|bool|Precision detection master switch. When disabled, no additional sampling injection or detection is performed; it does not affect users requesting logprobs themselves. Options: `true` / `false`, default value: `false`.|
+|**precision_auto_recovery_enabled**|bool|Precision detection master switch. When disabled, no additional sampling injection or detection is performed; it does not affect users requesting logprobs themselves. Options: `true` / `false`, default value: `false`.|
 | **additional_annotations** | object | Optional; custom Annotations for the Controller workload and its Pod template. |
 | **additional_labels** | object | Optional; custom Labels for the Controller workload and its Pod template. |
 | image_name | string | Optional; Controller container image. If not specified, `motor_deploy_config.image_name` is used. **Takes effect only in Kubernetes deployment**; Docker deployment does not support specifying images per component and uniformly uses `motor_deploy_config.image_name`. |

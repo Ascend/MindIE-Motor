@@ -461,7 +461,7 @@ pub struct OffloadPoolState {
 - content **跨 tier 移除存活**（不随 CPU 驱逐清除）：即便 CPU 先驱逐、Disk store
   事件后到，仍可在 `content` 保留窗口（`CONTENT_TTL`，300s）内解析入 Disk。
 - `content` 按 `CONTENT_TTL`（300s）TTL 清扫：迁移窗口关闭后自动清除，内存有界；
-  条目是 tier 数据的拷贝加短暂迁移残留，无 Disk 部署的额外开销可忽略。
+  条目是 tier 数据的拷贝加短暂迁移残留，无 Disk 部署额外开销可忽略。
 
 **为什么 offload 缓存要携带 parent_hash？**
 
@@ -615,7 +615,7 @@ prefill_cost = max(0, isl − overlap_credit × affinity_matched_tokens)
 | 阶段 | `unified` | `load_gated` |
 |------|-----------|--------------|
 | 初选 | 剩余 prefill 成本与 endpoint 负载加权求和，取最小值 | 按 endpoint 负载取最低 N 个，再按加权匹配长度排序 |
-| CAS 冲突 / 候选失效后的重选 | 复用所有候选的 prefill 成本，用新负载重新评分 | 在原筛选集合内最多保留的 3 个亲和候选中，按新负载分择优；不重新计算全局 N 个集合 |
+| CAS 冲突 / 候选失效后的重选 | 复用所有候选的 prefill 成本，用新负载重新评分 | 在原筛选集合内最多保留 3 个亲和候选中，按新负载分择优；不重新计算全局 N 个集合 |
 
 重选调用 `allocate_arbitration.py`，负载分复用 `LoadBalancePolicy.calculate_endpoint_score()`：
 `endpoint_load + endpoint_instance_score_weight × 实例平均负载`，实例权重默认 `0.05`。

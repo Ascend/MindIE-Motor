@@ -361,7 +361,7 @@ MindIE Motor /metrics 端点提供了丰富的引擎级指标，下表列出推�
 
 ### Decode 扩缩容推荐指标
 
-| 指标名 | 类型 | 说明 | 推荐阈值建议 |
+| 指标名 | 类型 | 说明 | 推荐阈值 |
 |--------|------|------|-------------|
 | vllm:num_requests_waiting | Gauge | 等待调度的请求数 | 同 Prefill：单一目标值决定两个方向，示例 target=5 按 Pod 平均 |
 | vllm:num_requests_running | Gauge | 当前运行中的请求数 | 视 NPU 规格和模型而定 |

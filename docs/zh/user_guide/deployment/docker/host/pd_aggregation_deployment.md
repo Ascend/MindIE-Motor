@@ -176,7 +176,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 }
 ```
 
-按[启动服务指导](#启动服务)部署管理面服务时，会额外创建一个名为 `<container-name>-vllm-render` 的容器，并在其中启动 vLLM Render。当管理面服务被终止时，render服务会被自动终止；当管理面服务被重启时，render服务被自动重启。Render退出后，管理面服务继续运行。
+按[启动服务](#启动服务)部署管理面服务时，会额外创建一个名为 `<container-name>-vllm-render` 的容器，并在其中启动 vLLM Render。当管理面服务被终止时，render服务会被自动终止；当管理面服务被重启时，render服务被自动重启。Render退出后，管理面服务继续运行。
 
 若 `<container-name>` 或 `<container-name>-vllm-render` 已经存在，终端部署会询问是否删除后继续。这一步在端口检查之前：上次容器没清掉时，它占用的端口会随容器一起释放，不再被当成端口冲突。回答 `y` 会同时删除管理面容器和 Render 容器，再重新创建。回答 `N`，或在非交互环境执行，则中止且不覆盖。
 

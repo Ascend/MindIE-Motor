@@ -271,7 +271,7 @@ Fill in `user_config.json` according to your own cluster. This example is:
 
 - One instance each for Prefill and Decode, 4 cards per Pod; Prefill pinned to 109 and Decode pinned to 104
 
-- Prefill enables prefix cache, the KV connector uses MooncakeHybrid plus AscendStore memcache, and hixlep points to `/home/z00931220/hixlep`
+- Prefill enables prefix cache, the KV connector uses MooncakeHybrid plus AscendStore memcache, and hixlep points to `/home/<user>/hixlep`
 
 - Decode disables prefix cache, keeps only MooncakeHybrid, and hixlep points to `/etc/hixlep`
 
@@ -382,7 +382,7 @@ if ! [[ "$allocated_devices" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
 fi
 IFS=, read -ra allocated_list <<< "$allocated_devices"
 export ASCEND_RT_VISIBLE_DEVICES="$(seq -s, 0 $((${#allocated_list[@]}-1)))"
-export ASCEND_LOCAL_COMM_RES="$(cat /mnt/share/y00943510/hixlep/ub_endpoint_npu_${allocated_list[0]}.json)"
+export ASCEND_LOCAL_COMM_RES="$(cat /mnt/share/<user>/hixlep/ub_endpoint_npu_${allocated_list[0]}.json)"
 export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/driver/lib64/common:$LD_LIBRARY_PATH
 source /mnt/configmap/boot.sh
 ```

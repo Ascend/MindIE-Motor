@@ -111,7 +111,7 @@ The length factor expresses how flexible the request is with respect to migratin
 
 ### Usage Scenarios
 
-**Applicable to Decode workloads with mixed long and short requests where sequence length has an obvious impact on TPOT. The benefit has been verified on Atlas 800I A3s with Qwen3.5-397B-A17B-W8A8 and CPU offload enabled for Decode under long-tail mixed workloads; other models, workloads, and configurations should be confirmed through service-level stress tests.**
+**Applicable to Decode workloads with mixed long and short requests where sequence length has an obvious impact on TPOT. The benefit has been verified on Atlas 800I A3 with Qwen3.5-397B-A17B-W8A8 and CPU offload enabled for Decode under long-tail mixed workloads; other models, workloads, and configurations should be confirmed through service-level stress tests.**
 
 | Scenario | Applicable Condition |
 |------|----------|

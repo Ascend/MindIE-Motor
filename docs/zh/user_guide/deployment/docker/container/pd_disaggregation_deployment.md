@@ -99,7 +99,7 @@
 
 ## 容器数量规划
 
-完成user_config.json配置后，需根据`motor_deploy_config`确定推理实例名称及各实例对应的容器数量。同一`--instance-name`下的多个容器可部署在不同服务器，每个容器单独创建并在容器内执行一次`--start`。管控容器与kv_store不计入推理容器数量。
+完成user_config.json配置后，需根据`motor_deploy_config`确定推理实例名称及各实例对应的容器数量。同一`--instance-name`下的多个容器可部署在不同服务器，每个容器单独创建并在容器内执行一次`--start`。管理容器与kv_store不计入推理容器数量。
 
 ![容器数量规划示意图](../../../../imgs/docker_container_qty_plan.png)
 
@@ -345,9 +345,9 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 ### 同一容器部署多个推理实例
 
-一个容器里可以执行多次执行`--start`，以此部署多个推理实例。
+一个容器里可以多次执行`--start`，以此部署多个推理实例。
 
-下面以 1 个容器部署 1 个 Prefill 和 1 个 Decode 为例，容器挂载卡`0,1,2,3`。Prefill `p0`使用`0,1`，Decode `d0`使用`2,3`。
+下面以1个容器部署1个Prefill和1个Decode为例，容器挂载卡`0,1,2,3`。Prefill `p0`使用`0,1`，Decode `d0`使用`2,3`。
 
 1. 创建容器
 

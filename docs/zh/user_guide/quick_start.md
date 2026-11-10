@@ -263,7 +263,7 @@ curl -X POST http://127.0.0.1:31015/v1/chat/completions \
     }'
 ```
 
-如果返回如下结果，则说明尚未启动就绪：
+如果返回如下结果，则说明尚未就绪：
 
 ```Output
 {"detail":"Service is not available"}

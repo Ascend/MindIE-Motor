@@ -60,7 +60,7 @@ When a Chat request carries both `max_completion_tokens` and `max_tokens`, only 
 
 | Dimension | Constraint Description |
 |------|---------|
-| Hardware | <ul><li>Atlas 800I A2s</li><li>Atlas 800I A3s</li><li>Ascend 950PR products</li></ul> |
+| Hardware | <ul><li>Atlas 800I A2</li><li>Atlas 800I A3</li><li>Ascend 950PR products</li></ul> |
 | Deployment scenario | PD disaggregation (the Prefill and Decode engines are separated) and PD aggregation (Union engine) deployment are supported. |
 | Engine | Only vLLM is supported |
 | Feature mutual exclusion | None |

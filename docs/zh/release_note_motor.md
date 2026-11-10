@@ -132,8 +132,8 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
 - 支持跨超节点部署服务、PD异构部署，以及推理大EP场景下DP域缩容运行。
 - 新增容量规划指标，支持基于HPA的自动扩缩容与PD配比推导。
 - 支持Prefill与Decode分别配置调度策略。
-- 新增 Coordinator 独立部署模式与 Mooncake standalone 部署适配。
-- 支持 Ascend 950PR&950DT 系列产品 IPv6 单栈组网下部署推理服务。
+- 新增Coordinator独立部署模式与Mooncake standalone部署适配。
+- 支持Ascend 950PR&950DT系列产品IPv6单栈组网下部署推理服务。
 - 推理引擎服务启动加速。
 - Coordinator支持独立的vLLM Render实现Tokenizer能力的服务。
 - 支持数据混淆推理（PMCC），Coordinator侧完成混淆词表与多模态张量的双向置换，可直接承载数据混淆权重。
