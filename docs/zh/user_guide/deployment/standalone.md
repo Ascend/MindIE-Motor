@@ -280,8 +280,15 @@ python3 -m motor.coordinator.register add \
     --prefill "10.10.0.11:8000" \
     --prefill "10.10.0.11:9000" \
     --kv-events-port 5557 \
-    --kv-events-port 6557
+    --kv-events-port 6557 \
+    --kv-replay-port 6667 \
+    --kv-replay-port 7667
 ```
+
+`--kv-replay-port` 独立指定每个 Prefill 实例的 replay 起始端口，顺序与 `--prefill` 一致，组内按 DP 偏移。
+需配置 `kv_conductor_config.replay_endpoint`（例如 `tcp://*:6667`）提供地址模板；未配置时不启用 replay。
+不传该参数时沿用全局 replay 基址加 rank。引擎侧须分别配置匹配的实际 events/replay 监听端口；
+该注册命令不会修改引擎监听配置。已有实例修改端口请使用默认 `set`，`add` 会拒绝同 ID 的端口变更。
 
 ```bash
 source /opt/motor-coord/venv/bin/activate

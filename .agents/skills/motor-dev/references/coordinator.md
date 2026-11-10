@@ -270,9 +270,10 @@ Endpoint/model derivation selects Prefill before Union, never Decode. Legacy
 YuanRong registers HBM per DP (port + rank), CPU/Disk once per `(IP, model)` (base port), and
 periodic re-registration reconciles missing node pools as well as DPs. The timer defaults to off;
 Mooncake/Memcache central pool registration is not reconciled by that periodic path.
-Standalone registration may attach `kv_events_port` to each endpoint through repeatable
-`--kv-events-port` values (one per Prefill group, in Prefill order). This per-instance base overrides
-the global NPU endpoint port; multi-DP groups and expanded single-HTTP endpoints retain `base + rank`.
+Standalone registration may attach `kv_events_port` and `kv_replay_port` to each endpoint through repeatable
+`--kv-events-port` and `--kv-replay-port` values (one per Prefill group, in Prefill order). This per-instance base overrides
+the global NPU/replay endpoint ports independently; the corresponding endpoint patterns must remain configured.
+Multi-DP groups and expanded single-HTTP endpoints retain `base + rank`.
 
 Worker-local successful SHM CAS allocations feed `DpStatsLogger` for every scheduling policy.
 `scheduler_config.dp_stats_window` is the emit interval (default 60 seconds; 0 disables).
@@ -432,8 +433,8 @@ Controller clears a handled precision alarm
 `InstanceManager` treats instance IDs as globally unique across all roles and the available, unavailable, and paused
 pools. ADD is idempotent only when ID, role, job name, and endpoint structure match; otherwise it is a conflict. SET
 rejects duplicate request IDs before building its ID-keyed diff while preserving same-ID structural updates. The
-endpoint structure includes `kv_events_port`, so changing only that port refreshes the same logical instance and
-re-registers its KV event subscriber; the port remains excluded from standalone instance-ID derivation and DEL
+endpoint structure includes `kv_events_port` and `kv_replay_port`, so changing either port refreshes the same
+logical instance and re-registers its KV event subscriber; both ports remain excluded from standalone instance-ID derivation and DEL
 identity. An
 endpoint-based DEL validates the role plus the order-independent physical endpoint multiset (`ip`, business/bootstrap
 ports, and `headless`) while ignoring order-derived endpoint IDs and endpoint map keys. An explicit ID-only DEL remains

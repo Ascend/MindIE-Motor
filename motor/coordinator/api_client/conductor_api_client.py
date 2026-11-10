@@ -219,9 +219,10 @@ class ConductorApiClient:
         """Register a single DP's NPU/HBM endpoint (all backends)."""
         rank = endpoint.id if dp_rank is None else dp_rank
         instance_id = conductor_instance_id(instance)
-        valid_port, kv_events_port = cls._try_endpoint_kv_events_port(instance, endpoint, rank)
+        valid_port, kv_events_port = cls._try_endpoint_kv_port(instance, endpoint, rank)
         if not valid_port:
             return
+        valid_replay_port, kv_replay_port = cls._try_endpoint_kv_port(instance, endpoint, rank, "kv_replay_port")
         npu_url = cls._resolve_endpoint_url(
             reg.npu_endpoint or reg.xpu_endpoint or reg.endpoint,
             endpoint.ip,
@@ -229,7 +230,11 @@ class ConductorApiClient:
             kv_events_port,
         )
 
-        replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, rank)
+        replay_url = (
+            cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, rank, kv_replay_port)
+            if valid_replay_port
+            else None
+        )
         register_data: dict = {
             "instance_id": instance_id,
             "type": reg.engine_type,
@@ -463,9 +468,9 @@ class ConductorApiClient:
         return f"{parts[0]}{format_host(ip)}:{port}"
 
     @staticmethod
-    def _endpoint_kv_events_port(endpoint: "Endpoint", dp_rank: int) -> int | None:
+    def _endpoint_kv_port(endpoint: "Endpoint", dp_rank: int, field_name: str = "kv_events_port") -> int | None:
         """Resolve an endpoint override, preserving base+rank for expanded single-HTTP DPs."""
-        port = getattr(endpoint, "kv_events_port", None)
+        port = getattr(endpoint, field_name, None)
         if isinstance(port, bool) or not isinstance(port, int):
             return None
         endpoint_id = getattr(endpoint, "id", dp_rank)
@@ -473,22 +478,24 @@ class ConductorApiClient:
             endpoint_id = dp_rank
         resolved = port + dp_rank - endpoint_id
         if not 1 <= resolved <= 65535:
-            raise ValueError(f"KV-events port out of range for dp_rank={dp_rank}: {resolved}")
+            raise ValueError(f"{field_name} out of range for dp_rank={dp_rank}: {resolved}")
         return resolved
 
     @classmethod
-    def _try_endpoint_kv_events_port(
+    def _try_endpoint_kv_port(
         cls,
         instance: "Instance",
         endpoint: "Endpoint",
         dp_rank: int,
+        field_name: str = "kv_events_port",
     ) -> tuple[bool, int | None]:
         """Resolve an override without letting one invalid target abort batch registration."""
         try:
-            return True, cls._endpoint_kv_events_port(endpoint, dp_rank)
+            return True, cls._endpoint_kv_port(endpoint, dp_rank, field_name)
         except ValueError as exc:
             logger.error(
-                "KV-events port resolution failed: instance_id=%s endpoint_id=%s dp_rank=%s: %s",
+                "%s resolution failed: instance_id=%s endpoint_id=%s dp_rank=%s: %s",
+                field_name,
                 instance.id,
                 endpoint.id,
                 dp_rank,
@@ -542,15 +549,20 @@ class ConductorApiClient:
             cls._register_yuanrong_node(reg, sb, instance, endpoint, rank)
             return
 
-        valid_port, kv_events_port = cls._try_endpoint_kv_events_port(instance, endpoint, rank)
+        valid_port, kv_events_port = cls._try_endpoint_kv_port(instance, endpoint, rank)
         if not valid_port:
             return
+        valid_replay_port, kv_replay_port = cls._try_endpoint_kv_port(instance, endpoint, rank, "kv_replay_port")
         medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, rank, kv_events_port)
         if all(v == "" for v in medium_endpoints.values()):
             logger.debug("no endpoint configured for kv events, skipping registration")
             return
 
-        replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, rank)
+        replay_url = (
+            cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, rank, kv_replay_port)
+            if valid_replay_port
+            else None
+        )
         register_data: dict = {
             "medium_endpoints": medium_endpoints,
             "type": reg.engine_type,
@@ -744,9 +756,10 @@ class ConductorApiClient:
         instance_id = conductor_instance_id(instance)
         sb = cls._resolve_store_backend()
 
-        valid_port, kv_events_port = cls._try_endpoint_kv_events_port(instance, endpoint, rank)
+        valid_port, kv_events_port = cls._try_endpoint_kv_port(instance, endpoint, rank)
         if not valid_port:
             return {}
+        valid_replay_port, kv_replay_port = cls._try_endpoint_kv_port(instance, endpoint, rank, "kv_replay_port")
         medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, rank, kv_events_port)
         # Keep only non-empty endpoints. YuanRong CPU/Disk are per-node, not per-DP.
         filtered = {k: v for k, v in medium_endpoints.items() if v}
@@ -755,7 +768,11 @@ class ConductorApiClient:
         if not filtered:
             return {}
 
-        replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, rank)
+        replay_url = (
+            cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, rank, kv_replay_port)
+            if valid_replay_port
+            else None
+        )
         payload: dict[str, Any] = {
             "medium_endpoints": filtered,
             "type": reg.engine_type,

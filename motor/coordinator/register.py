@@ -79,6 +79,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--kv-replay-port",
+        action="append",
+        type=int,
+        default=[],
+        metavar="PORT",
+        help=(
+            "KV-replay base port for one prefill instance group. Repeat once per --prefill group, "
+            "in --prefill order; group DPs use PORT + endpoint id."
+        ),
+    )
+    parser.add_argument(
         "--id",
         action="append",
         type=int,
@@ -120,12 +131,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     has_groups = bool(args.prefill or args.decode)
     if args.action == "list":
-        if has_groups or args.ids or args.kv_events_port:
-            parser.error("list does not take --prefill / --decode / --id / --kv-events-port")
+        if has_groups or args.ids or args.kv_events_port or args.kv_replay_port:
+            parser.error("list does not take --prefill / --decode / --id / --kv-events-port / --kv-replay-port")
         return args
     if args.action == "del":
-        if args.kv_events_port:
-            parser.error("--kv-events-port is only valid with set/add")
+        if args.kv_events_port or args.kv_replay_port:
+            parser.error("--kv-events-port and --kv-replay-port are only valid with set/add")
         if not has_groups and not args.ids:
             parser.error("del requires --prefill/--decode and/or --id")
     elif not has_groups:
@@ -136,6 +147,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("repeat --kv-events-port exactly once per --prefill instance group")
     if any(port < 1 or port > 65535 for port in args.kv_events_port):
         parser.error("--kv-events-port must be in range 1-65535")
+    if args.kv_replay_port and len(args.kv_replay_port) != len(args.prefill):
+        parser.error("repeat --kv-replay-port exactly once per --prefill instance group")
+    if any(port < 1 or port > 65535 for port in args.kv_replay_port):
+        parser.error("--kv-replay-port must be in range 1-65535")
     return args
 
 
@@ -265,6 +280,7 @@ def build_endpoints(
     model_name: str | None,
     probe: bool,
     kv_events_base_port: int | None = None,
+    kv_replay_base_port: int | None = None,
 ) -> dict[str, dict[int, dict]]:
     by_ip: dict[str, dict[int, dict]] = {}
     parsed_endpoints = parse_endpoint_group(group)
@@ -272,6 +288,11 @@ def build_endpoints(
         sys.exit(
             f"ERROR: KV-events port range for group '{group}' exceeds 65535: "
             f"{kv_events_base_port}+{len(parsed_endpoints) - 1}"
+        )
+    if kv_replay_base_port is not None and kv_replay_base_port + len(parsed_endpoints) - 1 > 65535:
+        sys.exit(
+            f"ERROR: KV-replay port range for group '{group}' exceeds 65535: "
+            f"{kv_replay_base_port}+{len(parsed_endpoints) - 1}"
         )
     for ep_id, (ip, port) in enumerate(parsed_endpoints):
         if probe and model_name is not None and not probe_endpoint(ip, port, model_name):
@@ -288,6 +309,8 @@ def build_endpoints(
         }
         if kv_events_base_port is not None:
             endpoint["kv_events_port"] = kv_events_base_port + ep_id
+        if kv_replay_base_port is not None:
+            endpoint["kv_replay_port"] = kv_replay_base_port + ep_id
         by_ip.setdefault(ip, {})[ep_id] = endpoint
     return by_ip
 
@@ -298,13 +321,19 @@ def build_instances(args: argparse.Namespace, model_name: str | None) -> list[di
     kv_events_ports = getattr(args, "kv_events_port", [])
     if kv_events_ports and len(kv_events_ports) != len(args.prefill):
         sys.exit("ERROR: repeat --kv-events-port exactly once per --prefill instance group")
+    kv_replay_ports = getattr(args, "kv_replay_port", [])
+    if kv_replay_ports and len(kv_replay_ports) != len(args.prefill):
+        sys.exit("ERROR: repeat --kv-replay-port exactly once per --prefill instance group")
     for role, groups in (("prefill", args.prefill), ("decode", args.decode)):
         for group_index, group in enumerate(groups):
             kv_events_base_port = kv_events_ports[group_index] if kv_events_ports and role == "prefill" else None
             if kv_events_base_port is not None and not 1 <= kv_events_base_port <= 65535:
                 sys.exit("ERROR: --kv-events-port must be in range 1-65535")
+            kv_replay_base_port = kv_replay_ports[group_index] if kv_replay_ports and role == "prefill" else None
+            if kv_replay_base_port is not None and not 1 <= kv_replay_base_port <= 65535:
+                sys.exit("ERROR: --kv-replay-port must be in range 1-65535")
             ip, port = first_endpoint(group)
-            by_ip = build_endpoints(group, model_name, probe, kv_events_base_port)
+            by_ip = build_endpoints(group, model_name, probe, kv_events_base_port, kv_replay_base_port)
             if not by_ip:
                 print(
                     f"WARN: no endpoint in group '{group}' ({role}); instance skipped",

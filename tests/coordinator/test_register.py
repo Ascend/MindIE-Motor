@@ -46,24 +46,26 @@ def test_parse_args_defaults_to_set():
     assert args.prefill == ["10.0.0.1:8000"]
 
 
-def test_parse_args_accepts_one_kv_events_port_per_instance_group():
+@pytest.mark.parametrize("port_field", ["kv_events_port", "kv_replay_port"])
+def test_parse_args_accepts_one_kv_events_port_per_instance_group(port_field):
     args = register.parse_args(
         [
             "--prefill",
             "10.0.0.1:8000",
             "--prefill",
             "10.0.0.1:8001",
-            "--kv-events-port",
+            f"--{port_field.replace('_', '-')}",
             "5557",
-            "--kv-events-port",
+            f"--{port_field.replace('_', '-')}",
             "6557",
         ]
     )
 
-    assert args.kv_events_port == [5557, 6557]
+    assert getattr(args, port_field) == [5557, 6557]
 
 
-def test_parse_args_rejects_kv_events_port_count_mismatch():
+@pytest.mark.parametrize("port_field", ["kv_events_port", "kv_replay_port"])
+def test_parse_args_rejects_kv_events_port_count_mismatch(port_field):
     with pytest.raises(SystemExit):
         register.parse_args(
             [
@@ -71,25 +73,26 @@ def test_parse_args_rejects_kv_events_port_count_mismatch():
                 "10.0.0.1:8000",
                 "--prefill",
                 "10.0.0.1:8001",
-                "--kv-events-port",
+                f"--{port_field.replace('_', '-')}",
                 "5557",
             ]
         )
 
 
-def test_parse_args_does_not_require_kv_events_port_for_decode_group():
+@pytest.mark.parametrize("port_field", ["kv_events_port", "kv_replay_port"])
+def test_parse_args_does_not_require_kv_events_port_for_decode_group(port_field):
     args = register.parse_args(
         [
             "--prefill",
             "10.0.0.1:8000",
             "--decode",
             "10.0.0.2:8000",
-            "--kv-events-port",
+            f"--{port_field.replace('_', '-')}",
             "5557",
         ]
     )
 
-    assert args.kv_events_port == [5557]
+    assert getattr(args, port_field) == [5557]
 
 
 def test_parse_args_del_requires_target():
@@ -187,21 +190,25 @@ def test_build_instances_keeps_all_dp_endpoints_when_probe_passes():
     assert list(instances[0]["endpoints"]["10.0.0.1"]) == [0, 1]
 
 
-def test_build_instances_assigns_explicit_kv_events_ports_per_instance_and_dp():
+@pytest.mark.parametrize("port_field", ["kv_events_port", "kv_replay_port"])
+def test_build_instances_assigns_explicit_kv_events_ports_per_instance_and_dp(port_field):
     args = _args(
         prefill=["10.0.0.1:8000,10.0.0.1:8001", "10.0.0.1:9000"],
         decode=["10.0.0.2:8000"],
-        kv_events_port=[5557, 6557],
+        **{port_field: [5557, 6557]},
     )
 
     instances = register.build_instances(args, "Qwen3-8B")
 
     first_endpoints = instances[0]["endpoints"]["10.0.0.1"]
     second_endpoints = instances[1]["endpoints"]["10.0.0.1"]
-    assert first_endpoints[0]["kv_events_port"] == 5557
-    assert first_endpoints[1]["kv_events_port"] == 5558
-    assert second_endpoints[0]["kv_events_port"] == 6557
-    assert "kv_events_port" not in instances[2]["endpoints"]["10.0.0.2"][0]
+    assert first_endpoints[0][port_field] == 5557
+    assert first_endpoints[1][port_field] == 5558
+    assert second_endpoints[0][port_field] == 6557
+    assert port_field not in instances[2]["endpoints"]["10.0.0.2"][0]
+
+    setattr(args, port_field, [7557, 8557])
+    assert [i["id"] for i in register.build_instances(args, "Qwen3-8B")] == [i["id"] for i in instances]
 
 
 def test_build_instances_refuses_partial_dp_group_when_probe_fails():
@@ -426,3 +433,23 @@ def test_prepare_id_delete_rejects_unknown_id():
 
     with pytest.raises(SystemExit, match="no registered instance with ID 77"):
         register._prepare_instances_for_refresh("del", instances, [])
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        "list --kv-replay-port 6667",
+        "del --id 1 --kv-replay-port 6667",
+        "--prefill 10.0.0.1:8000 --kv-replay-port 0",
+        "--prefill 10.0.0.1:8000 --kv-replay-port 65536",
+    ],
+)
+def test_reject_invalid_replay_port_arguments(argv):
+    with pytest.raises(SystemExit):
+        register.parse_args(argv.split())
+
+
+def test_replay_port_dp_range_must_fit_before_registering():
+    args = _args(prefill=["10.0.0.1:8000,10.0.0.1:8001"], kv_replay_port=[65535])
+    with pytest.raises(SystemExit, match="KV-replay port range"):
+        register.build_instances(args, "model")

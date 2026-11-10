@@ -13,6 +13,7 @@
 from unittest.mock import Mock, patch
 
 import msgspec
+import pytest
 
 from motor.common.resources.instance import Instance, Endpoint, PDRole
 from motor.coordinator.api_client.conductor_api_client import (
@@ -212,14 +213,41 @@ class TestBuildRegisterPayload:
         assert rank_one["medium_endpoints"]["npu"] == "tcp://10.0.0.3:6558"
 
     def test_invalid_expanded_kv_events_port_skips_payload_instead_of_raising(self):
-        cfg = _mock_config(npu_endpoint="tcp://*:5557")
+        cfg = _mock_config(npu_endpoint="tcp://*:5557", replay_endpoint="tcp://*:6667")
         inst = _make_instance(inst_id=3, role=PDRole.ROLE_P)
-        ep = _make_endpoint(ep_id=0, ip="10.0.0.3", kv_events_port=65535)
+        ep = _make_endpoint(ep_id=0, ip="10.0.0.3")
+        ep.kv_events_port = 65535
 
         with patch.object(ConductorApiClient, "coordinator_config", cfg):
             payload = ConductorApiClient._build_register_payload(inst, ep, dp_rank=1)
 
+            with patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient") as http:
+                ConductorApiClient.register_post(inst, ep, dp_rank=1)
+                ConductorApiClient._register_hbm_dp(ConductorApiClient._kv_reg(), "Mooncake", inst, ep, 1)
+                http.assert_not_called()
         assert payload == {}
+
+    def test_invalid_expanded_kv_replay_port_skips_replay_but_keeps_registration(self):
+        """Replay is an optional override: a bad replay port must not drop events/npu registration."""
+        cfg = _mock_config(npu_endpoint="tcp://*:5557", replay_endpoint="tcp://*:6667")
+        inst = _make_instance(inst_id=3, role=PDRole.ROLE_P)
+        ep = _make_endpoint(ep_id=0, ip="10.0.0.3", kv_events_port=5557)
+        ep.kv_replay_port = 65535
+
+        with patch.object(ConductorApiClient, "coordinator_config", cfg):
+            payload = ConductorApiClient._build_register_payload(inst, ep, dp_rank=1)
+
+            with patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient") as http:
+                ConductorApiClient.register_post(inst, ep, dp_rank=1)
+                ConductorApiClient._register_hbm_dp(ConductorApiClient._kv_reg(), "Mooncake", inst, ep, 1)
+                posted = [call.args[1] for call in http.return_value.__enter__.return_value.post.call_args_list]
+
+        assert payload["medium_endpoints"] == {"npu": "tcp://10.0.0.3:5558"}
+        assert "replay_endpoint" not in payload
+        assert len(posted) == 2
+        for register_data in posted:
+            assert register_data["medium_endpoints"] == {"npu": "tcp://10.0.0.3:5558"}
+            assert "replay_endpoint" not in register_data
 
     def test_payload_with_fallback_endpoint(self):
         """Legacy 'endpoint' fallback pattern used when npu_endpoint empty."""
@@ -949,28 +977,30 @@ def test_pool_endpoint_star_without_kvs_master_service_skips_pool(mock_http, mon
     assert "pool" not in calls[0][0][1].get("instance_id", "")
 
 
+@pytest.mark.parametrize("backend", ["Mooncake", "YuanRong"])
+@pytest.mark.parametrize("pattern", ["tcp://*:6667", ""])
 @patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
-def test_replay_endpoint_included_in_registration(mock_http):
-    """replay_endpoint is resolved and included in registration payloads."""
-    mock_client = Mock()
-    mock_client.post.return_value = {"status": "ok"}
-    mock_http.return_value.__enter__.return_value = mock_client
-
-    instance = _make_mock_instance(1)
-    ConductorApiClient._pool_registered = False
-
-    with _setup_reg_config(
-        "YuanRong",
-        npu_endpoint="tcp://*:15557",
-        cpu_endpoint="tcp://*:15558",
-        disk_endpoint="tcp://*:15558",
-        replay_endpoint="tcp://*:6667",
-    ):
-        ConductorApiClient.register_kv_instance([instance])
-
-    payload = mock_client.post.call_args_list[0][0][1]
-    assert "replay_endpoint" in payload
-    assert "6667" in payload["replay_endpoint"]
+def test_replay_endpoint_included_in_registration(mock_http, backend, pattern):
+    """Independent instances retain their replay ports through registration and expanded DP refresh."""
+    client = mock_http.return_value.__enter__.return_value
+    with _setup_reg_config(backend, npu_endpoint="tcp://*:5557", replay_endpoint=pattern):
+        for instance_id, port in ((1, 7667), (2, 8667)):
+            ep = Endpoint(id=0, ip="10.0.0.1", business_port="8000", kv_events_port=6557, kv_replay_port=port)
+            instance = _make_instance(inst_id=instance_id, endpoints={ep.ip: {0: ep}})
+            client.reset_mock()
+            ConductorApiClient.register_kv_instance([instance])
+            ConductorApiClient.register_post(instance, ep, dp_rank=1)
+            payloads = [
+                c.args[1]
+                for c in client.post.call_args_list
+                if c.args[1]["instance_id"] == conductor_instance_id(instance)
+            ]
+            assert len(payloads) == 2
+            for rank, payload in enumerate(payloads):
+                expected = f"tcp://10.0.0.1:{port + rank}" if pattern else None
+                assert payload.get("replay_endpoint") == expected
+                assert payload["medium_endpoints"]["npu"] == f"tcp://10.0.0.1:{6557 + rank}"
+                assert ConductorApiClient._build_register_payload(instance, ep, rank).get("replay_endpoint") == expected
 
 
 @patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
