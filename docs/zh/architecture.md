@@ -19,7 +19,7 @@ MindIE Motor与周边组件交互架构图，展示Coordinator、Controller、De
 
 **图1 MindIE Motor 架构图**
 
-![架构图](./imgs/MindIE_Motor_Architecture.webp)
+![架构图](./imgs/MindIE_Motor_Architecture.png)
 
 ## 关键组件与模块说明
 
