@@ -111,7 +111,7 @@ class FaultInfo(BaseModel):
 
 #### OriginFaultLevel → FaultLevel 静态映射
 
-`OriginFaultLevel` 是 mind-cluster 上游 ConfigMap 中的故障处理策略字符串，通过 `map_fault_level()` 映射为 MindIE Motor 内部的 `FaultLevel`：
+`OriginFaultLevel` 是 MindCluster 上游 ConfigMap 中的故障处理策略字符串，通过 `map_fault_level()` 映射为 MindIE Motor 内部的 `FaultLevel`：
 
 | OriginFaultLevel | FaultLevel | 语义 |
 |---|---|---|

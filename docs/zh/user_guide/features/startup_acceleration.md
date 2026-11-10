@@ -150,7 +150,7 @@ D2D权重加载特性通过user_config.json配置文件中的`engine_config`字�
 
 **问题描述**
 
-Elastic server启动失败，该实例后续无法作为seed实例供给其他实例拉取权重。
+Elastic server启动失败，该实例后续无法作为seed实例供其他实例拉取权重。
 
 **原因分析**
 

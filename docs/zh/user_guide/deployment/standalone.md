@@ -273,7 +273,7 @@ curl http://127.0.0.1:1025/v1/completions \
 
 默认按 `npu_endpoint` 的端口加 DP rank 订阅 KV events。
 同一台机器部署多个 Prefill 实例且各实例的 DP rank 都从 0 开始时，可为每个实例显式指定不同的起始端口；
-参数顺序为`--prefill` 组的顺序，组内各 DP 使用起始端口加 endpoint id：
+参数顺序与 `--prefill` 组的顺序一致，组内各 DP 使用起始端口加 endpoint id：
 
 ```bash
 python3 -m motor.coordinator.register add \

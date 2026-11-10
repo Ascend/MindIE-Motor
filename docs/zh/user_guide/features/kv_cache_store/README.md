@@ -262,7 +262,7 @@ P/D传输Connector选型如下表所示：
 
     **部署注意**
 
-    - **Mooncake 无探针**：`mooncake_master` 不提供 `/livez`。kv-store 的 startup / liveness / readiness 仅对 MemCache MetaService 做 HTTP 探活；`backend` 为 `mooncake`（或其它非 memcache 后端）时，探针会跳过 HTTP 请求并直接成功。因此 Mooncake 的 kv-store Pod Ready **不代表** `mooncake_master` 已就绪，不能用 kubelet 探针判断 Mooncake 健康状态。
+    - **Mooncake 无探针**：`mooncake_master` 不提供 `/livez`。kv-store 的 startup / liveness / readiness 仅对 MemCache MetaService 做 HTTP 探活；`backend` 为 `mooncake`（或其他非 memcache 后端）时，探针会跳过 HTTP 请求并直接成功。因此 Mooncake 的 kv-store Pod Ready **不代表** `mooncake_master` 已就绪，不能用 kubelet 探针判断 Mooncake 健康状态。
 
 #### 使用 UCMConnector 部署样例
 

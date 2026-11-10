@@ -44,7 +44,8 @@ Node Manager 是部署在推理节点上的管理进程，负责连接 Controlle
    d. `_daemon_loop()` — select-based 主循环，每 `daemon_loop_interval` 秒检查自杀标志和 stdin 输入。
 4. 各模块的初始化行为不变：`NodeManagerAPI.__init__` 在后台线程中启动 FastAPI，`RegisterManager.__init__` 启动注册线程，`Daemon.__init__` 启动进程监控线程。
 
-首次注册最多尝试 5 次，重试间隔为 2、4、8、16 秒。连续失败后，`RegisterManager` 向当前进程发送 `SIGTERM`。
+>[!NOTE] 说明
+>首次注册失败后，系统将持续重试，直至注册成功。前五次的重试间隔依次为2秒、4秒、8秒、16秒、32秒，此后每次重试间隔均固定为32秒。
 
 ### 启动实例
 

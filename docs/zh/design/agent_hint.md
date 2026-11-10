@@ -71,7 +71,7 @@ output_tokens/interval_ms/next_action 等）、`PriorityHint`（level/reason）�
 spec `cache_control` 仅从 header 解析：`type: pin` 解析保留；`ttl_s` 与 legacy `ttl`
 并存（`ttl_s` 优先，钳制 [60, 3600]）；`range.unit` **仅接受 `message`**——
 `range.end` 映射为 `msg_offset`（1-based 生效起点，与 `compute_block_offset` 对齐），
-`start>0` 与其它取值（含 `token`）丢弃 range + WARN、保留 `type`/`ttl` 等其余字段。
+`start>0` 与其他取值（含 `token`）丢弃 range + WARN、保留 `type`/`ttl` 等其余字段。
 `token` 不是协议取值：只存储不换算会把"保留前 N token"悄悄放大为"保留整段会话"，
 故收敛白名单并删除死代码分支；`compute_block_offset()` 对 `msg_offset=None` 增加守卫。
 
@@ -192,7 +192,7 @@ pin，不改变引擎 block 的保留/驱逐策略；pin 存在时 KV 仍可能�
   `ttl_explicit` 区分"客户端要求了保留"与"解析层默认值 300"；不序列化进引擎
   payload）。三个主流 harness 均不发 `ttl_s`，该限定保证现网零行为影响；
 - **到期释放**：sweep 取出到期声明后条件释放——pin 槽的 `renewed_at`（仅 record
-  更新、get 触碰不动）晚于本 worker 声明的 wall 入账时间，说明其它 worker 在声明
+  更新、get 触碰不动）晚于本 worker 声明的 wall 入账时间，说明其他 worker 在声明
   之后重新分配/续期了该 pin（其声明更晚、可能更长），此时跳过释放并把管理权交给
   续期 worker 的 keeper，避免本地短 TTL 账本误删共享表上仍有效的绑定；释放动作
   按 `_SWEEP_RELEASE_BATCH`（64/轮）限量，集中到期分多轮消化，不长时间阻塞事件

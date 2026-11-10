@@ -588,7 +588,7 @@
     kubectl describe pod <kube-controller-manager-pod 名> -n kube-system | grep "node-monitor-grace-period"
     ```
 
-2. 执行以下命令打开并修改配置节点心跳超时标记阈值（`node-monitor-grace-period`），配置文件所在路径一般存放在控制平面节点（运行kube-controller-manager的节点）的/etc/kubernetes/manifests/kube-controller-manager.yaml目录。
+2. 执行以下命令打开并修改节点心跳超时标记阈值（`node-monitor-grace-period`），配置文件所在路径一般存放在控制平面节点（运行kube-controller-manager的节点）的/etc/kubernetes/manifests/kube-controller-manager.yaml目录。
 
     ```bash
     vi /etc/kubernetes/manifests/kube-controller-manager.yaml

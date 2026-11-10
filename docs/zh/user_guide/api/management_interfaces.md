@@ -69,8 +69,6 @@ curl -X GET "http://{IP}:{Port}/liveness"
 
 **响应示例**
 
-- 响应示例：
-
 ```JSON
 { "status": "ok", "message": "Coordinator is alive" }
 ```

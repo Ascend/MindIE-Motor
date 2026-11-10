@@ -96,7 +96,7 @@ examples/deployer/config_tool/
 
 3. 拷贝vllm-ascend模型部署脚本至examples/deployer/config_tool/目录。
 
-    run_dp_template_prefill.sh、run_dp_template_decode.sh和run_dp_template_hybrid.sh文件用于保存vllm-ascnd部署脚本，这些文件均保存于examples/deployer/config_tool/目录下。
+    run_dp_template_prefill.sh、run_dp_template_decode.sh和run_dp_template_hybrid.sh文件用于保存vllm-ascend部署脚本，这些文件均保存于examples/deployer/config_tool/目录下。
 
     - **场景一**：通过Motor部署PD分离服务。
 

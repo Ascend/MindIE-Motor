@@ -42,7 +42,7 @@
 
 ### 使用样例
 
-请求重调度功能使用[user_config.json配置文件全量参数说明](../../configuration/config_reference.md#motor_coordinator_config)配置文件中的以下参数：
+请求重调度功能使用[user_config.json配置文件全量参数说明](../../configuration/config_reference.md#motor_coordinator_config)中的以下参数：
 
 - reschedule_config.enable：是否开启流式请求输出后的Token续推，默认为`false`。
   - false：关闭输出后的Token续推。

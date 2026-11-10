@@ -251,7 +251,7 @@ MindIE Motor依赖Kubernetes提供的容器编排能力，包括Pod部署、服�
     >https://docker.aityp.com/s/registry.k8s.io
     >```
 
-3. 执行以下命令清空系统网络代理环境变量。Kubernetes核心组件（kubeadm/kubelet）需直接访问API Server等服务，网络代理会拦截或篡改这类请求，可能导致Kubernetes服务不可用（**计算节点执行将本步骤执行完毕即可！！！后续请跳转至「创建集群」步骤；管理节点继续向下执行**）。
+3. 执行以下命令清空系统网络代理环境变量。Kubernetes核心组件（kubeadm/kubelet）需直接访问API Server等服务，网络代理会拦截或篡改这类请求，可能导致Kubernetes服务不可用（**计算节点将本步骤执行完毕即可！！！后续请跳转至「创建集群」步骤；管理节点继续向下执行**）。
 
     ```bash
     rm -rf /var/lib/kubelet

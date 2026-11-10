@@ -24,7 +24,7 @@
 | POST | /v1/messages/count_tokens |
 | GET  | /v1/models |
 
-管理面、Controller、Node Manager 和推理引擎进程不走这套限流。
+管理面、Controller、NodeManager 和推理引擎进程不走这套限流。
 
 ### 工作原理
 
