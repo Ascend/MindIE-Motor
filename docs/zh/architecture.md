@@ -19,11 +19,7 @@ MindIE Motor与周边组件交互架构图，展示Coordinator、Controller、De
 
 **图1 MindIE Motor 架构图**
 
-<p align="center" style="font-size:0;line-height:0;margin:0;">
-<img src="./imgs/MindIE_Motor_Architecture_r0c0.png" alt="" style="width:25%;margin:0;padding:0;border:0;display:inline-block;vertical-align:top;" /><img src="./imgs/MindIE_Motor_Architecture_r0c1.png" alt="" style="width:25%;margin:0;padding:0;border:0;display:inline-block;vertical-align:top;" /><img src="./imgs/MindIE_Motor_Architecture_r0c2.png" alt="" style="width:25%;margin:0;padding:0;border:0;display:inline-block;vertical-align:top;" /><img src="./imgs/MindIE_Motor_Architecture_r0c3.png" alt="" style="width:25%;margin:0;padding:0;border:0;display:inline-block;vertical-align:top;" />
-<img src="./imgs/MindIE_Motor_Architecture_r1c0.png" alt="" style="width:25%;margin:0;padding:0;border:0;display:inline-block;vertical-align:top;" /><img src="./imgs/MindIE_Motor_Architecture_r1c1.png" alt="" style="width:25%;margin:0;padding:0;border:0;display:inline-block;vertical-align:top;" /><img src="./imgs/MindIE_Motor_Architecture_r1c2.png" alt="" style="width:25%;margin:0;padding:0;border:0;display:inline-block;vertical-align:top;" /><img src="./imgs/MindIE_Motor_Architecture_r1c3.png" alt="" style="width:25%;margin:0;padding:0;border:0;display:inline-block;vertical-align:top;" />
-<img src="./imgs/MindIE_Motor_Architecture_r2c0.png" alt="" style="width:25%;margin:0;padding:0;border:0;display:inline-block;vertical-align:top;" /><img src="./imgs/MindIE_Motor_Architecture_r2c1.png" alt="" style="width:25%;margin:0;padding:0;border:0;display:inline-block;vertical-align:top;" /><img src="./imgs/MindIE_Motor_Architecture_r2c2.png" alt="" style="width:25%;margin:0;padding:0;border:0;display:inline-block;vertical-align:top;" /><img src="./imgs/MindIE_Motor_Architecture_r2c3.png" alt="" style="width:25%;margin:0;padding:0;border:0;display:inline-block;vertical-align:top;" />
-</p>
+![架构图](./imgs/MindIE_Motor_Architecture.webp)
 
 ## 关键组件与模块说明
 
