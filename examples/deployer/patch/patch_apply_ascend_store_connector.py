@@ -27,8 +27,8 @@ except ImportError:  # noqa: PERF203
 
 # AscendStoreConnector unique-union KV events: one version-agnostic patch
 # applies across supported vLLM bases (the aggregate() method is stable).
-# CPU event-grain hunks differ on v0.30.0, so that version selects a
-# dedicated kv_transfer patch below.
+# CPU event-grain hunks differ on v0.30.0 / v0.32.0, so those versions
+# select dedicated patches below (0.32.0 also patches metadata.py).
 TARGET_VLLM_VERSIONS = (
     "0.20.2",
     "0.21.0",
@@ -39,6 +39,7 @@ TARGET_VLLM_VERSIONS = (
     "0.25.1",
     "0.26.0",
     "0.30.0",
+    "0.32.0",
 )
 
 CONNECTOR_SPEC = (
@@ -56,12 +57,30 @@ CPU_EVENT_SPEC_V030 = (
     "vllm_ascend_store_cpu_event_grain_v030.patch",
     "# motor-patch: cpu kv events all compression grains inline v8 vllm0.30 (do not remove)",
 )
+METADATA_SPEC_V032 = (
+    "distributed/kv_transfer/kv_pool/ascend_store/metadata.py",
+    "0.32.0/vllm_ascend_store_metadata_infer_ratio.patch",
+    "# motor-patch: infer_cache_family_ratio v032 (do not remove)",
+)
+CONNECTOR_SPEC_V032 = (
+    "distributed/kv_transfer/kv_pool/ascend_store/ascend_store_connector.py",
+    "0.32.0/vllm_ascend_store_connector_kv_events.patch",
+    "# motor-patch: ascend-store unique kv events v032 (do not remove)",
+)
+CPU_EVENT_SPEC_V032 = (
+    "distributed/kv_transfer/kv_pool/ascend_store/kv_transfer.py",
+    "0.32.0/vllm_ascend_store_cpu_event_grain.patch",
+    "# motor-patch: cpu kv events all compression grains v032 (do not remove)",
+)
 
 # Default patch list for 0.20.2-0.26.0. marker must be unique so is_patched
 # never false-positives.
 PATCH_SPECS = [CONNECTOR_SPEC, CPU_EVENT_SPEC]
+# 0.32.0 lists metadata before kv_transfer because the latter imports
+# infer_cache_family_ratio from metadata.
 VERSION_PATCH_SPECS = {
     "0.30.0": [CONNECTOR_SPEC, CPU_EVENT_SPEC_V030],
+    "0.32.0": [METADATA_SPEC_V032, CONNECTOR_SPEC_V032, CPU_EVENT_SPEC_V032],
 }
 
 
@@ -145,7 +164,13 @@ def main() -> int:
             continue
         target = os.path.join(ascend_root, rel_path)
         if not os.path.isfile(target):
-            logger.info("Skip AscendStoreConnector patch: %s not found", target)
+            # 0.32.0 kv_transfer imports infer_cache_family_ratio from metadata;
+            # skipping a missing metadata target would leave a broken install.
+            if patch_name.startswith("0.32.0/"):
+                logger.error("Required AscendStoreConnector patch target not found: %s", target)
+                failed += 1
+            else:
+                logger.info("Skip AscendStoreConnector patch: %s not found", target)
             continue
         if not apply_patch(target, patch_path, marker):
             failed += 1

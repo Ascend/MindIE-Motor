@@ -21,7 +21,10 @@ sys.path.insert(0, str(PATCH_DIR))
 
 from patch_apply import APPLIERS  # noqa: E402
 from patch_apply_ascend_store_connector import (  # noqa: E402
+    CONNECTOR_SPEC_V032,
     CPU_EVENT_SPEC_V030,
+    CPU_EVENT_SPEC_V032,
+    METADATA_SPEC_V032,
     PATCH_SPECS,
     TARGET_VLLM_VERSIONS,
     apply_patch,
@@ -247,6 +250,15 @@ def test_v030_is_supported_and_selects_dedicated_cpu_patch():
     assert patch_specs_for_version("0.30.0-rc1") == [PATCH_SPECS[0], CPU_EVENT_SPEC_V030]
 
 
+def test_v032_is_supported_and_selects_version_dir_patches():
+    assert "0.32.0" in TARGET_VLLM_VERSIONS
+    expected = [METADATA_SPEC_V032, CONNECTOR_SPEC_V032, CPU_EVENT_SPEC_V032]
+    assert patch_specs_for_version("0.32.0+empty") == expected
+    assert patch_specs_for_version("0.32.0-rc1") == expected
+    for _, patch_name, _ in expected:
+        assert (PATCH_DIR / patch_name).is_file()
+
+
 def _v030_repo() -> Path | None:
     candidates = [
         MOTOR_ROOT.parent.parent / "cmb" / "vllm-ascend",
@@ -423,3 +435,240 @@ def test_v030_cpu_events_skip_empty_or_partial_grains(cpu_sender_v030, starts, e
     request = SimpleNamespace(block_hashes=["h0"], token_ids=list(range(32)), original_block_size=32)
     cpu_sender_v030.send(request, starts, ends)
     cpu_sender_v030.update_kv_event.assert_not_called()
+
+
+def _v032_patch_paths() -> list[Path]:
+    return [
+        PATCH_DIR / patch_name for _, patch_name, _ in (METADATA_SPEC_V032, CONNECTOR_SPEC_V032, CPU_EVENT_SPEC_V032)
+    ]
+
+
+def test_v032_patch_hunk_headers_match_bodies():
+    """Catch malformed unified-diff headers that break ``patch`` at EOF."""
+    import re
+
+    for patch_path in _v032_patch_paths():
+        lines = patch_path.read_text(encoding="utf-8").splitlines()
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            if not line.startswith("@@"):
+                index += 1
+                continue
+            match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+            assert match, f"bad hunk header in {patch_path.name}: {line}"
+            old_declared = int(match.group(2) or 1)
+            new_declared = int(match.group(4) or 1)
+            index += 1
+            old_actual = new_actual = 0
+            while index < len(lines) and not lines[index].startswith(("@@", "--- ", "+++ ")):
+                body = lines[index]
+                if body.startswith("+") and not body.startswith("+++"):
+                    new_actual += 1
+                elif body.startswith("-") and not body.startswith("---"):
+                    old_actual += 1
+                elif body.startswith("\\"):
+                    pass
+                else:
+                    old_actual += 1
+                    new_actual += 1
+                index += 1
+            assert (old_actual, new_actual) == (old_declared, new_declared), (
+                f"{patch_path.name} hunk {line}: declared "
+                f"{old_declared}/{new_declared}, actual {old_actual}/{new_actual}"
+            )
+
+
+def _v032_repo() -> Path | None:
+    candidates = [
+        MOTOR_ROOT.parent / "vllm-ascend",
+        MOTOR_ROOT.parent.parent / "cmb" / "vllm-ascend",
+        Path("/mnt/l00517252/cmb/vllm-ascend"),
+    ]
+    for repo in candidates:
+        if (repo / ".git").exists() or (repo / ".git").is_file():
+            return repo
+    return None
+
+
+def test_v032_unique_union_metadata_and_cpu_grain_patches_apply(tmp_path):
+    repo = _v032_repo()
+    if repo is None:
+        pytest.skip("vllm-ascend repo not available")
+    specs = [
+        (
+            "releases/v0.32.0rc:vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/metadata.py",
+            METADATA_SPEC_V032,
+        ),
+        (
+            "releases/v0.32.0rc:vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/ascend_store_connector.py",
+            CONNECTOR_SPEC_V032,
+        ),
+        (
+            "releases/v0.32.0rc:vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/kv_transfer.py",
+            CPU_EVENT_SPEC_V032,
+        ),
+    ]
+    sources = []
+    for git_spec, _ in specs:
+        content = _git_show(repo, git_spec)
+        if content is None:
+            content = _git_show(repo, f"origin/{git_spec}")
+        if content is None:
+            pytest.skip(f"releases/v0.32.0rc not present for {git_spec}")
+        sources.append(content)
+
+    for content, (_, (rel_path, patch_name, marker)) in zip(sources, specs, strict=True):
+        target = tmp_path / Path(rel_path).name
+        target.write_text(content)
+        assert apply_patch(str(target), str(PATCH_DIR / patch_name), marker)
+        text = target.read_text(encoding="utf-8")
+        ast.parse(text)
+        assert marker in text
+        assert apply_patch(str(target), str(PATCH_DIR / patch_name), marker)
+
+
+@pytest.fixture(params=["c1", "c2", "c4", "c128"])
+def cpu_publisher_v032(request):
+    """Execute the v0.32.0 CPU-event helpers without an installed NPU engine."""
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    meta_post = "\n".join(
+        line[1:]
+        for line in (PATCH_DIR / METADATA_SPEC_V032[1]).read_text().splitlines()
+        if line.startswith((" ", "+")) and not line.startswith("+++")
+    )
+    infer_fn = meta_post[
+        meta_post.index("def infer_cache_family_ratio") : meta_post.index("\ndef get_block_hashes")
+        if "\ndef get_block_hashes" in meta_post
+        else meta_post.index("\ndef maybe_convert_block_hash")
+        if "\ndef maybe_convert_block_hash" in meta_post
+        else len(meta_post)
+    ]
+    # metadata patch only adds infer_cache_family_ratio; cut at next blank-def if present
+    if "\ndef " in infer_fn[4:]:
+        infer_fn = infer_fn[: infer_fn.index("\ndef ", 4)]
+
+    patch_text = (PATCH_DIR / CPU_EVENT_SPEC_V032[1]).read_text()
+    postimage = "\n".join(
+        line[1:] for line in patch_text.splitlines() if line.startswith((" ", "+")) and not line.startswith("+++")
+    )
+    helpers = postimage[
+        postimage.index("    def _cpu_event_ranges") : postimage.index("    def _handle_stored_request")
+    ]
+    preamble = """
+class Sender:
+    pass
+"""
+    namespace = {
+        "ReqMeta": SimpleNamespace,
+        "BlockStored": SimpleNamespace,
+        "logger": logging.getLogger(__name__),
+        "get_block_hashes": lambda hashes, effective, _hash: hashes,
+        "maybe_convert_block_hash": lambda value: value,
+    }
+    exec(compile(infer_fn, str(PATCH_DIR / METADATA_SPEC_V032[1]), "exec"), namespace)  # noqa: S102  # pylint: disable=exec-used
+    exec(compile(preamble + helpers, str(PATCH_DIR / CPU_EVENT_SPEC_V032[1]), "exec"), namespace)  # noqa: S102  # pylint: disable=exec-used
+    sender = namespace["Sender"]()
+    sender.cache_family = request.param
+    sender.token_database = SimpleNamespace(group_cache_families={"kv": {0: request.param}}, hash_block_size=32)
+    sender._get_block_size = lambda _group_id: 32 * max(1, int(request.param[1:])) if request.param != "c1" else 32
+    if request.param == "c1":
+        sender._get_block_size = lambda _group_id: 32
+    else:
+        ratio = int(request.param[1:])
+        sender._get_block_size = lambda _group_id, r=ratio: 32 * r
+    sender.get_event_token_ids = lambda req_meta, start, end: req_meta.token_ids[start:end]
+    sender.update_kv_event = Mock()
+    sender.enable_kv_event = True
+    sender.infer_cache_family_ratio = namespace["infer_cache_family_ratio"]
+    # helpers close over module-global infer_cache_family_ratio
+    return sender
+
+
+@pytest.mark.parametrize("exists", [[False, False], [True, False], [True, True]])
+def test_v032_cpu_events_use_effective_grain_and_lookup_hits(cpu_publisher_v032, exists):
+    from types import SimpleNamespace
+
+    compress_ratio = int(cpu_publisher_v032.cache_family[1:])
+    effective = 32 if compress_ratio == 1 else 32 * compress_ratio
+    selected_ranges = [(0, effective), (effective, effective * 2)]
+    missing_indices = [index for index, hit in enumerate(exists) if not hit]
+    request = SimpleNamespace(
+        block_hashes=[f"h{index}" for index in range(2 if compress_ratio > 1 else 4)],
+        token_ids=list(range(effective * 2 if compress_ratio > 1 else 128)),
+        original_block_size=32,
+    )
+    if compress_ratio == 1:
+        # uncompressed: only missing ranges publish; grains are original_block_size
+        selected_ranges = [(0, 32), (64, 96)]
+        request = SimpleNamespace(
+            block_hashes=["h0", "h1", "h2", "h3"],
+            token_ids=list(range(128)),
+            original_block_size=32,
+        )
+        cpu_publisher_v032._get_block_size = lambda _group_id: 32
+
+    cpu_publisher_v032._publish_cpu_stored_events(
+        request,
+        0,
+        len(request.token_ids),
+        selected_ranges,
+        missing_indices,
+        None if missing_indices == [0, 1] or not missing_indices else None,
+    )
+    # logical_success=None means full selected/missing path after successful put
+    if compress_ratio > 1:
+        # compressed includes lookup hits via selected_ranges when logical_success is None
+        cpu_publisher_v032._publish_cpu_stored_events(
+            request, 0, len(request.token_ids), selected_ranges, missing_indices, None
+        )
+        events = cpu_publisher_v032.update_kv_event.call_args.args[0]
+        assert [event.block_hashes for event in events] == [["h0"], ["h1"]]
+        assert all(event.block_size == effective for event in events)
+        return
+
+    cpu_publisher_v032.update_kv_event.reset_mock()
+    cpu_publisher_v032._publish_cpu_stored_events(
+        request, 0, len(request.token_ids), selected_ranges, missing_indices, None
+    )
+    if not missing_indices:
+        # uncompressed with no missing keys still publishes nothing from empty missing_indices
+        # when logical_success is None and missing_indices empty → stored_ranges empty
+        cpu_publisher_v032.update_kv_event.assert_not_called()
+        return
+    events = cpu_publisher_v032.update_kv_event.call_args.args[0]
+    selected_blocks = [0 if index == 0 else 2 for index in missing_indices]
+    assert [event.block_hashes for event in events] == [[f"h{block}"] for block in selected_blocks]
+    assert all(event.block_size == 32 for event in events)
+
+
+def test_v032_cpu_events_not_published_when_partial_put_fails(cpu_publisher_v032):
+    from types import SimpleNamespace
+
+    request = SimpleNamespace(block_hashes=["h0", "h1"], token_ids=list(range(64)), original_block_size=32)
+    cpu_publisher_v032._get_block_size = lambda _group_id: 32
+    cpu_publisher_v032.cache_family = "c1"
+    cpu_publisher_v032.token_database.group_cache_families["kv"][0] = "c1"
+    cpu_publisher_v032._publish_cpu_stored_events(
+        request,
+        0,
+        64,
+        [(0, 32), (32, 64)],
+        [0, 1],
+        [False, False],
+    )
+    cpu_publisher_v032.update_kv_event.assert_not_called()
+
+
+def test_v032_cpu_events_skip_partial_grains(cpu_publisher_v032):
+    from types import SimpleNamespace
+
+    cpu_publisher_v032.cache_family = "c1"
+    cpu_publisher_v032.token_database.group_cache_families["kv"][0] = "c1"
+    cpu_publisher_v032._get_block_size = lambda _group_id: 32
+    request = SimpleNamespace(block_hashes=["h0"], token_ids=list(range(32)), original_block_size=32)
+    cpu_publisher_v032._publish_cpu_stored_events(request, 0, 32, [(0, 16)], [0], None)
+    cpu_publisher_v032.update_kv_event.assert_not_called()
