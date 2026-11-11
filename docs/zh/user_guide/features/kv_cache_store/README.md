@@ -329,7 +329,6 @@ P/D传输Connector选型如下表所示：
 
 ## 调优建议
 
-- **增大 `kv_parallel_size`**：KV 池化开启后，P 实例需要额外将 KV Cache 推入缓存池，可能带来少量性能开销。可适当增大 `kv_parallel_size` 以提升传输效率。
 - **配置驱逐参数**：Mooncake 后端的 `eviction_high_watermark_ratio`（建议 0.9）和 `eviction_ratio`（建议 0.1）控制池化空间的驱逐行为，应根据实际显存容量调整。
 - **调整租约 TTL**：`default_kv_lease_ttl` 需大于 `env.json` 中的 `ASCEND_CONNECT_TIMEOUT` 和 `ASCEND_TRANSFER_TIMEOUT`，避免 KV Cache 在传输过程中被提前清理。
 
@@ -354,20 +353,6 @@ P/D传输Connector选型如下表所示：
   ```
 
   如不符合，修改 `user_config.json` 后重新执行 `python deploy.py --config_dir ../../model_configs/vllm` 部署。
-
-### P 实例推理性能下降
-
-**问题描述**
-
-KV 池化开启后，P 实例推理性能下降。
-
-**原因分析**
-
-KV 池化开启后，P 实例需要额外将 KV Cache 推入缓存池，可能带来少量性能开销。
-
-**解决步骤**
-
-可适当增大 `kv_parallel_size` 以提升传输效率。
 
 ### D 实例拉取 KV Cache 超时
 

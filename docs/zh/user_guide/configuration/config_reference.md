@@ -687,7 +687,6 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
     "kv_transfer_config": {
       "kv_connector": "MooncakeConnectorV1",
       "kv_buffer_device": "npu",
-      "kv_parallel_size": 1,
       "kv_port": "30001",
       "kv_connector_extra_config": {}
     }
@@ -830,10 +829,8 @@ Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两
       "kv_connector": "MooncakeConnectorV1",
       "kv_buffer_device": "npu",
       "kv_role": "kv_producer",
-      "kv_parallel_size": 1,
       "kv_port": "30001",
       "engine_id": "0",
-      "kv_rank": 0,
       "kv_connector_extra_config": {}
     }
   },
@@ -915,10 +912,8 @@ Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两
       "kv_connector": "MooncakeConnectorV1",
       "kv_buffer_device": "npu",
       "kv_role": "kv_producer",
-      "kv_parallel_size": 1,
       "kv_port": "30001",
       "engine_id": "0",
-      "kv_rank": 0,
       "kv_connector_extra_config": {}
     }
   },

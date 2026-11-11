@@ -147,10 +147,8 @@ MindIE Motor部署EPD分离只需修改user_config.json配置文件后，通过d
            "kv_connector": "MooncakeConnectorV1",
            "kv_buffer_device": "npu",
            "kv_role": "kv_producer",
-           "kv_parallel_size": 1,
            "kv_port": "30001",
            "engine_id": "0",
-           "kv_rank": 0,
            "kv_connector_extra_config": {}
          }
        }
@@ -176,10 +174,8 @@ MindIE Motor部署EPD分离只需修改user_config.json配置文件后，通过d
            "kv_connector": "MooncakeConnectorV1",
            "kv_buffer_device": "npu",
            "kv_role": "kv_consumer",
-           "kv_parallel_size": 1,
            "kv_port": "30001",
            "engine_id": "0",
-           "kv_rank": 0,
            "kv_connector_extra_config": {}
          }
        }
