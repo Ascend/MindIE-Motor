@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="176" height="28" viewBox="0 0 176 28" role="img" aria-label="Docs: Read the Docs">
+  <title>Docs: Read the Docs</title>
+  <defs>
+    <clipPath id="badge">
+      <rect width="176" height="28" rx="5"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#badge)">
+    <rect width="176" height="28" fill="#4833EB"/>
+    <rect x="58" width="118" height="28" fill="#FE742C"/>
+  </g>
+  <g font-family="Arial, Helvetica, sans-serif" font-size="12" text-anchor="middle">
+    <text x="29" y="18" fill="#FFFFFF">Docs</text>
+    <text x="117" y="18" fill="#14182B">Read the Docs</text>
+  </g>
+</svg>

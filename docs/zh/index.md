@@ -5,6 +5,12 @@ hide:
 
 # MindIE Motor 文档
 
+<div class="motor-brand" markdown="1">
+
+![MindIE Motor](assets/mindie-motor-logo.png){ .motor-brand__logo width="575" }
+
+</div>
+
 欢迎使用 MindIE Motor 中文文档。本站点涵盖架构说明、用户指南、设计文档及开发者指南。
 
 ## 文档导航

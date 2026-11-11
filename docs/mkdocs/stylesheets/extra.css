@@ -7,7 +7,7 @@
 
   .md-typeset .admonition.announcement,
   .md-typeset details.announcement {
-    border-color: rgb(255, 110, 66);
+    border-color: var(--motor-orange);
   }
   .md-typeset .admonition.important,
   .md-typeset details.important {
@@ -15,16 +15,16 @@
   }
   .md-typeset .admonition.code,
   .md-typeset details.code {
-    border-color: #64dd17;
+    border-color: var(--motor-purple);
   }
   .md-typeset .admonition.console,
   .md-typeset details.console {
-    border-color: #64dd17;
+    border-color: var(--motor-purple);
   }
 
   .md-typeset .announcement > .admonition-title,
   .md-typeset .announcement > summary {
-    background-color: rgb(255, 110, 66, 0.1);
+    background-color: #FE742C1A;
   }
   .md-typeset .important > .admonition-title,
   .md-typeset .important > summary {
@@ -32,16 +32,16 @@
   }
   .md-typeset .code > .admonition-title,
   .md-typeset .code > summary {
-    background-color: #64dd171a;
+    background-color: #4833EB1A;
   }
   .md-typeset .console > .admonition-title,
   .md-typeset .console > summary {
-    background-color: #64dd171a;
+    background-color: #4833EB1A;
   }
 
   .md-typeset .announcement > .admonition-title::before,
   .md-typeset .announcement > summary::before {
-    background-color: rgb(239, 85, 82);
+    background-color: var(--motor-orange);
     -webkit-mask-image: var(--md-admonition-icon--announcement);
             mask-image: var(--md-admonition-icon--announcement);
   }
@@ -53,13 +53,13 @@
   }
   .md-typeset .code > .admonition-title::before,
   .md-typeset .code > summary::before {
-    background-color: #64dd17;
+    background-color: var(--md-primary-fg-color);
     -webkit-mask-image: var(--md-admonition-icon--code);
             mask-image: var(--md-admonition-icon--code);
   }
   .md-typeset .console > .admonition-title::before,
   .md-typeset .console > summary::before {
-    background-color: #64dd17;
+    background-color: var(--md-primary-fg-color);
     -webkit-mask-image: var(--md-admonition-icon--console);
             mask-image: var(--md-admonition-icon--console);
   }

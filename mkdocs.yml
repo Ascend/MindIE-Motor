@@ -9,8 +9,8 @@ repo_name: MindIE-Motor
 theme:
   name: material
   language: zh
-  logo: assets/ascend-logo.png
-  favicon: assets/ascend-favicon.ico
+  logo: assets/mindie-motor-logo.png
+  favicon: assets/mindie-motor-favicon.svg
   font:
     text: Roboto
     code: false
@@ -18,18 +18,22 @@ theme:
     repo: fontawesome/brands/git-alt
   palette:
     - media: "(prefers-color-scheme)"
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-auto
         name: 切换到亮色模式
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: white
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: 切换到暗色模式
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: black
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-2
         name: 跟随系统
@@ -101,6 +105,7 @@ markdown_extensions:
 
 extra_css:
   - mkdocs/stylesheets/extra.css
+  - mkdocs/stylesheets/brand.css
 
 extra_javascript:
   - mkdocs/javascripts/mathjax.js

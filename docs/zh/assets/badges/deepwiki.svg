@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="172" height="28" viewBox="0 0 172 28" role="img" aria-label="DeepWiki: Ask AI">
+  <title>DeepWiki: Ask AI</title>
+  <defs>
+    <clipPath id="badge">
+      <rect width="172" height="28" rx="5"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#badge)">
+    <rect width="172" height="28" fill="#4833EB"/>
+    <rect x="88" width="84" height="28" fill="#FE742C"/>
+  </g>
+  <g font-family="Arial, Helvetica, sans-serif" font-size="12" text-anchor="middle">
+    <text x="44" y="18" fill="#FFFFFF">DeepWiki</text>
+    <text x="130" y="18" fill="#14182B">Ask AI</text>
+  </g>
+</svg>

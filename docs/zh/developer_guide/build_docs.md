@@ -93,6 +93,29 @@ nav:
 - **Material 专有语法**：源码中的 **`!!! note`** 仅在 MkDocs 中渲染；若希望 GitHub 等通用预览也可读，可优先使用 **`>[!NOTE]`** 交给钩子转换（避免仅两个空格之类的「装饰缩进」贴在 **`>[!NOTE]`** 前，否则可能影响解析）。
 - **`extra_css` / `extra_javascript`**：在 **`mkdocs.yml`** 中配置为相对于 **`docs/zh`** 的路径（当前为 **`mkdocs/stylesheets/extra.css`**、**`mkdocs/javascripts/mathjax.js`**），依赖 **`docs/zh/mkdocs`** 指向 **`docs/mkdocs`**。
 
+## MindIE Motor 品牌资源
+
+仓库首页与文档站共用 `docs/zh/assets/mindie-motor-logo.png`。此文件保留提供的原始 PNG，
+不要对 Logo 拉伸、变色或应用暗色反转滤镜。明暗主题均为 Logo 提供白色承托区域。
+
+- **首页标识**：`README.md` 和 `docs/zh/index.md` 使用同一张原图；显示宽度不超过原图的 575 像素。
+- **导航标识**：`mkdocs.yml` 的 `theme.logo` 控制全部文档页面及移动端导航。
+- **浏览器图标**：`theme.favicon` 指向 `assets/mindie-motor-favicon.svg`。SVG 内嵌同一张 PNG，
+  以 `0 0 200 123` 的显示窗口呈现左侧图形标识，无外部文件请求；更换横标时需同步更新内嵌资源和窗口。
+- **社区入口**：`docs/zh/assets/badges/` 保存社区、许可、文档、Zread 与 DeepWiki 的 SVG 徽章。
+  只修改样式时，保留 `README.md` 中各入口的原始链接目标。
+- **主题样式**：`docs/mkdocs/stylesheets/brand.css` 维护全站品牌变量与组件样式，
+  `extra.css` 中的公告、代码和终端提示框复用这些变量。警告、错误等提示仍使用对应语义颜色。
+
+品牌主色为电光蓝紫 `#4833EB` 与活力橙 `#FE742C`。浅色页面正文链接使用蓝紫，
+橙色用于强调线、焦点描边与徽章底色；橙色底上的文字使用深色 `#14182B`。
+暗色页面正文链接使用浅紫 `#B9ADFF`，保证阅读对比度。
+
+更新后运行文档构建，并检查首页、普通文章、移动端导航、搜索、明暗主题以及键盘焦点。
+GitCode 项目头像、第三方知识库的站点标识属于平台设置，不由 MkDocs 配置控制；
+需由对应平台的维护者同步更新。Read the Docs 的发布来源与版本由平台配置决定，
+仓库中的 `trigger-readthedocs` 工作流会在符合分支规则的文档变更推送后请求重建。
+
 ## 安装依赖
 
 在仓库根目录执行：
