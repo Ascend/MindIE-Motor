@@ -48,6 +48,10 @@
   color: var(--motor-header-fg);
 }
 
+.md-header .md-source {
+  color: var(--motor-header-fg);
+}
+
 .md-tabs {
   background-color: var(--motor-header-bg);
   border-bottom: 1px solid var(--motor-border);

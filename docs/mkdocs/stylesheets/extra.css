@@ -15,11 +15,11 @@
   }
   .md-typeset .admonition.code,
   .md-typeset details.code {
-    border-color: var(--motor-purple);
+    border-color: var(--md-primary-fg-color);
   }
   .md-typeset .admonition.console,
   .md-typeset details.console {
-    border-color: var(--motor-purple);
+    border-color: var(--md-primary-fg-color);
   }
 
   .md-typeset .announcement > .admonition-title,

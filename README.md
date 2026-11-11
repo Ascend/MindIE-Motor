@@ -1,5 +1,5 @@
 <p align="center">
-    <img alt="MindIE Motor" src="./docs/zh/assets/mindie-motor-logo.png" width="100%">
+    <img alt="MindIE Motor" src="./docs/zh/assets/mindie-motor-logo.svg" width="100%">
 </p>
 
 <div align="center">
