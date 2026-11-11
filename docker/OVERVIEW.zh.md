@@ -32,8 +32,8 @@
 
 | 字段 | 示例值 | 说明 |
 |---|---|---|
-| `Motor版本` | `3.2.0`、`3.2.0b6` | MindIE-Motor 版本号 |
-| `引擎版本` | `0.5.21`、`0.30.0` | 配套 SGLang 或 vllm-ascend 版本 |
+| `Motor版本` | `3.3.0`、`3.2.0b6` | MindIE-Motor 版本号 |
+| `引擎版本` | `0.30.0rc2`、`0.5.21` | 配套 SGLang 或 vllm-ascend 版本 |
 | `芯片系列` | `a3`、`a5`、`a2` | 目标昇腾芯片系列 |
 | `操作系统` | `ubuntu22.04`、`openeuler24.03` | 基础操作系统 |
 | `python版本` | `py3.12` | Python 版本 |
@@ -53,9 +53,22 @@ vllm_ascend_<模型名>-<芯片系列>-<操作系统>-<python版本>
 
 3.0.x 历史 Tag 使用另一套命名，见 [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md)。
 
-### 最新版本 MindIE-Motor 3.2.0
+### 最新版本 MindIE-Motor 3.3.0
 
-如下所示是 MindIE-Motor 在 AscendHub 发布的最新版本 3.2.0 中 vLLM-Ascend 与 SGLang 的镜像（2026/10/30）。历史版本所有的 Tag 请参考 [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md)。
+如下所示是 MindIE-Motor 在 AscendHub 发布的最新版本 3.3.0 的全部镜像，配套 vLLM-Ascend v0.30.0rc2 发布。历史版本所有的 Tag 请参考 [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md)。
+
+| Tag | Dockerfile | 架构 | 镜像内容 |
+|---|---|---|---|
+| `3.3.0-vllm_ascend0.30.0rc2-a2-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.3.0 / vllm-ascend 0.30.0rc2 |
+| `3.3.0-vllm_ascend0.30.0rc2-a2-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.3.0 / vllm-ascend 0.30.0rc2 |
+| `3.3.0-vllm_ascend0.30.0rc2-a3-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.3.0 / vllm-ascend 0.30.0rc2 |
+| `3.3.0-vllm_ascend0.30.0rc2-a3-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.3.0 / vllm-ascend 0.30.0rc2 |
+| `3.3.0-vllm_ascend0.30.0rc2-a5-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.3.0 / vllm-ascend 0.30.0rc2 |
+| `3.3.0-vllm_ascend0.30.0rc2-a5-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.3.0 / vllm-ascend 0.30.0rc2 |
+
+### MindIE-Motor 3.2.0
+
+如下所示是 MindIE-Motor 在 AscendHub 发布的 3.2.0 版本中 vLLM-Ascend 与 SGLang 的镜像（2026/10/30）。历史版本所有的 Tag 请参考 [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md)。
 
 #### vLLM-Ascend 镜像
 
@@ -95,7 +108,7 @@ vllm_ascend_<模型名>-<芯片系列>-<操作系统>-<python版本>
 每个 Dockerfile 会在构建时自动 clone 指定分支与 commit 的源码，并在镜像内执行 `build.sh` 安装 `motor` / `ccae_reporter`，**无需本地源码或构建上下文**。将 `<tag>` 替换为目标组合后，在项目根目录执行：
 
 ```bash
-TAG="3.2.0-sglang0.5.21-a3-ubuntu22.04-py3.12"
+TAG="3.3.0-vllm_ascend0.30.0rc2-a2-ubuntu22.04-py3.12"
 
 docker build --network=host \
     --platform=linux/arm64 \

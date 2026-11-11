@@ -32,8 +32,8 @@ Current published image tags follow these formats:
 
 | Field | Example Value | Description |
 |---|---|---|
-| `MotorVersion` | `3.2.0`, `3.2.0b6` | MindIE-Motor version number |
-| `EngineVersion` | `0.5.21`, `0.30.0` | Matching SGLang or vllm-ascend version |
+| `MotorVersion` | `3.3.0`, `3.2.0b6` | MindIE-Motor version number |
+| `EngineVersion` | `0.30.0rc2`, `0.5.21` | Matching SGLang or vllm-ascend version |
 | `ChipSeries` | `a3`, `a5`, `a2` | Target Atlas chip series |
 | `OperatingSystem` | `ubuntu22.04`, `openeuler24.03` | Base OS |
 | `PythonVersion` | `py3.12` | Python version |
@@ -53,9 +53,22 @@ vllm_ascend_<ModelName>-<ChipSeries>-<OperatingSystem>-<PythonVersion>
 
 3.0.x historical tags use a different naming scheme; see [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md).
 
-### Latest Version MindIE-Motor 3.2.0
+### Latest Version MindIE-Motor 3.3.0
 
-The following tables list vLLM-Ascend and SGLang images for the latest MindIE-Motor 3.2.0 release on AscendHub (2026/10/30). For historical tags, see [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md).
+The following are all images of MindIE-Motor 3.3.0 published on AscendHub, released to pair with the vLLM-Ascend v0.30.0rc2 images. For historical tags, see [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md)
+
+| Tag | Dockerfile | Architecture | Image Contents |
+|---|---|---|---|
+| `3.3.0-vllm_ascend0.30.0rc2-a2-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.3.0 / vllm-ascend 0.30.0rc2 |
+| `3.3.0-vllm_ascend0.30.0rc2-a2-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.3.0 / vllm-ascend 0.30.0rc2 |
+| `3.3.0-vllm_ascend0.30.0rc2-a3-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.3.0 / vllm-ascend 0.30.0rc2 |
+| `3.3.0-vllm_ascend0.30.0rc2-a3-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.3.0 / vllm-ascend 0.30.0rc2 |
+| `3.3.0-vllm_ascend0.30.0rc2-a5-ubuntu22.04-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.3.0 / vllm-ascend 0.30.0rc2 |
+| `3.3.0-vllm_ascend0.30.0rc2-a5-openeuler24.03-py3.12` | Dockerfile 待上传 | arm64 / x86_64 | motor 3.3.0 / vllm-ascend 0.30.0rc2 |
+
+### MindIE-Motor 3.2.0
+
+The following tables list vLLM-Ascend and SGLang images for the MindIE-Motor 3.2.0 release on AscendHub (2026/10/30). For historical tags, see [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md).
 
 #### vLLM-Ascend Images
 
@@ -95,7 +108,7 @@ See the [quick start guide](https://gitcode.com/Ascend/MindIE-Motor/blob/master/
 Each Dockerfile clones the pinned branch and commit during the build, then runs `build.sh` to install `motor` and `ccae_reporter`. **No local source tree or build context is required.** Replace `<tag>` with the desired combination and run from the repository root:
 
 ```bash
-TAG="3.2.0-sglang0.5.21-a3-ubuntu22.04-py3.12"
+TAG="3.3.0-vllm_ascend0.30.0rc2-a2-ubuntu22.04-py3.12"
 
 docker build --network=host \
     --platform=linux/arm64 \
