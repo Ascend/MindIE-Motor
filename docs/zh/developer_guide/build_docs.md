@@ -103,6 +103,8 @@ nav:
 - **首页标识**：`README.md` 和 `docs/zh/index.md` 使用同一份高清标识，按内容区域的 100% 宽度等比例展示。
   `README.md` 以完整 Logo 开头，不另加重复的文字标题。
 - **导航标识**：`mkdocs.yml` 的 `theme.logo` 控制全部文档页面及移动端导航。
+  页头在桌面和窄屏均显示完整 Logo，隐藏重复的站点名称文字；滚动后的文章标题仍由主题正常切换。
+  `site_name` 保留用于浏览器标题、无障碍标签等站点元数据。
 - **浏览器图标**：`theme.favicon` 指向 `assets/mindie-motor-favicon.svg`。SVG 内嵌同一张 PNG，
   与 `mindie-motor-logo.svg` 使用相同的高清 PNG 和显示窗口，以及 `xMidYMid meet`，
   同时保留图形和后方全部字标，不裁切标识内容，无外部文件请求。

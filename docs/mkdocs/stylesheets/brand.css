@@ -55,6 +55,16 @@
   color: var(--motor-header-fg);
 }
 
+/* The complete logo supplies the site name, including on narrow screens. */
+.md-header__button.md-logo {
+  display: block;
+}
+
+/* Keep both topics in the DOM for Material's scrolling page-title transition. */
+.md-header__topic:not([data-md-component="header-topic"]) {
+  display: none;
+}
+
 .md-tabs {
   background-color: var(--motor-header-bg);
   border-bottom: 1px solid var(--motor-border);
