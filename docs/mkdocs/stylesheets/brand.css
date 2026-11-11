@@ -43,6 +43,9 @@
 }
 
 .md-header {
+  /* Match inherited text tokens to the custom header surface in both themes. */
+  --md-primary-bg-color: var(--motor-header-fg);
+  --md-primary-bg-color--light: var(--motor-header-fg);
   background-color: var(--motor-header-bg);
   border-bottom: 2px solid var(--motor-orange);
   color: var(--motor-header-fg);

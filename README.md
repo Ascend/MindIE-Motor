@@ -1,3 +1,6 @@
+<!-- The complete wordmark below serves as the README title. -->
+<!-- markdownlint-disable-file MD041 -->
+
 <p align="center">
     <img alt="MindIE Motor" src="./docs/zh/assets/mindie-motor-logo.svg" width="100%">
 </p>
