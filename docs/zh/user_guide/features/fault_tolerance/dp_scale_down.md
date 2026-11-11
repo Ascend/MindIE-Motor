@@ -64,19 +64,19 @@ Motor 负责故障收集、缩容门禁（FtGate）、向 NodeManager 下发 FT 
 
 ### 环境准备
 
-- 已按 [K8s PD 分离部署](../../deployment/README.md#k8s-pd-disaggregation) 或 **Decode/Union** PD 混部完成 Motor 服务部署；集群节点为 **A3 超节点**，Controller、Coordinator 与各推理 Pod 正常注册。
+- 已按 [K8s PD 分离部署](../../deployment/k8s/pd_disaggregation_deployment.md) 或 **Decode/Union** PD 混部完成 Motor 服务部署；集群节点为 **A3 超节点**，Controller、Coordinator 与各推理 Pod 正常注册。
 - 目标实例使用3.2.0版本motor镜像拉起，模型为 **W8A8**、默认权重加载器，且**未启用 MTP**；引擎已按[引擎使用约束](#引擎使用约束)配置 `user_config` 与 `env.json`（见[配置示例](#配置示例)）。
 - `env.json` 中在 **`motor_common_env`** 配置 `ASCEND_LOCAL_COMM_RES`（见引擎约束第 7 条）；`TASK_QUEUE_ENABLE`、`HCCL_ASYNC_ERROR_HANDLING`、`HCCL_EXEC_TIMEOUT` 等写入 **`motor_engine_decode_env`** 或 **`motor_engine_union_env`**（见第 8–12 条）。
-- 若镜像内引擎尚未包含 DP 缩容相关实现，需在容器启动、执行 `engine.sh` **之前**应用v3.2.0版本 Motor deployer 提供的容错补丁。补丁合入后路径为：
+- 若镜像内引擎尚未包含 DP 缩容相关实现，需在容器启动、执行 `engine.sh` **之前**应用 v3.2.0 版本 Motor deployer 提供的容错补丁。补丁合入后路径为：
 
-  ```bash
-  # 在 deployer/startup/boot.sh 中、source engine.sh 之前插入
-  bash /path/to/deployer/patch/0.30.0/apply_patches.sh \
-      /path/to/deployer/patch/0.30.0/fault_tolerance/vllm_v0.30.0_ft.patch \
-      /path/to/deployer/patch/0.30.0/fault_tolerance/vllm_ascend_v0.30.0_ft.patch
-  ```
+    ```bash
+    # 在 deployer/startup/boot.sh 中、source engine.sh 之前插入
+    bash /path/to/deployer/patch/0.30.0/apply_patches.sh \
+        /path/to/deployer/patch/0.30.0/fault_tolerance/vllm_v0.30.0_ft.patch \
+        /path/to/deployer/patch/0.30.0/fault_tolerance/vllm_ascend_v0.30.0_ft.patch
+    ```
 
-  将 `/path/to/deployer` 替换为容器内 `examples/deployer` 的实际挂载路径。可通过环境变量 `PYTHON` 指定用于 `pip show` 定位安装目录的解释器，默认 `python3`。若同时使用容器快照补丁，须**先应用容错补丁，再应用快照补丁**。
+    将 `/path/to/deployer` 替换为容器内 `examples/deployer` 的实际挂载路径。可通过环境变量 `PYTHON` 指定用于 `pip show` 定位安装目录的解释器，默认 `python3`。若同时使用容器快照补丁，须**先应用容错补丁，再应用快照补丁**。
 
 - 集群具备 MindCluster 故障管理与（可选）Infer Operator 外部调度能力；缩容后空 Pod 回收依赖 `enable_dp_scale_up` 与集群调度器行为。
 
@@ -170,15 +170,16 @@ kubectl get pod -n {namespace} \
 > 故障注入与 DP 缩容验证会中断目标实例上的请求，请在测试环境进行，并保证仍有足够幸存 DP 容量。
 
 1. 记录目标实例 ID 与各 Pod 的 DP 布局（可通过 Controller 实例查询或部署配置确认）。
-2. 向Decode实例注入pkill -9 VLLM::Worker_DP 进程。
+2. 向 Decode 实例注入 `pkill -9 VLLM::Worker_DP` 进程。
 3. 查询 Controller DP 缩容运行态（管理面端口 `controller_api_port`，默认 `1026`）：
 
-   ```bash
-   curl "http://{controller-ip}:{port}/controller/fault_tolerance/status"
-   curl "http://{controller-ip}:{port}/controller/fault_tolerance/status?instance_id={id}"
-   ```
+    ```bash
+    curl "http://{controller-ip}:{port}/controller/fault_tolerance/status"
+    curl "http://{controller-ip}:{port}/controller/fault_tolerance/status?instance_id={id}"
+    ```
 
-   响应中的 `phase` 会经历 `DECIDING`、`SCALING_DOWN`、`POST_SCALE_CLEANUP`、`SCALED_DOWN_RUNNING` 等状态；`enable_dp_scale_down` 为 false 时返回 `DISABLED`。
+    响应中的 `phase` 会经历 `DECIDING`、`SCALING_DOWN`、`POST_SCALE_CLEANUP`、`SCALED_DOWN_RUNNING` 等状态；`enable_dp_scale_down` 为 false 时返回 `DISABLED`。
+
 4. 观察 Controller / NodeManager 日志中 `DpScaleDownStrategy` 与 `scale-down` 相关记录，确认 `removed_dp_ranks` 与幸存 rank 符合预期。
 5. 缩容完成后向 Coordinator 发送推理请求，确认实例在较小 DP 规模下仍可服务；若启用[虚推健康探测](../sim_inference.md)，NodeManager 会在 DP master 变更后迁移虚推 monitor。
 
