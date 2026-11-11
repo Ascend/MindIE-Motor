@@ -7,7 +7,7 @@ hide:
 
 <div class="motor-brand" markdown="1">
 
-![MindIE Motor](assets/mindie-motor-logo.png){ .motor-brand__logo width="575" }
+![MindIE Motor](assets/mindie-motor-logo.png){ .motor-brand__logo width="100%" }
 
 </div>
 

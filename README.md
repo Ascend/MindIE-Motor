@@ -1,7 +1,5 @@
-# MindIE Motor
-
 <p align="center">
-    <img alt="MindIE Motor" src="./docs/zh/assets/mindie-motor-logo.png" width="575">
+    <img alt="MindIE Motor" src="./docs/zh/assets/mindie-motor-logo.png" width="100%">
 </p>
 
 <div align="center">

@@ -98,10 +98,12 @@ nav:
 仓库首页与文档站共用 `docs/zh/assets/mindie-motor-logo.png`。此文件保留提供的原始 PNG，
 不要对 Logo 拉伸、变色或应用暗色反转滤镜。明暗主题均为 Logo 提供白色承托区域。
 
-- **首页标识**：`README.md` 和 `docs/zh/index.md` 使用同一张原图；显示宽度不超过原图的 575 像素。
+- **首页标识**：`README.md` 和 `docs/zh/index.md` 使用同一张原图，按内容区域的 100% 宽度等比例展示。
+  `README.md` 以完整 Logo 开头，不另加重复的文字标题。
 - **导航标识**：`mkdocs.yml` 的 `theme.logo` 控制全部文档页面及移动端导航。
 - **浏览器图标**：`theme.favicon` 指向 `assets/mindie-motor-favicon.svg`。SVG 内嵌同一张 PNG，
-  以 `0 0 200 123` 的显示窗口呈现左侧图形标识，无外部文件请求；更换横标时需同步更新内嵌资源和窗口。
+  使用完整原图的 `0 0 575 123` 显示窗口及 `xMidYMid meet`，同时保留图形和后方全部字标，
+  无裁切、无外部文件请求。更换 Logo 时需同步更新内嵌资源与完整原图尺寸。
 - **社区入口**：`docs/zh/assets/badges/` 保存社区、许可、文档、Zread 与 DeepWiki 的 SVG 徽章。
   只修改样式时，保留 `README.md` 中各入口的原始链接目标。
 - **主题样式**：`docs/mkdocs/stylesheets/brand.css` 维护全站品牌变量与组件样式，
