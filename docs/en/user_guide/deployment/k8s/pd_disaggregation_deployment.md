@@ -82,7 +82,7 @@ On each server, check whether the `/lib/route.conf` and `/etc/hccl_rootinfo.json
             └── models/            # Model-specific configuration
     ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >
     >- The configuration files are located in the `examples/model_configs` directory. Select the corresponding configuration based on the engine type and model.
     >- For details about how to use the deployment tool, see `examples/deployer/README.md`.
@@ -107,7 +107,7 @@ Perform the following operations on the master node of the K8s cluster.
     python3 deploy.py --config_dir ../../model_configs/vllm
     ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >- Image and weights: Ensure that image_name can be pulled normally within the cluster and that `weight_mount_path` exists on the host.
     >- Deployment failure: You can first uninstall the current service using the termination command in step 5, then troubleshoot and modify the configuration, and then redeploy.
     >- Weight loading timeout: In some vLLM versions, weight loading that takes longer than about 10 minutes may report a `timeout`, which usually does not affect program running. The description for the image/engine version in use takes precedence.
@@ -181,7 +181,7 @@ Multiple management plane and service plane Pods are created and distributed acr
 
 **Enabling the Feature**
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >ETCD must be deployed in advance (the server side requires at least 3 replicas to ensure the reliability of the ETCD cluster). For details about this feature, see [Master/Standby Switchover](../../features/fault_tolerance/standby.md).
 
   ```json
@@ -238,7 +238,7 @@ The preceding configuration indicates that a maximum of 10000 requests are proce
 
 Delete the `rate_limit_config` parameter block, or set the `enable_rate_limit` parameter to `false`.
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >For details about this feature, see [Service Rate Limiting](../../features/rate_limiting.md). For field descriptions, see the `rate_limit_config` field in [motor_coordinator_config](../../configuration/config_reference.md#motor_coordinator_config).
 
 ### Virtual Inference Health Probe
@@ -313,7 +313,7 @@ The KV Cache affinity scheduling capability of MindIE Motor relies on the Moonca
 
 Delete the preceding configuration items.
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >Ensure that the KV Conductor component is installed in the image. For details about this feature, see [KV Cache Affinity Scheduling](../../features/kvcache_affinity.md).
 
 ### PD Heterogeneous (PR/DT) Scheduling
@@ -359,7 +359,7 @@ Fill in the corresponding fields in the Prefill/Decode configurations. If a fiel
 
 Delete the preceding fields or leave them empty.
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >This feature takes effect only in Kubernetes PD disaggregation. When `hardware_type` is `Ascend950`, the base `nodeSelector` is `accelerator: huawei-npu`; the chip name label is an additional entry and does not need to be filled in for all-PR or all-DT networking. Docker-based deployment has no scheduler, so deploy according to the output of [Deploying Multi-Container PD Disaggregation Services with Docker](../docker/host/pd_disaggregation_deployment.md#starting-service) (that is, issue the Prefill command on PR and the Decode command on DT).
 
 ### KV Pooling Capability

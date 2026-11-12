@@ -28,7 +28,7 @@
 
 MindIE Motor must be used with matching versions of each component. Do not mix components across different versions.
 
-> [!NOTE]NOTE
+> [!NOTE] Note
 > In the following tables, "/" indicates that the versions are not compatible, and "Y" indicates that they are compatible.
 
 **Table 3**  Version compatibility between MindIE Motor and MindCluster

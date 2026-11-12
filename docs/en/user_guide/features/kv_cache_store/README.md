@@ -36,7 +36,7 @@ MindIE Motor uses `MultiConnector` to combine the P/D transfer Connector with th
 
 - **UCM**: Combines UCM Stores such as Cache and POSIX through the `store_pipeline` of `UCMConnector`. In the current distributed P/D solution, Prefill saves and loads cross-request prefixes, and Decode does not load UCM. For details, see [Deploying UCM in MindIE Motor](./backend/ucm.md).
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 >- MemCache and Mooncake are backends of `AscendStoreConnector`; UCM is another Store Connector but still belongs to the KV pooling capability. Do not configure `"backend": "ucm"`.
 >- In addition, `MooncakeConnectorV1`, `MooncakeHybridConnector`, and others are responsible for real-time P/D transfer, and are not the same layer of configuration as the Mooncake Backend of `AscendStoreConnector`.
@@ -206,7 +206,7 @@ The P/D transfer Connector is selected as follows:
     | --- | --- | --- | --- | --- | --- |
     | `local_service_mode` | string | `inprocess`, `standalone` | Optional | Atlas 800I A2/Ascend 950PR products: `inprocess`; Atlas 800I A3: `standalone` | LocalService deployment mode: `inprocess` (same process as vLLM) or `standalone` (independent process) |
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     > All internal MemCache configuration items (DRAM pool size, communication protocol, MetaService port, SSD cache, UBSIO parameters, etc.) are managed by users in `mmc-local-inprocess.conf` or `mmc-local-standalone.conf` of the corresponding mode, and do not need to be configured in `user_config.json`. See [MemCache Backend Documentation](./backend/memcache.md).
 
 3. (Optional) <a id="step3"></a>Configure multiple services to share the kv_store.
@@ -247,7 +247,7 @@ The P/D transfer Connector is selected as follows:
     | `target_job_id` points to another service, and a kv_store Service and a kv_store Pod in the Running state exist in the target namespace | Reuse the domain name of the target kv_store, and do not deploy a kv_store Pod for this service |
     | `target_job_id` is incorrect, or no available kv_store exists in the target namespace | Fall back to creating a new kv_store Pod in the current namespace |
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     > The `deploy_mode` of the two services (`multi_deployment` / `infer_service_set`) should be consistent; otherwise, the Service names may not match, and the reuse fails and falls back to creating a new one.
 4. Deploy the service by using the `deploy.py` script in the `examples/deployer` directory with the following commands.
 
@@ -283,7 +283,7 @@ The P/D transfer Connector is selected as follows:
    - The `store_pipeline`, `storage_backends`, and capacity parameters of UCM determine how the prefix cache is saved, and `AscendStoreConnector.backend` is not used.
 
 2. The current Motor UCM example still configures `kv_cache_store_config.backend: "mooncake"`, which is used by the current deployer to generate Mooncake kv_store/master resources. This is a deployment adaptation configuration and does not mean that UCM has become the Mooncake Backend. The actual Store of UCM is determined by `store_pipeline` in `UCMConnector`.
-   >[!NOTE]NOTE
+   >[!NOTE] Note
    > For the complete configuration, storage mounting, deployment, and verification steps, see [Deploying UCM in MindIE Motor](./backend/ucm.md).
 3. Deploy the service by using the `deploy.py` script in the `examples/deployer` directory with the following commands.
 
@@ -313,7 +313,7 @@ The P/D transfer Connector is selected as follows:
 
    The expected output contains a `kv-store` Pod that is in the `Running` state and ready.
 
-   >[!NOTE]NOTE
+   >[!NOTE] Note
    > For the Mooncake backend, kv-store Pod Ready cannot prove that `mooncake_master` is ready (there is no `/livez` probe). Confirm it with the master logs or `:50090/metrics`. For details, see "Deployment notes" above.
 
 2. Confirm that the P/D engine Pods start properly and that the logs do not contain KV transfer-related errors.

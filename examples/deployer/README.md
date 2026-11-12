@@ -327,7 +327,7 @@ Seed 可用于还原词表置换，必须与混淆权重同权限保管，禁止
 | `master-addr` | vLLM Adapter 检测到跨节点 PCP/PP 模式（`nnodes > 1` 且 `master-port` 存在）时，自动将 `master-dp-ip` 作为 `--master-addr` 注入原生 vLLM 命令 |
 | `headless` | vLLM Adapter 在跨节点 PCP/PP 模式下，对 `node-rank != 0` 的从节点自动追加 `--headless` |
 
->[!NOTE]说明
+>[!NOTE] 说明
 >跨节点 PCP/PP 场景下，用户仅需在 `engine_config` 中配置 `nnodes` 和 `master-port`，其余参数由 Motor 自动处理。当前不支持同一实例内 `data_parallel_size > 1` 且 `nnodes > 1`。
 
 CLI 参数与 `engine_config` 键名的完整映射关系详见 [vLLM 原生配置适配器](../../motor/node_manager/core/services/native_engine/backends/vllm/config.py) 中的 `VLLMConfig`。

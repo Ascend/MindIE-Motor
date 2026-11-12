@@ -1,6 +1,6 @@
 # Management Interface
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 > Kubernetes deployment should restrict the access scope of management ports through ClusterIP, NetworkPolicy, and similar mechanisms. For bare metal standalone deployment that needs to listen externally, it is recommended that the management plane API Key and `mgmt_tls_config` be enabled at the same time; the API Key is responsible for identity verification, and TLS is responsible for preventing eavesdropping.
 
@@ -101,7 +101,7 @@ curl -X GET "http://{IP}:{Port}/readiness"
 { "status": "ok", "message": "Coordinator is ok", "ready": true }
 ```
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >If active/standby mode is enabled and the current node is not the master node, `503` is returned with the message `Coordinator is not master`.
 
 ## Health Status Query Interface
@@ -133,7 +133,7 @@ curl -X GET "http://{IP}:{Port}/health"
 { "status": "ok", "timestamp": "2026-07-02T10:00:00+00:00" }
 ```
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >`/health` and `/metrics` are mounted on the Coordinator Observability port (`coordinator_obs_port`, default `1027`, K8s nodePort `31017`), and are **not** served on the management interface port (`coordinator_api_mgmt_port`, default `1026`).
 
 ## Instance Query Interface
@@ -277,7 +277,7 @@ Request headers:
 
 **usage example**
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >The request body must be in JSON format and must not exceed 10 MB.
 >[!WARNING]Version Upgrade
 > The `Endpoint` registration protocol has removed the unused `mgmt_port` and strictly rejects unknown fields. Controller, Coordinator, and NodeManager must be upgraded together, and mixed operation of new and old components is not supported.

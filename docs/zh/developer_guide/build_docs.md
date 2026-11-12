@@ -121,7 +121,7 @@ INFO     -  [12:00:00] Serving on http://127.0.0.1:8000/
 
 Step 3：在浏览器中访问终端给出的地址即可预览文档（若配置了多语言或版本路径，请以实际输出为准）。
 
-> [!NOTE]说明
+> [!NOTE] 说明
 >
 > * **`mkdocs serve`** 默认监听 **`8000`** 端口。若该端口被占用，可通过 **`-a`** 指定其它地址端口，例如 **`mkdocs serve -a 127.0.0.1:8080`**。
 > * 想在本地尽早发现链接/锚点等问题，可加 **`--strict`**：**`mkdocs serve --strict`**。Read the Docs 当前配置为 **`fail_on_warning: false`**（见 **`.readthedocs.yaml`**），但本地仍可主动开启以减少静默错误。

@@ -80,7 +80,7 @@ A complete model management configuration generally contains at least the follow
 
 2. Automatically started model service version;
 
-3. Model test version (used for AIS_Bench deployment);
+3. Model test version (used for AISBench deployment);
 
 Version 1 is used for installation and deployment debugging, version 3 is used for precision and performance testing, and version 2 is used for reliability testing and formal production. The typical configuration of each version is shown below:
 
@@ -734,7 +734,7 @@ Download Motor and its dependencies offline. The main parts are as follows:
 
 - Dependencies listed in motor requirements.txt
 
-- libzmp
+- libzmq
 
 - pciutils
 
@@ -1940,7 +1940,7 @@ This guide uses AIS_Bench to perform precision testing on the model service, mai
 
 5. The same health check implementation works for the GLM model service, but MA reports a health check failure after switching to DeepSeek or another model service:
 
-   When you judge the service health by sending a POST request to the /v1/chat/completion interface of vLLM and checking for a normal return value, make sure that the request body and response format match the specific model. For example, the thinking mode of DeepSeek uses the "\<think\>xxxx\<\\think\>" format in content, whereas the thinking process of models such as GLM5 is stored in the reasoning_content field. For the health probe request body of GLM series models, it is recommended to add the \"chat_template_kwargs\":{\"enable_thinking\": False} field to disable thinking mode and ensure that the returned content is in the "content" field.
+   When you judge the service health by sending a POST request to the /v1/chat/completions interface of vLLM and checking for a normal return value, make sure that the request body and response format match the specific model. For example, the thinking mode of DeepSeek uses the "\<think\>xxxx\<\\think\>" format in content, whereas the thinking process of models such as GLM5 is stored in the reasoning_content field. For the health probe request body of GLM series models, it is recommended to add the \"chat_template_kwargs\":{\"enable_thinking\": False} field to disable thinking mode and ensure that the returned content is in the "content" field.
 
 6. After creating a new version of the MA model service and copying the health check command from another page, the service fails to start:
 

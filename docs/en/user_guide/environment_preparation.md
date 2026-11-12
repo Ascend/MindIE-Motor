@@ -29,7 +29,7 @@ MindIE Motor depends on the container orchestration capabilities provided by Kub
 |Ascend Docker Runtime|Provides Ascend containerization support for Docker or Containerd, automatically mounting required files and device dependencies.|Y|Y|
 |Infer Operator|Creates inference instance Workloads and Services, providing manual scaling capabilities for inference instances.|Y|N|
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >The meanings of Y and N in the table above are as follows:
 >
 >- Y: installation is required.
@@ -197,7 +197,7 @@ After the installation is complete, proceed directly to the [Creating a Cluster]
       yum install -y kubelet-1.23.0-00 kubeadm-1.23.0-00 kubectl-1.23.0-00
       ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >
     >- A proxy must be configured before installation.
     >- After installation, restore the repository sources in the `/etc/yum.repos.d/disabled` folder as needed.
@@ -212,7 +212,7 @@ After the installation is complete, proceed directly to the [Creating a Cluster]
     kubeadm config images list
     ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >When running the preceding command, you must clear the proxy configuration. Otherwise, subsequent version mismatches may occur.
 
     The query result is shown in the following figure.
@@ -270,7 +270,7 @@ After the installation is complete, proceed directly to the [Creating a Cluster]
     unset HTTPS_PROXY
     ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >For compute nodes, simply complete this step and then go to [Creating a Cluster](#creating-a-cluster) to continue. Management nodes continue with the following steps.
 
 4. Initialize kubeadm.
@@ -329,7 +329,7 @@ After the installation is complete, proceed directly to the [Creating a Cluster]
         docker tag swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/calico/node:v3.24.5             calico/node:v3.24.5
         ```
 
-        >[!NOTE]NOTE
+        >[!NOTE] Note
         >The versions of Kubernetes and Calico must match. The preceding operation uses version 3.24.5 as an example. If you need to change the version, query the matching version and download it for use.
 
     - Run the following command to download the Calico .yaml file. (A network proxy must be configured before this step.)
@@ -349,7 +349,7 @@ After the installation is complete, proceed directly to the [Creating a Cluster]
 
         ![Display of modifications](../imgs/edit_calico_yaml.png)
 
-        >[!NOTE]NOTE
+        >[!NOTE] Note
         >Calico runs on every server in the cluster (Calico is configured only on the management node, and the configuration is applied to all nodes in the cluster). Therefore, the preceding expression must ensure that Calico can find the NIC on every server in the cluster:
         >
         >- If the primary NIC names (found by running `ip route | grep default`) of all nodes in the cluster share the same prefix, for example, the primary NIC names of the cluster nodes are enp1 (master), enp2 (worker1 node), and enp115235 (worker node 2), you can enter `enp.*`.
@@ -398,7 +398,7 @@ Connect compute nodes to the management node by following the steps below to for
         hostname
         ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >The token and ca-cert code are valid for 24 hours. If they have expired, re-create them using the commands above.
 2. On the compute node, run the following command to join the cluster.
 
@@ -417,7 +417,7 @@ Connect compute nodes to the management node by following the steps below to for
 
     ![New node](../imgs/add_new_node.png)
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >Repeat steps 2 and 3 until all compute nodes have joined the management node.
 
 ## MindCluster Component Installation
@@ -430,12 +430,12 @@ The cluster management components depend on the Ascend Docker Runtime, Ascend De
 
 3. Refer to the [Ascend Device Plugin](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/en/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/04_ascend_device_plugin.md) section in the *MindCluster Cluster Scheduling User Guide* to install the Ascend Device Plugin, using the `device-plugin-_xxx_-v{version}.yaml` file for installation.
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >When the Ascend Device Plugin starts, if the `useAscendDocker` parameter in the `xxx.yaml` configuration file is set to `true` and the user has installed the Ascend Docker Runtime and it has taken effect, the driver-related directories under `/usr/local/Ascend` are automatically mounted.
 
 4. Refer to the [Volcano](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/en/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/05_volcano.md) section in the *MindCluster Cluster Scheduling User Guide* to install Volcano.
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >In the single-machine scenario, when installing Volcano by referring to the [Volcano](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/en/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/05_volcano.md) section in the *MindCluster Cluster Scheduling User Guide*, before executing step 9 in the "Volcano" section, you need to modify the `volcano-v{version}.yaml` file in the `volcano-v{version}` directory generated after Volcano decompression, search for the `useClusterInfoManager` field and change its value to `false`, as shown in the following figure. After the modification is complete, execute step 9 in the "Volcano" section.
     >![](../imgs/volcano.png)
 
@@ -447,7 +447,7 @@ The cluster management components depend on the Ascend Docker Runtime, Ascend De
 
 Based on the server type, perform the following operations on the management node to set labels for the cluster uniformly.
 
-   >[!NOTE]NOTE
+   >[!NOTE] Note
    >The current script also labels the master node of the K8s cluster as a worker node, meaning that by default the master node can also be used to deploy inference services. If adjustment is needed, users can modify the labeling script themselves.
 
 <!-- npu="910b" id1 -->
@@ -517,7 +517,7 @@ Based on the server type, perform the following operations on the management nod
     <!-- npu="950" id3 -->
 3. 950PR&950DT products (common cluster).
 
-   >[!NOTE]NOTE
+   >[!NOTE] Note
    >`accelerator-type` must be filled in based on the actual form. For a common cluster, use `850-Atlas-8p-8`; for an Atlas 850, change it to `850-SuperPod-Atlas-8`; for an Atlas 950 SuperPoD, change it to `950-SuperPod-Atlas-8`. For details, see [Creating Node Labels](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/en/scheduling/installation_guide/03_installation/manual_installation/01_preparing_for_installation.md#%E5%88%9B%E5%BB%BA%E8%8A%82%E7%82%B9%E6%A0%87%E7%AD%BE).
 
    ```bash

@@ -14,7 +14,7 @@ This document describes how to complete a **PD disaggregation** deployment in a 
 | Health probe | Native generative `GET /health` |
 | Configuration file generation | Use the reference configuration files under `model_configs/sglang/` and modify them for the actual environment |
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >The client accesses only the **Coordinator** northbound interfaces, so switching engines does not require changing the call method.
 
 ## Environment Pre-check
@@ -61,7 +61,7 @@ examples/
             └── deepseek_v4_flash/A3/ # deepseek-v4-flash Atlas 800I A3 aggregation reference configuration
 ```
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 >- For details about the service topology and the `deploy_mode` description, see [deployment mode configuration](./README.md).
 >- For usage of the deployment tool, see `examples/deployer/README.md`.
@@ -137,7 +137,7 @@ The following is only a Qwen3-8B example. For more detailed configurations, see 
 }
 ```
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 >- The `engine_config` module is **passed through** as `sglang.launch_server` parameters by the NodeManager component, and the field names follow the CLI of the SGLang version in use (kebab-case is supported, and some fields also accept underscore).
 >- On the Prefill side, `disaggregation-bootstrap-port` (or `disaggregation_bootstrap_port`) is written to `bootstrap_port` in the instance metadata for the SGLang Adapter of the Coordinator to perform P/D pairing. **Do not** mix it with the service port `endpoint_config.service_ports`.
@@ -160,7 +160,7 @@ cd examples/deployer
 python3 deploy.py --config_dir ../../model_configs/sglang/models/glm5.1/A3
 ```
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 >- **Image and weights**: Confirm that each node can pull `image_name` and that `model-path` is readable in the container.
 >- **NPU Pending**: Before deployment, check whether the resources of the target nodes are fully occupied by other tasks. Do not run Motor and pure SGLang on the same machine in parallel and compete for cards.
@@ -185,7 +185,7 @@ kubectl get pods -n <namespace> -o wide
 | `sglang-d*` | Decode instance |
 | `kv-conductor-*` (optional) | Serves the KV affinity feature |
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >A Pod in `Running` state does not mean that the service is fully ready; the actual startup status must be confirmed with the logs and `/v1/models`.
 
 ### Viewing Logs
@@ -230,7 +230,7 @@ After inference is complete, run the following command to terminate the service 
 bash delete.sh <namespace>
 ```
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >Before redeploying, confirm that the old Pods have exited and that the NPUs have been released, and then run `deploy.py`. Avoid relying only on `kubectl rollout restart` or a partial rebuild, which may cause persistent Pending.
 
 ## Feature Configuration

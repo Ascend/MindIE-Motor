@@ -101,7 +101,7 @@ PD 分离同时通过 MultiConnector 做 KV 池化时，把 `ascend_local_comm_r
 
   3. inprocess 模板里每个 worker 的 DRAM 从 `0GB` 改成现场池大小。这套例子是 `100GB`。
 
-      >[!NOTE]说明
+      >[!NOTE] 说明
       > `user_config.json` 里的 `kv_cache_store_config.port` 是池化服务的端口。memcache conf 里的 meta 服务端口要写成同一个数。只改其中一个时，引擎找不到池化服务。
 
 ### 修改 infer_service_template.yaml
@@ -123,7 +123,7 @@ PD 分离同时通过 MultiConnector 做 KV 池化时，把 `ascend_local_comm_r
         allowPrivilegeEscalation: true   # 新增
       ```
 
-      >[!NOTE]说明
+      >[!NOTE] 说明
       > 这套跨节点现场不要设置 `ASCEND_GLOBAL_RESOURCE_CONFIG`。设成 `roce:device` 会滤掉 host 侧 `roce:host` 端点。
 
   3. 在 Prefill、Decode 的 `volumeMounts` 和 `volumes` 里成对增加下面两项，不要再加其他 RoCE 设备目录。
@@ -185,7 +185,7 @@ PD 分离同时通过 MultiConnector 做 KV 池化时，把 `ascend_local_comm_r
             path: /usr/local/Ascend/driver/tools/hccn_tool
       ```
 
-      >[!NOTE]说明
+      >[!NOTE] 说明
       > `lib/constant.py` 的 `A5_HOST_PATH_VOLUMES_HOST_NIC` 里去掉重复的 `npu-smi-bin`。引擎模板已经用 volume 名 `npu-smi` 挂了同一个路径，两个名字挂到同一 `mountPath` 会被 API 拒绝。
 
   5. 给 Prefill 和 Decode 的 Pod 打开 host 网络。InferServiceSet 加在角色的 Pod spec 上，只增加这两个字段：
@@ -208,7 +208,7 @@ PD 分离同时通过 MultiConnector 做 KV 池化时，把 `ascend_local_comm_r
                     dnsPolicy: ClusterFirstWithHostNet
       ```
 
-      >[!NOTE]说明
+      >[!NOTE] 说明
       > 若 `user_config.json` 中配置了 `"deploy_mode": "multi_deployment"`，host 网络改 `engine_template.yaml`，字段放在 `spec.template.spec` 下。不能把普通 Deployment 的层级直接套在 InferServiceSet 顶层。`dnsPolicy` 不会自动修复节点到 DNS 的路由。
 
   6. 搜索 `name: prefill`。只给 Prefill 加大页。Decode 只走 Mooncake、没有单独的大页实测需求时，不加这项申请，避免大页额度申请过多导致 Pod 无法调度。request 和 limit 必须相等。`416Gi` 是示例，改之前先看节点 allocatable。
@@ -264,7 +264,7 @@ PD 分离同时通过 MultiConnector 做 KV 池化时，把 `ascend_local_comm_r
       ASCEND_LOCAL_COMM_RES={"version":"1.3"}
       ```
 
-      >[!NOTE]说明
+      >[!NOTE] 说明
       > 该场景会自动开启推理引擎所在容器的 root 权限，并额外挂载 `/dev/ummu`、`/dev/uburma` 两条宿主机路径。同时为引擎 Pod 打开 host 网络（`hostNetwork`）。暂不支持单机多容器场景。
 
 ## 跨超节点场景（基于 UBoE 协议进行参数面数据传输）
@@ -280,5 +280,5 @@ PD 分离同时通过 MultiConnector 做 KV 池化时，把 `ascend_local_comm_r
       ASCEND_LOCAL_COMM_RES={"version":"1.3"}
       ```
 
-      >[!NOTE]说明
+      >[!NOTE] 说明
       > 该场景会自动开启推理引擎所在容器的 root 权限，并额外挂载 `/dev/ummu`、`/dev/uburma` 两条宿主机路径。

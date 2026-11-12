@@ -2,7 +2,7 @@
 
 This document guides users to complete the deployment of an inference service on a single machine based on Docker, where the entire PD disaggregation deployment is completed on one server within one container. It applies to small models (weights less than 100 GB) and does not depend on K8s. For large models or multi-node deployment, see [Host Deployment: PD Disaggregation](host/pd_disaggregation_deployment.md). KV pooling requires a separate kv_store container; use host deployment and refer to [(Optional) Enabling KV Pooling](./host/pd_disaggregation_deployment.md#optional-enabling-kv-pooling).
 
->[!NOTE] NOTE
+>[!NOTE] Note
 > In single-container deployment, Prefill and Decode run in the same container on the same machine, and mixed networking of Ascend 950PR and 950DT is not supported. For mixed networking, use [Host Deployment: PD Disaggregation](./host/pd_disaggregation_deployment.md#starting-service), place the Prefill command on the 950PR, and place the Decode command on the 950DT.
 
 ## Deployment Flowchart

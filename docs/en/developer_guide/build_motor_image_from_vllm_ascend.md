@@ -44,7 +44,7 @@ make build-pymotor-image \
 
 The final image name is `example.com/team/mindie-motor-vllm:master`.
 
-> [!NOTE]NOTE
+> [!NOTE] Note
 > `type=docker` can load only a single-architecture image into the local Docker. When `PLATFORMS` contains multiple platforms, use `OUTPUT=type=registry` to push a multi-architecture image.
 
 ### Make Variables
@@ -78,7 +78,7 @@ The Dockerfile build process includes:
 4. Build and install the `ccae_reporter` observability component.
 5. Copy the examples to `/tmp/motor/examples`, and generate the container entrypoint script and usage agreement.
 
-> [!NOTE]NOTE
+> [!NOTE] Note
 > Uncommitted changes in the current workspace are also copied into the image. Development builds do not pin the source code commit; for formal delivery, use `docker/mindie-motor-vllm/<tag>/Dockerfile`.
 
 ## Manual Installation and Offline Build
@@ -117,7 +117,7 @@ When libzmq is missing, `build.sh` detects it and automatically skips the option
 
 ## (Optional) Downloading Dependencies
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >If the machine used to build the image cannot access the network, download the dependencies first.
 
 Perform the following steps in an environment with network access:
@@ -206,7 +206,7 @@ Copy `/mnt/MindIE-Motor.tar.gz` to the `/mnt/` directory of the machine used to 
 
 ## Obtaining the Base Image (Using vLLM-Ascend as an Example)
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >To improve the download speed, you can replace `quay.io` with `quay.nju.edu.cn`.
 
 Obtaining method: Open [RED HAT](https://quay.io/repository/ascend/vllm-ascend?tab=tags) and click the version you want to download.

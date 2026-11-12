@@ -12,7 +12,7 @@ The Observability query interface uses an independent port:
 
 - Security protocol: `https` is used when `observability_tls_config.enable_tls=true`; otherwise, `http` is used.
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 > - `{IP}`: the IP address or domain name of the machine where the Controller service is deployed.
 > - `{Port}`: the configuration item `api_config.observability_api_port`.
@@ -211,12 +211,12 @@ The following example references the normal test case in `tests/controller/obser
 | Both Prefill and Decode exist in active instances, but initial/inactive contains instance names not covered by active. | 2 | Sub-healthy |
 | Prefill or Decode is missing in active instances. | 3 | Abnormal |
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >The response example shows only part of the Pod, NPU, and DPGroup content. The actual number returned depends on the number of runtime instances, Pods, Endpoints, and devices.
 
 ## (Deprecated) Metrics Query Interface
 
-> [!NOTE] NOTE
+> [!NOTE] Note
 > The `GET /observability/metrics` interface is deprecated. It is a proxy that forwards to the Coordinator `/metrics` endpoint and is retained only for compatibility (it supports the `type` / `role` parameters and directly returns Prometheus text). **To obtain metrics, directly use the [`GET /metrics`](./metrics_interfaces.md#interface-format) interface on the Coordinator Observability port**, which supports richer aggregation views (`full` / `instance` / `role` / `dp` / `node`) and return formats (Prometheus / OpenTelemetry).
 
 ## Alarm Query Interface
@@ -323,7 +323,7 @@ Controller / Coordinator
   -> CCAE
 ```
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 > - After a successful query, the interface removes the records returned this time from the queue of the corresponding `source_id`. This operation only indicates that the records have been consumed; it does not indicate that the fault has recovered, and it does not generate alarm clear records.
 > - When an alarm recovers, MindIE Motor generates a clear record with `category=2` and `cleared=1` according to the clear mechanism of the specific alarm. An alarm occurrence record is usually `category=1` and `cleared=0`.
@@ -821,7 +821,7 @@ You can also specify the configuration file separately:
 python deploy.py --user_config_path ../../model_configs/vllm/user_config.json --env_config_path ../../model_configs/vllm/env.json --update_config
 ```
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >The CCAE configuration supports dynamic modification. The Reporter monitors `user_config.json` and starts connecting to CCAE after detecting `north_config` and `north_tls_config`, without restarting the Motor inference service.
 
 ### Starting CCAE Reporter

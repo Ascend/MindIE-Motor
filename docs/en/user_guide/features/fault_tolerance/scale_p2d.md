@@ -255,7 +255,7 @@ The following uses PD disaggregation 1P1D as an example. Replace {namespace} in 
    | ScaleP2D recovery succeeded | Recovery succeeded |
    | ScaleP2D recovery failed | Recovery failed; troubleshoot with `last_error` |
 
-   >[!NOTE]NOTE
+   >[!NOTE] Note
    >The formula for available P nodes is `nodes_per_P × (P_count - 1)`, and at least one P instance must be retained. In 1P1D deployment, the available nodes are 0, so preemption is not completed even if a D instance is faulty, and `Insufficient Prefill nodes` appears in the log. To verify the complete recovery process, the number of P instances must be at least 2.
 
 ## FAQs

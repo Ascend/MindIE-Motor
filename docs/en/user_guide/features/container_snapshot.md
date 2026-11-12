@@ -131,7 +131,7 @@ The instance creation process depends on whether the current service already has
 
 Each time the service is created or restarted, the deployment environment checks whether a snapshot named after the current namespace exists in `host_snapshot_image_path`, and selects cold start or snapshot restoration startup accordingly.
 
-> [!NOTE]NOTE
+> [!NOTE] Note
 > When the baseline snapshot is created for the first time, the instance still needs to complete a cold start and Device suspend. Only after the baseline snapshot is available can subsequent instances be started through snapshot restoration.
 
 <!-- -->
@@ -239,7 +239,7 @@ Other deployment modes do not automatically generate deployment YAML templates t
 
    When the interface returns HTTP 200 and the response is `{"status": true}`, the instance has been restored and is ready.
 
-   > [!NOTE]NOTE
+   > [!NOTE] Note
    > An instance cannot provide inference services during the checkpoint. Before `checkpoint` is updated to `"done"`, Node Manager does not report normal heartbeats.
 
 ### Verification

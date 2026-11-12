@@ -76,7 +76,7 @@ The default port of a Coordinator instance is 31015. If two sets of PD instances
             ...
       ```
 
-      >[!NOTE]NOTE
+      >[!NOTE] Note
       > If `"deploy_mode": "multi_deployment"` is configured in `user_config.json`, the traditional multi-YAML deployment method is used. The content to be modified is the same as above, but the files to be modified are different:
       >
       > - Coordinator port: Modify the `nodePort` field in `coordinator_template.yaml`.
@@ -216,7 +216,7 @@ By default, Coordinator, Controller, and inference Pods are randomly allocated a
 
       You can observe that each pod is scheduled to different nodes according to the label relationship.
 
-  >[!NOTE]NOTE
+  >[!NOTE] Note
   > If `"deploy_mode": "multi_deployment"` is configured in `user_config.json`, the labeling method is the same as above, but the template files to be modified are different:
   >
   > - Controller: Modify `controller_template.yaml` and add `nodeSelector` under `template.spec`.
@@ -324,5 +324,5 @@ By default, Coordinator, Controller, and inference Pods are randomly allocated a
 
       You can observe that each pod is scheduled to different nodes according to the label relationships.
 
-  >[!NOTE]NOTE
+  >[!NOTE] Note
   > In the PD aggregation deployment scenario, deployment is performed by default through the `multi_deployment` method (the `user_config.json` must contain hybrid fields such as `hybrid_instances_num`), and there is no need to modify `infer_service_template.yaml`.

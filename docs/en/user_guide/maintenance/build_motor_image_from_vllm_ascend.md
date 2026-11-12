@@ -93,14 +93,14 @@ make build-pymotor-image \
   OUTPUT=type=registry
 ```
 
-> [!NOTE]NOTE
+> [!NOTE] Note
 > The `master` Dockerfile copies `motor`, `scripts`, and `examples` in the current workspace into the image, so uncommitted code changes are also included in the image. The build process requires access to the base image repository and Python software sources. For offline environments, use the manual method described later.
 
 ### Manual Build
 
 ### (Optional) Downloading Dependencies
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >If the machine used to create the image can access the Internet, go to [Obtaining the Base Image](#obtaining-the-base-image-using-vllm-ascend-as-an-example). If the server used to create the image cannot access the network, perform the steps in this section.
 
 Perform the following steps in an environment with network access:
@@ -165,7 +165,7 @@ Obtaining method: Open [RED HAT](https://quay.io/repository/ascend/vllm-ascend?t
 docker pull quay.io/ascend/vllm-ascend:v0.13.0
 ```
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >To improve the download speed, you can replace `quay.io` with `quay.nju.edu.cn`.
 
 #### Installing MindIE Motor

@@ -123,7 +123,7 @@ print("vocab_size:", cfg.get("text_config", {}).get("vocab_size") or cfg.get("vo
 EOF
 ```
 
-> [!NOTE] NOTE
+> [!NOTE] Note
 >
 > - `patch_size` and `temporal_patch_size` together determine the flatten dimension of `pixel_values`
 > - `D = 3 × patch_size² × temporal_patch_size` (1536 for Qwen3-VL). When they are inconsistent with the weights,

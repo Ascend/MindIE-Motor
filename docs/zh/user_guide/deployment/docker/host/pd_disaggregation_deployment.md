@@ -41,7 +41,7 @@
 
 2. 准备配置文件。
 
-     MindIE Motor已提供常用模型（deepseek_v4_flash、deepseek_v4_pro、GLM 5.1等）的[PD分离配置示例](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/model_configs/vllm/models/README.md)，基于模型和服务器类型选择配置示例，并**将配置文件拷贝至/home/examples/config目录**下。
+     MindIE Motor已提供常用模型（deepseek_v4_flash、deepseek_v4_pro、GLM 5.1等）的[PD分离配置示例](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/model_configs/vllm/models/README.md)，基于模型和服务器类型选择配置示例，并**将配置文件拷贝至/home/examples/config目录**。
 
       <table>
         <tr><th style="font-size:18px" align="center" colspan="4">常用模型</th></tr>
@@ -51,7 +51,7 @@
           <th align="center">Atlas 800I A3 超节点</th>
           <th align="center">Atlas 950系列服务器</th>
         </tr>
-        <tr><td>DeepSeek-V4.1-Flash </td><td align="center"><a href="../../../../../../model_configs/vllm/models/deepseek_v4.1_flash/A2">A2</a></td><td align="center"><a href="../../../../../../model_configs/vllm/models/deepseek_v4.1_flash/A3">A3</a></td><td align="center"><a href="../../../../../../model_configs/vllm/models/deepseek_v4.1_flash/A5">A5</a></td></tr>
+        <tr><td>DeepSeek-V4.1-Flash </td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/deepseek_v4.1_flash/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/deepseek_v4.1_flash/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/deepseek_v4.1_flash/A5">A5</a></td></tr>
         <tr><td>GLM-5.3-Flash </td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.3_flash/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.3_flash/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.3_flash/A5">A5</a></td></tr>
         <tr><td>GLM-5.2 </td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.2/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.2/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.2/A5">A5</a></td></tr>
         <tr><td>GLM-5.3 </td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.3/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.3/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.3/A5">A5</a></td></tr>
@@ -67,7 +67,7 @@
 
 3. 保存配置文件
 
-   进入examples目录下，将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下，再修改后保存：
+   进入examples目录，将所选模型目录下的 user_config.json、env.json 粘贴到./config目录，再修改后保存：
 
    ```bash
    cd /home/examples
@@ -77,7 +77,7 @@
    vim ./config/env.json
    ```
 
-     >[!NOTE]说明
+     >[!NOTE] 说明
      >上述Motor配置仅给出一种可行的模型切分示例，**用户可根据实际情况调整模型划分策略**，关注以下表中参数即可，但必须满足以下公式的限制：
      >
      > 1个P实例占用的NPU卡数 = single_p_instance_pod_num（占用几个pod，跨几机） × p_pod_npu_num （每个pod占用的NPU数）= data_parallel_size × tensor_parallel_size

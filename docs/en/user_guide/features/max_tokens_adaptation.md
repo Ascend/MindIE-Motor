@@ -114,7 +114,7 @@ Set the `context_budget_mode` parameter to `on` in the `motor_coordinator_config
 }
 ```
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 >- The deployment process automatically obtains the `model_path` of the tokenizer from the Prefill (PD disaggregation) or Union (PD aggregation) engine configuration.
 >- In the PD disaggregation scenario, the context upper limits are also obtained from the Prefill and Decode engine configurations. You do not need to enable `kv-events-config` or configure `conductor_service` for this feature.

@@ -6,7 +6,7 @@ Instance rescheduling is used to automatically reclaim a faulty inference instan
 
 Instance rescheduling and [request rescheduling](./rescheduler.md) act at different levels. Instance rescheduling restores the capacity of inference instances, while request rescheduling forwards the affected inference requests to other healthy instances. The two capabilities can be used together to shorten request interruptions during a fault.
 
-> [!NOTE]NOTE
+> [!NOTE] Note
 > The current Motor deployment template configures `fault-scheduling: grace` and `fault-retry-times: "10000"` for inference Pods by default. When workloads are managed by Infer Operator, `fault-scheduling` also supports the `external-*` modes in which Infer Operator takes over Pod deletion. Instance rescheduling does not need to be enabled separately in `user_config.json`.
 
 ### How It Works

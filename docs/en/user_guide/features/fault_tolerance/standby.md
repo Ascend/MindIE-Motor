@@ -25,7 +25,7 @@ The active/standby switchover depends on the ETCD distributed lock feature, whic
 
 #### (Optional) Generating ETCD Security Certificates
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >If CA certificates are not used for mutual authentication and encrypted communication, services will transmit data in plaintext, which may pose a high network security risk.
 
 1. Prepare the prerequisite files for certificate generation. The following example uses `/home/{username}/auto_gen_ms_cert` as the directory for storing the files.
@@ -64,7 +64,7 @@ The active/standby switchover depends on the ETCD distributed lock feature, whic
     DNS.10 = etcd-2.etcd.default.svc.cluster.local
     ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >The domain names in `alt_names` must cover `etcd_config.etcd_host` configured for the Controller/Coordinator and the domain names of all ETCD cluster nodes. Otherwise, after TLS is enabled, the client cannot connect to ETCD because certificate verification fails.
 
     **client.cnf**
@@ -134,7 +134,7 @@ The active/standby switchover depends on the ETCD distributed lock feature, whic
     authorityKeyIdentifier=keyid:always,issuer:always
     ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >It is recommended that the `{dir}` path in the file be a shared directory accessible to all nodes.
 
     **gen_etcd_controller_ca.sh**
@@ -173,7 +173,7 @@ The active/standby switchover depends on the ETCD distributed lock feature, whic
     chmod 0400 ./*.pem
     ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     > Remember the password used when generating `ca.key`, as it is required when generating new certificates.
 
 2. Run the following command to execute `gen_etcd_controller_ca.sh` and generate files such as the server certificate and client certificate.
@@ -217,7 +217,7 @@ The active/standby switchover depends on the ETCD distributed lock feature, whic
 
     Through the preceding operations, a CA certificate, a server-side certificate, and a client-side certificate are generated. (The CA certificate is used for authentication, the server certificate is used for ETCD cluster deployment, and the client certificate is used for Controller/Coordinator active/standby switchover.)
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     > If multiple client-side certificates are required, use the same CA certificate and repeat the following operations:
     >
     > ```bash
@@ -241,7 +241,7 @@ The following is a deployment reference example.
     docker pull quay.io/coreos/etcd:v3.6.0-rc.4
     ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >If `docker pull` fails, you can use the `podman` command to download the ETCD image, save it, and then import it using the `docker load` command. The commands are as follows:
     >
     > ```bash
@@ -512,7 +512,7 @@ The following is a deployment reference example.
 
         - `spec.template.spec.containers.args.--peer-key-file`: specify the private key of this node as a peer
 
-        >[!NOTE]NOTE
+        >[!NOTE] Note
         >The TLS parameters in the example, such as `--client-cert-auth` and `--peer-client-cert-auth`, need to be retained only when [Generating ETCD Security Certificates](#optional-generating-etcd-security-certificates) has been performed. If CA certificates are not used, delete the preceding TLS-related parameters and the `etcd-ca` volume; otherwise, ETCD fails to start because the certificate files cannot be found.
 
     5. Run the following command on the master node of the K8s cluster to deploy the ETCD server side.
@@ -543,7 +543,7 @@ The following is a deployment reference example.
         default         etcd-2  1/1     Running  0           44h xxx.xxx.xxx.xxx  worker-80-39  <none>           <none>
         ```
 
-        >[!NOTE]NOTE
+        >[!NOTE] Note
         >- Which method to use to make the modification take effect after modifying `etcd.yaml` depends on the field being modified:
         >
         >   - If only fields that can take effect through a rolling update, such as `image`, `env`, and `args`, are modified, the StatefulSet uses the RollingUpdate strategy and starts each Pod in sequence without deleting PVCs. Run the following command.
@@ -588,7 +588,7 @@ The following is a deployment reference example.
 
 When a hardware fault occurs (for example, a machine restart), the K8s cluster cannot promptly detect the status of container Pods, causing the inference service to fail to recover within the specified time. You can perform the following steps to accelerate service recovery.
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >If the impact duration of hardware faults is not a concern, you can skip the following steps.
 
 1. Run the following command to query the node heartbeat timeout marking threshold (`node-monitor-grace-period`) of the K8s management node. If the result is empty, the default value is used.
@@ -618,7 +618,7 @@ When a hardware fault occurs (for example, a machine restart), the K8s cluster c
             ...
       ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >- Before modification, back up the original file: `cp /etc/kubernetes/manifests/kube-controller-manager.yaml /root/kube-controller-manager.yaml.bak`.
     >- This file is monitored by kubelet, which recreates the Pod based on it. Incorrect indentation levels of metadata, name, namespace, and spec cause `kube-controller-manager` to fail to start.
 
@@ -680,7 +680,7 @@ The active/standby switchover feature applies to scenarios that have requirement
     ...
     ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >- The mount point `/usr/local/Ascend/pyMotor/conf/security/etcd` is the path agreed in this document. The code does not have this default value, and the path must be consistent with the certificate path configured in `etcd_tls_config` in step 2.
     >- After the deployment is complete, run the following command to confirm that the certificate directory has been mounted to the generated yaml (for the infer_service_set mode, the corresponding file path is `examples/deployer/output_yamls/infer_service.yaml`; for the multi_deployment mode, the corresponding file path is examples/deployer/output_yamls/mindie_motor_controller.yaml, so as to avoid the certificate not being mounted due to a wrong template file)
     >
@@ -711,7 +711,7 @@ The active/standby switchover feature applies to scenarios that have requirement
    ...
    ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >The Controller/Coordinator uses gRPC mutual authentication with ETCD. Only four fields take effect: `enable_tls`, `ca_file`, `cert_file`, and `key_file`. `passwd_file` and `crl_file` are reserved fields that do not take effect in ETCD scenarios and can keep their default values.
 
 3. Enable the Controller active/standby switchover feature in the `user_config.json` configuration file. The configuration parameters are as follows. Change `enable_master_standby` to `true`.
@@ -730,7 +730,7 @@ The active/standby switchover feature applies to scenarios that have requirement
 
     - `true`: enables the active/standby switchover.
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >By default, the ETCD server side in the default namespace is used, and the default port number is 2379. To modify it, change the ETCD information in `motor_controller_config`. The domain name is usually etcd.{namespace}.svc.cluster.local.
     >
     > ```json
@@ -765,7 +765,7 @@ The active/standby switchover feature applies to scenarios that have requirement
 
 5. Send a request to verify whether the service has started successfully.
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     > The Controller provides only management plane interfaces (`motor_controller_config.api_config.controller_api_port`, default: 1026) and does not provide inference interfaces such as /v1/chat/completions. Inference requests must be sent to the active Coordinator node. To verify the active/standby state of the Controller, check the logs and the Pod READY status described in [Verification](#verification).
 
     There are two ways to send a request:
@@ -848,7 +848,7 @@ The active/standby switchover feature applies to scenarios that have requirement
     ...
     ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >- The mount point `/usr/local/Ascend/pyMotor/conf/security/etcd` is the path agreed in this document. The code does not have this default value, and the path must be consistent with the certificate path configured in `etcd_tls_config` in step 2.
     >- After the deployment is complete, run the following command to confirm that the certificate directory has been mounted to the generated yaml (for the multi_deployment mode, the corresponding file path is examples/deployer/output_yamls/mindie_motor_coordinator.yaml; for the infer_service_set mode, the corresponding file path is examples/deployer/output_yamls/infer_service.yaml, so as to avoid the certificate not being mounted due to a wrong template file)
     >
@@ -879,7 +879,7 @@ The active/standby switchover feature applies to scenarios that have requirement
    ...
    ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >The Controller/Coordinator uses gRPC mutual authentication with ETCD. Only four fields take effect: `enable_tls`, `ca_file`, `cert_file`, and `key_file`. `passwd_file` and `crl_file` are reserved fields that do not take effect in ETCD scenarios and can keep their default values.
 
 3. Enable the Coordinator active/standby switchover feature in the `user_config.json` configuration file. The configuration parameters are as follows. Change `enable_master_standby` to `true`.
@@ -898,7 +898,7 @@ The active/standby switchover feature applies to scenarios that have requirement
 
     - `true`: enables the active/standby switchover.
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >By default, the ETCD server side in the default namespace is used, and the default port number is 2379. To modify it, change the ETCD information in `motor_coordinator_config`. The domain name is usually etcd.{namespace}.svc.cluster.local.
     >
     > ```json

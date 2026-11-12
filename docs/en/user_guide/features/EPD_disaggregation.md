@@ -207,7 +207,7 @@ To deploy the EPD disaggregation feature in MindIE Motor, you only need to modif
    | ec_role | string | ec_producer, ec_consumer | Yes (in `ec-transfer-config`) | None | Role configuration. It is `ec_producer` on E instances and `ec_consumer` on P instances. |
    | shared_storage_path | string | A valid storage path | Yes (in `ec_connector_extra_config`) | None | Encoder cache directory shared by E instances and P instances. The configuration must be the same on both sides and the path must be accessible. |
 
-   > [!NOTE]NOTE
+   > [!NOTE] Note
    >
    >- In the motor_deploy_config configuration, `e_instances_num` indicates the number of E instances, `single_e_instance_pod_num` indicates the number of pods occupied by each E instance, and `e_pod_npu_num` indicates the number of NPU cards occupied by the pod of each E instance.
    >- Add the motor_engine_encode_config configuration. For the E-instance, the engine_config must include the `ec-transfer-config` setting with `ec_role` set to `ec_producer`. For details, see [vLLM Ascend EPD Disaggregation Feature Description](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/epd_disaggregation.html).

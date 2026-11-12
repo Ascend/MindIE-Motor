@@ -6,7 +6,7 @@ Request rescheduling is used to reduce the impact of inference node faults or ab
 
 For requests for which no response body has been returned to the client, the Coordinator can re-initiate inference with the original request. For streaming requests whose partial content has already been returned, after request rescheduling is enabled, the Coordinator caches the input token IDs and the generated output token IDs, concatenates them into a new input when the continuation conditions are met, and has another available instance continue generating, avoiding returning the content already received by the client again.
 
-> [!NOTE]NOTE
+> [!NOTE] Note
 >
 > The request rescheduling function is disabled by default. This switch controls token continuation after the output of streaming requests, and does not control the recomputation capability inside the inference engine.
 

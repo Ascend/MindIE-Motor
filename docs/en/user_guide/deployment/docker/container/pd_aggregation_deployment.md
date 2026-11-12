@@ -53,7 +53,7 @@ On **any server**, perform the following operations.
    }
    ```
 
-   >[!NOTE]Note
+   >[!NOTE] Note
    >The preceding Motor configuration provides only one feasible model sharding example. **Users can adjust the model partitioning strategy according to actual conditions** by focusing on the parameters in the following table, but the following formula must be satisfied:
    >
    > Number of NPU cards occupied by one aggregation instance = `single_hybrid_instance_pod_num` (number of Pods occupied, across how many machines) × `hybrid_pod_npu_num` (number of NPUs occupied by each Pod) = `data_parallel_size` × `tensor_parallel_size`

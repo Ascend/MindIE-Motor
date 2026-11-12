@@ -138,7 +138,7 @@ Both strategies support `hit_rate_threshold`; for the configuration method, see 
     | kv_conductor_config.http_server_port | Specify it explicitly at the top level, for example `13333`; the Deployer relies on this item to enable the conductor, so do not rely only on the runtime default value. |
     | kv_conductor_config.block_size | You must check the actual event granularity of the main attention group, and it is recommended to specify it explicitly as in the example. If it is not specified, it is derived from the engine `block-size` and defaults to `128`; for hybrid KV models, override it according to the [actual event granularity](#deepseek-v4). |
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >The event ports must be reachable from the network where the conductor resides; with multiple DPs, check each port obtained by adding the DP rank to the base event port.
 
     **Table 2** Parameters that require no additional configuration
@@ -159,7 +159,7 @@ Both strategies support `hit_rate_threshold`; for the configuration method, see 
     | Re-registration or historical event replay required | For periodic re-registration, set a positive `re_register_interval_sec` (disabled by default); for historical replay, configure `kv-events-config.replay_endpoint` of the engine. Confirm the recovery capability boundary before enabling it. |
     | Interworking with an old conductor that supports only JSON | Set `kv_conductor_config.query_encoding` to `json`; see [Query exception troubleshooting](#coordinator-cannot-query-the-conductor). |
 
-    For the complete parameter definitions, see [Configuration Reference](../configuration/config_reference.md#motor_coordinator_config); for automatic derivation and migration of old configurations, see [Automatic Derivation and Compatibility](../configuration/config_reference.md#kv_conductor_config-automatic-derivation-and-compatibility).
+    For the complete parameter definitions, see [Configuration Reference](../configuration/config_reference.md#motor_coordinator_config); for automatic derivation and migration of old configurations, see [Automatic Derivation and Compatibility](../configuration/config_reference.md#automatic-derivation-and-compatibility-of-kv_conductor_config).
 3. Deploy the service.
 
     ```bash

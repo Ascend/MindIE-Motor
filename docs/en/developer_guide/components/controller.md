@@ -308,7 +308,7 @@ sequenceDiagram
     Note over IM: Instance resumes service
 ```
 
-> [!NOTE]NOTE
+> [!NOTE] Note
 > **Key value of domain name abstraction**: pod_ip changes as the Pod is rebuilt, but the Controller identifies instance identity through job_name. The Node Manager accesses the Controller through the K8s Service domain name (rather than a hardcoded Pod IP), ensuring that registration requests always reach the Controller regardless of how the Pod is rebuilt or how the IP changes. On the Controller side, only job_name consistency matters to represent the same logical instance, without the need to perceive the underlying IP drift.
 
 #### Scenario 4: Hardware Fault Perception → Isolation → Policy Recovery
@@ -792,7 +792,7 @@ ConfigWatcher detects configuration file changes.
             └─ module.update_config(config)
 ```
 
-> [!NOTE]NOTE
+> [!NOTE] Note
 > The runtime configuration (port, TLS) of `ControllerAPI` does not support hot update and requires a Pod restart to take effect. All other modules support hot update.
 
 ### 4.4 Adding API Routes

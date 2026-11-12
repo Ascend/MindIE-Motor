@@ -89,7 +89,7 @@ See the [dsv4 flash deployment guide](https://github.com/vllm-project/vllm-ascen
           ...
       ```
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >In the scenario where one instance occupies multiple servers, the vllm-ascend community may provide multiple scripts for deploying one instance (corresponding to multiple servers respectively). There is no obvious difference in the configuration of these deployment scripts, and you only need to focus on one of them.
     >
     >For example: In Section 5.2 of the [qwen3-235B model deployment guide](https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/tutorials/models/Qwen3-235B-A22B.md#52-multi-node-pd-separation-deployment), both Decode node 0 and Decode node 1 exist. When using them, select either one as the D instance deployment script.

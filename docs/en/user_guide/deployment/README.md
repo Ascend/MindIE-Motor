@@ -12,7 +12,7 @@ This deployment method is suitable for scenarios where a Kubernetes cluster alre
     - For the deployment document based on the vLLM inference engine, see [PD Disaggregation Service Deployment (Based on the vLLM Inference Engine)](./k8s/pd_disaggregation_deployment.md).
     - For the deployment document based on the SGLang inference engine, see [PD Disaggregation Service Deployment (Based on the SGLang Inference Engine)](./k8s/pd_disaggregation_sglang.md).
 
->[!NOTE] NOTE
+>[!NOTE] Note
 >When the deployer needs to be executed in the cluster through a Job, you can use [Cloud-Native Deployment](../../../../examples/cloud_native_deploy/README.md). The community Chart supports direct `helm install/upgrade`.
 
 ## Docker Deployment

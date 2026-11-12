@@ -39,7 +39,7 @@ Other OpenAI-compatible fields (such as `max_tokens` and `temperature`) are pass
 | frequency_penalty | number | Frequency penalty that reduces repeated content. The value range depends on the backend implementation. |
 | stop | string/array | Stop word. Generation ends early when the stop word is matched. |
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >Fields not supported by the backend inference engine are ignored or subject to degraded handling. The specific capabilities are subject to the actual model and backend version.
 
 **Usage Example**

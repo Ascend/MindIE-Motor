@@ -190,7 +190,7 @@ Infer Operator creates Horizontal Pod Autoscaler (HPA) resources for inference i
          # ... Keep the remaining configuration unchanged ...
    ```
 
-   >[!NOTE]NOTE
+   >[!NOTE] Note
    >The Prometheus Adapter path requires adding `selector.matchLabels` under `external.metric` (see [Prometheus + Prometheus Adapter](#step-2-2)). Example:
    >
    >```yaml
@@ -381,7 +381,7 @@ The MindIE Motor /metrics endpoint provides a rich set of engine-level metrics. 
 | vllm:e2e_request_latency_seconds | Histogram | End-to-end request latency | Set according to the SLA target (e.g., p95 < 2s). |
 | vllm:time_per_output_token_seconds | Histogram | Time per output token (TPOT) | Set according to the SLA target (e.g., p95 < 50ms). |
 
-> [!NOTE]NOTE
+> [!NOTE] Note
 >
 >- `motor:prompt_tokens_per_second` and `motor:generation_tokens_per_second` are service-level metrics calculated by the MindIE Motor Coordinator. They are derived by computing the delta rate from the raw vLLM counters, which more accurately reflects real-time throughput.
 >- Histogram-type metrics (such as `vllm:e2e_request_latency_seconds`) need to be exposed as independent metrics after the quantiles (p50/p95/p99) are calculated on the metric integration component side.

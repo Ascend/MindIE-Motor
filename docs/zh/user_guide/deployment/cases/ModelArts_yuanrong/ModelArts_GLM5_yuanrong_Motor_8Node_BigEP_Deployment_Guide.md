@@ -143,18 +143,18 @@ python -m http.server 1025
 
     > ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image14.png)
 
-7. 本地创建"etcd-all-latest.yaml"文件，打开并复制[ETCD池化部署方案](#etcd池化部署方案)
-    \> 部署脚本实现"中的脚本内容，镜像地址修改为步骤6中的地址；
+7. 本地创建"etcd-all-latest.yaml"文件，打开并复制“[ETCD池化部署方案](#etcd池化部署方案)
+    \> 部署脚本实现”中的脚本内容，镜像地址修改为步骤6中的地址；
 
-8. 进入HCS界面，选择"服务列表 \> 计算 \> 云容器引擎CCE"
+8. 进入HCS界面，选择“服务列表 \> 计算 \> 云容器引擎CCE”
 
     ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image15.png)
 
-9. 进入CCE界面"集群管理 \> 资源池"，选择并进入要部署服务的资源池
+9. 进入CCE界面“集群管理 \> 资源池”，选择并进入要部署服务的资源池
 
     ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image16.png)
 
-10. 选择"工作负载 \> 有状态负载 \> YAML创建"
+10. 选择“工作负载 \> 有状态负载 \> YAML创建”
 
     ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image17.png)
 
@@ -398,7 +398,7 @@ sleep 36000000
 
 2. 新增元戎 & vllm-ascend补丁
 
-3. ETCD安装部署使用
+3. ETCD安装部署
 
 4. 启动ETCD服务（方案1调用start_etcd.sh启动,
     方案2无需启动，直接使用部署好的etcd集群）
@@ -1740,7 +1740,7 @@ CONCURRENCY_LIST=(8 16 32 48 64)
 INPUT_LENGTH_LIST=(32768 65536 131072 163840 190000)
 # 输出长度组合设置
 OUTPUT_LENGTH_LIST=(1024 2048 4096 8192)
-# 输出长度组合
+# 总测试轮数
 TOTAL_ROUNDS=$(( ${#CONCURRENCY_LIST[@]} * ${#INPUT_LENGTH_LIST[@]} * ${#OUTPUT_LENGTH_LIST[@]} ))
 CURRENT_ROUND=0
 

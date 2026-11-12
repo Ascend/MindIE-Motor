@@ -64,7 +64,7 @@ MindIE Motor provides the following management interfaces:
 
 - [Health Status Query Interface](./management_interfaces.md#health-status-query-interface): `/health`
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 > - Except for instance query, the management interfaces are intended for use only within the Kubernetes cluster and are not exposed outside the cluster.
 > - `/instances` is also retained on the internal management port `1026` and is exposed for read-only queries through the Coordinator Observability port `1027` (K8s nodePort `31017`).
@@ -96,7 +96,7 @@ The monitoring metrics of MindIE Motor are centrally collected and aggregated by
 
 - [Instance Query Interface](./management_interfaces.md#instance-query-interface): `/instances`, which allows ras_monitor or external O&M tools to obtain the instance health status
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 > - Metrics are collected by the Coordinator from each Engine periodically (default `3` seconds) and semantically aggregated. For details, see [Metrics Interface](./metrics_interfaces.md).
 > - The `/observability/metrics` on the Controller side is a deprecated forwarding interface. **For new integrations, use this port directly**. For details, see [Observation Interface](#observation-interface).
@@ -129,7 +129,7 @@ The monitoring metrics of MindIE Motor are centrally collected and aggregated by
 
 - The TLS of the Metrics Interface is controlled by `mgmt_tls_config.enable_tls`.
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >The Metrics Interface port (`coordinator_obs_port`, default `1027`) and the Controller Observation Interface port (`observability_api_port`, default `1027`) share the same default value, but they belong to different components and different services: the Metrics Interface is located on the `Coordinator` (nodePort `31017`), while the Observation Interface is located on the `Controller` (nodePort `31027`). Be sure to distinguish between them when using.
 
 ## Observation Interface
@@ -142,7 +142,7 @@ The Controller observation interface provides O&M observation data such as the m
 
 - [Integrating with the CCAE Frontend Platform](./observability_interface.md#connecting-to-the-ccae-frontend-platform)
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 > - `/observability/metrics` is deprecated: this interface is a proxy that forwards to the Coordinator `/metrics` and is retained only for compatibility. For new integrations, use the [Metrics Interface](#metrics-interface) directly.
 > - The observation interface is disabled by default and takes effect only after `observability_config.observability_enable=true` is configured. In primary/standby mode, only the primary Controller provides query capabilities externally.

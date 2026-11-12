@@ -4,7 +4,7 @@ This table is compiled based on the MindIE Motor 3.2.0 implementation and uses K
 
 In Kubernetes, internal access between components uses Pod IP or Service addresses, and external access uses node IP and NodePort. The default mappings are inference `31015 → 1025`, Coordinator observability `31017 → 1027`, and Controller observability `31027 → 1027`. NodePort can be changed by deployment configuration, and the deployer may also remap it in case of a conflict; the actual ports are subject to the generated Service YAML and runtime configuration. Scenarios such as Docker and standalone deployment do not have these Kubernetes NodePorts, and the actual listening addresses of the corresponding containers or processes should be used.
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >For the communication matrix related to datadist, HCCL, LCCL, and ATB, see [CANN Communication Matrix](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/latest/maintenref/refdoc/refer001.html). The KV transfer, distributed communication, and PD bootstrap ports of native vLLM/SGLang also depend on the engine configuration, and the Motor service port rules cannot be uniformly applied; for the configuration fields, see [Full Configuration Reference](configuration/config_reference.md).
 
 ## Regular Communication

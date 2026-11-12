@@ -83,7 +83,7 @@ Applicable to the scenario where Prefill and Decode are deployed in a combined m
    python3 deploy.py --config_dir ../../model_configs/vllm --update_instance_num --nostep
    ```
 
-   > [!NOTE]NOTE
+   > [!NOTE] Note
    > If the deployment was performed by specifying configuration files individually, you must also specify `--user_config_path` and `--env_config_path` during scaling.
 
    Parameter description:
@@ -94,7 +94,7 @@ Applicable to the scenario where Prefill and Decode are deployed in a combined m
 
    When scaling is successful, `instance num update end.` appears in the logs.
 
-   > [!NOTE]NOTE
+   > [!NOTE] Note
    >- The baseline comes from the cluster ConfigMap (motor-config). Compared with the current input, only instance number changes are allowed.
    >- Scale-out: run kubectl apply only for the newly added instance indexes. Running instances are not re-pulled.
    >- Scale-in: delete instances in sequence starting from the highest index, and synchronously delete the corresponding engine YAML files under `output/deployment/`.
@@ -147,7 +147,7 @@ Applicable to the scenario where Prefill and Decode are deployed in a combined m
    python3 deploy.py --config_dir ../../model_configs/vllm/pd_hybrid --update_instance_num --nostep
    ```
 
-   > [!NOTE]NOTE
+   > [!NOTE] Note
    > If the deployment was performed by specifying configuration files individually, you must also specify `--user_config_path` and `--env_config_path` during scaling.
 
    Parameter description:
@@ -158,7 +158,7 @@ Applicable to the scenario where Prefill and Decode are deployed in a combined m
 
    When scaling is successful, `instance num update end.` appears in the logs.
 
-   > [!NOTE]NOTE
+   > [!NOTE] Note
    >- The baseline comes from the cluster ConfigMap (motor-config). Compared with the current input, only instance number changes are allowed.
    >- Scale-out: run kubectl apply only for the newly added instance indexes. Running instances are not re-pulled.
    >- Scale-in: delete instances in sequence starting from the highest index, and synchronously delete the corresponding engine YAML files under `output/deployment/`.

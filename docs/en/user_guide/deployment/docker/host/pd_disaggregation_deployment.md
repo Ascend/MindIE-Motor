@@ -42,7 +42,7 @@ On **any server**, perform the following operations.
 2. Prepare the configuration file.
 
      MindIE Motor has provided [PD disaggregation configuration examples](../../../../../../model_configs/vllm/models/README.md) for common models (deepseek_v4_flash, deepseek_v4_pro, GLM 5.1, etc.). Select a configuration example based on the model and server type, and **copy the configuration file to the /home/examples/config directory**.
-     >[!NOTE]NOTE
+     >[!NOTE] Note
      >The preceding Motor configuration provides only one feasible model splitting example. **Users can adjust the model partitioning strategy based on actual conditions** by focusing on the parameters in the following table, but the following formula must be satisfied:
      >
      > Number of NPU cards occupied by one P instance = single_p_instance_pod_num (number of Pods occupied, across how many machines) × p_pod_npu_num (number of NPUs occupied by each Pod) = data_parallel_size × tensor_parallel_size

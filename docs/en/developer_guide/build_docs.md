@@ -138,7 +138,7 @@ INFO     -  [12:00:00] Serving on http://127.0.0.1:8000/
 
 Step 3: Access the address shown in the terminal in a browser to preview the documentation (if multi-language or version paths are configured, use the actual output).
 
-> [!NOTE] NOTE
+> [!NOTE] Note
 >
 > * **`mkdocs serve`** listens on port **`8000`** by default. If that port is occupied, specify another address and port with **`-a`**, for example **`mkdocs serve -a 127.0.0.1:8080`**.
 > * To detect link/anchor issues locally as early as possible, add **`--strict`**: **`mkdocs serve --strict`**. Read the Docs is currently configured with **`fail_on_warning: false`** (see **`.readthedocs.yaml`**), but you can still enable it locally to reduce silent errors.

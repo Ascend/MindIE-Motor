@@ -95,7 +95,7 @@ Once the conditions are met, the engine automatically sets `load_format = "netlo
    | int8_cache_name | list | INT8 cache names | Optional | None | Internal int8 parameter names of vLLM Ascend; if configured, D2D transfers only the corresponding int8 parameters. By default, no filtering is performed and all parameters are transferred.|
    | output_prefix | string | File name prefix | Optional | None | If set, each rank produces {OUTPUT_PREFIX}{RANK}.txt, which contains the IP:Port pairing information of each rank.|
 
-   >[!NOTE]NOTE
+   >[!NOTE] Note
    >
    >- If speculative inference (such as `speculative-config` / MTP) is enabled for the model, the main model and the draft model share the same `source` and `listen_port` configuration, and no additional configuration is required. The draft weight service port is automatically offset by 10000 from `listen_port`; in this case, it is recommended to configure the port as < 55535 - device_rank.
    >- Configuration key names can be in lowercase (such as `listen_port`) or uppercase (such as `LISTEN_PORT`); the two are equivalent.
@@ -110,7 +110,7 @@ Once the conditions are met, the engine automatically sets `load_format = "netlo
    python3 deploy.py --config_dir .../../model_configs/vllm/models/...
    ```
 
-   >[!NOTE]NOTE
+   >[!NOTE] Note
    >
    >`--config_dir` is the directory that contains `user_config.json` and `env.json`. The above `.../../model_configs/vllm/models/...` is a path example and must be replaced with the configuration directory corresponding to the engine and model actually used (refer to the configuration directories in the "tested models" table of this document).
 

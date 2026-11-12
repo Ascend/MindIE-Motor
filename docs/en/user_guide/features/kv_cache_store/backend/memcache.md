@@ -39,7 +39,7 @@ The MindIE Motor environment has been installed and deployed, and MemCache is pr
 
 The following steps show how to configure and use the MemCache backend.
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >The `connectors[0]` of hybrid attention models must use `MooncakeHybridConnector`. For details, see [P/D Transfer Connector Selection](../README.md#table_Connector).
 
 **Procedure**
@@ -75,7 +75,7 @@ The following steps show how to configure and use the MemCache backend.
     | local_config_path | String | conf path in the container | Optional | `/usr/local/Ascend/pyMotor/conf/mmc-local-inprocess.conf` | Client configuration read by the worker and NodeManager. For standalone, also set this inprocess file. Do not change it to `mmc-local-standalone.conf`. |
     | target_job_id| String | `motor_deploy_config.job_id` of the target service | Optional | — | Reuses the kv_store of another inference service. If it is not configured, is the same as the local `job_id`, or the target kv_store is unavailable, a kv_store is created in the current namespace. For details, see [KV Pooling README — Sharing kv_store Among Multiple Services](../README.md#step3) |
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >DRAM, protocol, and SSD parameters are written in two templates, which are located in `examples/deployer/startup/roles/kv_store_backends/memcache/`. During deployment, `common.sh` synchronizes them to `$CONFIG_PATH/`, which corresponds to `/usr/local/Ascend/pyMotor/conf/` in engine containers.
     >- `mmc-local-inprocess.conf`: client configuration of vLLM workers. In A3 standalone mode, keep `dram.size = 0GB`, `storage.enabled = false`, and `ubsio.disk.path` empty.
     >- `mmc-local-standalone.conf`: configuration of the standalone LocalService. Only this file enables DRAM and SSD.
@@ -103,7 +103,7 @@ The following steps show how to configure and use the MemCache backend.
     4. Automatic backend_id injection.
       ock.mmc.local_service.backend_id of the LocalService on each engine node is automatically replaced by the deployer with the pod IP of the node during deployment, requiring no user configuration. kv-conductor uses it to distinguish the node to which a KV block belongs.
 
-        >[!NOTE]NOTE
+        >[!NOTE] Note
         >MultiConnector patch (mandatory): The vLLM upstream does not implement MultiConnector.get_kv_connector_kv_cache_events() (TODO). When MultiConnector is used as kv_transfer_config.kv_connector, the KV events collected by AscendStoreConnector on the worker side are silently discarded, so engine offload events cannot reach kv-conductor and the two-phase matching always lacks the engine side. vllm-ascend has replaced the MultiConnector registration with AscendMultiConnector. During deployment, apply examples/deployer/patch/vllm_ascend_multi_connector_kv_events.patch (it adds sub-connector event proxying for AscendMultiConnector, and one patch is compatible with v0.20.2 to v0.26.0). A suggestion has been synchronized to the vLLM upstream for merging.
         **Prerequisite**: memcache_hybrid must be a version that includes the KvEvent feature (**MemCache Hybrid v1.2.0 and later**, corresponding to memcache PR #334); otherwise, MetaConfig does not recognize the kv_events_* fields.
 
@@ -111,7 +111,7 @@ The following steps show how to configure and use the MemCache backend.
 
     For block device preparation, refer to [DRAM + SSD Multi-level Pooling Kubernetes Configuration Example](https://gitcode.com/Ascend/memcache/wiki/DRAM+%20SSD%20%E5%A4%9A%E7%BA%A7%E6%B1%A0%E5%8C%96%20Kubernetes%20%E9%85%8D%E7%BD%AE%E7%A4%BA%E4%BE%8B.md). The following steps enable MemCache SSD with `examples/deployer/deploy.py` according to that example. `kv_cache_store_config.backend` is `memcache`. Atlas 800I A2 and Ascend 950PR use `inprocess`, and Atlas 800I A3 uses `standalone`.
 
-    >[!NOTE]NOTE
+    >[!NOTE] Note
     >- For standard attention, `connectors[0]` uses `MooncakeConnectorV1` or `MooncakeConnectorV2`, and `connectors[1]` uses `AscendStoreConnector` with `"backend": "memcache"`. For hybrid attention, `connectors[0]` uses `MooncakeHybridConnector`. For selection, see [P/D Transfer Connector Selection](../README.md#table_Connector).
     >- Set the protocol according to the hardware: `device_rdma` for A2, `device_sdma` for A3, and `device_urma` for A5. The default values in the conf templates cannot be applied directly to other hardware.
     >- `storage.enabled` enables SSD only for the process in which `ubsio.disk.path` is not empty and `dram.size > 0`. Workers in A3 standalone read the inprocess file, in which `dram.size = 0GB`, so workers do not enable SSD. SSD is enabled only by the standalone LocalService according to the standalone file.

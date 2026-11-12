@@ -89,7 +89,7 @@ examples/deployer/config_tool/
           ...
       ```
 
-    >[!NOTE]说明
+    >[!NOTE] 说明
     >一个实例占用多个服务器的场景下，vllm-ascend社区可能为一个实例的部署提供多份脚本（分别对应多台服务器），这些部署脚本的配置没有明显差异，仅需要关注其中一份脚本。
     >
     >例如：[qwen3-235B模型部署指导](https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/tutorials/models/Qwen3-235B-A22B.md#52-multi-node-pd-separation-deployment)的5.2小节中，同时存在Decode node 0和Decode node 1，在使用时选取任意一份作为D实例部署脚本即可。

@@ -40,7 +40,7 @@ The hardware environments supported by PD aggregation are as follows.
 | Server | Atlas 800I A2 | 32 GB/64 GB |
 | Server | Atlas 800I A3 | 64 GB |
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 >- The cluster must have parameter-plane interconnection, that is, the ports corresponding to the server NPU cards are in the same VLAN and can communicate with each other through RoCE.
 >- To ensure stable service running, users should strictly control the permissions of self-created Pods to prevent high-privilege Pods from modifying MindIE internal parameters and causing exceptions.
@@ -68,7 +68,7 @@ After the image is imported, use the following command to check whether the Dock
    docker images
    ```
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 >All K8s nodes participating in the deployment must be able to load or pull the image specified by `image_name` locally. Otherwise, the Pod may be in the ImagePullBackOff or ErrImagePull state because the image is unavailable.
 
@@ -93,7 +93,7 @@ Upload the examples directory in this repository to the master node of the K8s c
   docker rm "$cid"
   ```
 
-  >[!NOTE]NOTE
+  >[!NOTE] Note
   >If Podman commands are used, replace `docker` with `podman` in the preceding commands.
 
 The main file and directory structure related to PD aggregation in the examples directory is as follows:
@@ -235,7 +235,7 @@ The motor_engine_union_config field is used to configure the PD aggregation nati
 | engine_config.enable-prefix-caching | bool | It is recommended to enable prefix caching when KV Cache affinity is enabled. |
 | Other keys | - | Engine-native parameters. Fill them in directly according to the documentation of the selected engine. |
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >When KV Cache affinity scheduling is enabled, the Coordinator automatically merges prefill_kv_event_config from the motor_engine_union_config.engine_config.kv-events-config field, and the motor_engine_prefill_config field does not need to be configured again. In addition, the kv_conductor_config field (containing at least the http_server_port parameter) must be configured at the root node of the user_config.json configuration file.
 
 ### Configuring the env.json File
@@ -300,7 +300,7 @@ Run the following commands in the /examples/deployer directory. Two ways of spec
   python3 deploy.py --config_dir ../../model_configs/vllm/pd_hybrid
   ```
 
-  >[!NOTE]NOTE
+  >[!NOTE] Note
   >If you only need to check the YAML generation, add the `--dry-run` parameter to the command, as shown in the following example:
   >
   >```bash
@@ -324,7 +324,7 @@ Run the following commands in the /examples/deployer directory. Two ways of spec
     --env_config_path ../../model_configs/vllm/pd_hybrid/env.json
   ```
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >If the deployment fails, uninstall the cluster first, troubleshoot and modify the configuration, and then redeploy.
 
 ### Viewing Cluster Status and Logs
@@ -391,7 +391,7 @@ curl -X POST http://<IP>:31015/v1/chat/completions \
 
 If {"detail":"Service is not available"} is returned, the service is not ready yet. Retry later and check the Pod logs. If streaming JSON is returned, inference is working properly.
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 >The HTTP protocol poses security risks. In production environments, you are advised to enable HTTPS.
 
@@ -403,7 +403,7 @@ To scale PD aggregation, modify only the hybrid_instances_num parameter under th
 python3 deploy.py --config_dir ../../model_configs/vllm/pd_hybrid --update_instance_num
 ```
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 >- The value of the hybrid_instances_num parameter must be in the range (0, 16].
 >- The scaling baseline comes from the cluster ConfigMap motor-config.
@@ -426,7 +426,7 @@ For example:
 bash delete.sh mindie-motor
 ```
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >Replace the namespace with the name that is actually created. The uninstallation script must be run in the /examples/deployer directory; otherwise, the output_yamls path cannot be found correctly and an error is reported.
 
 ## Troubleshooting and Precautions

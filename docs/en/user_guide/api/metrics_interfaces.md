@@ -12,7 +12,7 @@ The metric collection chain is as follows:
 
 3. The aggregation results are cached by collection version and provided externally through this interface.
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 > - The `/observability/metrics` on the Controller side is a deprecated forwarding proxy (forwarding to the Coordinator `/metrics`), retained only for compatibility scenarios. **For new integrations, use this interface directly**.
 > - The default port `1027` is the same as the default port of the Controller observation interface (`observability_api_port`, which hosts `/observability/inventory` and others), but the two belong to different components and different services. Do not confuse them during configuration.
@@ -91,7 +91,7 @@ The `type` parameter controls the aggregation granularity of metrics. Different 
 | `dp` | No aggregation, raw output per endpoint | `dp_rank`, `role`, `instance_id`, `pod_ip` | Single-endpoint-level troubleshooting |
 | `node` | Node-level (NODE) | `pod_ip`, `role` | Monitoring by physical node |
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 > - The `full` view is suitable for direct Prometheus scraping. When the `role` view does not specify the `role` parameter, each role is aggregated independently and then concatenated into a single text, so the same metric name appears multiple times (each with its own `role` label), which is normal.
 > - Except for the `dp` view, all other views undergo semantic aggregation (for details, see [Data Processing Description](#data-processing-description)).
@@ -356,7 +356,7 @@ The naming convention of K8s External Metrics does not contain `:`, so the follo
 | `motor:pd_ratio_suggested` | `motor_pd_ratio_suggested` |
 | `vllm:request_prefill_time_seconds` (including the `_mean` / `_p50` / `_p95` / `_p99` derived quantiles) | `vllm_request_prefill_time_seconds` (and the corresponding suffix forms, such as `vllm_request_prefill_time_seconds_p95`) |
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 > - Aliases are generated only for the metrics in the contract list above (exactly 8 original metrics); other metrics (such as `vllm:num_requests_running`) are output only under their original names, and the capacity planning diagnostic metrics (`*_capacity_tps` / `*_demand_tps` / `motor:kv_demand_tokens` / `motor:capacity_calibrated`) do not generate aliases.
 > - Aliases are appended only at the output rendering layer, and the aggregation semantics and the behavior of query parameters such as `type` / `role` are not affected.
@@ -389,7 +389,7 @@ When `kv_cache_store_config` (Mooncake/Memcache) is configured, KV Store summary
 | `kv_store_keys` | Number of keys stored in the KV Store |
 | `kv_store_eviction` | KV Store eviction count, label `stat=success\|attempts` |
 
->[!NOTE]NOTE
+>[!NOTE] Note
 >
 > - KV Store metrics are **returned only with the `type=full` view**: the `instance` / `role` / `dp` / `node` views output only engine metrics and do not include the `kv_store_*` series.
 > - The endpoint-granularity scheduling state metric `motor:endpoint_state` (containing the `request_count` / `fresh_load` / `active_tokens` / `total_cnt` / `kv_usage` / `kv_hit_tokens` / `kv_input_tokens` / `kv_hit_rate` / `running` / `waiting` samples) is the same as the KV Store metrics: it is **returned only with the `type=full` view (including the `type=motor` view)**, and the `instance` / `role` / `dp` / `node` views do not contain this family.
@@ -453,7 +453,7 @@ Usage recommendations:
 
 ### Instance Metric Query Interface
 
-> [!NOTE]NOTE
+> [!NOTE] Note
 > The `GET /instance/metrics` interface is deprecated. Use `GET /metrics?type=instance` instead. Calling this interface returns HTTP 410 Gone.
 
 **Interface Format**
