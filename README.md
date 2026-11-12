@@ -17,6 +17,7 @@
 
 ## ✨ 最新消息
 
+- [2026.11.11]: 🚀 3.3.0b1 发布，配套 vLLM-Ascend 0.32 RC 版本
 - [2026.10.28]: 🚀 3.2.0 发布
 - [2026.10.28]: 🚀 优化 Docker only 部署方案，部署流程大幅简化
 - [2026.10.28]: 🚀 支持950系列服务器部署跨超节点的推理服务
@@ -34,7 +35,7 @@
 
 MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提供一键式 PD 分离与 PD 混部部署。它基于云原生插件化架构，对接 [vLLM-Ascend](https://github.com/vllm-project/vllm-ascend) 与 [SGLang](https://github.com/sgl-project/sglang) 原生引擎，结合高性能调度与负载均衡，构建高可用、可扩展的大规模推理服务。
 
-<img src="./docs/zh/imgs/MindIE-Motor-architecture-zh.png" alt="MindIE Motor 架构" width="100%"/>
+<img src="./docs/zh/imgs/MindIE-Motor-architecture-zh.svg" alt="MindIE Motor 架构" width="100%"/>
 
 ## 🖥️ 服务部署
 
@@ -139,7 +140,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 ## 🔀 版本说明
 
-当前发布版本为 3.2.0。组件配套、兼容性和更新说明见 [版本配套说明](./docs/zh/release_note_motor.md)。
+当前稳定版本为 3.2.0。组件配套、兼容性和更新说明见 [版本配套说明](./docs/zh/release_note_motor.md)。
 
 ## 🛠️ 贡献指南
 
