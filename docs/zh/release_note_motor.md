@@ -28,7 +28,7 @@
 
 MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
 
-> [!NOTE]说明
+> [!NOTE] 说明
 > 下方表格中的“/”表示不配套，“Y”表示可配套。
 
 **表 3**  MindIE Motor与MindCluster版本兼容

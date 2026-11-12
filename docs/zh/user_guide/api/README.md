@@ -45,7 +45,7 @@ MindIE Motor提供下列管理接口：
 - [根路径服务信息接口](./management_interfaces.md#根路径服务信息接口)：`/`
 - [健康状态查询接口](./management_interfaces.md#健康状态查询接口)：`/health`
 
->[!NOTE]说明
+>[!NOTE] 说明
 >
 > - 除实例查询外，管理接口仅限Kubernetes集群内使用，不提供给集群外使用。
 > - `/instances` 同时保留在内部管理端口 `1026`，并通过 Coordinator Observability 端口 `1027`（K8s nodePort `31017`）对外提供只读查询。
@@ -73,7 +73,7 @@ MindIE Motor 的监控指标由 Coordinator 统一汇聚、聚合，通过 Coord
 - [指标查询接口](./metrics_interfaces.md#接口格式)：`/metrics`，支持聚合视图（`full`/`instance`/`role`/`dp`/`node`）与返回格式（Prometheus / OpenTelemetry）
 - [实例查询接口](./management_interfaces.md#实例查询接口)：`/instances`，供 ras_monitor 或外部运维工具获取实例健康状态
 
->[!NOTE]说明
+>[!NOTE] 说明
 >
 > - 指标由 Coordinator 按周期（默认 `3` 秒）从各 Engine 采集并语义化聚合，详情参见[指标接口](./metrics_interfaces.md)。
 > - Controller 侧的 `/observability/metrics` 为已弃用的转发接口，**新接入请直接使用本端口**，详见[观测接口](#观测接口)。
@@ -97,7 +97,7 @@ MindIE Motor 的监控指标由 Coordinator 统一汇聚、聚合，通过 Coord
   - 当配置文件中无此配置项时，使用默认端口`1027`。
 - 指标接口的TLS由`mgmt_tls_config.enable_tls`控制。
 
->[!NOTE]说明
+>[!NOTE] 说明
 >指标接口端口（`coordinator_obs_port`，默认`1027`）与Controller观测接口端口（`observability_api_port`，默认`1027`）默认值相同，但属于不同组件、不同服务：指标接口位于`Coordinator`（nodePort `31017`），观测接口位于`Controller`（nodePort `31027`），使用时注意区分。
 
 ## 观测接口
@@ -108,7 +108,7 @@ Controller 观测接口提供模型服务清单与告警等运维观测数据（
 - [告警查询接口](./observability_interface.md#告警查询接口)：`/observability/alarms`
 - [对接 CCAE 前端平台](./observability_interface.md#对接-ccae-前端平台)
 
->[!NOTE]说明
+>[!NOTE] 说明
 >
 > - `/observability/metrics` 已弃用：该接口是转发到 Coordinator `/metrics` 的代理，仅作兼容保留，新接入请直接使用[指标接口](#指标接口)。
 > - 观测接口默认关闭，需配置 `observability_config.observability_enable=true` 后生效；主备模式下仅主 Controller 对外提供查询能力。

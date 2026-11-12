@@ -53,7 +53,7 @@
    }
    ```
 
-   >[!NOTE]说明
+   >[!NOTE] 说明
    >上述Motor配置仅给出一种可行的模型切分示例，**用户可根据实际情况调整模型划分策略**，关注以下表中参数即可，但必须满足以下公式的限制：
    >
    > 1个混部实例占用的NPU卡数 = single_hybrid_instance_pod_num（占用几个pod，跨几机） × hybrid_pod_npu_num （每个pod占用的NPU数）= data_parallel_size × tensor_parallel_size

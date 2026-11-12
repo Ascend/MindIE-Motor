@@ -76,7 +76,7 @@ motor_deploy_config字段为部署与资源相关配置，由deploy.py读取并�
 
 上述字段仅修改工作负载及其Pod模板的元数据，不修改对应Service等其他资源。`single_container` 部署模式下，各组件共享同一个工作负载，自定义元数据通过 `motor_coordinator_config` 配置。
 
->[!NOTE]说明
+>[!NOTE] 说明
 >
 >`app` 是部署器保留标签，不能通过 `additional_labels` 配置，部署主流程会在生成资源前拒绝此类配置。请勿覆盖其他由部署器生成的组件标识、工作负载选择器等系统Labels；本功能不会同步修改 `spec.selector`，覆盖此类Labels可能导致工作负载无法创建或无法匹配Pod。
 
@@ -658,7 +658,7 @@ motor_coordinator_config字段配置样例如下所示：
 | additional_labels | object | 可选；Coordinator工作负载及其Pod模板的自定义Labels。 |
 | image_name | string | 可选；Coordinator 容器镜像。不填则使用 `motor_deploy_config.image_name`。**仅 Kubernetes 部署生效**；Docker 部署统一使用 `motor_deploy_config.image_name`。 |
 
->[!NOTE]说明
+>[!NOTE] 说明
 >
 >**Render 使用限制**
 >
@@ -1053,7 +1053,7 @@ PD模式下P与D**各自独立配置**"health_check_config"，未配置时使用
 |--------|------|------|
 | dispatch_profile | string | 可选值为 `handoff` 或 `trigger`。原生 vLLM P/D 同时接受二者：`handoff` 为 Prefill 完成后交给 Decode；`trigger` 为 Decode 先启动并经 Worker metaserver 触发 Prefill（`MooncakeLayerwiseConnector` 自动推导为 `trigger`）。SGLang 使用自身 bootstrap 协议。Prefill 与 Decode 两端应保持一致。 |
 
->[!NOTE]说明
+>[!NOTE] 说明
 > `dispatch_profile` 写在 `motor_engine_*_config` 顶层，不是在 `engine_config` 内部。`dispatch_capabilities` 为内部兼容字段，不支持用户直接填写。
 
 ### health_check_config

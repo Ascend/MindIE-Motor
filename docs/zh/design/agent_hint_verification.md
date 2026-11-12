@@ -39,9 +39,7 @@
 
 ## 3. 执行环境
 
-- 容器化环境：openEuler 24.03 + Python 3.11（与门禁编译/UT 镜像口径一致），
-  `TORCH_DEVICE_BACKEND_AUTOLOAD=0`（无 NPU 透传的开发机跳过 torch_npu 后端加载），
-  `bash tests/run_tests.sh`（pytest 封装，-n 6 并行）。
+- 容器化环境：openEuler 24.03 + Python 3.11（与门禁编译/UT 镜像口径一致），`TORCH_DEVICE_BACKEND_AUTOLOAD=0`（无 NPU 透传的开发机跳过 torch_npu 后端加载），`bash tests/run_tests.sh`（pytest 封装，-n 6 并行）。
 
 ## 4. 执行记录
 
@@ -53,10 +51,7 @@
 | 全仓回归（合入前基线） | `bash tests/run_tests.sh` | 4316 passed / 0 failed / 42 skipped |
 | 全仓回归（并入上游 `49e0595f` 后终版） | `bash tests/run_tests.sh` | **4387 passed / 0 failed** / 46 skipped |
 
-（执行时间 2026-10-19；warnings 为存量告警，与本次改动无关。终版分支已并入合入窗口期
-上游新增的 `49e0595f`（flash engine KV offload 事件 + DP 统计修复），冲突解决：
-`scheduler_client.py` scheduled 日志行采用上游新标签 + 本侧 `prio/aff/reason/sp` 字段并集；
-`scheduler_connection_manager.py` 采用上游 `log_dp_stats` 新语义 + 本侧优先级门槛参数。）
+（执行时间 2026-10-19；warnings 为存量告警，与本次改动无关。终版分支已并入合入窗口期上游新增的 `49e0595f`（flash engine KV offload 事件 + DP 统计修复），冲突解决：`scheduler_client.py` scheduled 日志行采用上游新标签 + 本侧 `prio/aff/reason/sp` 字段并集；`scheduler_connection_manager.py` 采用上游 `log_dp_stats` 新语义 + 本侧优先级门槛参数。）
 
 ### 4.2 静态检查
 
@@ -75,12 +70,7 @@ gitleaks 离线二进制在开发环境不可用，本次未执行（门禁 CI �
 
 ### 4.3 端到端验证（轻量：真实 Coordinator 进程 + mock 引擎）
 
-在 openEuler 24.03 容器内从源码树拉起**真实 Coordinator 进程**（`python -m
-motor.coordinator.main`，含 InferenceWorker 子进程与 workload-shm 原生库），对端为
-OpenAI 兼容 mock 引擎；开关全开：`MOTOR_SESSION_AFFINITY=1`（SHARED 共享表 +
-`PLACEMENT=balanced`）、`MOTOR_CACHE_CONTROL_LIFECYCLE=1`（sweep 1s）、
-`agent_status_config.enabled=true`、`strict_priority_config` 启用。驱动以 HTTP 驱动
-mgmt/infer 两个面，**24/24 检查全部通过**：
+在 openEuler 24.03 容器内从源码树拉起**真实 Coordinator 进程**（`python -m motor.coordinator.main`，含 InferenceWorker 子进程与 workload-shm 原生库），对端为 OpenAI 兼容 mock 引擎；开关全开：`MOTOR_SESSION_AFFINITY=1`（SHARED 共享表 + `PLACEMENT=balanced`）、`MOTOR_CACHE_CONTROL_LIFECYCLE=1`（sweep 1s）、`agent_status_config.enabled=true`、`strict_priority_config` 启用。驱动脚本以 HTTP 驱动 mgmt/infer 两个面，**24/24 检查全部通过**：
 
 | 场景 | 判据（实测日志/响应原文） |
 | --- | --- |
@@ -118,10 +108,7 @@ device 1）** 发起真实推理流量，agent-hint 全链路 **23/23 检查通�
 与轻量 e2e 的差异：引擎为真实 vLLM 多进程（APIServer + EngineCore + NPU worker），
 请求经 NodeManager 注册的实例端点完成真实 prefill+decode。
 
-**评审修复后的复验**：将 §4.5 全部修复（tombstone/MSAFF5 布局/声明承诺写槽/
-keeper 条件释放与限量/信任门热更新/脱敏/状态机扇出）构建进镜像重新部署后，
-同一 23 项驱动 **23/23 通过**；其中跨 worker GET 404 的偶发视图差异（设计 §4.9
-已声明限制）与 keeper 释放日志在本轮均确认正常。
+**评审修复后的复验**：将 §4.5 全部修复（tombstone/MSAFF5 布局/声明承诺写槽/keeper 条件释放与限量/信任门热更新/脱敏/状态机扇出）构建进镜像重新部署后，同一 23 项驱动 **23/23 通过**；其中跨 worker GET 404 的偶发视图差异（设计 §4.9已声明限制）与 keeper 释放日志在本轮均确认正常。
 
 ### 4.5 评审修复（tobking，2026-10-19）
 
@@ -143,18 +130,12 @@ keeper 条件释放与限量/信任门热更新/脱敏/状态机扇出）构建�
 
 ### 4.6 合入前修复的质量问题（同轮静态门禁）
 
-- `tests/coordinator/scheduler/test_cache_lifecycle_e2e.py`：F811（参数遮蔽导入的
-  fixture）改为 `@pytest.mark.usefixtures("native_lib")`；D209 文档字符串收尾；
+- `tests/coordinator/scheduler/test_cache_lifecycle_e2e.py`：F811（参数遮蔽导入的fixture）改为 `@pytest.mark.usefixtures("native_lib")`；D209 文档字符串收尾；
 - `tests/coordinator/domain/test_agent_hint_wire.py`：W0404（函数内重复 import base64）；
-- `tests/coordinator/scheduler/runtime/test_session_affinity_shared.py`：W0404（子进程
-  目标函数内重复 import，模块级导入已覆盖 fork/spawn 两种启动方式）；
-- `session_affinity.py` ↔ `session_affinity_shared.py` 模块级循环引用（R0401）：
-  `SessionPin` 与 `_DEFAULT_MAX_ENTRIES` 下移至 `session_affinity_shared.py`
-  （共享表与进程内表共用同一类型，且该模块仅依赖 stdlib），`session_affinity.py`
-  单向引用并 re-export，依赖方向唯一化；行为与对外 API 路径不变；
+- `tests/coordinator/scheduler/runtime/test_session_affinity_shared.py`：W0404（子进程目标函数内重复 import，模块级导入已覆盖 fork/spawn 两种启动方式）；
+- `session_affinity.py` ↔ `session_affinity_shared.py` 模块级循环引用（R0401）：`SessionPin` 与 `_DEFAULT_MAX_ENTRIES` 下移至 `session_affinity_shared.py`（共享表与进程内表共用同一类型，且该模块仅依赖 stdlib），`session_affinity.py`单向引用并 re-export，依赖方向唯一化；行为与对外 API 路径不变；
 - `fastapi_middleware.py`：R1714 合并等值比较为 `in`；
-- `scheduler_client.py`：W0706 删除冗余 `except asyncio.CancelledError: raise`
-  （3.8+ CancelledError 为 BaseException，`except Exception` 不会捕获）。
+- `scheduler_client.py`：W0706 删除冗余 `except asyncio.CancelledError: raise`（3.8+ CancelledError 为 BaseException，`except Exception` 不会捕获）。
 
 ### 4.7 评审修复（PR #1196 检视意见补充）
 
@@ -174,22 +155,14 @@ keeper 条件释放与限量/信任门热更新/脱敏/状态机扇出）构建�
 
 ## 5. 兼容性检查
 
-- 默认配置（不设置任何新开关/env）下，基线调度行为不变：全部新逻辑由
-  `MOTOR_SESSION_AFFINITY*` / `MOTOR_CACHE_CONTROL_*` / `agent_status_config.enabled`
-  / `priority_reserve_ratio` / `priority_load_threshold` / `strict_priority_config.enabled`
-  门控，缺省关闭；
+- 默认配置（不设置任何新开关/env）下，基线调度行为不变：全部新逻辑由`MOTOR_SESSION_AFFINITY*` / `MOTOR_CACHE_CONTROL_*` / `agent_status_config.enabled`/ `priority_reserve_ratio` / `priority_load_threshold` / `strict_priority_config.enabled`门控，缺省关闭；
 - 既有客户端（不发送 `X-Agent-Hint`）零感知：body legacy 接口冻结，spec 字段不进入 body；
-- `user_config.json` 增量兼容：新增字段均有默认值，既有配置文件无需修改——
-  已用 `examples/deployer/config_tool/output_config/user_config.json` 实际加载并
-  `validate_config()` 通过（全部新开关读出为默认关闭值）；
+- `user_config.json` 增量兼容：新增字段均有默认值，既有配置文件无需修改——已用 `examples/deployer/config_tool/output_config/user_config.json` 实际加载并`validate_config()` 通过（全部新开关读出为默认关闭值）；
 - 调度日志 `aff=` outcome 口径不变，新增字段仅追加。
 
 ## 6. 遗留项与边界
 
-- 引擎侧 KV 动作（offload/prefetch，pause/suspend 钩子）与请求级 priority 引擎透传：
-  依赖引擎消费能力，当前降级为状态跟踪（见设计 §4.6）；
-- strict_priority 信任门为 bootstrap（静态 token），产品决策后平移至密钥表/mTLS，
-  消费点无需改动；
+- 引擎侧 KV 动作（offload/prefetch，pause/suspend 钩子）与请求级 priority 引擎透传：依赖引擎消费能力，当前降级为状态跟踪（见设计 §4.6）；
+- strict_priority 信任门为 bootstrap（静态 token），产品决策后平移至密钥表/mTLS，消费点无需改动；
 - Prometheus 指标（hits/misses/stale/声明数）为后续横切项；
-- 端到端实机联调（DSH/Pi/Hermes 三 harness 互操作）在开发仓完成过验证，本次合入
-  以单元/集成测试与默认关闭的兼容性为验收基线。
+- 端到端实机联调（DSH/Pi/Hermes 三 harness 互操作）在开发仓完成过验证，本次合入以单元/集成测试与默认关闭的兼容性为验收基线。

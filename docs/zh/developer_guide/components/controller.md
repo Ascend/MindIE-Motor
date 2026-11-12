@@ -300,7 +300,7 @@ sequenceDiagram
     Note over IM: 实例恢复服务
 ```
 
-> [!NOTE]
+> [!NOTE] 说明
 > **域名抽象的关键价值**：pod_ip 会随 Pod 重建而变化，但 Controller 通过 job_name 识别实例身份。NodeManager 通过 K8s Service 域名（而非写死的 Pod IP）访问 Controller，确保无论 Pod 如何重建、IP 如何变化，注册请求始终能到达 Controller。Controller 侧只关心 job_name 一致即代表同一逻辑实例，无需感知底层 IP 漂移。
 
 #### 场景 4：硬件故障感知→隔离→策略恢复
@@ -592,7 +592,7 @@ flowchart LR
 - 行为：释放一个 Prefill 节点 → 用释放的节点拉起新 Decode 实例 → Coordinator 自动降级为 SINGLE_NODE 模式 → 新 Decode 就绪后恢复 PD 分离
 - 适用场景：Decode 实例硬件故障且集群无冗余节点
 
-> [!NOTE]
+> [!NOTE] 说明
 > 两种策略的详细设计见 [故障容错设计文档](../../design/fault_tolerance/overview.md)。
 
 ### 3.4 可观测性：库存与告警
@@ -748,7 +748,7 @@ main.on_config_updated()
             └─ module.update_config(config)
 ```
 
-> [!NOTE]
+> [!NOTE] 说明
 > `ControllerAPI` 的运行时配置（端口、TLS）不支持热更新，需要重启 Pod 生效。其余模块均支持热更新。
 
 ### 4.4 新增 API 路由

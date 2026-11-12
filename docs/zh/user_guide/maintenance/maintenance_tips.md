@@ -76,7 +76,7 @@ Coordinator实例的默认端口为31015，如现场部署了两套PD实例，�
             ...
       ```
 
-      >[!NOTE]说明
+      >[!NOTE] 说明
       > 若`user_config.json`中配置了`"deploy_mode": "multi_deployment"`，则使用传统多YAML方式部署，需修改的内容上文相同，但需要修改的文件不同：
       >
       > - Coordinator端口：修改`coordinator_template.yaml`中的`nodePort`字段。
@@ -214,7 +214,7 @@ Coordinator实例的默认端口为31015，如现场部署了两套PD实例，�
 
       可以观察各pod将按照标签关系被调度至不同节点。
 
-  >[!NOTE]说明
+  >[!NOTE] 说明
   > 若`user_config.json`中配置了`"deploy_mode": "multi_deployment"`，打标签的方式与上文相同，但需修改的模板文件不同：
   >
   > - Controller：修改`controller_template.yaml`，在`template.spec`下新增`nodeSelector`。
@@ -320,5 +320,5 @@ Coordinator实例的默认端口为31015，如现场部署了两套PD实例，�
 
       可以观察各pod将按照标签关系被调度至不同节点。
 
-  >[!NOTE]说明
+  >[!NOTE] 说明
   > PD混部场景默认通过`multi_deployment`方式部署（`user_config.json`中需包含`hybrid_instances_num`等混部字段），无需修改`infer_service_template.yaml`。

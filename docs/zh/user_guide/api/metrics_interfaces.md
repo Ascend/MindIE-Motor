@@ -12,7 +12,7 @@ MindIE Motor 的监控指标由 Coordinator 统一汇聚、聚合并提供，**�
 2. 解析 Prometheus 文本，按指标语义（sum / max / mean / 直方图合并 / 直通）跨实例、跨端点聚合，并计算 Motor 自定义指标；
 3. 聚合结果按采集版本缓存，通过本接口对外提供。
 
->[!NOTE]说明
+>[!NOTE] 说明
 >
 > - Controller 侧的 `/observability/metrics` 是已弃用的转发代理（转发到 Coordinator `/metrics`），仅在兼容场景保留，**新接入请直接使用本接口**。
 > - 默认端口 `1027` 与 Controller 观测接口（`observability_api_port`，承载 `/observability/inventory` 等）的默认端口相同，但两者属于不同组件、不同服务，配置时不要混淆。
@@ -86,7 +86,7 @@ curl -X GET "http://{IP}:{Port}/metrics?format=opentelemetry"
 | `dp` | 不聚合，按端点原始输出 | `dp_rank`、`role`、`instance_id`、`pod_ip` | 单端点级排障 |
 | `node` | 节点级（NODE） | `pod_ip`、`role` | 按物理节点监控 |
 
->[!NOTE]说明
+>[!NOTE] 说明
 >
 > - `full` 视图适合直接接入 Prometheus 抓取；`role` 视图不指定 `role` 参数时，各角色独立聚合后拼接为单一文本，同一指标名会出现多次（各自带 `role` 标签），属正常现象。
 > - 除 `dp` 视图外，其他视图都经过了语义化聚合（详见[数据加工说明](#数据加工说明)）。
@@ -363,7 +363,7 @@ K8s External Metrics 命名习惯不含 `:`，因此下列 HPA 契约指标在 `
 | `motor:pd_ratio_suggested` | `motor_pd_ratio_suggested` |
 | `vllm:request_prefill_time_seconds`（含 `_mean` / `_p50` / `_p95` / `_p99` 派生分位数） | `vllm_request_prefill_time_seconds`（及对应后缀形式，如 `vllm_request_prefill_time_seconds_p95`） |
 
->[!NOTE]说明
+>[!NOTE] 说明
 >
 > - 仅上述契约清单（恰好 8 个原始指标）内的指标会生成别名，其他指标（如 `vllm:num_requests_running`）只以原始名输出；容量规划的诊断指标（`*_capacity_tps` / `*_demand_tps` / `motor:kv_demand_tokens` / `motor:capacity_calibrated`）不生成别名。
 > - 别名只在输出渲染层追加，聚合语义、`type` / `role` 等查询参数行为均不受影响。
@@ -396,7 +396,7 @@ Engine 进程自身的指标，跨 Engine 求和：
 | `kv_store_keys` | KV Store 存储的 key 数量 |
 | `kv_store_eviction` | KV Store 淘汰计数，label `stat=success\|attempts` |
 
->[!NOTE]说明
+>[!NOTE] 说明
 >
 > - KV Store 指标**仅随 `type=full` 视图返回**：`instance` / `role` / `dp` / `node` 视图只输出引擎指标，不含 `kv_store_*` 系列。
 > - 端点粒度的调度状态指标 `motor:endpoint_state`（含 `request_count` / `fresh_load` / `active_tokens` / `total_cnt` / `kv_usage` / `kv_hit_tokens` / `kv_input_tokens` / `kv_hit_rate` / `running` / `waiting` 样本）与 KV Store 指标一致，**仅随 `type=full`（含 `type=motor`）视图返回**，`instance` / `role` / `dp` / `node` 视图不含该族。

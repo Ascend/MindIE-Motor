@@ -44,7 +44,7 @@ make build-pymotor-image \
 
 最终镜像名为 `example.com/team/mindie-motor-vllm:master`。
 
-> [!NOTE]说明
+> [!NOTE] 说明
 > `type=docker` 只能将单架构镜像加载到本地 Docker。`PLATFORMS` 包含多个平台时，应使用 `OUTPUT=type=registry` 推送多架构镜像。
 
 ### Make 变量
@@ -78,7 +78,7 @@ Dockerfile 的构建过程包括：
 4. 构建并安装 `ccae_reporter` 可观测组件。
 5. 将示例复制到 `/tmp/motor/examples`，并生成容器入口脚本和使用协议。
 
-> [!NOTE]说明
+> [!NOTE] 说明
 > 当前工作区中的未提交修改也会被复制到镜像中。开发构建不固定源码 commit；正式交付应使用 `docker/mindie-motor-vllm/<tag>/Dockerfile`。
 
 ## 手动安装和离线构建
@@ -117,7 +117,7 @@ rustup --version && rustc --version && cargo --version
 
 ## 依赖下载（可选）
 
->[!NOTE]说明
+>[!NOTE] 说明
 >如果制作镜像的机器不能联网，先下载依赖。
 
 在有网的环境执行如下步骤：
@@ -206,7 +206,7 @@ tar -czvf MindIE-Motor.tar.gz MindIE-Motor
 
 ## 获取基础镜像，以vLLM-Ascend为例
 
->[!NOTE]说明
+>[!NOTE] 说明
 >为提高下载速度，可将`quay.io`替换为`quay.nju.edu.cn`。
 
 获取方法：打开[RED HAT](https://quay.io/repository/ascend/vllm-ascend?tab=tags)，点击需要下载的版本。

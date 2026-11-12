@@ -474,8 +474,7 @@ root 挂接——否则 continuation-edge 图会丢失链式关系，CPU/Disk �
 `parent_hash`）应用，绝不批量合并成单个 `parent_hash: None` 的事件——批量会静默丢失
 块间续接。
 
-**缓存清理语义**：ingest 路径不再触发惰性全量扫描。后台 maintenance 默认每 30s 调用 `sweep_stale_caches()`，分别清理 `pending_pool`（默认 60s）、`content`（默认 300s）。
-和 `offload`（默认 600s）。三类缓存均记录插入时间；实际最长驻留时间约为对应 TTL 加一个
+**缓存清理语义**：ingest 路径不再触发惰性全量扫描。后台 maintenance 默认每 30s 调用 `sweep_stale_caches()`，分别清理 `pending_pool`（默认 60s）、`content`（默认 300s）和 `offload`（默认 600s）。三类缓存均记录插入时间；实际最长驻留时间约为对应 TTL 加一个
 maintenance 周期。`offload` 没有容量上限，但不会永久驻留，同时仍会在匹配成功或引擎侧
 `evict_pending_blocks` 时提前删除。Worker 注销只按 Worker 清理 `pending_pool`；共享的
 `offload` / `content` 由匹配、显式移除或 TTL 维护回收。
@@ -615,7 +614,7 @@ prefill_cost = max(0, isl − overlap_credit × affinity_matched_tokens)
 | 阶段 | `unified` | `load_gated` |
 |------|-----------|--------------|
 | 初选 | 剩余 prefill 成本与 endpoint 负载加权求和，取最小值 | 按 endpoint 负载取最低 N 个，再按加权匹配长度排序 |
-| CAS 冲突 / 候选失效后的重选 | 复用所有候选的 prefill 成本，用新负载重新评分 | 在原筛选集合内最多保留 3 个亲和候选中，按新负载分择优；不重新计算全局 N 个集合 |
+| CAS 冲突 / 候选失效后的重选 | 复用所有候选的 prefill 成本，用新负载重新评分 | 在原筛选集合内最多保留 3 个亲和候选，按新负载分择优；不重新计算全局 N 个集合 |
 
 重选调用 `allocate_arbitration.py`，负载分复用 `LoadBalancePolicy.calculate_endpoint_score()`：
 `endpoint_load + endpoint_instance_score_weight × 实例平均负载`，实例权重默认 `0.05`。

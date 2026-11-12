@@ -6,7 +6,7 @@
 
 实例重调度与[请求重调度](./rescheduler.md)作用于不同层级。实例重调度恢复推理实例容量，请求重调度将受影响的推理请求转发到其他健康实例。两项能力可以同时使用，以缩短故障期间的请求中断时间。
 
-> [!NOTE] ✏️ 说明
+> [!NOTE] 说明
 > Motor当前部署模板默认为推理Pod配置`fault-scheduling: grace`和`fault-retry-times: "10000"`。使用Infer Operator管理工作负载时，`fault-scheduling`还支持由Infer Operator接管Pod删除的`external-*`模式。实例重调度不需要在`user_config.json`中单独开启。
 
 ### 工作原理

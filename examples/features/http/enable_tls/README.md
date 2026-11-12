@@ -4,7 +4,7 @@
 
 按照以下步骤启用TLS加密通信：
 
-> [!NOTE] 注意
+> [!NOTE] 说明
 >
 > - 以下操作需要在**宿主机**上执行，因为`/mnt`目录通过hostPath方式挂载到容器中。
 > - **在多节点集群环境中**，`/mnt`目录必须是**共享存储**（如NFS、CephFS等），确保所有节点都能访问相同的证书文件。
@@ -141,7 +141,7 @@ bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
 | `CERT_NAMES` | 需要生成的证书名称列表，空格分隔 | `infer mgmt` |
 | `GEN_CERT_SCRIPT` | 证书生成脚本路径 | `/mnt/cert_scripts/openssl_gen_cert.sh` |
 
->[!NOTE] 注意
+>[!NOTE] 说明
 >`CERT_NAMES`默认只包含`infer`和`mgmt`证书。`etcd`和`grpc`证书为可选，仅在启用ETCD相关功能（持久化或主备）且对ETCD有安全性要求时才需要添加。
 
 **使用场景：**

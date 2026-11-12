@@ -4,7 +4,7 @@
 
 Kubernetes中，组件内部访问使用Pod IP或Service地址；对外访问使用节点IP和NodePort。默认映射为推理`31015 → 1025`、Coordinator观测`31017 → 1027`、Controller观测`31027 → 1027`。NodePort可由部署配置修改，冲突时部署器也可能重映射；实际端口以生成的Service YAML和运行配置为准。Docker、独立部署等场景没有这些Kubernetes NodePort，应使用对应容器或进程的实际监听地址。
 
->[!NOTE]说明
+>[!NOTE] 说明
 >datadist、HCCL、LCCL和ATB相关通信矩阵请参考[CANN 通信矩阵](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/latest/maintenref/refdoc/refer001.html)。原生vLLM/SGLang的KV传输、分布式通信及PD bootstrap等端口还取决于引擎配置，不能统一套用Motor业务端口规则；配置字段见[全量配置说明](configuration/config_reference.md)。
 
 ## 常规通信

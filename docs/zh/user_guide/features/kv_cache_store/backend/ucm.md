@@ -1,6 +1,6 @@
 # MindIE Motor 中部署 UCM
 
-[Unified Cache Manager（UCM）](https://github.com/ModelEngine-Group/unified-cache-management) 通过持久化和复用 KVCache，减少相同前缀的重复 Prefill 计算。MindIE Motor 当前接入的是 **UCM Prefix Cache**。
+[Unified Cache Manager（UCM）](https://github.com/ModelEngine-Group/unified-cache-management) 通过持久化和复用 KV Cache，减少相同前缀的重复 Prefill 计算。MindIE Motor 当前接入的是 **UCM Prefix Cache**。
 
 在分布式 PD 部署中，Prefill 使用 `MultiConnector[Mooncake 传输 Connector, UCMConnector]`：Mooncake 负责 P/D 实时 KV 传输，UCM 负责跨请求前缀复用；Decode 使用与 Prefill 匹配的 Mooncake Connector。
 
@@ -202,9 +202,9 @@ bash delete.sh mindie-motor
 
 ## 验证 UCM 命中
 
-![UCM 首次请求与后续命中的 KVCache 流程](../../../../imgs/ucm-cache-hit-flow.svg)
+![UCM 首次请求与后续命中的 KV Cache 流程](../../../../imgs/ucm-cache-hit-flow.svg)
 
-向 Coordinator 连续发送两次完全相同的长前缀请求即可。第二次请求应复用第一次请求写入的 KVCache：
+向 Coordinator 连续发送两次完全相同的长前缀请求即可。第二次请求应复用第一次请求写入的 KV Cache：
 
 ```bash
 curl -sS http://<节点 IP>:31015/v1/chat/completions \
