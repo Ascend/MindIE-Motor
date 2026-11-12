@@ -10,6 +10,7 @@
 |----------|------|
 | 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li></ul>手动扩缩容无额外硬件限制，与已部署服务使用的机型一致。 |
 | 部署场景 | 支持PD分离（修改`p_instances_num`、`d_instances_num`）和PD混部（修改`hybrid_instances_num`）。 |
+| 特性互斥 | 静态扩缩容与动态扩缩容互斥，不能叠加使用。 |
 | 引擎 | 支持vLLM和SGLang；扩缩容不切换引擎，须与已部署服务的`engine_type`保持一致。 |
 | 软件依赖 | 需要K8s集群管理员的kubectl权限，且集群内已存在全量部署生成的ConfigMap `motor-config`。 |
 | 其他限制 | <ul><li>扩缩容时仅允许修改`motor_deploy_config.p_instances_num`、`motor_deploy_config.d_instances_num`、`motor_deploy_config.hybrid_instances_num`字段；</li><li>实例数须大于0且不超过16，否则部署或扩缩容时会报错；</li><li>扩缩容只影响engine实例，controller / coordinator不会在扩缩容路径中更新；</li><li>如需修改镜像、挂载路径等非实例数配置，请进行重新部署；</li><li>缩容会从高index开始删除实例，并同步删除`output/deployment/`下对应的engine YAML文件；</li><li>已部署配置的基线为集群内ConfigMap（motor-config）中的user_config；</li><li>Prefix Cache特性默认开启，该特性会复用已计算好的KV Cache。新扩容的实例没有KV Cache缓存，该实例的推理性能可能出现小幅度劣化并在一段时间后恢复。</li></ul> |

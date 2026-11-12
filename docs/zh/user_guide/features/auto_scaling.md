@@ -38,6 +38,7 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
 |----------|------|
 | 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li></ul> |
 | 部署场景 | 自动扩缩容要求 `infer_service_set` 部署模式（由 Infer Operator 创建 HPA）。<ul><li>PD 分离：为 `prefill`、`decode` 角色分别配置 `scalingPolicy`；</li><li>PD 混部：为 `union` 角色配置，且**必须显式指定 `metric`**——该角色没有默认指标，缺失时配置生成直接报错；</li><li>`multi_deployment`、`single_container`：不支持本文自动扩缩容，实例数仅可手动调整。</li></ul>Controller、Coordinator 不在本例的扩缩容范围内。 |
+| 特性互斥 | 静态扩缩容与动态扩缩容互斥，不能叠加使用。 |
 | 软件依赖 | Infer Operator ≥ 26.1.0，且须支持角色级 `scalingPolicy`；指标接入可选择 External Metrics Adaptor 或 Prometheus + Prometheus Adapter。 |
 | 其他限制 | <ul><li>缩容存在稳定窗口（默认 5 分钟），避免负载短暂波动导致频繁扩缩；</li><li>扩容的新实例没有 KV Cache 缓存，Prefix Cache 特性会逐步重建缓存，因此新实例的推理性能可能出现小幅度劣化并在一段时间后恢复；</li><li>建议 `minReplicas` 至少设为 1，避免缩容到 0 导致服务完全不可用；</li><li>Counter 类型指标（如 token 总数）不会因 /metrics 请求而重置，建议优先使用 Gauge 类型指标或 MindIE Motor 计算的 TPS 指标作为扩缩容依据；</li><li>若使用不带 `type` 参数的 /metrics 端点（默认 `full`），HPA 获取到的是全局聚合值；按 Prefill/Decode 角色独立扩缩容时，External Metrics Adaptor 需分别请求 `type=role` 视图，Prometheus 路径需在抓取或 PromQL 中按角色聚合。</li></ul> |
 

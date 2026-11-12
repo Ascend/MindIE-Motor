@@ -35,6 +35,15 @@ MindIE Motor采用控制面（Controller/Coordinator）与数据面（推理引�
 }
 ```
 
+>[!NOTE] 说明
+>
+>vLLM 中不带参数值的 CLI 配置项，在 Motor 的 `engine_config` 中默认通过“参数名去掉前导 `--`，值设为
+>`true`”的形式提供。例如，开启 Prefix Caching 的 vLLM 参数为 `--enable-prefix-caching`，对应 Motor 配置为
+>`"enable-prefix-caching": true`；关闭时使用 vLLM 提供的 `--no-enable-prefix-caching`，对应 Motor 配置为
+>`"no-enable-prefix-caching": true`。不要使用 `"enable-prefix-caching": false` 表示关闭，该写法只会使 Motor
+>不生成正向参数，也不会生成反向参数。正向和反向参数不应同时配置。其他不带参数值的配置项以所用 vLLM 版本的
+>CLI 参数说明为准。
+
 配置完成后，启动MindIE Motor服务，日志中应出现类似`engine_type: vllm`、`vLLM engine initialized successfully`等关键字，表示vLLM引擎对接成功。
 
 ### 配置SGLang推理引擎
