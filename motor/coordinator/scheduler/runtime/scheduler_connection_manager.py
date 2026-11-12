@@ -87,9 +87,11 @@ class SchedulerConnectionManager:
             dp_stats_window=coordinator_config.scheduler_config.dp_stats_window,
             priority_load_threshold=coordinator_config.scheduler_config.priority_load_threshold,
             priority_admission_level=coordinator_config.scheduler_config.priority_admission_level,
+            affinity_load_gate_ratio=coordinator_config.scheduler_config.affinity_load_gate_ratio,
             log_dp_stats=coordinator_config.worker_index is not None,
             tls_config=coordinator_config.infer_tls_config,
             on_instance_refreshed=on_instance_refreshed,
+            kvc_lifecycle=coordinator_config.kvc_lifecycle_config,
         )
         client = SchedulerClient(client_config)
         return cls(client=client, client_config=scheduler_config)

@@ -123,11 +123,14 @@ def _dispatcher_with_pub_socket(pub_socket) -> _SchedulerRequestDispatcher:
     return dispatcher
 
 
-def _request(session_id, state) -> SchedulerRequest:
+def _request(session_id, state, epoch=None) -> SchedulerRequest:
+    data = {"session_id": session_id, "state": state}
+    if epoch is not None:
+        data["epoch"] = epoch
     return SchedulerRequest(
         request_type=SchedulerRequestType.AGENT_STATUS_NOTIFY,
         request_id="req-1",
-        data={"session_id": session_id, "state": state},
+        data=data,
     )
 
 
@@ -238,3 +241,45 @@ async def test_pub_state_listener_failure_never_breaks_pin_release():
     client.agent_status_state_listener = broken
     await client._on_agent_status_event("s-9", "finalize")
     assert table.get("s-9", "union") is None
+
+
+@pytest.mark.asyncio
+async def test_report_agent_status_carries_epoch():
+    client = _client_with_affinity(None)
+    await client.report_agent_status("s-1", "finalize", 4)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    request = client._transport.send_request.await_args.args[0]
+    assert request.data == {"session_id": "s-1", "state": "finalize", "epoch": 4}
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_publish_carries_epoch():
+    pub = MagicMock()
+    pub.send_multipart = AsyncMock(return_value=None)
+    dispatcher = _dispatcher_with_pub_socket(pub)
+
+    await dispatcher._handle_agent_status_notify(_request("s-1", "finalize", epoch=4))
+
+    import msgspec
+
+    _, payload = pub.send_multipart.await_args.args[0]
+    assert msgspec.msgpack.decode(payload) == {"session_id": "s-1", "state": "finalize", "epoch": 4}
+
+
+@pytest.mark.asyncio
+async def test_pub_state_listener_receives_epoch():
+    """The remote finalize must advance the state machine with its real epoch."""
+    from motor.coordinator.domain.agent_session_status import AgentSessionStateMachine
+
+    machine = AgentSessionStateMachine()
+    machine.apply("s-9", "running", epoch=5)
+    client = _client_with_affinity(None)
+    client.agent_status_state_listener = machine.apply
+
+    await client._on_agent_status_event("s-9", "finalize", 5)
+
+    record = machine.get("s-9")
+    assert record is not None
+    assert record.state == "finalize"
+    assert record.epoch == 5

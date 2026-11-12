@@ -19,6 +19,7 @@ from motor.coordinator.domain.agent_hint_wire import (
     AGENT_HINT_WIRE_HEADER,
     STRICT_PRIORITY_TOKEN_HEADER,
     apply_agent_hint_header,
+    apply_spec_cache_control_to_engine_body,
     decode_agent_hint_header,
     extract_strict_priority_from_hint_headers,
     strict_priority_trusted,
@@ -175,8 +176,8 @@ SPEC_HINT = {
     "priority": {"level": 3, "reason": "critical_path"},
     "strict_priority": {"level": 3, "reason": "critical_path"},
     "cache_control": [
-        {"type": "pin", "range": {"end": 1}},
-        {"type": "ephemeral", "ttl_s": 12, "range": {"end": 10}},
+        {"type": "ephemeral", "ttl_s": 12, "range": {"end": 1}},
+        {"type": "ephemeral", "ttl_s": 60, "range": {"end": 10}},
     ],
 }
 
@@ -223,7 +224,7 @@ def test_wire_full_spec_reaches_parse_agent_hint_via_header_hint():
     assert hint.strict_priority.level == 3
     # spec cache_control (list form → first entry) with message-range mapping
     assert hint.cache_control is not None
-    assert hint.cache_control.type == "pin"
+    assert hint.cache_control.type == "ephemeral"
     assert hint.cache_control.msg_offset == 1
     assert hint.raw_extra == {}
 
@@ -378,3 +379,102 @@ def test_strict_priority_token_prefix_shared_values_match_exactly():
     assert strict_priority_trusted({STRICT_PRIORITY_TOKEN_HEADER: "secret-abc"}, enabled=True, tokens=tokens) is True
     assert strict_priority_trusted({STRICT_PRIORITY_TOKEN_HEADER: "secret-a"}, enabled=True, tokens=tokens) is False
     assert strict_priority_trusted({STRICT_PRIORITY_TOKEN_HEADER: "secret-abcd"}, enabled=True, tokens=tokens) is False
+
+
+def test_spec_cache_control_pin_is_dropped():
+    """The deprecated cache_control.type=pin never reaches the engine body."""
+    engine_body: dict = {}
+
+    apply_spec_cache_control_to_engine_body(
+        engine_body,
+        {"cache_control": {"type": "pin", "range": {"end": 3}}},
+    )
+
+    assert "agent_hint" not in engine_body
+
+
+def test_spec_cache_control_ephemeral_keeps_ttl_s_and_first_list_entry():
+    """Spec list form uses the first entry; ttl_s wins over the legacy ttl alias."""
+    engine_body: dict = {}
+
+    apply_spec_cache_control_to_engine_body(
+        engine_body,
+        {
+            "cache_control": [
+                {"type": "ephemeral", "ttl_s": 120, "range": {"start": 0, "end": 5}},
+                {"type": "ephemeral", "ttl_s": 60},
+            ]
+        },
+    )
+
+    assert engine_body["agent_hint"]["cache_control"] == {
+        "type": "ephemeral",
+        "ttl": 120,
+        "msg_offset": 5,
+    }
+
+
+def test_spec_cache_control_body_wins_and_malformed_type_is_ignored():
+    """A body declaration is never overwritten; unsupported spec types are dropped."""
+    engine_body = {"agent_hint": {"cache_control": {"type": "ephemeral", "ttl": 42}}}
+    apply_spec_cache_control_to_engine_body(
+        engine_body,
+        {"cache_control": {"type": "ephemeral", "ttl_s": 600}},
+    )
+    assert engine_body["agent_hint"]["cache_control"] == {"type": "ephemeral", "ttl": 42}
+
+    engine_body = {}
+    apply_spec_cache_control_to_engine_body(engine_body, {"cache_control": {"type": "pin"}})
+    assert "agent_hint" not in engine_body
+
+    engine_body = {}
+    apply_spec_cache_control_to_engine_body(engine_body, {"cache_control": {"type": "permanent"}})
+    assert "agent_hint" not in engine_body
+
+
+def test_spec_cache_control_range_start_gt_zero_is_dropped():
+    """Only range.start=0 is supported; the TTL survives without a msg_offset."""
+    engine_body: dict = {}
+
+    apply_spec_cache_control_to_engine_body(
+        engine_body,
+        {"cache_control": {"type": "ephemeral", "ttl_s": 60, "range": {"start": 2, "end": 9}}},
+    )
+
+    assert engine_body["agent_hint"]["cache_control"] == {"type": "ephemeral", "ttl": 60}
+
+
+def test_spec_cache_control_range_end_zero_is_dropped():
+    """msg_offset is 1-based: range.end=0 must not shift the engine cache by one."""
+    engine_body: dict = {}
+
+    apply_spec_cache_control_to_engine_body(
+        engine_body,
+        {"cache_control": {"type": "ephemeral", "ttl_s": 60, "range": {"end": 0}}},
+    )
+
+    assert engine_body["agent_hint"]["cache_control"] == {"type": "ephemeral", "ttl": 60}
+
+
+def test_spec_cache_control_non_positive_msg_offset_is_dropped():
+    engine_body: dict = {}
+
+    apply_spec_cache_control_to_engine_body(
+        engine_body,
+        {"cache_control": {"type": "ephemeral", "ttl_s": 60, "msg_offset": 0}},
+    )
+
+    assert engine_body["agent_hint"]["cache_control"] == {"type": "ephemeral", "ttl": 60}
+
+
+@pytest.mark.parametrize(("raw_ttl", "expected"), [(10, 60), (999999, 3600), (300, 300)])
+def test_spec_cache_control_ttl_is_clamped_like_cache_control(raw_ttl, expected):
+    """The engine TTL must match CacheControl's [60, 3600] clamp."""
+    engine_body: dict = {}
+
+    apply_spec_cache_control_to_engine_body(
+        engine_body,
+        {"cache_control": {"type": "ephemeral", "ttl_s": raw_ttl}},
+    )
+
+    assert engine_body["agent_hint"]["cache_control"]["ttl"] == expected

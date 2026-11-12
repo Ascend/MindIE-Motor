@@ -142,7 +142,7 @@ async def test_x1_control_without_explicit_ttl_keeps_the_binding(caplog):
     try:
         declarations = client._cache_declarations
         affinity = client._session_affinity
-        bare = {"type": "pin"}
+        bare = {"type": "ephemeral"}
 
         caplog.set_level(logging.INFO)
         assert await client.select_and_allocate(PDRole.ROLE_P, _request("x1-c", "s-x1", bare)) is not None
@@ -156,6 +156,34 @@ async def test_x1_control_without_explicit_ttl_keeps_the_binding(caplog):
         caplog.clear()
         assert await client.select_and_allocate(PDRole.ROLE_P, _request("x1-d", "s-x1", bare)) is not None
         assert _scheduled_affinity_outcome(caplog) == "hit", "the untouched binding must still be applied"
+    finally:
+        client._workload_reader.detach()
+        writer.release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("native_lib")
+async def test_location_only_pin_records_location_without_overriding_route(monkeypatch, caplog):
+    """MOTOR_SESSION_AFFINITY_ROUTE=0 keeps the pin as a location ledger only."""
+    client, writer = await _client_with_lifecycle()
+    try:
+        affinity = client._session_affinity
+        monkeypatch.setenv("MOTOR_SESSION_AFFINITY_ROUTE", "0")
+        resolved = []
+        monkeypatch.setattr(
+            "motor.coordinator.scheduler.runtime.scheduler_client.resolve_session_pin",
+            lambda *args, **kwargs: resolved.append(args),
+        )
+
+        caplog.set_level(logging.INFO)
+        result = await client.select_and_allocate(PDRole.ROLE_P, _request("loc-a", "s-loc", {"type": "ephemeral"}))
+
+        assert result is not None
+        assert resolved == [], "route-disabled affinity must not consult the pin for routing"
+        pin = affinity.get("s-loc", _ROLE)
+        assert pin is not None, "the dispatched instance must still be recorded as the KV location"
+        assert pin.instance_id == result[0].id
+        assert _scheduled_affinity_outcome(caplog) == "-"
     finally:
         client._workload_reader.detach()
         writer.release()

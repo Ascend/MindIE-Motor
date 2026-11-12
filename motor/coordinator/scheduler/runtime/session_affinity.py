@@ -55,6 +55,7 @@ AFFINITY_MAX_ENV = "MOTOR_SESSION_AFFINITY_MAX"
 AFFINITY_SHARED_ENV_FLAG = "MOTOR_SESSION_AFFINITY_SHARED"
 AFFINITY_SHM_KEY_ENV = "MOTOR_SESSION_AFFINITY_SHM_KEY"
 AFFINITY_PLACEMENT_ENV = "MOTOR_SESSION_AFFINITY_PLACEMENT"
+AFFINITY_ROUTE_ENV = "MOTOR_SESSION_AFFINITY_ROUTE"
 
 # Placement modes for decisions that create a NEW pin (fresh/stale/epoch):
 #   policy   — default; fall through to the normal scheduling policy (historical behavior)
@@ -249,6 +250,18 @@ def resolve_session_pin(
     if own_dropped is not None:
         return AffinityDecision(None, own_dropped)
     return AffinityDecision(None, _AFFINITY_OUTCOME_FRESH)
+
+
+def session_affinity_route_enabled() -> bool:
+    """Return whether a recorded pin may override the routing policy.
+
+    ``MOTOR_SESSION_AFFINITY_ROUTE=0`` keeps recording pins as a location
+    ledger (which engine holds a session's KV) but never routes by them, so a
+    KVC-only pin cannot skew placement. Unset or any other value stays on the
+    historical affinity-routing behavior.
+    """
+    raw = os.getenv(AFFINITY_ROUTE_ENV, "").strip().lower()
+    return raw not in ("0", "false", "off", "no", "disabled")
 
 
 def session_affinity_placement_mode() -> str:

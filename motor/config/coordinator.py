@@ -425,6 +425,12 @@ class SchedulerConfig:
     # gate and consumes the rate limiter's priority reserve. Single source shared by
     # the scheduler gate and the rate limiter.
     priority_admission_level: int = 3
+    # Soft session-affinity capacity gate. 0 disables it (historical hard
+    # stickiness). When > 0, a pinned instance whose SHM active-token load is
+    # above ``min_load * (1 + ratio)`` loses the pin and the request falls back
+    # to load_balance. This implements the handoff's "affinity is a preference,
+    # never a capacity override" rule.
+    affinity_load_gate_ratio: float = 0.0
     # kv_cache_affinity tunables (affinity + load + per-medium weights).
     kv_affinity: KvAffinityConfig = field(default_factory=KvAffinityConfig)
     # KV event registration config for kv-conductor.
@@ -686,12 +692,44 @@ class AgentStatusConfig:
     enabled: bool = False
     session_ttl_s: int = 3600
     max_sessions: int = 65536
+    # When True, one process (Obs) owns the session state machine and KVC
+    # lifecycle; inference workers forward every /agent-status event to it.
+    # Required for correctness with SO_REUSEPORT multi-worker inference: a
+    # per-worker timer cannot be cancelled by a ``running`` event that landed
+    # on another worker. Default False keeps the historical per-worker path.
+    central_lifecycle: bool = False
     # When True, /agent-status inherits the inference-plane API-key and rate-limit
     # gates (removed from their skip sets). Default False keeps the wire contract
     # with agent harnesses that send no auth header; enabling auth is the hardened
     # posture for deployments where the inference port is reachable beyond a
     # trusted network (finalize can mutate affinity for known sessions).
     require_infer_auth: bool = False
+
+
+@dataclass
+class KvcLifecycleConfig:
+    """Agent-hint KV-cache lifecycle (KVC) management.
+
+    Default off, so baseline behaviour is unchanged. ``enabled`` gates the
+    asynchronous lifecycle controller (pause -> idle offload/evict,
+    resume -> prefetch, finalize -> evict). ``idle_offload_s`` /
+    ``idle_evict_s`` are Motor-owned idle delays; 0 disables each stage.
+    """
+
+    enabled: bool = False
+    manage_timeout_s: float = 5.0
+    queue_size: int = 1024
+    # Motor-owned idle timers; 0 disables each stage.
+    idle_offload_s: float = 0.0
+    idle_evict_s: float = 0.0
+    # Capacity gate for offload/evict: act only when the max endpoint KV usage
+    # is at/above this ratio. 0 disables the gate (always act).
+    offload_kv_usage_high_water: float = 0.0
+    # Pull an offloaded session back on the next out-of-band ``resume``.
+    prefetch_enabled: bool = True
+    # Shared-memory region used to export KVC counters to the Obs process.
+    # Empty disables export; the name must match in every coordinator process.
+    metrics_shm_name: str = "motor_kvc_metrics"
 
 
 @dataclass
@@ -884,6 +922,7 @@ class CoordinatorConfig:
     mgmt_api_key_config: MgmtAPIKeyConfig = field(default_factory=MgmtAPIKeyConfig)
     rate_limit_config: RateLimitConfig = field(default_factory=RateLimitConfig)
     agent_status_config: AgentStatusConfig = field(default_factory=AgentStatusConfig)
+    kvc_lifecycle_config: KvcLifecycleConfig = field(default_factory=KvcLifecycleConfig)
     strict_priority_config: StrictPriorityConfig = field(default_factory=StrictPriorityConfig)
     standby_config: StandbyConfig = field(default_factory=StandbyConfig)
 
@@ -1000,6 +1039,14 @@ class CoordinatorConfig:
                 "recompute_max_retry": ignore_removed_recompute_retry,
             }
 
+            def ignore_removed_pin_ttl(_obj, _key, _value):
+                logger.warning(
+                    "kvc_lifecycle_config.pin_ttl_s is deprecated and ignored; "
+                    "cache_control.type=pin is no longer supported"
+                )
+
+            kvc_lifecycle_handlers = {"pin_ttl_s": ignore_removed_pin_ttl}
+
             # Build AIGW model metadata from engine configs.
             # This runs whenever engine sections are present, regardless of
             # whether the user wrote an "aigw" key in motor_coordinator_config.
@@ -1021,6 +1068,7 @@ class CoordinatorConfig:
                 ("mgmt_api_key_config", config.mgmt_api_key_config, None),
                 ("rate_limit_config", config.rate_limit_config, None),
                 ("agent_status_config", config.agent_status_config, None),
+                ("kvc_lifecycle_config", config.kvc_lifecycle_config, kvc_lifecycle_handlers),
                 ("strict_priority_config", config.strict_priority_config, None),
                 ("standby_config", config.standby_config, None),
                 ("etcd_config", config.etcd_config, None),
@@ -1375,12 +1423,31 @@ class CoordinatorConfig:
             self._errors.append("scheduler_config.priority_load_threshold cannot be negative")
         if self.scheduler_config.priority_admission_level < 0:
             self._errors.append("scheduler_config.priority_admission_level cannot be negative")
+        if self.scheduler_config.affinity_load_gate_ratio < 0:
+            self._errors.append("scheduler_config.affinity_load_gate_ratio cannot be negative")
 
         # Validate agent_status out-of-band channel (Agent Hint Phase 4)
         if self.agent_status_config.session_ttl_s <= 0:
             self._errors.append("agent_status_config.session_ttl_s must be positive")
         if self.agent_status_config.max_sessions <= 0:
             self._errors.append("agent_status_config.max_sessions must be positive")
+        # KVC lifecycle: thresholds are 0-disabled, everything else must be positive.
+        if self.kvc_lifecycle_config.manage_timeout_s <= 0:
+            self._errors.append("kvc_lifecycle_config.manage_timeout_s must be positive")
+        if self.kvc_lifecycle_config.queue_size <= 0:
+            self._errors.append("kvc_lifecycle_config.queue_size must be positive")
+        if self.kvc_lifecycle_config.idle_offload_s < 0:
+            self._errors.append("kvc_lifecycle_config.idle_offload_s cannot be negative")
+        if self.kvc_lifecycle_config.idle_evict_s < 0:
+            self._errors.append("kvc_lifecycle_config.idle_evict_s cannot be negative")
+        if (
+            self.kvc_lifecycle_config.idle_offload_s > 0
+            and self.kvc_lifecycle_config.idle_evict_s > 0
+            and self.kvc_lifecycle_config.idle_evict_s < self.kvc_lifecycle_config.idle_offload_s
+        ):
+            self._errors.append("kvc_lifecycle_config.idle_evict_s must be >= idle_offload_s")
+        if not 0.0 <= self.kvc_lifecycle_config.offload_kv_usage_high_water <= 1.0:
+            self._errors.append("kvc_lifecycle_config.offload_kv_usage_high_water must be in [0, 1]")
         # WP-E2: a strict channel enabled without credentials is a misconfig
         # (every strict_priority would be stripped at the entry gate).
         if self.strict_priority_config.enabled and not [

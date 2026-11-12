@@ -20,6 +20,7 @@ from typing import Any, Awaitable, Callable
 import msgspec
 import zmq
 
+from motor.common.http.http_client import HTTPClientPool
 from motor.common.logger import get_logger
 from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction
 from motor.common.resources.instance import Instance, PDRole
@@ -27,6 +28,7 @@ from motor.config.coordinator import (
     KV_AFFINITY_MODE_UNIFIED,
     KV_AFFINITY_MODES,
     KvAffinityConfig,
+    KvcLifecycleConfig,
 )
 from motor.coordinator.domain import (
     InstanceReadiness,
@@ -65,6 +67,9 @@ from motor.coordinator.scheduler.policy.dynamic_bucket import (
 from motor.coordinator.scheduler.policy.kv_cache_affinity import KvCacheAffinityPolicy
 from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
 from motor.coordinator.scheduler.policy.round_robin import RoundRobinPolicy
+from motor.coordinator.scheduler.runtime.agent_hint_lifecycle import (
+    build_manage_request_body,
+)
 from motor.coordinator.scheduler.runtime.dp_stats import DpStatsLogger
 from motor.coordinator.scheduler.runtime.kv_usage import (
     KvUsageShmReader,
@@ -80,6 +85,7 @@ from motor.coordinator.scheduler.runtime.session_affinity import (
     resolve_session_pin,
     select_balanced_instance,
     session_affinity_placement_mode,
+    session_affinity_route_enabled,
 )
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
     AGENT_STATUS_TOPIC,
@@ -516,8 +522,8 @@ class _SchedulerTransport:
 OnInstanceChangeNotify = Callable[[int | None, dict | None], Awaitable[None]]
 
 # Callback when an out-of-band agent_status event is received from Scheduler PUB
-# (multipart: [topic, msgpack_payload]); args: session_id, state.
-OnAgentStatusEventNotify = Callable[[str, str], Awaitable[None]]
+# (multipart: [topic, msgpack_payload]); args: session_id, state, epoch.
+OnAgentStatusEventNotify = Callable[[str, str, int | None], Awaitable[None]]
 
 # Callback when circuit breaker state change is received from Scheduler PUB
 OnCircuitBreakerChangeNotify = Callable[[int, str], Awaitable[None]]
@@ -616,9 +622,11 @@ class _InstancePushSubscriber:
                     elif topic == AGENT_STATUS_TOPIC and self._on_agent_status_event:
                         payload = self._parse_msgpack_frame(frames, 1)
                         if payload and isinstance(payload, dict):
+                            raw_epoch = payload.get("epoch")
                             await self._on_agent_status_event(
                                 str(payload.get("session_id", "")),
                                 str(payload.get("state", "")),
+                                raw_epoch if isinstance(raw_epoch, int) and not isinstance(raw_epoch, bool) else None,
                             )
                 except asyncio.CancelledError:
                     break
@@ -684,12 +692,17 @@ class SchedulerClientConfig:
     # the gate. The gate never empties the pool (availability first); 0 disables.
     priority_load_threshold: int = 0
     priority_admission_level: int = 3
+    # Soft affinity capacity gate (0 disables; see SchedulerConfig).
+    affinity_load_gate_ratio: float = 0.0
     dp_stats_window: int = 60
     # Each inference worker dumps its request counts every dp_stats_window seconds.
     # Obs/standby (worker_index is None) leave this off.
     log_dp_stats: bool = False
     tls_config: Any | None = None
     on_instance_refreshed: OnInstanceRefreshedCallback | None = None
+    # KVC-L0 (Agent Hint lifecycle): finalize -> engine evict. None/disabled
+    # keeps the management path inert (default off).
+    kvc_lifecycle: KvcLifecycleConfig | None = None
 
 
 class AsyncSchedulerClient:
@@ -783,12 +796,15 @@ class AsyncSchedulerClient:
             else None
         )
 
+        # KVC-L0 lifecycle (default off): finalize -> engine evict.
+        self._kvc_lifecycle = config.kvc_lifecycle
+        self._tls_config = config.tls_config
         # Session affinity (env-gated; None keeps baseline scheduling untouched)
         self._session_affinity: SessionAffinityTable | None = create_session_affinity_from_env()
         # Optional hook for the worker's agent-session state machine: PUB fan-out
         # events drive it so finalize's terminal semantics hold fleet-wide, not
         # only on the worker that received the POST (review 194528015).
-        self.agent_status_state_listener: Callable[[str, str], None] | None = None
+        self.agent_status_state_listener: Callable[[str, str, int | None], None] | None = None
         # Monotonic counter feeding the balanced-placement tie-break (per worker process).
         self._affinity_placement_seq = 0
 
@@ -800,6 +816,7 @@ class AsyncSchedulerClient:
         # Soft-priority admission gate (Agent Hint `priority`); 0 disables the gate.
         self._priority_load_threshold = max(0, int(config.priority_load_threshold))
         self._priority_admission_level = max(0, int(config.priority_admission_level))
+        self._affinity_load_gate_ratio = max(0.0, float(config.affinity_load_gate_ratio))
 
     @property
     def connected(self) -> bool:
@@ -1230,13 +1247,67 @@ class AsyncSchedulerClient:
         of the pinned path returning None / 503 (review 194976698 — the default
         affinity path previously omitted this filter).
         """
-        return {
+        eligible = {
             candidate.id
             for candidate in self._filter_instances(
                 list(pool.values()), required_engine_type, required_dispatch_capability
             )
             if not self.is_instance_blocked(candidate.id)
         }
+        return self._apply_affinity_load_gate(eligible)
+
+    def _apply_affinity_load_gate(self, eligible: set[int]) -> set[int]:
+        """Drop pins to instances much busier than the pool's least-loaded one.
+
+        The handoff rejects a hard pin that ignores capacity (§1.1/§4.3): session
+        stickiness raised the hit rate but clustered long sessions and destroyed
+        the TTFT tail. This is the soft-capacity gate — when an instance's SHM
+        active-token load exceeds ``min_load * (1 + ratio)``, its pin becomes
+        stale and the request falls back to the normal load-balance policy.
+        ``ratio <= 0`` (default) disables the gate; an empty load snapshot or a
+        fully-gated pool also falls back to the unfiltered set so a request never
+        fails for lack of a candidate.
+        """
+        ratio = getattr(self, "_affinity_load_gate_ratio", 0.0)
+        if ratio <= 0.0 or len(eligible) <= 1:
+            return eligible
+        loads = self._instance_active_tokens()
+        if not loads:
+            return eligible
+        eligible_loads = {iid: max(0.0, float(loads.get(iid, 0.0))) for iid in eligible}
+        min_load = min(eligible_loads.values())
+        threshold = min_load * (1.0 + ratio)
+        gated = {iid for iid, load in eligible_loads.items() if load <= threshold}
+        if not gated or gated == eligible:
+            return eligible
+        logger.info(
+            "affinity capacity gate: min_load=%.1f ratio=%.2f kept=%s dropped=%s",
+            min_load,
+            ratio,
+            sorted(gated),
+            sorted(set(eligible) - gated),
+        )
+        return gated
+
+    def capacity_pressure(self) -> bool:
+        """Whether KVC offload/evict should act now.
+
+        ``offload_kv_usage_high_water <= 0`` disables the gate (always act).
+        Otherwise act only when some endpoint's cached KV usage reaches the
+        threshold; an empty/missing scrape is treated as "no pressure" so a
+        transient metrics outage cannot fan out blind evictions.
+        """
+        cfg = self._kvc_lifecycle
+        threshold = float(getattr(cfg, "offload_kv_usage_high_water", 0.0) or 0.0) if cfg else 0.0
+        if threshold <= 0.0:
+            return True
+        instances = self._instances_from_cache()
+        for instance in instances.values():
+            for endpoint in instance.get_all_endpoints(include_headless=True):
+                usage = get_endpoint_kv_cache_usage(instance, endpoint)
+                if usage is not None and usage >= threshold:
+                    return True
+        return False
 
     def _request_priority(self, req_info: RequestInfo) -> int | None:
         """Hint priority level of the request (Agent Hint `priority`), or None."""
@@ -1457,6 +1528,7 @@ class AsyncSchedulerClient:
             target_instance_id is None
             and self._session_affinity is not None
             and (affinity_session_id or affinity_parent_session_id)
+            and session_affinity_route_enabled()
         ):
             pool = await self.get_available_instances(role)
             eligible = self._affinity_eligible_instance_ids(
@@ -2347,7 +2419,7 @@ class AsyncSchedulerClient:
                 instance_id,
             )
 
-    async def _on_agent_status_event(self, session_id: str, state: str) -> None:
+    async def _on_agent_status_event(self, session_id: str, state: str, epoch: int | None = None) -> None:
         """Apply an out-of-band agent_status fan-out from Scheduler PUB (Phase 4).
 
         The fan-out drives two things: the worker's local session state machine
@@ -2364,7 +2436,7 @@ class AsyncSchedulerClient:
         listener = getattr(self, "agent_status_state_listener", None)
         if listener is not None:
             try:
-                listener(session_id, state)
+                listener(session_id, state, epoch=epoch)
             except Exception as e:
                 logger.warning(
                     "agent status state listener failed: session_id=%s state=%s err=%s", session_id, state, e
@@ -2463,7 +2535,7 @@ class AsyncSchedulerClient:
             return 0
         return self._session_affinity.drop_all_roles(session_id)
 
-    async def report_agent_status(self, session_id: str, state: str) -> None:
+    async def report_agent_status(self, session_id: str, state: str, epoch: int | None = None) -> None:
         """Relay an out-of-band agent_status event to SchedulerServer (Phase 4).
 
         Fire-and-forget like ``report_cb_event``: the finalize fan-out releases
@@ -2484,6 +2556,10 @@ class AsyncSchedulerClient:
             data={
                 "session_id": session_id,
                 "state": state,
+                # Carry the epoch through the PUB fan-out: the receiving worker's
+                # state machine would otherwise treat finalize as epoch 0 and drop
+                # it as stale once its local record advanced (review 200149634).
+                **({"epoch": epoch} if epoch is not None else {}),
             },
         )
 
@@ -2502,6 +2578,163 @@ class AsyncSchedulerClient:
 
         task = asyncio.create_task(self._transport.send_request(request))
         task.add_done_callback(_on_agent_status_send_done)
+
+    def _session_pins_for_manage(self, session_id: str) -> list[object]:
+        """Return the distinct instance pins for a session across all role pools."""
+        affinity = self._session_affinity
+        if affinity is None:
+            return []
+        pins: list[object] = []
+        seen: set[int] = set()
+        for role in (PDRole.ROLE_U, PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_E):
+            pin = affinity.get(session_id, role.value)
+            if pin is None or pin.instance_id in seen:
+                continue
+            seen.add(pin.instance_id)
+            pins.append(pin)
+        return pins
+
+    @staticmethod
+    def _endpoint_for_pin(instance: Instance, endpoint_id: int | None) -> Endpoint | None:
+        """Resolve the pinned endpoint (by id) or fall back to one healthy endpoint."""
+        if endpoint_id is not None:
+            for endpoint in instance.get_all_endpoints(include_headless=True):
+                if endpoint.id == endpoint_id:
+                    return endpoint
+            # The pin's endpoint may have been re-registered/replaced (DP). Falling
+            # back to a healthy endpoint beats leaving the session unmanaged forever.
+            logger.warning(
+                "pinned endpoint_id=%s not found on instance_id=%s; falling back to a healthy endpoint",
+                endpoint_id,
+                instance.id,
+            )
+            return select_endpoint_for_instance(instance)
+        return select_endpoint_for_instance(instance)
+
+    async def send_session_manage_request(
+        self,
+        session_id: str,
+        edit_type: str,
+        *,
+        target: str = "session",
+        block_start: int | None = None,
+        block_end: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Send one engine ``context_management`` edit to every instance holding the session.
+
+        KVC-L0 entry point used by the lifecycle controller (finalize -> evict).
+        Best-effort: no pin / no endpoint / HTTP failure only logs a WARNING and
+        returns what succeeded; it never retries and never raises.
+        """
+        cfg = self._kvc_lifecycle
+        if cfg is None or not getattr(cfg, "enabled", False):
+            return []
+        pins = self._session_pins_for_manage(session_id)
+        if not pins:
+            logger.warning(
+                "kvc %s skipped: no session pin (affinity disabled or expired): session_id=%s",
+                edit_type,
+                session_id,
+            )
+            return []
+        instances = self._instances_from_cache()
+        results: list[dict[str, Any]] = []
+        for pin in pins:
+            instance = instances.get(pin.instance_id)
+            if instance is None:
+                logger.warning(
+                    "kvc %s skipped: pinned instance not in cache: session_id=%s instance_id=%s",
+                    edit_type,
+                    session_id,
+                    pin.instance_id,
+                )
+                continue
+            endpoint = self._endpoint_for_pin(instance, pin.endpoint_id)
+            if endpoint is None:
+                logger.warning(
+                    "kvc %s skipped: no endpoint for pinned instance: session_id=%s instance_id=%s",
+                    edit_type,
+                    session_id,
+                    pin.instance_id,
+                )
+                continue
+            try:
+                body = build_manage_request_body(
+                    session_id,
+                    edit_type,
+                    model=instance.model_name,
+                    target=target,
+                    block_start=block_start,
+                    block_end=block_end,
+                )
+            except ValueError as e:
+                logger.warning("kvc %s skipped: invalid request: session_id=%s error=%s", edit_type, session_id, e)
+                # Keep the results already collected (and try the remaining pins);
+                # an invalid body for one instance must not discard partial success.
+                continue
+            logger.info(
+                "kvc manage dispatch: session_id=%s edit=%s instance_id=%s endpoint_id=%s target=%s:%s",
+                session_id,
+                edit_type,
+                pin.instance_id,
+                pin.endpoint_id,
+                endpoint.ip,
+                endpoint.business_port,
+            )
+            result = await self._post_manage_request(endpoint, body, timeout=cfg.manage_timeout_s)
+            if result is not None:
+                results.append(result)
+        return results
+
+    async def _post_manage_request(
+        self,
+        endpoint: Endpoint,
+        body: dict[str, Any],
+        *,
+        timeout: float,
+    ) -> dict[str, Any] | None:
+        """POST one manage request and return the engine's ``edit_results`` entry (or None)."""
+        try:
+            client = await HTTPClientPool().get_client(
+                endpoint.ip,
+                endpoint.business_port,
+                tls_config=self._tls_config,
+            )
+            response = await asyncio.wait_for(client.post("/v1/chat/completions", json=body), timeout=timeout)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as e:  # noqa: BLE001 — KVC must never break scheduling/status paths
+            logger.warning(
+                "kvc manage request failed: session_id=%s endpoint=%s:%s error=%s",
+                body.get("agent_hint", {}).get("session_id"),
+                endpoint.ip,
+                endpoint.business_port,
+                e,
+            )
+            return None
+        edit_results = None
+        if isinstance(payload, dict):
+            hint_response = payload.get("agent_hint_response")
+            if isinstance(hint_response, dict):
+                edit_results = hint_response.get("edit_results")
+        if not isinstance(edit_results, list) or not edit_results:
+            logger.warning(
+                "kvc manage request returned no edit_results: session_id=%s endpoint=%s:%s",
+                body.get("agent_hint", {}).get("session_id"),
+                endpoint.ip,
+                endpoint.business_port,
+            )
+            return None
+        result = edit_results[0]
+        if isinstance(result, dict) and not result.get("op_status"):
+            logger.warning(
+                "kvc manage request op_status=false: session_id=%s endpoint=%s:%s fail_reason=%s",
+                body.get("agent_hint", {}).get("session_id"),
+                endpoint.ip,
+                endpoint.business_port,
+                result.get("fail_reason"),
+            )
+        return result if isinstance(result, dict) else None
 
     def _select_endpoint_candidates_from_list_with_policy(
         self,

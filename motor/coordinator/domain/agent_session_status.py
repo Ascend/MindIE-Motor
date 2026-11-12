@@ -17,12 +17,19 @@ phases can hook engine KV actions (T-A2/A5, gated on engine capability B1).
 
 Semantics (design 20261012-01 §2.3):
 
-- Out-of-order tolerant: any state may follow any state — agent lifecycles
-  are framework-specific, so there is no legal-transition table. ``running``
-  arriving before ``tool`` is recorded as-is.
-- ``finalize`` is terminal: a repeated ``finalize`` is idempotent (applied,
-  state unchanged); any other state after finalize is not applied (WARN,
-  applied=false) — terminal means terminal.
+- The lifecycle contract has four canonical states: ``pause`` / ``resume`` /
+  ``running`` / ``finalize``. ``tool`` and ``suspend`` are deprecated wire
+  aliases and are normalized to ``pause`` here as well as at the endpoint.
+- Out-of-order tolerant: any canonical state may follow any state — agent
+  lifecycles are framework-specific, so there is no legal-transition table.
+  ``resume`` is an explicit event; ``running`` after ``pause`` stays
+  ``running`` and is not inferred as a resume.
+- ``finalize`` terminates the CURRENT epoch: a repeated ``finalize`` is
+  idempotent (applied, state unchanged); ``resume`` and other states after
+  finalize are not applied (WARN, applied=false). Only a ``running`` event
+  carrying a NEWER epoch may reuse the same ``session_id`` as a fresh context
+  generation (reason ``resumed_epoch``); it is not a continuation of the
+  finalized session's KV.
 - Unknown sessions create a record (covers Motor restarts with DSH replaying
   pending events).
 - TTL expiry uses the SERVER receipt clock; the client-reported
@@ -31,8 +38,8 @@ Semantics (design 20261012-01 §2.3):
   ``max_sessions``; no background sweeper thread.
 
 Field-level validation (state whitelist, tools shape) belongs to the endpoint
-(``AgentStatusHint``); this machine only guards types defensively and never
-raises — callers decide the HTTP outcome.
+(``AgentStatusHint``); this machine normalizes aliases and rejects states
+outside the canonical set without raising — callers decide the HTTP outcome.
 """
 
 import threading
@@ -45,7 +52,25 @@ from motor.common.logger import get_logger
 
 logger = get_logger(__name__)
 
+_PAUSE_STATE = "pause"
+_RESUME_STATE = "resume"
+_RUNNING_STATE = "running"
 _FINAL_STATE = "finalize"
+_CANONICAL_STATES = frozenset({_PAUSE_STATE, _RESUME_STATE, _RUNNING_STATE, _FINAL_STATE})
+_LEGACY_STATE_ALIASES = {"tool": _PAUSE_STATE, "suspend": _PAUSE_STATE}
+
+
+def _normalize_epoch(value: int | None) -> int:
+    """Clamp an untrusted epoch to a non-negative int; missing means epoch 0."""
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def normalize_agent_state(state: str) -> str:
+    """Map deprecated wire aliases onto the canonical lifecycle states."""
+    return _LEGACY_STATE_ALIASES.get(state, state)
 
 
 @dataclass
@@ -79,6 +104,10 @@ class AgentSessionRecord:
     # Client-reported entry timestamp (unix ms); observability only, never
     # used for expiry (clock skew between agent and server).
     state_since_ms: int | None = None
+    # Agent-hint session epoch. A newer epoch may reuse the same session_id
+    # as a fresh context generation; it does not continue the finalized KV.
+    epoch: int = 0
+    finalized_epoch: int | None = None
     # Server receipt time of the latest applied event (unix ms).
     updated_at_ms: int = 0
     transition_count: int = 0
@@ -90,6 +119,8 @@ class AgentSessionRecord:
             "reason": self.reason,
             "tools": self.tools,
             "state_since_ms": self.state_since_ms,
+            "epoch": self.epoch,
+            "finalized_epoch": self.finalized_epoch,
             "updated_at_ms": self.updated_at_ms,
             "transition_count": self.transition_count,
         }
@@ -146,48 +177,97 @@ class AgentSessionStateMachine:
         reason: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         state_since_ms: int | None = None,
+        epoch: int | None = None,
     ) -> AgentSessionTransition:
         """Apply one out-of-band event; never raises.
 
         Returns the transition with ``applied``/``reason``: ``applied`` on a
         new/updated record or an idempotent duplicate ``finalize``;
-        ``terminal`` (not applied) for any state after finalize; ``invalid``
-        for a non-string/empty session or state.
+        ``terminal`` (not applied) for any state after finalize except a newer
+        epoch ``running``; ``invalid`` for a non-string/empty session or a
+        state outside the canonical set.
         """
         if not isinstance(session_id, str) or not session_id:
             return AgentSessionTransition(False, "invalid_session", "", str(state))
         if not isinstance(state, str) or not state:
             return AgentSessionTransition(False, "invalid_state", session_id, "")
+        state = normalize_agent_state(state)
+        if state not in _CANONICAL_STATES:
+            logger.warning(
+                "Invalid agent_status.state=%r; expected one of %s.",
+                state,
+                sorted(_CANONICAL_STATES),
+            )
+            return AgentSessionTransition(False, "invalid_state", session_id, state)
         now_ms = int(time.time() * 1000)
         with self._lock:
             self._expire_locked(now_ms)
             record = self._records.get(session_id)
+            event_epoch = _normalize_epoch(epoch)
             if record is not None and record.state == _FINAL_STATE:
                 if state == _FINAL_STATE:
                     # Repeated finalize: idempotent, record untouched.
                     return AgentSessionTransition(True, "idempotent", session_id, _FINAL_STATE)
+                finalized_epoch = record.finalized_epoch if record.finalized_epoch is not None else record.epoch
+                if state == _RUNNING_STATE and event_epoch > finalized_epoch:
+                    # A newer epoch means the same session_id was reused for a
+                    # fresh context generation; it is not a continuation of the
+                    # finalized session. Affinity and KVC ledgers start clean.
+                    previous_state = record.state
+                    record.state = state
+                    record.reason = reason
+                    record.tools = list(tools or [])
+                    record.state_since_ms = state_since_ms
+                    record.epoch = event_epoch
+                    record.finalized_epoch = None
+                    record.updated_at_ms = now_ms
+                    record.transition_count += 1
+                    self._records.move_to_end(session_id)
+                    self._expiry_order[session_id] = None
+                    self._expiry_order.move_to_end(session_id)
+                    return AgentSessionTransition(True, "resumed_epoch", session_id, state, previous_state)
                 logger.warning(
-                    "agent_status event after finalize ignored: session_id=%s state=%s",
+                    "agent_status event after finalize ignored: session_id=%s state=%s epoch=%d finalized_epoch=%d",
                     session_id,
                     state,
+                    event_epoch,
+                    finalized_epoch,
                 )
                 return AgentSessionTransition(False, "terminal", session_id, state, _FINAL_STATE)
             previous_state = record.state if record is not None else None
+            # A missing epoch means "old client / not supplied": it must not be
+            # compared as 0 against a record that already advanced, or every
+            # epoch-less event would be silently dropped as stale.
+            epoch_supplied = epoch is not None
             if record is None:
                 record = AgentSessionRecord(
                     state=state,
                     reason=reason,
                     tools=list(tools or []),
                     state_since_ms=state_since_ms,
+                    epoch=event_epoch,
+                    finalized_epoch=event_epoch if state == _FINAL_STATE else None,
                     updated_at_ms=now_ms,
                     transition_count=1,
                 )
                 self._records[session_id] = record
             else:
+                if epoch_supplied and event_epoch < record.epoch:
+                    logger.debug(
+                        "agent_status stale epoch ignored: session_id=%s state=%s epoch=%d current=%d",
+                        session_id,
+                        state,
+                        event_epoch,
+                        record.epoch,
+                    )
+                    return AgentSessionTransition(False, "stale_epoch", session_id, state, record.state)
                 record.state = state
                 record.reason = reason
                 record.tools = list(tools or [])
                 record.state_since_ms = state_since_ms
+                record.epoch = max(record.epoch, event_epoch)
+                if state == _FINAL_STATE:
+                    record.finalized_epoch = event_epoch
                 record.updated_at_ms = now_ms
                 record.transition_count += 1
             self._records.move_to_end(session_id)

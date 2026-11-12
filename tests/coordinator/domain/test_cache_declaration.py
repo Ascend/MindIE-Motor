@@ -14,7 +14,6 @@ import pytest
 
 from motor.coordinator.domain.cache_declaration import (
     DECL_TYPE_EPHEMERAL,
-    DECL_TYPE_PIN,
     LIFECYCLE_ENV_FLAG,
     LIFECYCLE_MAX_ENV,
     LIFECYCLE_SWEEP_ENV,
@@ -63,26 +62,26 @@ def test_declare_records_expiry_window():
 def test_declare_clamps_ttl_into_spec_window_and_ceiling():
     """Parser clamps to [60, 3600]; the table re-clamps defensively (incl. configured ceiling)."""
     table = CacheDeclarationTable()
-    assert table.declare("low", DECL_TYPE_PIN, 5, now_ms=0).ttl_s == 60
-    assert table.declare("high", DECL_TYPE_PIN, 99_999, now_ms=0).ttl_s == 3600
+    assert table.declare("low", DECL_TYPE_EPHEMERAL, 5, now_ms=0).ttl_s == 60
+    assert table.declare("high", DECL_TYPE_EPHEMERAL, 99_999, now_ms=0).ttl_s == 3600
 
     table.update_limits(16, 120, now_ms=0)
-    assert table.declare("cfg", DECL_TYPE_PIN, 600, now_ms=0).ttl_s == 120
+    assert table.declare("cfg", DECL_TYPE_EPHEMERAL, 600, now_ms=0).ttl_s == 120
     table.update_limits(16, 1, now_ms=0)  # ceiling below the floor is lifted to the floor
-    assert table.declare("floor", DECL_TYPE_PIN, 600, now_ms=0).ttl_s == 60
+    assert table.declare("floor", DECL_TYPE_EPHEMERAL, 600, now_ms=0).ttl_s == 60
 
 
 def test_declare_renews_existing_declaration():
     """Re-declaring the same session overwrites in place and extends the window."""
     table = CacheDeclarationTable()
     table.declare("s-1", DECL_TYPE_EPHEMERAL, 60, now_ms=0)
-    renewed = table.declare("s-1", DECL_TYPE_PIN, 600, msg_offset=3, now_ms=10_000)
+    renewed = table.declare("s-1", DECL_TYPE_EPHEMERAL, 600, msg_offset=3, now_ms=10_000)
 
     assert len(table) == 1
     assert renewed is not None
     current = table.get("s-1", now_ms=10_000)
     assert current is not None
-    assert current.decl_type == DECL_TYPE_PIN
+    assert current.decl_type == DECL_TYPE_EPHEMERAL
     assert current.msg_offset == 3
     assert current.expire_ms == 10_000 + 600_000
 
@@ -91,7 +90,7 @@ def test_sweep_returns_expired_and_keeps_active():
     """Only the elapsed declaration is handed to the keeper."""
     table = CacheDeclarationTable()
     table.declare("short", DECL_TYPE_EPHEMERAL, 60, now_ms=0)
-    table.declare("long", DECL_TYPE_PIN, 600, now_ms=0)
+    table.declare("long", DECL_TYPE_EPHEMERAL, 600, now_ms=0)
 
     assert table.sweep(now_ms=59_999) == []
     expired = table.sweep(now_ms=60_000)
@@ -104,8 +103,8 @@ def test_sweep_returns_expired_and_keeps_active():
 def test_sweep_orders_by_expiry_and_drains():
     """Keeper processes oldest expiry first, and a second sweep is empty."""
     table = CacheDeclarationTable()
-    table.declare("b", DECL_TYPE_PIN, 120, now_ms=0)
-    table.declare("a", DECL_TYPE_PIN, 60, now_ms=0)
+    table.declare("b", DECL_TYPE_EPHEMERAL, 120, now_ms=0)
+    table.declare("a", DECL_TYPE_EPHEMERAL, 60, now_ms=0)
 
     expired = table.sweep(now_ms=600_000)
     assert [decl.session_id for decl in expired] == ["a", "b"]
@@ -136,7 +135,7 @@ def test_redeclare_cancels_pending_release():
     table.declare("s-1", DECL_TYPE_EPHEMERAL, 60, now_ms=0)
     table.get("s-1", now_ms=60_000)  # expires -> pending
 
-    table.declare("s-1", DECL_TYPE_PIN, 600, now_ms=60_001)
+    table.declare("s-1", DECL_TYPE_EPHEMERAL, 600, now_ms=60_001)
     assert table.pending_release_count == 0
     assert table.sweep(now_ms=60_002) == []
     assert table.get("s-1", now_ms=60_002) is not None
@@ -145,11 +144,11 @@ def test_redeclare_cancels_pending_release():
 def test_drop_forgets_active_and_pending():
     """finalize forgets the session outright, so the keeper cannot release it twice."""
     table = CacheDeclarationTable()
-    table.declare("s-1", DECL_TYPE_PIN, 60, now_ms=0)
+    table.declare("s-1", DECL_TYPE_EPHEMERAL, 60, now_ms=0)
     assert table.drop("s-1") is True
     assert table.drop("s-1") is False
 
-    table.declare("s-2", DECL_TYPE_PIN, 60, now_ms=0)
+    table.declare("s-2", DECL_TYPE_EPHEMERAL, 60, now_ms=0)
     table.get("s-2", now_ms=60_000)  # expires -> pending
     assert table.drop("s-2") is True
     assert table.pending_release_count == 0
@@ -159,11 +158,11 @@ def test_drop_forgets_active_and_pending():
 def test_get_does_not_refresh_recency():
     """Regression: reads must not reorder LRU, or a stale declaration outlives newer ones."""
     table = CacheDeclarationTable(max_declarations=2)
-    table.declare("old", DECL_TYPE_PIN, 600, now_ms=0)
-    table.declare("new", DECL_TYPE_PIN, 600, now_ms=1_000)
+    table.declare("old", DECL_TYPE_EPHEMERAL, 600, now_ms=0)
+    table.declare("new", DECL_TYPE_EPHEMERAL, 600, now_ms=1_000)
 
     assert table.get("old", now_ms=1_000) is not None
-    table.declare("newest", DECL_TYPE_PIN, 600, now_ms=2_000)
+    table.declare("newest", DECL_TYPE_EPHEMERAL, 600, now_ms=2_000)
 
     assert table.get("old", now_ms=2_000) is None
     assert table.get("new", now_ms=2_000) is not None
@@ -173,9 +172,9 @@ def test_get_does_not_refresh_recency():
 def test_capacity_eviction_keeps_newest():
     """Least-recently-declared is evicted first; eviction drops bookkeeping only."""
     table = CacheDeclarationTable(max_declarations=2)
-    table.declare("a", DECL_TYPE_PIN, 600, now_ms=0)
-    table.declare("b", DECL_TYPE_PIN, 600, now_ms=1)
-    table.declare("c", DECL_TYPE_PIN, 600, now_ms=2)
+    table.declare("a", DECL_TYPE_EPHEMERAL, 600, now_ms=0)
+    table.declare("b", DECL_TYPE_EPHEMERAL, 600, now_ms=1)
+    table.declare("c", DECL_TYPE_EPHEMERAL, 600, now_ms=2)
 
     assert len(table) == 2
     assert table.get("a", now_ms=3) is None
@@ -189,7 +188,7 @@ def test_update_limits_shrinks_capacity():
     """Hot reload applies immediately and evicts down to the new bound."""
     table = CacheDeclarationTable(max_declarations=8)
     for index in range(5):
-        table.declare(f"s-{index}", DECL_TYPE_PIN, 600, now_ms=index)
+        table.declare(f"s-{index}", DECL_TYPE_EPHEMERAL, 600, now_ms=index)
 
     table.update_limits(2, 3600, now_ms=5)
 
@@ -203,12 +202,12 @@ def test_malformed_input_is_rejected_without_raising():
     """Malformed declarations degrade silently; they never fail a request."""
     table = CacheDeclarationTable()
 
-    assert table.declare("", DECL_TYPE_PIN, 60) is None
-    assert table.declare(None, DECL_TYPE_PIN, 60) is None
+    assert table.declare("", DECL_TYPE_EPHEMERAL, 60) is None
+    assert table.declare(None, DECL_TYPE_EPHEMERAL, 60) is None
     assert table.declare("s", "forever", 60) is None
-    assert table.declare("s", DECL_TYPE_PIN, "abc") is None
-    assert table.declare("s", DECL_TYPE_PIN, None) is None
-    assert table.declare("s", DECL_TYPE_PIN, True) is None
+    assert table.declare("s", DECL_TYPE_EPHEMERAL, "abc") is None
+    assert table.declare("s", DECL_TYPE_EPHEMERAL, None) is None
+    assert table.declare("s", DECL_TYPE_EPHEMERAL, True) is None
     assert table.get("") is None
     assert table.get(None) is None
     assert table.drop("") is False
@@ -219,7 +218,7 @@ def test_malformed_input_is_rejected_without_raising():
 def test_bad_msg_offset_degrades_to_none():
     """Range is advisory here: a malformed offset must not drop the whole declaration."""
     table = CacheDeclarationTable()
-    decl = table.declare("s", DECL_TYPE_PIN, 60, msg_offset="3")
+    decl = table.declare("s", DECL_TYPE_EPHEMERAL, 60, msg_offset="3")
 
     assert decl is not None
     assert decl.msg_offset is None
@@ -229,8 +228,8 @@ def test_bad_msg_offset_degrades_to_none():
 def test_snapshot_is_most_recent_first_and_detached():
     """Diagnostics read a copy, newest first, without touching the live table."""
     table = CacheDeclarationTable()
-    table.declare("a", DECL_TYPE_PIN, 60, now_ms=0)
-    table.declare("b", DECL_TYPE_PIN, 60, now_ms=1)
+    table.declare("a", DECL_TYPE_EPHEMERAL, 60, now_ms=0)
+    table.declare("b", DECL_TYPE_EPHEMERAL, 60, now_ms=1)
 
     snapshot = table.snapshot()
     assert [decl.session_id for decl in snapshot] == ["b", "a"]
@@ -266,7 +265,7 @@ def test_factory_enables_and_honors_knobs(monkeypatch):
     assert table is not None
     assert table.max_declarations == 16
     assert table.ttl_max_s == 120
-    assert table.declare("s", DECL_TYPE_PIN, 600, now_ms=0).ttl_s == 120
+    assert table.declare("s", DECL_TYPE_EPHEMERAL, 600, now_ms=0).ttl_s == 120
 
 
 @pytest.mark.parametrize("value", ["1", "true", "YES", "On"])
@@ -314,9 +313,9 @@ def test_sweep_interval_defaults_and_falls_back(monkeypatch):
 def test_declare_accumulates_roles_across_renewals():
     """Protection must cover every role pool the session was scheduled in."""
     table = CacheDeclarationTable()
-    table.declare("s-1", "pin", 600, role="prefill", now_ms=0)
-    table.declare("s-1", "pin", 600, role="decode", now_ms=1)
-    table.declare("s-1", "pin", 600, role="prefill", now_ms=2)  # duplicate role
+    table.declare("s-1", "ephemeral", 600, role="prefill", now_ms=0)
+    table.declare("s-1", "ephemeral", 600, role="decode", now_ms=1)
+    table.declare("s-1", "ephemeral", 600, role="prefill", now_ms=2)  # duplicate role
 
     declaration = table.get("s-1", now_ms=3)
     assert declaration is not None
@@ -326,7 +325,7 @@ def test_declare_accumulates_roles_across_renewals():
 def test_declare_ignores_blank_role():
     """A blank role is not storable, but must not reject the declaration."""
     table = CacheDeclarationTable()
-    declaration = table.declare("s-1", "pin", 600, role="", now_ms=0)
+    declaration = table.declare("s-1", "ephemeral", 600, role="", now_ms=0)
 
     assert declaration is not None
     assert declaration.roles == ()
@@ -336,10 +335,17 @@ def test_active_excludes_expired_and_keeps_order():
     """``active`` is the keeper's protection worklist: live declarations, newest first."""
     table = CacheDeclarationTable()
     table.declare("gone", "ephemeral", 60, role="union", now_ms=0)
-    table.declare("kept-a", "pin", 3600, role="union", now_ms=10)
-    table.declare("kept-b", "pin", 3600, role="prefill", now_ms=20)
+    table.declare("kept-a", "ephemeral", 3600, role="union", now_ms=10)
+    table.declare("kept-b", "ephemeral", 3600, role="prefill", now_ms=20)
 
     active = table.active(now_ms=60_000)
 
     assert [declaration.session_id for declaration in active] == ["kept-b", "kept-a"]
     assert len(table) == 2
+
+
+def test_declare_rejects_removed_pin_type():
+    """cache_control.type=pin is removed; only ephemeral declarations are accepted."""
+    table = CacheDeclarationTable()
+    assert table.declare("s-1", "pin", 60) is None
+    assert len(table) == 0

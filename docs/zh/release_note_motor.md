@@ -153,6 +153,7 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
 - 新增`/v1/responses`接口。
 - `GET /instances`接口返回内容新增pool/healthy状态与熔断快照字段。
 - 新增`motor:*`调度指标端点，通过共享内存对外暴露调度指标。
+- `cache_control.type`仅支持`ephemeral`，已废弃的`pin`被移除；旧客户端继续发送`pin`时请求正常返回（HTTP 200），但`pin`语义被静默丢弃，KV可能被提前淘汰，升级前请用日志自查存量`pin`流量。
 
 ### 已解决的问题
 
@@ -178,7 +179,9 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
 
 - 对业务的影响
 
-  对业务无影响。
+  对业务无影响。但需注意`cache_control.type=pin`已移除：旧客户端继续发送`pin`时请求不失败，只是`pin`语义被静默丢弃，KV可能被提前淘汰。升级前可执行
+  `kubectl logs -n <namespace> <coordinator-pod> | grep -cE "Invalid cache_control\.type=.*dropping cache_control|X-Agent-Hint cache_control\.type=.*not engine-representable"`
+  统计存量`pin`流量，并改造为`ephemeral`后再升级。
 
 - 对网络通信的影响
 

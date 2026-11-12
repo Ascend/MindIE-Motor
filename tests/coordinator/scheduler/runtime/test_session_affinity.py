@@ -15,6 +15,7 @@ from motor.coordinator.scheduler.runtime.session_affinity import (
     AFFINITY_ENV_FLAG,
     AFFINITY_MAX_ENV,
     AFFINITY_PLACEMENT_ENV,
+    AFFINITY_ROUTE_ENV,
     NEW_PIN_OUTCOMES,
     PLACEMENT_BALANCED,
     PLACEMENT_POLICY,
@@ -23,6 +24,7 @@ from motor.coordinator.scheduler.runtime.session_affinity import (
     resolve_session_pin,
     select_balanced_instance,
     session_affinity_placement_mode,
+    session_affinity_route_enabled,
 )
 
 ROLE_U = "union"
@@ -402,3 +404,20 @@ def test_placement_mode_default_and_balanced(monkeypatch):
 def test_placement_mode_invalid_value_falls_back_to_policy(monkeypatch):
     monkeypatch.setenv(AFFINITY_PLACEMENT_ENV, "round_robin")
     assert session_affinity_placement_mode() == PLACEMENT_POLICY
+
+
+@pytest.mark.parametrize("value", [None, "", "1", "true", " on "])
+def test_route_enabled_by_default_and_for_truthy_values(value, monkeypatch):
+    """Historical affinity routing stays on unless explicitly disabled."""
+    if value is None:
+        monkeypatch.delenv(AFFINITY_ROUTE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(AFFINITY_ROUTE_ENV, value)
+    assert session_affinity_route_enabled() is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "OFF", " no ", "disabled"])
+def test_route_disabled_by_location_only_values(value, monkeypatch):
+    """Location-only pin mode records the pin but never routes by it."""
+    monkeypatch.setenv(AFFINITY_ROUTE_ENV, value)
+    assert session_affinity_route_enabled() is False

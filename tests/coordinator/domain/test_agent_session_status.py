@@ -21,14 +21,14 @@ import pytest
 
 def test_apply_new_session_creates_record():
     machine = AgentSessionStateMachine()
-    transition = machine.apply("s-1", "tool", reason="await_tool", tools=[{"name": "write", "call_id": "c1"}])
+    transition = machine.apply("s-1", "pause", reason="await_tool", tools=[{"name": "write", "call_id": "c1"}])
 
     assert transition.applied is True
     assert transition.reason == "applied"
     assert transition.previous_state is None
     record = machine.get("s-1")
     assert record is not None
-    assert record.state == "tool"
+    assert record.state == "pause"
     assert record.reason == "await_tool"
     assert record.tools == [{"name": "write", "call_id": "c1"}]
     assert record.transition_count == 1
@@ -39,7 +39,8 @@ def test_out_of_order_transitions_tolerated():
     machine = AgentSessionStateMachine()
     assert machine.apply("s-1", "running").applied is True
     assert machine.apply("s-1", "tool").applied is True
-    assert machine.apply("s-1", "pause").applied is True
+    assert machine.get("s-1").state == "pause"
+    assert machine.apply("s-1", "resume").applied is True
     assert machine.apply("s-1", "running").applied is True
     assert machine.get("s-1").state == "running"
     assert machine.get("s-1").transition_count == 4
@@ -47,7 +48,7 @@ def test_out_of_order_transitions_tolerated():
 
 def test_finalize_is_terminal_and_idempotent():
     machine = AgentSessionStateMachine()
-    assert machine.apply("s-1", "tool").applied is True
+    assert machine.apply("s-1", "pause").applied is True
     assert machine.apply("s-1", "finalize").applied is True
     assert machine.get("s-1").state == "finalize"
 
@@ -165,7 +166,7 @@ def test_update_limits_hot_reload():
 
 def test_record_to_dict_shape():
     record = AgentSessionRecord(
-        state="tool",
+        state="pause",
         reason="await_tool",
         tools=[{"name": "write"}],
         state_since_ms=1790000000000,
@@ -174,10 +175,12 @@ def test_record_to_dict_shape():
     )
     payload = record.to_dict()
     assert payload == {
-        "state": "tool",
+        "state": "pause",
         "reason": "await_tool",
         "tools": [{"name": "write"}],
         "state_since_ms": 1790000000000,
+        "epoch": 0,
+        "finalized_epoch": None,
         "updated_at_ms": 1790000001000,
         "transition_count": 3,
     }
@@ -192,11 +195,87 @@ def test_transition_to_dict_shape():
     assert payload["previous_state"] is None
 
 
-@pytest.mark.parametrize("state", ["running", "tool", "pause", "suspend", "finalize"])
-def test_spec_whitelist_states_accepted(state):
-    """The machine accepts any non-empty state; whitelist enforcement is the
-    endpoint's job (AgentStatusHint). Spec states must all round-trip.
-    """
+@pytest.mark.parametrize("state", ["pause", "resume", "running", "finalize"])
+def test_canonical_states_accepted(state):
+    """The lifecycle contract exposes exactly four canonical states."""
     machine = AgentSessionStateMachine()
     assert machine.apply("s-1", state).applied is True
     assert machine.get("s-1").state == state
+
+
+@pytest.mark.parametrize("state", ["tool", "suspend"])
+def test_legacy_states_normalize_to_pause(state):
+    """Deprecated tool/suspend aliases are stored as pause."""
+    machine = AgentSessionStateMachine()
+    assert machine.apply("s-1", state).applied is True
+    assert machine.get("s-1").state == "pause"
+
+
+def test_unknown_state_is_rejected():
+    machine = AgentSessionStateMachine()
+    transition = machine.apply("s-1", "waiting")
+    assert transition.applied is False
+    assert transition.reason == "invalid_state"
+    assert machine.get("s-1") is None
+
+
+def test_pause_then_running_is_not_inferred_as_resume():
+    machine = AgentSessionStateMachine()
+    assert machine.apply("s-1", "pause").applied is True
+    assert machine.apply("s-1", "running").applied is True
+    assert machine.get("s-1").state == "running"
+
+
+def test_pause_then_resume_is_recorded_explicitly():
+    machine = AgentSessionStateMachine()
+    assert machine.apply("s-1", "pause").applied is True
+    resumed = machine.apply("s-1", "resume")
+    assert resumed.applied is True
+    assert resumed.previous_state == "pause"
+    assert machine.get("s-1").state == "resume"
+
+
+def test_newer_epoch_running_revives_finalized_session():
+    machine = AgentSessionStateMachine()
+    assert machine.apply("s-1", "pause", epoch=0).applied is True
+    assert machine.apply("s-1", "finalize", epoch=0).applied is True
+
+    # Same epoch running stays terminal.
+    assert machine.apply("s-1", "running", epoch=0).applied is False
+
+    # Resume never reopens finalize, even with a newer epoch.
+    rejected_resume = machine.apply("s-1", "resume", epoch=1)
+    assert rejected_resume.applied is False
+    assert rejected_resume.reason == "terminal"
+
+    revived = machine.apply("s-1", "running", epoch=1)
+    assert revived.applied is True
+    assert revived.reason == "resumed_epoch"
+    record = machine.get("s-1")
+    assert record is not None
+    assert record.state == "running"
+    assert record.epoch == 1
+    assert record.finalized_epoch is None
+
+
+def test_stale_epoch_event_is_ignored():
+    machine = AgentSessionStateMachine()
+    assert machine.apply("s-1", "running", epoch=2).applied is True
+    stale = machine.apply("s-1", "pause", epoch=1)
+    assert stale.applied is False
+    assert stale.reason == "stale_epoch"
+    assert machine.get("s-1").state == "running"
+
+
+def test_missing_epoch_is_not_treated_as_stale():
+    """Old clients omit epoch; that absence must not make the event look like epoch 0."""
+    machine = AgentSessionStateMachine()
+    assert machine.apply("s-1", "running", epoch=2).applied is True
+
+    transition = machine.apply("s-1", "pause")
+
+    assert transition.applied is True
+    assert transition.reason == "applied"
+    record = machine.get("s-1")
+    assert record.state == "pause"
+    assert record.epoch == 2

@@ -281,11 +281,26 @@ Motor 侧只提供消费端能力：解析 `X-Agent-Hint` 请求头、接收 `/a
    payload = {
        "session": {"session_id": "s-1001", "parent_session_id": "s-1000", "epoch": 1},
        "priority": {"level": 3, "reason": "critical_path"},
-       "cache_control": {"type": "pin", "ttl_s": 600}
+       "cache_control": {"type": "ephemeral", "ttl_s": 600}
    }
    print(base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("="))
    PY
    )
+   ```
+
+   `cache_control.type` 仅支持 `ephemeral`；已废弃的 `pin` 会被丢弃。**注意这是静默降级**：
+   旧客户端继续发送 `pin` 时请求仍正常返回（HTTP 200），但 `pin` 语义不再生效，KV 可能被提前淘汰，
+   客户端侧没有任何错误感知。升级前建议先统计存量 `pin` 流量：
+
+   ```bash
+   kubectl logs -n <namespace> <coordinator-pod> | grep -cE \
+     "Invalid cache_control\.type=.*dropping cache_control|X-Agent-Hint cache_control\.type=.*not engine-representable"
+   ```
+
+   命中数即仍需改造的请求量；同时排查配置中已废弃的 `kvc_lifecycle_config.pin_ttl_s`：
+
+   ```bash
+   kubectl logs -n <namespace> <coordinator-pod> | grep -c "kvc_lifecycle_config.pin_ttl_s is deprecated"
    ```
 
    携带 hint 发起推理：
@@ -470,6 +485,28 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 1. 设置 `agent_status_config.enabled=true` 并重启 Coordinator。
 2. 请求体需为合法 JSON 对象，且同时包含 `session.session_id` 与 `agent_status`。
 3. 字段级畸形（如非法 `state`）会返回 HTTP 200 + `applied=false` + WARN，属预期行为，不会失败。
+
+### 升级后旧客户端的 `cache_control.type=pin` 静默失效
+
+**问题描述**
+
+升级后请求仍返回 HTTP 200，但会话的 KV 保留/亲和效果不如升级前，客户端没有任何报错。
+
+**原因分析**
+
+`cache_control.type` 已收敛为仅支持 `ephemeral`，`pin` 被移除。旧客户端发送 `pin` 时不会失败，而是丢弃整条 `cache_control`（body 通道）或忽略该声明（`X-Agent-Hint` 通道），属于**静默降级**：pin 语义丢失、KV 可能提前淘汰，客户端无感知。
+
+**解决步骤**
+
+1. 升级前用日志统计存量 `pin` 流量：
+
+   ```bash
+   kubectl logs -n <namespace> <coordinator-pod> | grep -cE \
+     "Invalid cache_control\.type=.*dropping cache_control|X-Agent-Hint cache_control\.type=.*not engine-representable"
+   ```
+
+2. 将客户端 `cache_control.type` 改为 `ephemeral`；如需更长保留，显式携带 `ttl_s`（[60, 3600]）。
+3. 若配置中残留 `kvc_lifecycle_config.pin_ttl_s`，会被忽略并打印 `deprecated and ignored` 告警，可一并清理。
 
 ### `cache_control` 声明没有保活 / 提前释放
 

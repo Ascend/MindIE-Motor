@@ -27,6 +27,7 @@ import hmac
 import json
 
 from motor.common.logger import get_logger
+from motor.coordinator.domain.agent_hint import _CACHE_TTL_MAX, _CACHE_TTL_MIN
 
 logger = get_logger(__name__)
 
@@ -200,6 +201,102 @@ def apply_agent_hint_header(request_json: dict, headers: dict | None) -> dict | 
     _merge_priority(agent_hint, decoded)
     _merge_latency(agent_hint, decoded)
     return decoded
+
+
+def _map_spec_cache_control(decoded: dict | None) -> dict | None:
+    """Translate one spec ``cache_control`` entry into the engine's body schema.
+
+    The north-bound spec uses ``type=ephemeral``, ``ttl_s`` and
+    ``range{start,end,unit}``; the engine consumes ``type=ephemeral`` plus a
+    ``ttl`` and logical ``block_offset``/``msg_offset``.
+
+    Returns None when there is nothing safe to forward, so a malformed hint
+    never changes the request.
+    """
+    if not isinstance(decoded, dict):
+        return None
+    raw = decoded.get("cache_control")
+    if isinstance(raw, list):
+        if not raw:
+            return None
+        raw = raw[0]
+    if not isinstance(raw, dict):
+        return None
+
+    cache_type = raw.get("type")
+    cache_type = cache_type if isinstance(cache_type, str) else None
+    if cache_type not in (None, "", "ephemeral"):
+        logger.warning("X-Agent-Hint cache_control.type=%r is not engine-representable; ignoring", cache_type)
+        return None
+
+    mapped: dict = {"type": "ephemeral"}
+    ttl_s = _as_int(raw.get("ttl_s"))
+    if ttl_s is None:
+        ttl_s = _as_int(raw.get("ttl"))
+    if ttl_s is not None:
+        # Same [60, 3600] clamp as ``CacheControl``: the engine retention must not
+        # outlive the Motor-side affinity pin, or KV leaks long after the pin expires.
+        clamped_ttl = max(_CACHE_TTL_MIN, min(_CACHE_TTL_MAX, ttl_s))
+        if clamped_ttl != ttl_s:
+            logger.warning(
+                "X-Agent-Hint cache_control.ttl_s=%s out of range [%s, %s]; clamped to %s",
+                ttl_s,
+                _CACHE_TTL_MIN,
+                _CACHE_TTL_MAX,
+                clamped_ttl,
+            )
+        mapped["ttl"] = clamped_ttl
+
+    msg_offset = _as_int(raw.get("msg_offset"))
+    range_data = raw.get("range")
+    if isinstance(range_data, dict):
+        unit = range_data.get("unit")
+        start = _as_int(range_data.get("start"))
+        end = _as_int(range_data.get("end"))
+        # ``message`` is the only protocol unit; start > 0 is not supported yet
+        # (matches ``_normalize_spec_range``), so the range is simply dropped.
+        # ``msg_offset`` is 1-based: end=0 would shift the engine's whole cache by
+        # one message, so only a positive end derives an offset.
+        if unit in (None, "", "message") and start in (None, 0) and end is not None and end > 0:
+            msg_offset = end
+    if msg_offset is not None:
+        if msg_offset < 1:
+            logger.warning(
+                "X-Agent-Hint cache_control.msg_offset=%s out of range (1-based); ignoring",
+                msg_offset,
+            )
+        else:
+            mapped["msg_offset"] = msg_offset
+    return mapped
+
+
+def apply_spec_cache_control_to_engine_body(
+    engine_body: dict,
+    decoded: dict | None,
+) -> None:
+    """Merge the header spec ``cache_control`` into the body forwarded to the engine.
+
+    Kept separate from :func:`apply_agent_hint_header` on purpose: the parse
+    view (``request_json``) must stay header-only for the spec block, while the
+    engine needs the legacy-representable form. ``engine_body`` is expected to
+    own a private ``agent_hint`` dict so this write cannot leak back into the
+    parse view. Body fields always win; a spec entry only fills an absent
+    ``cache_control``.
+    """
+    if not isinstance(engine_body, dict):
+        return
+    mapped = _map_spec_cache_control(decoded)
+    if mapped is None:
+        return
+    agent_hint = engine_body.get("agent_hint")
+    if not isinstance(agent_hint, dict):
+        if agent_hint is not None:
+            return
+        agent_hint = {}
+        engine_body["agent_hint"] = agent_hint
+    if agent_hint.get("cache_control") is not None:
+        return
+    agent_hint["cache_control"] = mapped
 
 
 def extract_strict_priority_from_hint_headers(headers: dict | None) -> tuple[int, str | None] | None:

@@ -20,7 +20,7 @@
 
 | 测试文件 | 覆盖 |
 | --- | --- |
-| `tests/coordinator/domain/test_agent_hint.py` | spec schema、cache_control（pin/ttl_s/range unit 收敛）、ttl_explicit、畸形输入 |
+| `tests/coordinator/domain/test_agent_hint.py` | spec schema、cache_control（ephemeral/ttl_s/range unit 收敛，pin 已删除）、ttl_explicit、畸形输入 |
 | `tests/coordinator/domain/test_agent_hint_wire.py` | header 解码、spec→legacy 映射、body wins、golden vector |
 | `tests/coordinator/domain/test_agent_session_status.py` | 状态机迁移契约、TTL、LRU |
 | `tests/coordinator/domain/test_block_offset_translator.py` | 块坐标换算与 None 守卫 |

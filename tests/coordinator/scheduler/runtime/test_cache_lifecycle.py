@@ -52,7 +52,7 @@ def test_record_declaration_requires_an_explicit_ttl():
     declarations = CacheDeclarationTable()
     client = _client(None, declarations)
 
-    client._record_cache_declaration(_hint(decl_type="pin", ttl=300, ttl_explicit=False), "s-1")
+    client._record_cache_declaration(_hint(decl_type="ephemeral", ttl=300, ttl_explicit=False), "s-1")
     assert len(declarations) == 0
 
     client._record_cache_declaration(_hint(ttl=60, ttl_explicit=True, msg_offset=3), "s-1")
@@ -107,7 +107,7 @@ def test_sweep_keeps_the_pin_of_an_active_declaration():
     affinity.record("s-1", 7, "union")
     declarations = CacheDeclarationTable()
     client = _client(affinity, declarations)
-    declarations.declare("s-1", "pin", 3600)
+    declarations.declare("s-1", "ephemeral", 3600)
 
     client._sweep_cache_declarations()
 
@@ -133,7 +133,7 @@ async def test_finalize_drops_declaration_and_pin_together():
     affinity.record("s-1", 7, "union")
     declarations = CacheDeclarationTable()
     client = _client(affinity, declarations)
-    declarations.declare("s-1", "pin", 3600)
+    declarations.declare("s-1", "ephemeral", 3600)
 
     await client._on_agent_status_event("s-1", "finalize")
 
@@ -150,7 +150,7 @@ def test_drop_session_pins_also_forgets_the_declaration():
     affinity.record("s-1", 7, "union")
     declarations = CacheDeclarationTable()
     client = _client(affinity, declarations)
-    declarations.declare("s-1", "pin", 3600)
+    declarations.declare("s-1", "ephemeral", 3600)
 
     assert client.drop_session_pins("s-1") == 1
     assert len(declarations) == 0
@@ -192,7 +192,7 @@ def _filled_affinity(max_entries: int):
     declarations = CacheDeclarationTable()
     client = _client(affinity, declarations)
     affinity.record("s-keep", 3, "union")
-    declarations.declare("s-keep", "pin", 3600)
+    declarations.declare("s-keep", "ephemeral", 3600)
     for session_id, instance_id in (("s-short-1", 1), ("s-short-2", 2)):
         affinity.record(session_id, instance_id, "union")
         # Elapsed on the real clock, so the next keeper tick releases it.
@@ -225,13 +225,13 @@ def test_touch_refreshes_only_declared_bindings():
     affinity.record("s-undeclared", 2, "union")
     declarations = CacheDeclarationTable()
     client = _client(affinity, declarations)
-    declarations.declare("s-declared", "pin", 3600, role="union")
+    declarations.declare("s-declared", "ephemeral", 3600, role="union")
 
     assert client._touch_cache_declarations() == 1
 
     # A declaration whose role has no binding (or no recorded role) yields no hit.
-    declarations.declare("s-elsewhere", "pin", 3600, role="prefill")
-    declarations.declare("s-norole", "pin", 3600)
+    declarations.declare("s-elsewhere", "ephemeral", 3600, role="prefill")
+    declarations.declare("s-norole", "ephemeral", 3600)
     assert client._touch_cache_declarations() == 1
 
     # Disabled feature / no affinity table: inert.
@@ -252,7 +252,7 @@ def test_x2_protection_keeps_declared_bindings_under_capacity_pressure():
         declarations = CacheDeclarationTable()
         client = _client(affinity, declarations)
         affinity.record("s-declared", 1, "union")
-        declarations.declare("s-declared", "pin", 3600, role="union")
+        declarations.declare("s-declared", "ephemeral", 3600, role="union")
         for index in range(5):
             affinity.record(f"s-other-{index}", 100 + index, "union")
             if protect:
@@ -282,7 +282,7 @@ def test_expired_declaration_defers_release_when_pin_renewed_elsewhere():
     client = _client(affinity, declarations)
 
     affinity.record("s-x", 7, "union")
-    declarations.declare("s-x", "pin", 60, role="union")
+    declarations.declare("s-x", "ephemeral", 60, role="union")
     time.sleep(0.02)
     # Another worker renews: re-record (renewal stamp) + its own longer
     # declaration published onto the shared slot (declare_retention).
@@ -315,7 +315,7 @@ def test_sweep_release_is_batch_bounded():
     for i in range(total):
         session = f"s-batch-{i}"
         affinity.record(session, 1, "union")
-        declarations.declare(session, "pin", 60)
+        declarations.declare(session, "ephemeral", 60)
         declaration = declarations.get(session)
         declaration.expire_ms = 0  # simulate elapsing
 

@@ -562,7 +562,7 @@ def test_header_hint_normalizes_dirty_session_numbers():
 
 
 def test_header_hint_agent_status_full_and_invalid_state():
-    """agent_status parses tools; an unknown state drops the whole block."""
+    """agent_status parses tools; deprecated aliases normalize; unknown drops."""
     hint = parse_agent_hint(
         {},
         header_hint={
@@ -576,10 +576,18 @@ def test_header_hint_agent_status_full_and_invalid_state():
     )
 
     assert hint.agent_status is not None
-    assert hint.agent_status.state == "tool"
+    assert hint.agent_status.state == "pause"
     assert hint.agent_status.reason == "await_tool"
     assert hint.agent_status.tools[0].name == "web_search"
     assert hint.agent_status.tools[0].child_session_id == "s-child"
+
+    resumed = parse_agent_hint({}, header_hint={"agent_status": {"state": "resume"}})
+    assert resumed.agent_status is not None
+    assert resumed.agent_status.state == "resume"
+
+    suspended = parse_agent_hint({}, header_hint={"agent_status": {"state": "suspend"}})
+    assert suspended.agent_status is not None
+    assert suspended.agent_status.state == "pause"
 
     invalid = parse_agent_hint({}, header_hint={"agent_status": {"state": "waiting"}})
     assert invalid.agent_status is None
@@ -660,17 +668,23 @@ def test_body_spec_blocks_are_unknown_passthrough():
     }
 
 
-def test_header_hint_spec_cache_control_pin_with_message_range():
-    """pin + range{end=1} maps to msg_offset=1 via the header path."""
+def test_header_hint_spec_cache_control_ephemeral_with_message_range():
+    """ephemeral + range{end=1} maps to msg_offset=1 via the header path."""
     hint = parse_agent_hint(
         {"messages": [{"role": "system"}, {"role": "user"}]},
-        header_hint={"cache_control": {"type": "pin", "range": {"end": 1}}},
+        header_hint={"cache_control": {"type": "ephemeral", "range": {"end": 1}}},
     )
 
     assert hint.cache_control is not None
-    assert hint.cache_control.type == "pin"
+    assert hint.cache_control.type == "ephemeral"
     assert hint.cache_control.msg_offset == 1
     assert hint.cache_control.range_unit == "message"
+
+
+def test_header_hint_spec_cache_control_pin_is_rejected():
+    """The deprecated cache_control.type=pin is no longer supported."""
+    hint = parse_agent_hint({}, header_hint={"cache_control": {"type": "pin", "ttl_s": 600}})
+    assert hint.cache_control is None
 
 
 def test_header_hint_spec_cache_control_ttl_s_and_list_form():
@@ -680,7 +694,7 @@ def test_header_hint_spec_cache_control_ttl_s_and_list_form():
         header_hint={
             "cache_control": [
                 {"type": "ephemeral", "ttl_s": 600},
-                {"type": "pin"},
+                {"type": "ephemeral", "ttl_s": 60},
             ]
         },
     )
@@ -710,17 +724,17 @@ def test_header_hint_spec_cache_control_unknown_unit_drops_range():
 
     with_messages = parse_agent_hint(
         {"messages": [{"role": "user", "content": "hi"} for _ in range(3)]},
-        header_hint={"cache_control": {"type": "pin", "range": {"unit": "token", "end": 512}}},
+        header_hint={"cache_control": {"type": "ephemeral", "range": {"unit": "token", "end": 512}}},
     )
     assert with_messages.cache_control is not None
-    assert with_messages.cache_control.type == "pin"
+    assert with_messages.cache_control.type == "ephemeral"
     assert with_messages.cache_control.range_unit is None
     assert with_messages.cache_control.msg_offset == 3  # no-range default = whole conversation
 
 
 def test_spec_cache_control_ttl_explicit_distinguishes_asked_from_defaulted():
     """``ttl`` defaults to 300, so only ``ttl_explicit`` separates "asked" from "defaulted"."""
-    implied = parse_agent_hint({}, header_hint={"cache_control": {"type": "pin"}})
+    implied = parse_agent_hint({}, header_hint={"cache_control": {"type": "ephemeral"}})
     assert implied.cache_control is not None
     assert implied.cache_control.ttl == 300
     assert implied.cache_control.ttl_explicit is False
@@ -730,12 +744,12 @@ def test_spec_cache_control_ttl_explicit_distinguishes_asked_from_defaulted():
     assert via_alias.cache_control.ttl == 60
     assert via_alias.cache_control.ttl_explicit is True
 
-    via_legacy_name = parse_agent_hint({}, header_hint={"cache_control": {"type": "pin", "ttl": 600}})
+    via_legacy_name = parse_agent_hint({}, header_hint={"cache_control": {"type": "ephemeral", "ttl": 600}})
     assert via_legacy_name.cache_control is not None
     assert via_legacy_name.cache_control.ttl == 600
     assert via_legacy_name.cache_control.ttl_explicit is True
 
-    explicit_default_value = parse_agent_hint({}, header_hint={"cache_control": {"type": "pin", "ttl_s": 300}})
+    explicit_default_value = parse_agent_hint({}, header_hint={"cache_control": {"type": "ephemeral", "ttl_s": 300}})
     assert explicit_default_value.cache_control is not None
     assert explicit_default_value.cache_control.ttl_explicit is True
 
@@ -754,7 +768,7 @@ def test_body_cache_control_ttl_explicit_tracks_client_intent():
 
 def test_ttl_explicit_is_derived_only_and_never_serialized():
     """The flag is server-side bookkeeping; it must not leak into the engine payload."""
-    hint = parse_agent_hint({}, header_hint={"cache_control": {"type": "pin", "ttl_s": 60}})
+    hint = parse_agent_hint({}, header_hint={"cache_control": {"type": "ephemeral", "ttl_s": 60}})
 
     assert hint.cache_control is not None
     assert hint.cache_control.ttl_explicit is True
@@ -765,11 +779,11 @@ def test_header_hint_spec_cache_control_range_with_start_dropped():
     """unit=message with start>0 is unsupported: the range is dropped, not the hint."""
     hint = parse_agent_hint(
         {},
-        header_hint={"cache_control": {"type": "pin", "range": {"start": 2, "end": 5}}},
+        header_hint={"cache_control": {"type": "ephemeral", "range": {"start": 2, "end": 5}}},
     )
 
     assert hint.cache_control is not None
-    assert hint.cache_control.type == "pin"
+    assert hint.cache_control.type == "ephemeral"
     assert hint.cache_control.range_unit is None
     assert hint.cache_control.msg_offset is None
 
@@ -777,7 +791,7 @@ def test_header_hint_spec_cache_control_range_with_start_dropped():
 def test_header_hint_spec_cache_control_without_range_still_defaults_msg_offset():
     """No behaviour change on the message path: an unset msg_offset still defaults to len(messages)."""
     messages = [{"role": "user", "content": "hi"} for _ in range(3)]
-    hint = parse_agent_hint({"messages": messages}, header_hint={"cache_control": {"type": "pin"}})
+    hint = parse_agent_hint({"messages": messages}, header_hint={"cache_control": {"type": "ephemeral"}})
 
     assert hint.cache_control is not None
     assert hint.cache_control.range_unit is None
@@ -785,7 +799,7 @@ def test_header_hint_spec_cache_control_without_range_still_defaults_msg_offset(
 
 
 def test_body_cache_control_stays_legacy_strict():
-    """Body cache_control rejects pin and ignores spec keys (header-only protocol)."""
+    """Body cache_control rejects non-ephemeral types and ignores spec keys."""
     pin_body = parse_agent_hint({"agent_hint": {"cache_control": {"type": "pin", "range": {"end": 1}}}})
     assert pin_body.cache_control is None
 
@@ -803,7 +817,7 @@ def test_body_cache_control_wins_over_header_spec_cache_control():
             "messages": [{"role": "user"} for _ in range(4)],
             "agent_hint": {"cache_control": {"ttl": 120}},
         },
-        header_hint={"cache_control": {"type": "pin", "range": {"end": 1}}},
+        header_hint={"cache_control": {"type": "ephemeral", "range": {"end": 1}}},
     )
 
     assert hint.cache_control is not None
@@ -828,7 +842,7 @@ def test_server_only_fields_stripped_on_both_cache_control_paths():
     """The anti-forgery strip covers the header spec path too."""
     hint = parse_agent_hint(
         {},
-        header_hint={"cache_control": {"type": "pin", "block_offset": 99, "range": {"end": 1}}},
+        header_hint={"cache_control": {"type": "ephemeral", "block_offset": 99, "range": {"end": 1}}},
     )
 
     assert hint.cache_control is not None
@@ -879,7 +893,7 @@ def test_malformed_prediction_tool_entry_never_raises():
     [
         {"priority": {"level": 1e999}},
         {"strict_priority": {"level": 1e999}},
-        {"cache_control": {"type": "pin", "range": {"unit": "message", "end": 1e999}}},
+        {"cache_control": {"type": "ephemeral", "range": {"unit": "message", "end": 1e999}}},
         {"prediction": {"remaining_calls": 1e999}},
         {"prediction": {"next_action": {"state": "tool", "tools": [{"name": "t", "expected_duration_s": 1e999}]}}},
         {"agent_status": {"state": "tool", "state_since_ms": 1e999}},

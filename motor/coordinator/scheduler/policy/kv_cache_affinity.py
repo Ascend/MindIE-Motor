@@ -354,7 +354,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             if messages is not None:
                 tokenizer_manager = TokenizerManager()
                 encoded_ids = tokenizer_manager.apply_chat_template(messages, tools, req_data=req_info.req_data)
-                if not is_responses_request:
+                if not is_responses_request and getattr(req_info, "_hint_block_offsets_attached", False) is not True:
                     attach_block_offsets(req_info, messages, tools, tokenizer=tokenizer_manager.tokenizer)
             else:
                 prompt = req_info.req_data.get(OpenAIField.PROMPT, None)

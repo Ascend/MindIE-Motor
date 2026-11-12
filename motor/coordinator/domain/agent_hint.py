@@ -41,7 +41,7 @@ _AGENT_HINT_KNOWN_FIELDS = frozenset(
         "priority_control",
     }
 )
-_CACHE_TYPE_ALLOWED = frozenset({"ephemeral", "pin"})
+_CACHE_TYPE_ALLOWED = frozenset({"ephemeral"})
 _CACHE_TYPE_DEFAULT = "ephemeral"
 _CACHE_TTL_DEFAULT = 300
 _CACHE_TTL_MIN = 60
@@ -52,6 +52,12 @@ _CACHE_RANGE_UNIT_DEFAULT = "message"
 _SESSION_RELATIONS_ALLOWED = frozenset({"fork", "spawn", "handoff"})
 _SESSION_JOINS_ALLOWED = frozenset({"sync", "async"})
 _SESSION_JOIN_DEFAULT = "sync"
+# Canonical agent-status states. ``tool``/``suspend`` are kept as deprecated
+# wire aliases so older harnesses keep working; they normalize to ``pause``.
+_AGENT_STATUS_STATES_ALLOWED = frozenset({"pause", "resume", "running", "finalize"})
+_AGENT_STATUS_STATE_ALIASES = {"tool": "pause", "suspend": "pause"}
+# Prediction keeps the historical state vocabulary: it is a forecast field,
+# not the agent-status lifecycle contract.
 _AGENT_STATES_ALLOWED = frozenset({"running", "tool", "pause", "suspend", "finalize"})
 _EDIT_TYPES_ALLOWED = frozenset({"offload", "prefetch", "evict"})
 _EDIT_TARGETS_ALLOWED = frozenset({"session", "messages", "tools"})
@@ -80,15 +86,16 @@ class CacheControl(BaseModel):
     """KV cache control.
 
     Shared model for two sources with different strictness (see
-    ``_parse_cache_control`` / ``_parse_spec_cache_control``): the legacy body
-    interface only ever produces ``type='ephemeral'`` with ``ttl`` /
-    ``msg_offset``, while the spec header (X-Agent-Hint) additionally carries
-    ``type='pin'``, ``ttl_s`` and ``range`` (``range_*`` fields; ``unit=message``
-    maps onto ``msg_offset``). ``message`` is the only ``range.unit`` the protocol
-    defines, so any other unit drops the range (see ``_normalize_spec_range``).
+    ``_parse_cache_control`` / ``_parse_spec_cache_control``): both the legacy
+    body interface and the spec header (X-Agent-Hint) produce
+    ``type='ephemeral'`` with ``ttl`` / ``msg_offset``; the spec header
+    additionally carries ``ttl_s`` and ``range`` (``range_*`` fields;
+    ``unit=message`` maps onto ``msg_offset``). ``message`` is the only
+    ``range.unit`` the protocol defines, so any other unit drops the range
+    (see ``_normalize_spec_range``).
     """
 
-    type: str = Field(default=_CACHE_TYPE_DEFAULT, description="Cache type; 'ephemeral' or 'pin'.")
+    type: str = Field(default=_CACHE_TYPE_DEFAULT, description="Cache type; only 'ephemeral' is supported.")
     ttl: int = Field(default=_CACHE_TTL_DEFAULT, description="Cache TTL in seconds; clamped to [60, 3600].")
     msg_offset: int | None = Field(
         default=_CACHE_MSG_OFFSET_DEFAULT,
@@ -474,7 +481,7 @@ class SessionHint(BaseModel):
 
 
 class AgentStatusTool(BaseModel):
-    """Tool a ``tool``-state agent is waiting on (spec ``agent_status.tools[]``)."""
+    """Tool an agent is waiting on while paused (spec ``agent_status.tools[]``)."""
 
     name: str | None = Field(default=None, description="Tool name; 'agent:<agent_type>' when waiting on a child agent.")
     call_id: str | None = Field(default=None, description="Tool call ID.")
@@ -484,10 +491,10 @@ class AgentStatusTool(BaseModel):
 class AgentStatusHint(BaseModel):
     """Agent lifecycle status (spec ``agent_status``); out-of-band event support lands in Phase 4."""
 
-    state: str = Field(..., description="One of 'running' / 'tool' / 'pause' / 'suspend' / 'finalize'.")
+    state: str = Field(..., description="One of 'pause' / 'resume' / 'running' / 'finalize'.")
     state_since_ms: int | None = Field(default=None, description="Unix ms timestamp when the state was entered.")
     reason: str | None = Field(default=None, description="State reason, e.g. 'await_tool', 'human_approval'.")
-    tools: list[AgentStatusTool] = Field(default_factory=list, description="Tools awaited in 'tool' state.")
+    tools: list[AgentStatusTool] = Field(default_factory=list, description="Tools awaited while paused.")
 
     @field_validator("state_since_ms", mode="before")
     @classmethod
@@ -498,14 +505,17 @@ class AgentStatusHint(BaseModel):
     @classmethod
     def _validate_state(cls, value: Any) -> str:
         value = str(value)
-        if value not in _AGENT_STATES_ALLOWED:
+        normalized = _AGENT_STATUS_STATE_ALIASES.get(value, value)
+        if normalized not in _AGENT_STATUS_STATES_ALLOWED:
             logger.warning(
                 "Invalid agent_status.state=%r; expected one of %s. Dropping agent_status.",
                 value,
-                sorted(_AGENT_STATES_ALLOWED),
+                sorted(_AGENT_STATUS_STATES_ALLOWED),
             )
             raise ValueError(f"unsupported agent_status.state: {value!r}")
-        return value
+        if normalized != value:
+            logger.debug("agent_status.state=%r normalized to %r (deprecated alias).", value, normalized)
+        return normalized
 
 
 class PredictionTool(BaseModel):
@@ -761,9 +771,9 @@ def _parse_cache_control(
 ) -> CacheControl | None:
     """Parse the legacy body ``cache_control`` (strictly ephemeral/ttl/msg_offset).
 
-    The Agent-Hint spec fields (``pin`` type, ``ttl_s``, ``range``) are
-    header-only protocol (X-Agent-Hint); their presence in the body is warned
-    about and ignored so the body schema stays a pure legacy interface.
+    The Agent-Hint spec fields (``ttl_s``, ``range``) are header-only protocol
+    (X-Agent-Hint); their presence in the body is warned about and ignored so
+    the body schema stays a pure legacy interface.
     """
     if not isinstance(data, dict):
         return None
@@ -781,13 +791,6 @@ def _parse_cache_control(
         logger.warning("Failed to parse cache_control: %s", e)
         return None
     cache_control.ttl_explicit = ttl_explicit
-    if cache_control.type != _CACHE_TYPE_DEFAULT:
-        logger.warning(
-            "cache_control.type=%r in the request body is not supported (body is legacy ephemeral-only); "
-            "dropping cache_control. Use the X-Agent-Hint header for spec cache_control.",
-            cache_control.type,
-        )
-        return None
     return _finalize_cache_control(cache_control, messages)
 
 
@@ -797,7 +800,7 @@ def _parse_spec_cache_control(
 ) -> CacheControl | None:
     """Parse the spec-form ``cache_control`` carried by X-Agent-Hint.
 
-    Accepts ``type`` pin/ephemeral, ``ttl_s`` (preferred over ``ttl``) and
+    Accepts ``type=ephemeral`` only, ``ttl_s`` (preferred over ``ttl``) and
     ``range{start,end,unit}`` (``unit=message``, the only protocol value, maps onto
     the legacy ``msg_offset`` translation; any other unit drops the range).
     """

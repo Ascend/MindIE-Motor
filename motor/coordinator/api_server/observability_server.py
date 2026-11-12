@@ -16,6 +16,7 @@ tooling in the future.
 """
 
 import asyncio
+import json
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ from datetime import datetime, timezone
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
+from pydantic import ValidationError
 
 from motor.common.logger import get_logger
 from motor.common.http.cert_util import CertUtil
@@ -31,6 +33,12 @@ from motor.config.coordinator import CoordinatorConfig, MGMT_API_KEY_HEADER
 from motor.coordinator.api_server.base_server import BaseCoordinatorServer
 from motor.coordinator.api_server.app_builder import AppBuilder
 from motor.coordinator.metrics.metrics_collector import MetricsCollector
+from motor.coordinator.domain.agent_hint import AgentStatusHint
+from motor.coordinator.scheduler.runtime.agent_hint_lifecycle import CentralAgentLifecycle
+from motor.coordinator.scheduler.runtime.agent_hint_metrics import (
+    KvcMetricsShmReader,
+    kvc_metrics_to_motor_metrics,
+)
 from motor.coordinator.scheduler.runtime import SchedulerConnectionManager
 from motor.coordinator.scheduler.runtime.kv_usage import KvUsageShmPublisher
 from motor.coordinator.scheduler.runtime.scheduler_metrics import (
@@ -84,7 +92,18 @@ class ObservabilityServer(BaseCoordinatorServer):
         # client subscribes to the scheduler's instance-change pub and keeps a live view.
         self._scheduler_connection = SchedulerConnectionManager.from_config(config)
         self._instance_provider = _SchedulerInstanceProvider(self._scheduler_connection)
+        status_cfg = config.agent_status_config
+        self._central_lifecycle = (
+            CentralAgentLifecycle(
+                session_ttl_s=status_cfg.session_ttl_s,
+                max_sessions=status_cfg.max_sessions,
+                kvc_config=config.kvc_lifecycle_config,
+            )
+            if status_cfg.enabled and status_cfg.central_lifecycle
+            else None
+        )
         self._sched_metrics_reader = None
+        self._kvc_metrics_readers: dict[int, KvcMetricsShmReader] = {}
         self._app_builder = AppBuilder(config)
         self.observability_app = self._app_builder.create_observability_app(lifespan=self._lifespan)
         self._register_routes()
@@ -93,6 +112,7 @@ class ObservabilityServer(BaseCoordinatorServer):
     async def _lifespan(self, app: FastAPI):
         logger.info("Observability server is starting...")
         await self._scheduler_connection.connect()
+        self._wire_central_lifecycle()
         try:
             MetricsCollector().set_event_loop(asyncio.get_running_loop())
             MetricsCollector().set_scheduler_provider(lambda: self._instance_provider)
@@ -123,6 +143,15 @@ class ObservabilityServer(BaseCoordinatorServer):
                 except Exception as e:
                     logger.warning("Ignored error detaching sched metrics reader: %s", e)
                 self._sched_metrics_reader = None
+            for reader in list(getattr(self, "_kvc_metrics_readers", {}).values()):
+                try:
+                    reader.detach()
+                except Exception as e:
+                    logger.warning("Ignored error detaching kvc metrics reader: %s", e)
+            if hasattr(self, "_kvc_metrics_readers"):
+                self._kvc_metrics_readers.clear()
+            if self._central_lifecycle is not None:
+                await self._central_lifecycle.aclose()
             await self._scheduler_connection.disconnect()
 
     def _provide_sched_metrics(self) -> list:
@@ -134,7 +163,7 @@ class ObservabilityServer(BaseCoordinatorServer):
         """
         shm_name = self._get_sched_metrics_shm_name()
         if not shm_name:
-            return []
+            return self._provide_kvc_metrics()
         reader = getattr(self, "_sched_metrics_reader", None)
         if reader is None or reader.shm_name != shm_name:
             if reader is not None:
@@ -148,9 +177,42 @@ class ObservabilityServer(BaseCoordinatorServer):
             except FileNotFoundError:
                 logger.debug("Sched metrics shm %s not ready yet, will retry", shm_name)
                 self._sched_metrics_reader = None
-                return []
+                # Sched shm can lag behind KVC; keep exporting KVC counters instead
+                # of dropping them from /metrics.
+                return self._provide_kvc_metrics()
             self._sched_metrics_reader = reader
-        return sched_metrics_snapshot_to_motor_metrics(reader.read_snapshot())
+        metrics = sched_metrics_snapshot_to_motor_metrics(reader.read_snapshot())
+        metrics.extend(self._provide_kvc_metrics())
+        return metrics
+
+    def _provide_kvc_metrics(self) -> list:
+        """Append KVC counters from the single central owner or per-worker shm."""
+        if self._central_lifecycle is not None:
+            stats = self._central_lifecycle.stats()
+            return kvc_metrics_to_motor_metrics(stats, scope="central") if stats else []
+        kvc_cfg = self.coordinator_config.kvc_lifecycle_config
+        base_name = kvc_cfg.metrics_shm_name if kvc_cfg.enabled else ""
+        if not base_name:
+            return []
+        workers = max(1, int(getattr(self.coordinator_config.inference_workers_config, "num_workers", 1) or 1))
+        metrics: list = []
+        readers = getattr(self, "_kvc_metrics_readers", None)
+        if readers is None:
+            readers = {}
+            self._kvc_metrics_readers = readers
+        for worker_index in range(workers):
+            shm_name = f"{base_name}_{worker_index}"
+            reader = readers.get(worker_index)
+            if reader is None or reader.shm_name != shm_name:
+                if reader is not None:
+                    reader.detach()
+                reader = KvcMetricsShmReader(shm_name)
+                if not reader.attach():
+                    readers.pop(worker_index, None)
+                    continue
+                readers[worker_index] = reader
+            metrics.extend(kvc_metrics_to_motor_metrics(reader.read(), worker_index=worker_index))
+        return metrics
 
     def _get_sched_metrics_shm_name(self) -> str | None:
         """Return the scheduler-metrics shm name from the scheduler client, or None."""
@@ -215,6 +277,117 @@ class ObservabilityServer(BaseCoordinatorServer):
         async def health():
             return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
+        if self._central_lifecycle is not None:
+
+            @self.observability_app.post("/internal/agent-status")
+            async def central_agent_status_report(request: Request):
+                self._wire_central_lifecycle()
+                try:
+                    raw = await request.body()
+                    if not raw:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST, detail="Request body cannot be empty"
+                        )
+                    body = json.loads(raw.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid JSON format: {str(e)}"
+                    ) from e
+                if not isinstance(body, dict):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request body must be a JSON object")
+                session = body.get("session")
+                status_data = body.get("agent_status")
+                if not isinstance(session, dict) or not isinstance(status_data, dict):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Both 'session' and 'agent_status' must be JSON objects",
+                    )
+                session_id = session.get("session_id")
+                if not isinstance(session_id, str) or not session_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="session.session_id is required",
+                    )
+                raw_epoch = session.get("epoch")
+                if raw_epoch is None:
+                    epoch: int | None = None
+                else:
+                    try:
+                        epoch = max(0, int(raw_epoch))
+                    except (TypeError, ValueError):
+                        epoch = 0
+                try:
+                    agent_status = AgentStatusHint.model_validate(status_data)
+                except ValidationError as e:
+                    logger.warning(
+                        "central agent_status event rejected (field-level invalid): session_id=%s error=%s",
+                        session_id,
+                        e,
+                    )
+                    return {"status": "ok", "applied": False, "reason": "invalid_agent_status"}
+                result = await self._central_lifecycle.apply(
+                    session_id,
+                    agent_status.state,
+                    epoch=epoch,
+                    reason=agent_status.reason,
+                    tools=[tool.model_dump(exclude_none=True) for tool in agent_status.tools],
+                    state_since_ms=agent_status.state_since_ms,
+                    finalize_release=self._release_central_session_pins,
+                )
+                logger.info(
+                    "central agent_status event session_id=%s state=%s epoch=%s applied=%s reason=%s previous=%s",
+                    session_id,
+                    agent_status.state,
+                    epoch,
+                    result["applied"],
+                    result["reason"],
+                    result["previous_state"],
+                )
+                return result
+
+            @self.observability_app.get("/internal/agent-status")
+            async def central_agent_status_query(request: Request):
+                session_id = request.query_params.get("session_id")
+                if not session_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="session_id query parameter is required",
+                    )
+                record = self._central_lifecycle.get(session_id)
+                if record is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"No agent status record for session_id={session_id}",
+                    )
+                return record
+
+    def _wire_central_lifecycle(self) -> None:
+        """Attach the Obs-owned lifecycle to the scheduler client (lazy)."""
+        if self._central_lifecycle is None:
+            return
+        client = self._scheduler_connection.get_client()
+        if client is None:
+            return
+        self._central_lifecycle.set_sender(client.send_session_manage_request)
+        self._central_lifecycle.set_pressure_provider(client.capacity_pressure)
+
+    async def _release_central_session_pins(self, session_id: str, epoch: int | None = None) -> None:
+        """Finalize cleanup on the owner: local drop plus fleet-wide PUB."""
+        client = self._scheduler_connection.get_client()
+        if client is None:
+            logger.warning(
+                "central agent_status finalize: scheduler client unavailable, pins kept: session_id=%s",
+                session_id,
+            )
+            return
+        dropped = client.drop_session_pins(session_id)
+        logger.info(
+            "central agent_status finalize released session pins: session_id=%s dropped=%d",
+            session_id,
+            dropped,
+        )
+        await client.report_agent_status(session_id, "finalize", epoch)
+
     async def run(self) -> None:
         config_kwargs = self.create_base_uvicorn_config(
             self.observability_app,
@@ -253,6 +426,9 @@ class ObservabilityServer(BaseCoordinatorServer):
         new_mgmt_api_key = new_mgmt_api_key_config.load_api_key() if new_mgmt_api_key_config.enable_api_key else ""
         self._mgmt_api_key_config = new_mgmt_api_key_config
         self._mgmt_api_key = new_mgmt_api_key
+        if self._central_lifecycle is not None:
+            status_cfg = new_config.agent_status_config
+            self._central_lifecycle.update_limits(status_cfg.session_ttl_s, status_cfg.max_sessions)
 
     def _load_mgmt_api_key(self) -> str:
         if not self._mgmt_api_key_config.enable_api_key:

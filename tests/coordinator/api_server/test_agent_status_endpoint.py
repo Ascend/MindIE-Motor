@@ -27,13 +27,16 @@ from motor.coordinator.api_server.inference_server import InferenceServer
 from motor.coordinator.domain.agent_session_status import AgentSessionStateMachine
 
 
-def _event(session_id: str, state: str, **status_extra) -> dict:
+def _event(session_id: str, state: str, *, epoch: int | None = None, **status_extra) -> dict:
     """Build a DSH-shaped event; omitted extras stay absent (DSH never sends
     ``tools`` on running/finalize events — see agent-hints status.ts).
     """
     agent_status = {"state": state, "state_since_ms": 1791604302656}
     agent_status.update({key: value for key, value in status_extra.items() if value is not None})
-    return {"session": {"session_id": session_id}, "agent_status": agent_status}
+    session = {"session_id": session_id}
+    if epoch is not None:
+        session["epoch"] = epoch
+    return {"session": session, "agent_status": agent_status}
 
 
 class _FakeSchedulerConnection:
@@ -72,17 +75,17 @@ def client():
         yield test_client, connection
 
 
-def test_tool_running_finalize_sequence(client):
-    """T-A1: the integration-record §3.3 timeline lands applied + queryable."""
+def test_pause_resume_running_finalize_sequence(client):
+    """Four canonical states land applied + queryable."""
     test_client, _ = client
-    for state in ("tool", "running", "finalize"):
+    for state in ("pause", "resume", "running", "finalize"):
         response = test_client.post(
             "/agent-status",
             json=_event(
                 "session-a1952a88",
                 state,
-                reason="await_tool" if state == "tool" else None,
-                tools=[{"name": "write", "call_id": "chatcmpl-tool"}] if state == "tool" else None,
+                reason="await_tool" if state == "pause" else None,
+                tools=[{"name": "write", "call_id": "chatcmpl-tool"}] if state == "pause" else None,
             ),
         )
         assert response.status_code == 200
@@ -92,7 +95,17 @@ def test_tool_running_finalize_sequence(client):
     assert query.status_code == 200
     record = query.json()
     assert record["state"] == "finalize"
-    assert record["transition_count"] == 3
+    assert record["transition_count"] == 4
+
+
+def test_legacy_tool_suspend_alias_normalizes_to_pause(client):
+    test_client, _ = client
+    for state in ("tool", "suspend"):
+        response = test_client.post("/agent-status", json=_event(f"s-{state}", state))
+        assert response.status_code == 200
+        assert response.json()["state"] == "pause"
+        record = test_client.get("/agent-status", params={"session_id": f"s-{state}"}).json()
+        assert record["state"] == "pause"
 
 
 def test_finalize_triggers_pin_release(client):
@@ -100,7 +113,28 @@ def test_finalize_triggers_pin_release(client):
     response = test_client.post("/agent-status", json=_event("s-pin", "finalize"))
     assert response.status_code == 200
     assert connection.drop_session_pins_calls == ["s-pin"]
-    connection.client.report_agent_status.assert_awaited_once_with("s-pin", "finalize")
+    connection.client.report_agent_status.assert_awaited_once_with("s-pin", "finalize", None)
+
+
+def test_finalize_forwards_epoch_to_pub(client):
+    """The PUB fan-out must carry the epoch, or remote workers drop finalize as stale."""
+    test_client, connection = client
+    test_client.post("/agent-status", json=_event("s-epoch", "running", epoch=3))
+    response = test_client.post("/agent-status", json=_event("s-epoch", "finalize", epoch=3))
+    assert response.status_code == 200
+    connection.client.report_agent_status.assert_awaited_once_with("s-epoch", "finalize", 3)
+
+
+def test_epoch_less_event_after_epoch_advance_is_not_stale(client):
+    """Old clients without epoch must still be applied after a newer epoch was seen."""
+    test_client, _ = client
+    assert test_client.post("/agent-status", json=_event("s-old", "running", epoch=5)).json()["applied"] is True
+
+    response = test_client.post("/agent-status", json=_event("s-old", "pause"))
+
+    assert response.status_code == 200
+    assert response.json()["applied"] is True
+    assert response.json()["state"] == "pause"
 
 
 def test_structural_errors_answer_400(client):
@@ -191,9 +225,60 @@ def test_disabled_channel_has_no_routes():
 
 
 def test_pause_suspend_accepted_degraded(client):
-    """T-A2 degraded: pause/suspend migrate the machine, no 5xx (B1 pending)."""
+    """pause and the deprecated suspend alias both migrate the machine."""
     test_client, _ = client
     for state in ("pause", "suspend", "running"):
         response = test_client.post("/agent-status", json=_event("s-2", state, reason="human_approval"))
         assert response.status_code == 200
         assert response.json()["applied"] is True
+        assert response.json()["state"] == ("running" if state == "running" else "pause")
+
+
+def test_newer_epoch_running_revives_finalized_session(client):
+    test_client, connection = client
+    first = test_client.post("/agent-status", json=_event("s-epoch", "finalize", epoch=0))
+    assert first.json()["applied"] is True
+
+    same_epoch = test_client.post("/agent-status", json=_event("s-epoch", "running", epoch=0))
+    assert same_epoch.json()["applied"] is False
+    assert same_epoch.json()["reason"] == "terminal"
+
+    rejected_resume = test_client.post("/agent-status", json=_event("s-epoch", "resume", epoch=1))
+    assert rejected_resume.status_code == 200
+    assert rejected_resume.json()["applied"] is False
+    assert rejected_resume.json()["reason"] == "terminal"
+
+    revived = test_client.post("/agent-status", json=_event("s-epoch", "running", epoch=1))
+    assert revived.status_code == 200
+    assert revived.json()["applied"] is True
+    assert revived.json()["reason"] == "resumed_epoch"
+    record = test_client.get("/agent-status", params={"session_id": "s-epoch"}).json()
+    assert record["state"] == "running"
+    assert record["epoch"] == 1
+    assert record["finalized_epoch"] is None
+    assert connection.drop_session_pins_calls == ["s-epoch"]
+
+
+def test_central_mode_forwards_events_without_local_apply():
+    """Central owner: the worker must not run its own state machine/timer."""
+    server, _ = _build_server()
+    server._central_agent_status = True
+    result = {
+        "status": "ok",
+        "applied": True,
+        "reason": "applied",
+        "state": "running",
+        "previous_state": None,
+    }
+    server._forward_central_agent_status = AsyncMock(return_value=result)
+
+    with TestClient(server._inference_app) as test_client:
+        response = test_client.post("/agent-status", json=_event("s-central", "running"))
+        assert response.status_code == 200
+        assert response.json() == result
+        query = test_client.get("/agent-status", params={"session_id": "s-central"})
+        assert query.status_code == 200
+        assert query.json() == result
+
+    assert len(server._agent_status_machine) == 0
+    assert [call.args[1] for call in server._forward_central_agent_status.await_args_list] == ["POST", "GET"]

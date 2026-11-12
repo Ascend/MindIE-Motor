@@ -63,6 +63,8 @@ from motor.coordinator.render.vllm_render_client import VLLMRenderClient
 from motor.coordinator.router.dispatch import handle_metaserver_request, handle_request
 from motor.coordinator.scheduler.policy.kv_cache_affinity import TokenizerManager
 from motor.coordinator.scheduler.runtime import SchedulerConnectionManager
+from motor.coordinator.scheduler.runtime.agent_hint_lifecycle import AgentHintLifecycleManager
+from motor.coordinator.scheduler.runtime.agent_hint_metrics import KvcMetricsShmWriter
 from motor.coordinator.tracer.tracing import TracerManager
 
 logger = get_logger(__name__)
@@ -347,6 +349,38 @@ class InferenceServer(BaseCoordinatorServer):
             if status_cfg.enabled
             else None
         )
+        kvc_cfg = self.coordinator_config.kvc_lifecycle_config
+        # Central mode: Obs owns the state machine + KVC timers; this worker only
+        # forwards events. A per-worker timer cannot be cancelled by a running
+        # event that SO_REUSEPORT delivered to another worker (handoff §11).
+        self._central_agent_status = bool(status_cfg.enabled and status_cfg.central_lifecycle)
+        api_cfg = self.coordinator_config.api_config
+        central_host = str(api_cfg.coordinator_api_host)
+        if central_host in ("0.0.0.0", "::", ""):
+            central_host = "127.0.0.1"
+        self._central_agent_status_endpoint = (central_host, str(api_cfg.coordinator_obs_port))
+        self._kvc_lifecycle = (
+            AgentHintLifecycleManager(
+                enabled=True,
+                max_sessions=status_cfg.max_sessions,
+                idle_offload_s=kvc_cfg.idle_offload_s,
+                idle_evict_s=kvc_cfg.idle_evict_s,
+                queue_size=kvc_cfg.queue_size,
+                prefetch_enabled=kvc_cfg.prefetch_enabled,
+            )
+            if status_cfg.enabled and kvc_cfg.enabled and not self._central_agent_status
+            else None
+        )
+        self._kvc_metrics_writer = None
+        if self._kvc_lifecycle is not None and kvc_cfg.metrics_shm_name:
+            try:
+                worker_index = getattr(self.coordinator_config, "worker_index", None) or 0
+                shm_name = f"{kvc_cfg.metrics_shm_name}_{int(worker_index)}"
+                self._kvc_metrics_writer = KvcMetricsShmWriter(shm_name)
+                self._kvc_lifecycle.set_stats_listener(self._kvc_metrics_writer.update)
+            except Exception as e:  # noqa: BLE001 — metrics export must not block startup
+                logger.warning("kvc metrics shm unavailable; counters stay local: %s", e)
+                self._kvc_metrics_writer = None
         self._register_routes()
 
     @property
@@ -384,6 +418,11 @@ class InferenceServer(BaseCoordinatorServer):
         sampling_cfg = self.coordinator_config.precision_detection_config
         TracerManager(self.coordinator_config)
         await self._scheduler_connection.connect()
+        # Wire the agent_status PUB listener at startup (not lazily on the first
+        # POST): every worker must observe the fleet-wide event stream from the
+        # beginning, otherwise its local state machine starts empty and a
+        # finalize can be applied out of order.
+        self._wire_agent_status_listener()
         if sampling_cfg.precision_check_enabled:
             scheduler_client = self._scheduler_connection.get_client()
             if scheduler_client is None:
@@ -475,6 +514,19 @@ class InferenceServer(BaseCoordinatorServer):
                 TracerManager().shutdown()
             except Exception as e:
                 logger.warning("TracerManager shutdown during lifespan: %s", e)
+            manager = getattr(self, "_kvc_lifecycle", None)
+            if manager is not None:
+                try:
+                    await manager.aclose()
+                except Exception as e:
+                    logger.warning("KVC lifecycle shutdown failed: %s", e)
+            writer = getattr(self, "_kvc_metrics_writer", None)
+            if writer is not None:
+                try:
+                    writer.close()
+                except Exception as e:
+                    logger.warning("KVC metrics shm close failed: %s", e)
+                self._kvc_metrics_writer = None
             await self._scheduler_connection.disconnect()
 
     def verify_api_key(self, request: Request) -> None:
@@ -638,14 +690,55 @@ class InferenceServer(BaseCoordinatorServer):
             return
         machine = self._agent_status_machine
 
-        def _apply_state_event(session_id: str, state: str) -> None:
+        def _apply_state_event(session_id: str, state: str, epoch: int | None = None) -> None:
             machine.apply(
                 session_id,
                 state=state,
+                epoch=epoch,
             )
 
         client.agent_status_state_listener = _apply_state_event
         self._agent_status_listener_wired = True
+
+    async def _forward_central_agent_status(self, request: Request, method: str) -> dict[str, Any]:
+        """Relay one status event to the single Obs-owned lifecycle owner.
+
+        The inference port is SO_REUSEPORT across workers, so handling the event
+        locally would reintroduce split state. A transport failure is a 503 so
+        the sender's retry/drop contract sees an explicit outage.
+        """
+        host, port = self._central_agent_status_endpoint
+        try:
+            client = await HTTPClientPool().get_client(
+                host,
+                port,
+                tls_config=self.coordinator_config.mgmt_tls_config,
+            )
+            if method == "POST":
+                raw = await request.body()
+                response = await client.post(
+                    "/internal/agent-status",
+                    content=raw,
+                    headers={"Content-Type": "application/json"},
+                    timeout=10.0,
+                )
+            else:
+                response = await client.get(
+                    "/internal/agent-status",
+                    params=dict(request.query_params),
+                    timeout=10.0,
+                )
+            if response.status_code >= 400:
+                raise HTTPException(status_code=response.status_code, detail=response.text[:512])
+            return response.json()
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001 — surface an explicit owner outage
+            logger.warning("central agent status forward failed: %s", e)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="central agent status owner unavailable",
+            ) from e
 
     async def _handle_agent_status_report(self, request: Request) -> dict[str, Any]:
         """Apply one out-of-band status event; never 5xx (spec Phase 4 §2.2)."""
@@ -657,6 +750,8 @@ class InferenceServer(BaseCoordinatorServer):
         # Lazy wiring: the scheduler client connects asynchronously at startup;
         # once wired, PUB fan-out drives the local state machine too (review 194528015).
         self._wire_agent_status_listener()
+        if getattr(self, "_central_agent_status", False):
+            return await self._forward_central_agent_status(request, "POST")
         try:
             raw = await request.body()
             if not raw:
@@ -685,6 +780,16 @@ class InferenceServer(BaseCoordinatorServer):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="session.session_id is required",
             )
+        raw_epoch = session.get("epoch")
+        if raw_epoch is None:
+            # Keep "not supplied" distinct from 0 so the state machine does not
+            # treat an epoch-less old-client event as stale (review 200151323).
+            epoch: int | None = None
+        else:
+            try:
+                epoch = max(0, int(raw_epoch))
+            except (TypeError, ValueError):
+                epoch = 0
         try:
             agent_status = AgentStatusHint.model_validate(status_data)
         except ValidationError as e:
@@ -705,23 +810,27 @@ class InferenceServer(BaseCoordinatorServer):
             reason=agent_status.reason,
             tools=[tool.model_dump(exclude_none=True) for tool in agent_status.tools],
             state_since_ms=agent_status.state_since_ms,
+            epoch=epoch,
         )
         logger.info(
-            "agent_status event session_id=%s state=%s applied=%s reason=%s previous=%s",
+            "agent_status event session_id=%s state=%s canonical=%s epoch=%s applied=%s reason=%s previous=%s",
             session_id,
             state,
+            transition.state,
+            epoch,
             transition.applied,
             transition.reason,
             transition.previous_state,
         )
-        if transition.applied and state == "finalize":
-            await self._release_session_pins(session_id)
-            logger.warning(
-                "agent_status finalize needs engine KV action (offload); "
-                "engine consumption capability unconfirmed (B1) — degraded to "
-                "state tracking + pin release only: session_id=%s",
+        if transition.applied and getattr(self, "_kvc_lifecycle", None) is not None:
+            await self._apply_kvc_lifecycle(
                 session_id,
+                transition.state,
+                epoch if epoch is not None else 0,
+                previous_state=transition.previous_state,
             )
+        if transition.applied and transition.state == "finalize":
+            await self._release_session_pins(session_id, epoch)
         return {
             "status": "ok",
             "applied": transition.applied,
@@ -737,6 +846,8 @@ class InferenceServer(BaseCoordinatorServer):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="agent status channel is not enabled",
             )
+        if getattr(self, "_central_agent_status", False):
+            return await self._forward_central_agent_status(request, "GET")
         session_id = request.query_params.get("session_id")
         if not session_id:
             raise HTTPException(
@@ -751,7 +862,42 @@ class InferenceServer(BaseCoordinatorServer):
             )
         return record.to_dict()
 
-    async def _release_session_pins(self, session_id: str) -> None:
+    async def _apply_kvc_lifecycle(
+        self,
+        session_id: str,
+        state: str,
+        epoch: int = 0,
+        *,
+        previous_state: str | None = None,
+    ) -> None:
+        """Drive the KVC lifecycle controller for one applied status event.
+
+        The sender is resolved lazily: the scheduler client connects after the
+        inference server starts, and KVC must degrade (WARN) rather than fail
+        the status report when it is unavailable.
+        """
+        manager = self._kvc_lifecycle
+        if manager is None:
+            return
+        try:
+            client = self._get_scheduler_client()
+        except RuntimeError:
+            logger.warning(
+                "kvc lifecycle skipped: scheduler client unavailable: session_id=%s state=%s",
+                session_id,
+                state,
+            )
+            return
+        manager.set_sender(client.send_session_manage_request)
+        manager.set_pressure_provider(client.capacity_pressure)
+        await manager.on_status(
+            session_id,
+            state,
+            epoch=epoch,
+            previous_state=previous_state,
+        )
+
+    async def _release_session_pins(self, session_id: str, epoch: int | None = None) -> None:
         """Release every role pin for session_id (local + fleet-wide PUB).
 
         Local drop first (the endpoint worker owns its own affinity table),
@@ -773,7 +919,7 @@ class InferenceServer(BaseCoordinatorServer):
             session_id,
             dropped,
         )
-        await client.report_agent_status(session_id, "finalize")
+        await client.report_agent_status(session_id, "finalize", epoch)
 
     def _apply_config_changes(self, new_config: CoordinatorConfig) -> None:
         """Apply Infer-specific config changes."""

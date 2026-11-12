@@ -112,6 +112,9 @@ class RequestInfo(BaseModel):
     # Bound UnifiedPD trigger attempt; looked up by the Worker metaserver callback.
     _trigger_attempt: object | None = PrivateAttr(default=None)
     _token_obfuscation_service: object | None = PrivateAttr(default=None)
+    # Set once dispatch translated the hint's message indices into block
+    # coordinates, so the scheduling policy skips a duplicate tokenize/offset pass.
+    _hint_block_offsets_attached: bool = PrivateAttr(default=False)
     prompt_tokens_details: dict = Field(default={}, description="prefill prompt_tokens_details")
     prompt_token_ids: list = Field(default=[], description="prefill prompt_token_ids")
     cached_token_ids: list = Field(default=[], description="Cached token_ids")

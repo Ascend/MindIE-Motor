@@ -55,9 +55,8 @@ LIFECYCLE_SWEEP_ENV = "MOTOR_CACHE_CONTROL_SWEEP_INTERVAL_S"
 _DEFAULT_SWEEP_INTERVAL_S = 5
 _MIN_SWEEP_INTERVAL_S = 1
 
-DECL_TYPE_PIN = "pin"
 DECL_TYPE_EPHEMERAL = "ephemeral"
-DECL_TYPES = frozenset({DECL_TYPE_PIN, DECL_TYPE_EPHEMERAL})
+DECL_TYPES = frozenset({DECL_TYPE_EPHEMERAL})
 
 # Kept in sync with agent_hint._CACHE_TTL_MIN/_CACHE_TTL_MAX. Re-clamped here so a
 # caller bypassing the parser cannot shorten retention below the spec floor or extend

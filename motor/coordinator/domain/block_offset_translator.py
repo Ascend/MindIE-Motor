@@ -1062,12 +1062,17 @@ def attach_block_offsets(req_info, messages, tools, tokenizer=None) -> None:
     """
     try:
         hint = getattr(req_info, "agent_hint_info", None)
-        if hint is None or not getattr(hint, "session_id", None):
+        if hint is None:
+            return
+        cm = getattr(hint, "context_management", None)
+        cc = getattr(hint, "cache_control", None)
+        if not getattr(hint, "session_id", None) and cc is None:
             return
 
-        cm = getattr(hint, "context_management", None)
         manage_request = bool(getattr(cm, "manage_request", False)) if cm is not None else False
-        if not manage_request:
+        # Decoupled from the scheduling policy: ordinary requests carrying a
+        # cache_control declaration also need message -> block coordinates.
+        if not manage_request and cc is None:
             return
 
         is_target_session = False
@@ -1092,7 +1097,6 @@ def attach_block_offsets(req_info, messages, tools, tokenizer=None) -> None:
                     is_target_session = True
                     break
 
-        cc = getattr(hint, "cache_control", None)
         kv_conductor_config = ConductorApiClient.coordinator_config.scheduler_config.kv_conductor_config
         block_size = getattr(kv_conductor_config, "block_size", 128)
         if is_target_session and cc is None:

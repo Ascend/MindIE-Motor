@@ -20,6 +20,7 @@
 # See the respective licenses for more details.
 
 import asyncio
+import os
 import string
 import uuid
 from functools import wraps
@@ -45,7 +46,10 @@ from motor.coordinator.domain.agent_hint import (
     ensure_minimum_messages_for_session_edits,
 )
 from motor.coordinator.domain.agent_hint import apply_strict_priority_trust
-from motor.coordinator.domain.agent_hint_wire import apply_agent_hint_header
+from motor.coordinator.domain.agent_hint_wire import (
+    apply_agent_hint_header,
+    apply_spec_cache_control_to_engine_body,
+)
 from motor.coordinator.router.adapters.pd_protocol import trim_vllm_engine_request_id
 from motor.coordinator.router.dispatch_session import AttemptContext
 from motor.coordinator.router.token_only import parse_token_only_request_id
@@ -173,6 +177,38 @@ def with_cancellation(handler_func):
             raise
 
     return wrapper
+
+
+def _attach_hint_block_offsets(req_info: RequestInfo, request_json: dict) -> None:
+    """Translate message indices to block coordinates for legacy manage requests.
+
+    ``attach_block_offsets`` used to be reachable only through the
+    kv_cache_affinity policy, so a ``manage_request`` routed by load_balance
+    reached the engine without ``block_start/block_end``. The same translation
+    is also required for ordinary requests that carry a ``cache_control``
+    declaration (whole-context TTL / pin). Best-effort: a missing tokenizer only
+    leaves ``target="messages"`` edits without coordinates (the engine rejects
+    them, and KVC logs the reason).
+    """
+    try:
+        from motor.coordinator.domain.block_offset_translator import attach_block_offsets
+        from motor.coordinator.scheduler.policy.kv_cache_affinity import TokenizerManager
+
+        tokenizer = getattr(TokenizerManager(), "tokenizer", None)
+        attach_block_offsets(
+            req_info,
+            request_json.get(OpenAIField.MESSAGES),
+            request_json.get(OpenAIField.TOOLS),
+            tokenizer=tokenizer,
+        )
+        # Mark the hint as translated so the scheduling policy does not tokenize
+        # and rebuild the same offset table again on the request path. Skip the
+        # marker when no tokenizer was available: the policy can still lazy-load
+        # one, and marking here would suppress that retry.
+        if tokenizer is not None:
+            req_info._hint_block_offsets_attached = True
+    except Exception as e:  # noqa: BLE001 — management translation must not fail the request
+        logger.warning("manage-request block offset translation failed, skipping: %s", e)
 
 
 def _is_pd_hybrid_deploy(config: CoordinatorConfig | None) -> bool:
@@ -545,15 +581,24 @@ async def __create_request_info(
     req_len = len(request_body)
     api = validate_and_sanitize_path(raw_request.url.path)
 
-    req_data = request_json.copy()
     client_expects_token_ids = bool(request_json.get("return_token_ids", False))
 
     # Merge the X-Agent-Hint legacy-representable fields into the body hint and
     # keep the decoded header payload for parse_agent_hint, so spec-form blocks
     # (session{}, agent_status, prediction, strict_priority, spec cache_control)
-    # come from the header only and never enter the request body.
+    # come from the header only and are not parsed from the request body.
+    # Merge BEFORE copying req_data: otherwise a header-only hint (no body
+    # ``agent_hint`` key) lands only on ``request_json`` and never reaches the
+    # engine (E2E: header-only sessions got 0 blocks on vLLM).
     header_hint = apply_agent_hint_header(request_json, dict(raw_request.headers))
     apply_session_control_autofill(request_json)
+    req_data = request_json.copy()
+    # The engine view gets a private agent_hint dict: the spec cache_control is
+    # translated for the engine here, while request_json stays header-only for
+    # parse_agent_hint (body fields still win).
+    if isinstance(req_data.get("agent_hint"), dict):
+        req_data["agent_hint"] = dict(req_data["agent_hint"])
+    apply_spec_cache_control_to_engine_body(req_data, header_hint)
     ensure_minimum_messages_for_session_edits(request_json, req_data)
     agent_hint_info = parse_agent_hint(
         request_json,
@@ -577,6 +622,17 @@ async def __create_request_info(
         client_expects_chat_shape=(OpenAIField.MESSAGES in request_json),
         agent_hint_info=agent_hint_info,
     )
+    context_management = getattr(agent_hint_info, "context_management", None)
+    manage_request = context_management is not None and bool(getattr(context_management, "manage_request", False))
+    cache_control = getattr(agent_hint_info, "cache_control", None)
+    if manage_request or cache_control is not None:
+        # Tokenizing a long prompt is CPU-bound; keep it off the event loop.
+        await asyncio.to_thread(_attach_hint_block_offsets, req_info, request_json)
+    # Motor-side affinity can consume hints while the engine keeps its normal
+    # prefix cache (no session block pinning). Manage requests must keep the
+    # hint or the engine cannot resolve the target session.
+    if not manage_request and os.getenv("MOTOR_ENGINE_AGENT_HINT", "1").strip() == "0":
+        req_info.req_data.pop("agent_hint", None)
     logger.info(
         "Scheduling metric stage=request_arrive req_id=%s unix_ts=%.6f",
         req_info.req_id,

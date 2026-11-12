@@ -2657,3 +2657,36 @@ def test_select_with_load_logs_all_candidates_when_enabled(monkeypatch, caplog):
     assert len(messages) == 2
     assert any("req_id=req-kva" in m and "point=1-11" in m and "combined=4.00" in m for m in messages)
     assert any("point=1-12" in m and "prefill_cost=3.00" in m and "combined=8.00" in m for m in messages)
+
+
+class TestEnsureTokenIdsSkipsDuplicateOffsets(unittest.TestCase):
+    """Dispatch may already have translated hint offsets; the policy must not redo it."""
+
+    def _req_info(self) -> RequestInfo:
+        return RequestInfo(
+            req_id="r-1",
+            req_data={"messages": [{"role": "user", "content": "hi"}]},
+            req_len=1,
+            api="/v1/chat/completions",
+        )
+
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager")
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.attach_block_offsets")
+    def test_skips_attach_when_dispatch_already_did_it(self, mock_attach, mock_tokenizer_manager):
+        req_info = self._req_info()
+        req_info._hint_block_offsets_attached = True
+        mock_tokenizer_manager.return_value.apply_chat_template.return_value = [1, 2, 3]
+
+        KvCacheAffinityPolicy._ensure_token_ids(req_info)
+
+        mock_attach.assert_not_called()
+
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager")
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.attach_block_offsets")
+    def test_attaches_when_dispatch_did_not_run(self, mock_attach, mock_tokenizer_manager):
+        req_info = self._req_info()
+        mock_tokenizer_manager.return_value.apply_chat_template.return_value = [1, 2, 3]
+
+        KvCacheAffinityPolicy._ensure_token_ids(req_info)
+
+        mock_attach.assert_called_once()

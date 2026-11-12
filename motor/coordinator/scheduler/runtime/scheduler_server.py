@@ -561,6 +561,8 @@ class _SchedulerRequestDispatcher:
         """
         session_id = request.data.get("session_id")
         state = request.data.get("state")
+        raw_epoch = request.data.get("epoch")
+        epoch = raw_epoch if isinstance(raw_epoch, int) and not isinstance(raw_epoch, bool) else None
         if not isinstance(session_id, str) or not session_id or not isinstance(state, str) or not state:
             return SchedulerResponse(
                 response_type=SchedulerResponseType.SUCCESS,
@@ -578,7 +580,7 @@ class _SchedulerRequestDispatcher:
                 request_id=request.request_id,
                 data={"relayed": False, "reason": "observability_only"},
             )
-        await self._publish_agent_status(session_id, state)
+        await self._publish_agent_status(session_id, state, epoch)
         return SchedulerResponse(
             response_type=SchedulerResponseType.SUCCESS,
             request_id=request.request_id,
@@ -725,7 +727,7 @@ class _SchedulerRequestDispatcher:
                 e,
             )
 
-    async def _publish_agent_status(self, session_id: str, state: str) -> None:
+    async def _publish_agent_status(self, session_id: str, state: str, epoch: int | None = None) -> None:
         """Publish an out-of-band agent_status fan-out to all workers (Phase 4).
 
         PUB does not queue: a worker that is not subscribed yet misses the
@@ -738,6 +740,8 @@ class _SchedulerRequestDispatcher:
             "session_id": session_id,
             "state": state,
         }
+        if epoch is not None:
+            payload["epoch"] = epoch
         try:
             await self._pub_socket.send_multipart([AGENT_STATUS_TOPIC, msgspec.msgpack.encode(payload)])
         except Exception as e:

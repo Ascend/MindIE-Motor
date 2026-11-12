@@ -1711,6 +1711,7 @@ def test_agent_status_config_defaults_off() -> None:
     assert config.agent_status_config.enabled is False
     assert config.agent_status_config.session_ttl_s == 3600
     assert config.agent_status_config.max_sessions == 65536
+    assert config.agent_status_config.central_lifecycle is False
     assert "/agent-status" in config.api_key_config.skip_paths
     assert "/agent-status" in config.rate_limit_config.skip_paths
 
@@ -1739,3 +1740,39 @@ def test_agent_status_require_infer_auth_removes_skip_paths():
     config.validate_config()
     assert "/agent-status" not in config.api_key_config.skip_paths
     assert "/agent-status" not in config.rate_limit_config.skip_paths
+
+
+def test_kvc_lifecycle_config_defaults_off() -> None:
+    """KVC-L0 is opt-in: default config must not change baseline behavior."""
+    config = CoordinatorConfig()
+    assert config.kvc_lifecycle_config.enabled is False
+    assert config.kvc_lifecycle_config.manage_timeout_s == 5.0
+    assert config.kvc_lifecycle_config.queue_size == 1024
+    assert config.kvc_lifecycle_config.idle_offload_s == 0
+    assert config.kvc_lifecycle_config.idle_evict_s == 0
+    assert config.kvc_lifecycle_config.offload_kv_usage_high_water == 0.0
+    assert config.kvc_lifecycle_config.prefetch_enabled is True
+    assert config.kvc_lifecycle_config.metrics_shm_name == "motor_kvc_metrics"
+
+
+def test_kvc_lifecycle_config_rejects_invalid_values() -> None:
+    config = CoordinatorConfig()
+    config.kvc_lifecycle_config.manage_timeout_s = -1
+    with pytest.raises(ValueError, match="kvc_lifecycle_config.manage_timeout_s must be positive"):
+        config.validate_config()
+
+    config = CoordinatorConfig()
+    config.kvc_lifecycle_config.idle_offload_s = -1
+    with pytest.raises(ValueError, match="kvc_lifecycle_config.idle_offload_s cannot be negative"):
+        config.validate_config()
+
+    config = CoordinatorConfig()
+    config.kvc_lifecycle_config.idle_offload_s = 60
+    config.kvc_lifecycle_config.idle_evict_s = 30
+    with pytest.raises(ValueError, match="kvc_lifecycle_config.idle_evict_s must be >= idle_offload_s"):
+        config.validate_config()
+
+    config = CoordinatorConfig()
+    config.kvc_lifecycle_config.offload_kv_usage_high_water = 1.5
+    with pytest.raises(ValueError, match="offload_kv_usage_high_water must be in"):
+        config.validate_config()
