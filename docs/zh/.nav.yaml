@@ -64,6 +64,7 @@ nav:
       - 服务维护:
           - 镜像制作: user_guide/maintenance/build_motor_image_from_vllm_ascend.md
           - 常用维护技巧: user_guide/maintenance/maintenance_tips.md
+          - 使用 LiteLLM 代理对接 Motor: user_guide/maintenance/litellm_proxy_usage.md
           - 故障案例排查: user_guide/maintenance/solutions_to_common_problems.md
       - API 参考:
           - 接口说明: user_guide/api/README.md
