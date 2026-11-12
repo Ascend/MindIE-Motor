@@ -1834,6 +1834,66 @@ async def test_unified_pd_sglang_decode_failure_cancels_prefill_without_peer_sto
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("abort_failure", [503, "connection", "timeout", "unexpected"])
+async def test_sglang_abort_failure_preserves_original_error_and_releases_both_legs(monkeypatch, abort_failure):
+    """Native stop is best effort: an abort failure cannot leak tasks or mask Decode's error."""
+    req_info = RequestInfo(
+        req_id="root-abort-failure",
+        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    scheduler = _Scheduler()
+    router = UnifiedPDRouter(req_info, config, scheduler=scheduler, request_manager=RequestManager(config))
+    prefill_started = asyncio.Event()
+    prefill_cancelled = asyncio.Event()
+    original_error = httpx.ConnectError("original decode failure")
+
+    class FailingAbortClient(_Client):
+        async def post(self, path, json=None, headers=None, timeout=None):
+            normalized_path = str(path).rstrip("/")
+            if normalized_path.endswith("abort_request"):
+                self.abort_requests.append((json, timeout))
+                if abort_failure == "connection":
+                    raise httpx.ConnectError("abort connection refused")
+                if abort_failure == "timeout":
+                    raise TimeoutError("abort timed out")
+                if abort_failure == "unexpected":
+                    raise ValueError("invalid abort response")
+                return httpx.Response(abort_failure, request=httpx.Request("POST", "http://engine/abort_request"))
+            assert normalized_path.endswith("v1/completions"), f"Unexpected request path: {path}"
+            if self.name == "prefill":
+                prefill_started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    prefill_cancelled.set()
+            await prefill_started.wait()
+            raise original_error
+
+    p_client = FailingAbortClient("prefill")
+    d_client = FailingAbortClient("decode")
+
+    @asynccontextmanager
+    async def client_for(resource):
+        yield p_client if resource.instance.role == PDRole.ROLE_P else d_client
+
+    monkeypatch.setattr(router, "_client_for", client_for)
+    with pytest.raises(httpx.ConnectError) as exc_info:
+        await asyncio.wait_for(router.handle_request(), timeout=2)
+
+    assert exc_info.value is original_error
+    assert prefill_cancelled.is_set()
+    expected_abort = [({"rid": "root-abort-failure#a1"}, 1.0)]
+    assert p_client.abort_requests == expected_abort
+    assert d_client.abort_requests == expected_abort
+    assert scheduler.update_workload.await_count == 2
+    assert not router._release_inflight
+
+
+@pytest.mark.asyncio
 async def test_unified_pd_sglang_retry_uses_new_matched_bootstrap_room(
     monkeypatch,
 ):

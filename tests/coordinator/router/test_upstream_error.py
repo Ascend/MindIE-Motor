@@ -8,6 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import asyncio
 import json
 from unittest.mock import MagicMock
 
@@ -20,9 +21,11 @@ from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import RequestInfo
 from motor.coordinator.router.strategies.base import BaseRouter
 from motor.coordinator.router.upstream_error import (
+    ERROR_MESSAGE_PREVIEW_BYTES,
     UpstreamHTTPError,
     is_cb_reportable_failure,
     is_retryable_upstream_error,
+    render_transport_error,
     render_upstream_error,
 )
 
@@ -278,3 +281,73 @@ def test_cb_not_reportable_for_vllm_validation_error_returned_as_400():
 def test_cb_reportable_for_connection_error():
     """Network-level errors always count as instance faults."""
     assert is_cb_reportable_failure(httpx.ConnectError("connection refused"))
+
+
+def test_upstream_error_str_preview_boundaries():
+    """__str__ bounds the body preview, omits it when empty, and never crashes on bad UTF-8."""
+    body = b"x" * (ERROR_MESSAGE_PREVIEW_BYTES + 10)
+    truncated = str(_make_error(500, body))
+    assert truncated == f"Upstream stream request failed with HTTP 500: {'x' * ERROR_MESSAGE_PREVIEW_BYTES}..."
+
+    exact_limit = str(_make_error(500, b"x" * ERROR_MESSAGE_PREVIEW_BYTES))
+    assert exact_limit == f"Upstream stream request failed with HTTP 500: {'x' * ERROR_MESSAGE_PREVIEW_BYTES}"
+
+    assert str(_make_error(503)) == "Upstream stream request failed with HTTP 503"
+
+    invalid = str(_make_error(500, b"\xff\xfe"))
+    assert invalid == "Upstream stream request failed with HTTP 500: \ufffd\ufffd"
+
+
+def test_from_response_forwards_only_whitelisted_headers():
+    """Engine-internal headers must not leak to the client; content-type/retry-after are kept."""
+    request = httpx.Request("POST", "http://engine/v1/completions")
+    response = httpx.Response(
+        500,
+        headers={"Content-Type": "application/json", "Retry-After": "3", "X-Internal-Trace": "abc"},
+        request=request,
+    )
+
+    error = UpstreamHTTPError.from_response(response, body=b"body", phase="stream", truncated=True)
+
+    assert error.status_code == 500
+    assert error.headers == {"content-type": "application/json", "retry-after": "3"}
+    assert error.truncated is True
+
+
+@pytest.mark.parametrize(
+    "transport_error",
+    [
+        httpx.ConnectError("connection refused"),
+        httpx.ConnectTimeout("connect timeout"),
+        httpx.PoolTimeout("pool exhausted"),
+        httpx.ReadError("read failed"),
+        httpx.ReadTimeout("read timeout"),
+        httpx.RemoteProtocolError("bad framing"),
+        httpx.WriteError("write failed"),
+        httpx.WriteTimeout("write timeout"),
+    ],
+)
+def test_transient_transport_errors_are_retryable(transport_error):
+    """Every connection-level httpx failure is transient and worth retrying on another instance."""
+    assert is_retryable_upstream_error(transport_error)
+
+
+def test_cancellation_is_never_retryable():
+    """A cancelled request must not be retried: the caller is already gone."""
+    assert not is_retryable_upstream_error(asyncio.CancelledError())
+
+
+@pytest.mark.parametrize(
+    ("transport_error", "expected_code"),
+    [
+        (httpx.ReadTimeout("read timeout"), 504),
+        (httpx.ConnectError("connection refused"), 502),
+    ],
+)
+def test_render_transport_error_maps_timeout_to_504_and_other_failures_to_502(transport_error, expected_code):
+    response = render_transport_error(transport_error)
+
+    assert response.status_code == expected_code
+    payload = json.loads(response.body)
+    assert payload["error"]["code"] == expected_code
+    assert payload["error"]["type"] == type(transport_error).__name__

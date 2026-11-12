@@ -439,6 +439,64 @@ def test_sglang_abort_uses_native_request_id():
     assert request.body == {"rid": "engine-1"}
 
 
+@pytest.mark.parametrize("port", [None, True, False, "8998", 8998.0, -1, 0, 65536])
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+def test_sglang_rejects_invalid_bootstrap_port_on_both_legs(port, phase):
+    """Do not send malformed bootstrap metadata to either engine, even on Decode."""
+    adapter = SglangProtocolAdapter()
+    endpoint = _endpoint("prefill.local", port)
+    request = {"messages": [{"role": "user", "content": "hello"}]}
+    original = deepcopy(request)
+
+    with pytest.raises(EngineProtocolError, match="invalid prefill bootstrap port") as exc_info:
+        if phase == "prefill":
+            adapter.build_prefill_request(request, _context(endpoint=endpoint))
+        else:
+            adapter.build_decode_request(request, _context(peer_endpoint=endpoint), None)
+
+    assert exc_info.value.engine_type == "sglang"
+    assert exc_info.value.phase == phase
+    assert request == original
+
+
+@pytest.mark.parametrize("port", [1, 65535])
+def test_sglang_bootstrap_port_boundaries_preserve_decode_generation(port):
+    """Valid ports and IPv6 hosts survive mapping; only Prefill disables streaming."""
+    adapter = SglangProtocolAdapter()
+    endpoint = _endpoint("2001:db8::1", port)
+    request = {
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "max_tokens": 32,
+        "max_completion_tokens": 16,
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    original = deepcopy(request)
+    prefill = adapter.build_prefill_request(request, _context(endpoint=endpoint))
+    decode = adapter.build_decode_request(request, _context(peer_endpoint=endpoint), None)
+
+    assert prefill.body["stream"] is False
+    assert "stream_options" not in prefill.body
+    assert decode.body["stream"] is True
+    assert decode.body["stream_options"] == {"include_usage": True}
+    for body in (prefill.body, decode.body):
+        assert body["bootstrap_port"] == port
+        assert body["bootstrap_host"] == endpoint.host
+        assert body["max_tokens"] == 32
+        assert body["max_completion_tokens"] == 16
+    decode.body["messages"][0]["content"] = "changed"
+    decode.body["stream_options"]["include_usage"] = False
+    assert request == original
+
+
+@pytest.mark.parametrize("usage", [None, [], "invalid", 0])
+def test_sglang_prefill_response_ignores_non_mapping_usage(usage):
+    metadata = SglangProtocolAdapter().parse_prefill_response({"usage": usage})
+
+    assert metadata.usage is None
+    assert metadata.handoff_ticket is None
+
+
 def test_vllm_does_not_claim_an_unverified_abort_endpoint():
     assert VllmProtocolAdapter().build_abort_request(_context()) is None
 
