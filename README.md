@@ -1,21 +1,23 @@
-# MindIE Motor
+<!-- The complete wordmark below serves as the README title. -->
+<!-- markdownlint-disable-file MD041 -->
 
 <p align="center">
-    <img alt="MindIE Motor" src="./docs/zh/imgs/MindIE-Motor-wordmark.jpg" width="100%">
+    <img alt="MindIE Motor" src="./docs/zh/assets/mindie-motor-logo.svg" width="100%">
 </p>
 
 <div align="center">
 
-<a href="https://www.hiascend.com/forum/"><img alt="Ascend" src="https://img.shields.io/badge/Community-MindIE%20Motor-blue.svg" width="218" height="28"></a>
-<a href="./LICENSE.md"><img alt="License" src="https://img.shields.io/badge/License-MulanPSL%202-blue" width="174" height="28"></a>
-<a href="https://mindie-motor.readthedocs.io/"><img alt="Docs" src="https://img.shields.io/badge/Docs-Read%20the%20Docs-8CA1AF" width="176" height="28"></a>
-<a href="https://zread.ai/Ascend/MindIE-Motor"><img alt="Zread" src="https://img.shields.io/badge/Zread-Ask_AI-_.svg?style=flat&color=0052D9&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff" width="147" height="28"></a>
-<a href="https://deepwiki.com/Ascend/MindIE-Motor"><img alt="DeepWiki" src="https://img.shields.io/badge/DeepWiki-Ask_AI-_.svg?style=flat&color=0052D9&labelColor=000000&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACwAAAAyCAYAAAAnWDnqAAAAAXNSR0IArs4c6QAAA05JREFUaEPtmUtyEzEQhtWTQyQLHNak2AB7ZnyXZMEjXMGeK/AIi+QuHrMnbChYY7MIh8g01fJoopFb0uhhEqqcbWTp06/uv1saEDv4O3n3dV60RfP947Mm9/SQc0ICFQgzfc4CYZoTPAswgSJCCUJUnAAoRHOAUOcATwbmVLWdGoH//PB8mnKqScAhsD0kYP3j/Yt5LPQe2KvcXmGvRHcDnpxfL2zOYJ1mFwrryWTz0advv1Ut4CJgf5uhDuDj5eUcAUoahrdY/56ebRWeraTjMt/00Sh3UDtjgHtQNHwcRGOC98BJEAEymycmYcWwOprTgcB6VZ5JK5TAJ+fXGLBm3FDAmn6oPPjR4rKCAoJCal2eAiQp2x0vxTPB3ALO2CRkwmDy5WohzBDwSEFKRwPbknEggCPB/imwrycgxX2NzoMCHhPkDwqYMr9tRcP5qNrMZHkVnOjRMWwLCcr8ohBVb1OMjxLwGCvjTikrsBOiA6fNyCrm8V1rP93iVPpwaE+gO0SsWmPiXB+jikdf6SizrT5qKasx5j8ABbHpFTx+vFXp9EnYQmLx02h1QTTrl6eDqxLnGjporxl3NL3agEvXdT0WmEost648sQOYAeJS9Q7bfUVoMGnjo4AZdUMQku50McDcMWcBPvr0SzbTAFDfvJqwLzgxwATnCgnp4wDl6Aa+Ax283gghmj+vj7feE2KBBRMW3FzOpLOADl0Isb5587h/U4gGvkt5v60Z1VLG8BhYjbzRwyQZemwAd6cCR5/XFWLYZRIMpX39AR0tjaGGiGzLVyhse5C9RKC6ai42ppWPKiBagOvaYk8lO7DajerabOZP46Lby5wKjw1HCRx7p9sVMOWGzb/vA1hwiWc6jm3MvQDTogQkiqIhJV0nBQBTU+3okKCFDy9WwferkHjtxib7t3xIUQtHxnIwtx4mpg26/HfwVNVDb4oI9RHmx5WGelRVlrtiw43zboCLaxv46AZeB3IlTkwouebTr1y2NjSpHz68WNFjHvupy3q8TFn3Hos2IAk4Ju5dCo8B3wP7VPr/FGaKiG+T+v+TQqIrOqMTL1VdWV1DdmcbO8KXBz6esmYWYKPwDL5b5FA1a0hwapHiom0r/cKaoqr+27/XcrS5UwSMbQAAAABJRU5ErkJggg==" width="172" height="28"></a>
+<a href="https://www.hiascend.com/forum/"><img alt="Community: MindIE Motor" src="./docs/zh/assets/badges/community.svg" width="218" height="28"></a>
+<a href="./LICENSE.md"><img alt="License: MulanPSL 2" src="./docs/zh/assets/badges/license.svg" width="174" height="28"></a>
+<a href="https://mindie-motor.readthedocs.io/"><img alt="Docs: Read the Docs" src="./docs/zh/assets/badges/docs.svg" width="176" height="28"></a>
+<a href="https://zread.ai/Ascend/MindIE-Motor"><img alt="Zread: Ask AI" src="./docs/zh/assets/badges/zread.svg" width="147" height="28"></a>
+<a href="https://deepwiki.com/Ascend/MindIE-Motor"><img alt="DeepWiki: Ask AI" src="./docs/zh/assets/badges/deepwiki.svg" width="172" height="28"></a>
 
 </div>
 
 ## ✨ 最新消息
 
+- [2026.11.11]: 🚀 3.3.0b1 发布，配套 vLLM-Ascend 0.32 RC 版本
 - [2026.10.28]: 🚀 3.2.0 发布
 - [2026.10.28]: 🚀 优化 Docker only 部署方案，部署流程大幅简化
 - [2026.10.28]: 🚀 支持950系列服务器部署跨超节点的推理服务
@@ -33,7 +35,9 @@
 
 MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提供一键式 PD 分离与 PD 混部部署。它基于云原生插件化架构，对接 [vLLM-Ascend](https://github.com/vllm-project/vllm-ascend) 与 [SGLang](https://github.com/sgl-project/sglang) 原生引擎，结合高性能调度与负载均衡，构建高可用、可扩展的大规模推理服务。
 
-<img src="./docs/zh/imgs/MindIE-Motor-architecture-zh.png" alt="MindIE Motor 架构" width="100%"/>
+<a href="./docs/zh/imgs/MindIE-Motor-architecture-zh.svg" title="点击查看大图">
+<img src="./docs/zh/imgs/MindIE-Motor-architecture-zh.svg" alt="MindIE Motor 架构" width="100%"/>
+</a>
 
 ## 🖥️ 服务部署
 
@@ -43,11 +47,11 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
       <table>
         <tr><th style="font-size:18px" align="center" colspan="2">🎯 部署指导</th></tr>
         <tr><th align="left" colspan="2">K8s 部署</th></tr>
-        <tr><td align="left" width="320" style="background:#eef5ff">【推荐】PD 分离（vLLM）</td><td align="center" width="72" style="background:#eef5ff"><a href="./docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation">链接</a></td></tr>
-        <tr><td align="left" width="320" style="background:#eef5ff">【推荐】PD 分离（SGLang）</td><td align="center" width="72" style="background:#eef5ff"><a href="./docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang">链接</a></td></tr>
+        <tr><td align="left" width="320" style="background:#F0EDFF">【推荐】PD 分离（vLLM）</td><td align="center" width="72" style="background:#F0EDFF"><a href="./docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation">链接</a></td></tr>
+        <tr><td align="left" width="320" style="background:#F0EDFF">【推荐】PD 分离（SGLang）</td><td align="center" width="72" style="background:#F0EDFF"><a href="./docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang">链接</a></td></tr>
         <tr><td align="left" width="320">PD 混部</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md">链接</a></td></tr>
         <tr><th align="left" colspan="2">docker 部署</th></tr>
-        <tr><td align="left" width="320" style="background:#eef5ff">【推荐】PD分离部署</td><td align="center" width="72" style="background:#eef5ff"><a href="./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md">链接</a></td></tr>
+        <tr><td align="left" width="320" style="background:#F0EDFF">【推荐】PD分离部署</td><td align="center" width="72" style="background:#F0EDFF"><a href="./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md">链接</a></td></tr>
         <tr><td align="left" width="320">PD混部部署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/host/pd_aggregation_deployment.md">链接</a></td></tr>
         <tr><td align="left" width="320">云平台（例如：ModelArts）PD分离部署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md">链接</a></td></tr>
         <tr><td align="left" width="320">云平台（例如：ModelArts）PD混部部署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_aggregation_deployment.md">链接</a></td></tr>
@@ -138,7 +142,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 ## 🔀 版本说明
 
-当前发布版本为 3.2.0。组件配套、兼容性和更新说明见 [版本配套说明](./docs/zh/release_note_motor.md)。
+当前稳定版本为 3.2.0。组件配套、兼容性和更新说明见 [版本配套说明](./docs/zh/release_note_motor.md)。
 
 ## 🛠️ 贡献指南
 

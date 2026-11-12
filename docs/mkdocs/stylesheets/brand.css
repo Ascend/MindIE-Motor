@@ -1,0 +1,165 @@
+/* Shared MindIE Motor brand colors. Keep the supplied artwork unchanged. */
+:root {
+  --motor-purple: #4833EB;
+  --motor-orange: #FE742C;
+  --motor-ink: #14182B;
+}
+
+/* Orange is used for accents; purple provides readable links on light pages. */
+[data-md-color-scheme="default"],
+[data-md-color-primary="custom"]:not([data-md-color-scheme="slate"]) {
+  --md-primary-fg-color: var(--motor-purple);
+  --md-primary-fg-color--light: #7868F0;
+  --md-primary-fg-color--dark: #3722C4;
+  --md-primary-bg-color: #FFFFFF;
+  --md-primary-bg-color--light: #FFFFFFB3;
+  --md-accent-fg-color: var(--motor-purple);
+  --md-accent-fg-color--transparent: #4833EB1A;
+  --md-accent-bg-color: #FFFFFF;
+  --md-accent-bg-color--light: #FFFFFFB3;
+  --md-typeset-a-color: var(--motor-purple);
+  --motor-header-bg: #FFFFFF;
+  --motor-header-fg: var(--motor-ink);
+  --motor-tint: #F0EDFF;
+  --motor-border: #DFD9FC;
+}
+
+/* A lighter purple keeps the same identity with sufficient contrast in slate. */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #B9ADFF;
+  --md-primary-fg-color--light: #D5CEFF;
+  --md-primary-fg-color--dark: #A697FF;
+  --md-primary-bg-color: var(--motor-ink);
+  --md-primary-bg-color--light: #14182BB3;
+  --md-accent-fg-color: var(--motor-orange);
+  --md-accent-fg-color--transparent: #FE742C1A;
+  --md-accent-bg-color: var(--motor-ink);
+  --md-accent-bg-color--light: #14182BB3;
+  --md-typeset-a-color: #B9ADFF;
+  --motor-header-bg: #191727;
+  --motor-header-fg: #F4F1FF;
+  --motor-tint: #29243F;
+  --motor-border: #4B4169;
+}
+
+.md-header {
+  /* Match inherited text tokens to the custom header surface in both themes. */
+  --md-primary-bg-color: var(--motor-header-fg);
+  --md-primary-bg-color--light: var(--motor-header-fg);
+  background-color: var(--motor-header-bg);
+  border-bottom: 2px solid var(--motor-orange);
+  color: var(--motor-header-fg);
+}
+
+.md-header .md-source {
+  color: var(--motor-header-fg);
+}
+
+/* The complete logo supplies the site name, including on narrow screens. */
+.md-header__button.md-logo {
+  display: block;
+}
+
+/* Keep both topics in the DOM for Material's scrolling page-title transition. */
+.md-header__topic:not([data-md-component="header-topic"]) {
+  display: none;
+}
+
+.md-tabs {
+  background-color: var(--motor-header-bg);
+  border-bottom: 1px solid var(--motor-border);
+  color: var(--motor-header-fg);
+}
+
+.md-tabs__item--active .md-tabs__link {
+  box-shadow: 0 2px 0 var(--motor-orange);
+  color: var(--md-primary-fg-color);
+}
+
+.md-tabs__link:is(:hover, :focus) {
+  color: var(--md-primary-fg-color);
+}
+
+/* The original wordmark has its own light surface, including in dark mode. */
+.md-header__button.md-logo img,
+.md-nav__title .md-nav__button.md-logo img {
+  background-color: #FFFFFF;
+  border-radius: 0.2rem;
+  box-sizing: content-box;
+  height: auto;
+  max-width: 100%;
+  padding: 0.2rem;
+  width: 7.5rem;
+}
+
+.md-search__form,
+.md-search__form:hover {
+  background-color: var(--motor-tint);
+  color: var(--motor-header-fg);
+}
+
+.md-search__input,
+.md-search__input + .md-search__icon {
+  color: var(--motor-header-fg);
+}
+
+.md-search__input::placeholder {
+  color: var(--motor-header-fg);
+  opacity: 0.7;
+}
+
+.motor-brand {
+  margin: 1.5rem auto 2rem;
+  max-width: 100%;
+  text-align: center;
+  width: 100%;
+}
+
+.motor-brand__logo {
+  background-color: #FFFFFF;
+  border: 1px solid var(--motor-border);
+  border-radius: 0.5rem;
+  box-sizing: border-box;
+  height: auto;
+  padding: 0.6rem;
+  width: 100%;
+}
+
+.md-typeset a:not(.md-button):hover {
+  text-decoration: underline;
+  text-decoration-color: var(--motor-orange);
+  text-underline-offset: 0.15em;
+}
+
+:is(.md-typeset a, .md-nav__link, .md-tabs__link, .md-header__button):focus-visible {
+  box-shadow: 0 0 0 1px var(--motor-orange);
+  outline: 2px solid var(--md-primary-fg-color);
+  outline-offset: 3px;
+}
+
+.md-typeset .md-button--primary {
+  background-color: var(--motor-purple);
+  border-color: var(--motor-purple);
+  color: #FFFFFF;
+}
+
+.md-typeset .md-button--primary:is(:hover, :focus) {
+  background-color: #3722C4;
+  border-color: #3722C4;
+  color: #FFFFFF;
+}
+
+.md-typeset .tabbed-set {
+  border-color: var(--motor-border);
+}
+
+.md-typeset .tabbed-labels > label:hover {
+  color: var(--md-primary-fg-color);
+}
+
+/* Print keeps the brand asset legible without the navigation chrome. */
+@media print {
+  .motor-brand__logo {
+    border: 0;
+  }
+}

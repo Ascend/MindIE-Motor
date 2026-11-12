@@ -93,6 +93,46 @@ nav:
 - **Material 专有语法**：源码中的 **`!!! note`** 仅在 MkDocs 中渲染；若希望 GitHub 等通用预览也可读，可优先使用 **`>[!NOTE]`** 交给钩子转换（避免仅两个空格之类的「装饰缩进」贴在 **`>[!NOTE]`** 前，否则可能影响解析）。
 - **`extra_css` / `extra_javascript`**：在 **`mkdocs.yml`** 中配置为相对于 **`docs/zh`** 的路径（当前为 **`mkdocs/stylesheets/extra.css`**、**`mkdocs/javascripts/mathjax.js`**），依赖 **`docs/zh/mkdocs`** 指向 **`docs/mkdocs`**。
 
+## MindIE Motor 品牌资源
+
+仓库首页与文档站共用 `docs/zh/assets/mindie-motor-logo.svg`。SVG 内嵌 2171×724 的高清修复 PNG，
+通过 `0 133.487 2171 464.405` 显示窗口去除上下多余留白，保留完整图形与全部字标，
+并维持原始 575:123 构图比例。原始低分辨率附件仍保存在 `mindie-motor-logo.png`，便于追溯。
+不要对 Logo 拉伸、变色或应用暗色反转滤镜。明暗主题均为 Logo 提供白色承托区域。
+
+- **首页标识**：`README.md` 和 `docs/zh/index.md` 使用同一份高清标识，按内容区域的 100% 宽度等比例展示。
+  `README.md` 以完整 Logo 开头，不另加重复的文字标题。
+- **导航标识**：`mkdocs.yml` 的 `theme.logo` 控制全部文档页面及移动端导航。
+  页头在桌面和窄屏均显示完整 Logo，隐藏重复的站点名称文字；滚动后的文章标题仍由主题正常切换。
+  `site_name` 保留用于浏览器标题、无障碍标签等站点元数据。
+- **浏览器图标**：`theme.favicon` 指向 `assets/mindie-motor-favicon.svg`。SVG 内嵌同一张 PNG，
+  与 `mindie-motor-logo.svg` 使用相同的高清 PNG 和显示窗口，以及 `xMidYMid meet`，
+  同时保留图形和后方全部字标，不裁切标识内容，无外部文件请求。
+  更换 Logo 时需同步更新两个 SVG 内嵌资源、PNG 尺寸和显示窗口。
+- **社区入口**：`docs/zh/assets/badges/` 保存社区、许可、文档、Zread 与 DeepWiki 的 SVG 徽章。
+  徽章采用浅紫灰底色 `#F3F1FA` / `#FAF9FD`、细边框 `#E2DDEE`，
+  标签使用灰紫 `#655F76`，目标文字使用品牌蓝紫 `#4833EB`，减少高饱和色块。
+  只修改样式时，保留 `README.md` 中各入口的原始链接目标。
+- **简介架构图**：`README.md` 引用 `docs/zh/imgs/MindIE-Motor-architecture-zh.svg`。
+  SVG 内嵌由配套 PNG 无损转换的 WebP，完整保留 2545×1008 图像，等比例展示，不裁切文字或布局。
+  画布与原图同尺寸，图像从 `(0, 0)` 开始；不添加外边框、底板或额外留白。点击首页架构图可查看大图。
+  PNG 仅做无损压缩，内嵌 WebP 的解码 RGB 与 PNG 完全一致；SVG 使用 sRGB 的 24° 色相旋转
+  将蓝色协调到品牌蓝紫色系，再用强度 0.15 的十字锐化核轻度增强文字和细线边缘。
+  锐化核的系数和为 1，均匀区域颜色保持不变；边缘使用 duplicate，保留 alpha。
+  此显示层增强不增加原图细节，不对全站图片或 Logo 应用滤镜。
+  更换架构图时同时更新 PNG 与 SVG 内嵌数据、图像尺寸和显示窗口。
+- **主题样式**：`docs/mkdocs/stylesheets/brand.css` 维护全站品牌变量与组件样式，
+  `extra.css` 中的公告、代码和终端提示框复用这些变量。警告、错误等提示仍使用对应语义颜色。
+
+品牌主色为电光蓝紫 `#4833EB` 与活力橙 `#FE742C`。浅色页面正文链接使用蓝紫，
+橙色用于强调线与焦点描边；橙色底上的文字使用深色 `#14182B`。
+暗色页面正文链接使用浅紫 `#B9ADFF`，保证阅读对比度。
+
+更新后运行文档构建，并检查首页、普通文章、移动端导航、搜索、明暗主题以及键盘焦点。
+GitCode 项目头像、第三方知识库的站点标识属于平台设置，不由 MkDocs 配置控制；
+需由对应平台的维护者同步更新。Read the Docs 的发布来源与版本由平台配置决定，
+仓库中的 `trigger-readthedocs` 工作流会在符合分支规则的文档变更推送后请求重建。
+
 ## 安装依赖
 
 在仓库根目录执行：
