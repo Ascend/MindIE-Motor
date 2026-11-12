@@ -2,6 +2,9 @@
 
 **Prefill / Decode 分离**指将预填充与解码阶段调度到不同实例协同完成。部署配置与 KV 传输参数见 [PD 分离服务部署](../user_guide/deployment/README.md#k8s-pd-disaggregation)。
 
+Coordinator 的进程职责、Obs 观测接口、主备启停和 Router 选型见
+[Coordinator 组件说明](../developer_guide/components/coordinator.md#router-策略选型)。
+
 ## 自动识别拓扑
 
 Coordinator 不再读取 `motor_coordinator_config.scheduler_config.deploy_mode`。请求进入 `motor/coordinator/router/dispatch.py` 后，根据当前可用实例角色自动选择 Router：

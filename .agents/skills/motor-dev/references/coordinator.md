@@ -26,7 +26,12 @@ CoordinatorDaemon (parent process, async main loop)
 
 **Process lifecycle:**
 
-- Start order: Mgmt (bind ROUTER/PUB + create SHM) → Obs → Inference
+- Start invocation order: Mgmt → Obs → Inference. `_start_processes()` calls each manager's `start()` in turn;
+  `BaseProcessManager.start()` starts child processes and checks liveness, without waiting for Mgmt socket binding,
+  SHM creation, or readiness. Child initialization can overlap subsequent starts, so this is not an initialization
+  completion order or a dependency-readiness barrier. A failed manager start is logged and the loop continues.
+  Mgmt binds ROUTER/PUB and creates SHM during its own initialization; use component code, logs, and readiness
+  checks to assess actual connection, waiting, retry, and failure behavior.
 - Stop order: Inference → Obs → Mgmt (reverse, via `STOP_ORDER` constant)
 - Termination: `terminate()` → `join(timeout=10s)` → `kill()` (three-stage, graceful first)
 - Health supervision: `SubprocessSupervisor` monitors child PIDs, auto-restarts dead processes

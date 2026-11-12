@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="390" viewBox="0 0 1080 390" role="img" aria-labelledby="title desc">
+  <title id="title">Coordinator 当前进程模型</title>
+  <desc id="desc">Daemon 父进程按 Mgmt、Obs、Inference 的顺序发起三类子进程启动，按相反顺序停止。启动调用顺序不保证组件初始化完成顺序或依赖已就绪。Mgmt 持有调度控制面和负载共享内存，Obs 采集指标，Inference Workers 运行 Router 和本地调度。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#375b85"/>
+    </marker>
+  </defs>
+  <rect width="1080" height="390" rx="12" fill="#fff"/>
+  <g font-family="Arial, Microsoft YaHei, Noto Sans CJK SC, sans-serif" text-anchor="middle" fill="#172b45">
+    <rect x="350" y="20" width="380" height="76" rx="10" fill="#e8f0fa" stroke="#375b85" stroke-width="2"/>
+    <text x="540" y="50" font-size="22" font-weight="bold">CoordinatorDaemon</text>
+    <text x="540" y="78" font-size="17">父进程：生命周期与子进程监控</text>
+    <path d="M 540 96 V 130 M 180 130 H 900 M 180 130 V 176 M 540 130 V 176 M 900 130 V 176" fill="none" stroke="#375b85" stroke-width="2"/>
+    <g fill="none" stroke="#375b85" stroke-width="2" marker-end="url(#arrow)">
+      <path d="M 180 157 V 177"/>
+      <path d="M 540 157 V 177"/>
+      <path d="M 900 157 V 177"/>
+    </g>
+    <rect x="20" y="180" width="320" height="110" rx="10" fill="#eff8f3" stroke="#38835b" stroke-width="2"/>
+    <text x="180" y="211" font-size="22" font-weight="bold">1. Mgmt</text>
+    <text x="180" y="241" font-size="17">管理 HTTP、实例表与调度控制面</text>
+    <text x="180" y="268" font-size="17">创建负载 SHM，提供 ZMQ RPC / PUB</text>
+    <rect x="380" y="180" width="320" height="110" rx="10" fill="#fff7e8" stroke="#a67624" stroke-width="2"/>
+    <text x="540" y="211" font-size="22" font-weight="bold">2. Obs</text>
+    <text x="540" y="241" font-size="17">独立可观测性 HTTP 与指标采集</text>
+    <text x="540" y="268" font-size="17">通过 Mgmt 查询实例状态</text>
+    <rect x="740" y="180" width="320" height="110" rx="10" fill="#f3effb" stroke="#7953a5" stroke-width="2"/>
+    <text x="900" y="211" font-size="22" font-weight="bold">3. Inference Workers</text>
+    <text x="900" y="241" font-size="17">推理 HTTP、Router 与本地调度</text>
+    <text x="900" y="268" font-size="17">共享内存 CAS 记账，可启动多个 Worker</text>
+    <text x="540" y="334" font-size="18">发起启动：Mgmt → Obs → Inference　　停止：Inference → Obs → Mgmt</text>
+    <text x="540" y="365" font-size="17">启动调用顺序不保证组件初始化完成顺序或依赖已就绪</text>
+  </g>
+</svg>
