@@ -14,7 +14,7 @@ NETWORK ?= host
 
 # Cloud Native Deploy image
 DEPLOYER_TAG ?= latest
-DEPLOYER_IMAGE_NAME ?= mindie-pymotor-deployer
+DEPLOYER_IMAGE_NAME ?= mindie-motor-deployer
 DEPLOYER_IMAGE ?= $(REGISTRY)/$(DEPLOYER_IMAGE_NAME):$(DEPLOYER_TAG)
 DEPLOYER_DOCKERFILE := examples/cloud_native_deploy/Dockerfile
 

@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: mindie-pymotor-user-config
+  name: mindie-motor-user-config
   namespace: mindie
 data:
   user_config.json: |

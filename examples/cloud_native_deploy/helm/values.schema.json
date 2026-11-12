@@ -5,7 +5,7 @@
   "properties": {
     "operation": {
       "type": "string",
-      "enum": ["deploy", "scale", "cleanup"]
+      "enum": ["deploy", "scale", "cleanup", "update-scaling-policy"]
     },
     "image": {
       "type": "object",
@@ -19,6 +19,13 @@
     },
     "userConfig": {"type": "string"},
     "envConfig": {"type": "string"},
+    "jobs": {
+      "type": "object",
+      "properties": {
+        "deploy": {"$ref": "#/definitions/deployerJob"},
+        "scale": {"$ref": "#/definitions/deployerJob"}
+      }
+    },
     "scalingPolicy": {
       "type": "object",
       "additionalProperties": {
@@ -30,6 +37,14 @@
           "target": {"type": "number", "exclusiveMinimum": 0}
         },
         "additionalProperties": false
+      }
+    }
+  },
+  "definitions": {
+    "deployerJob": {
+      "type": "object",
+      "properties": {
+        "args": {"type": "array", "items": {"type": "string"}}
       }
     }
   }

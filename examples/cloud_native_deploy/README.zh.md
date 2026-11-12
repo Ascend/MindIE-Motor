@@ -28,7 +28,7 @@
 在仓库根目录执行：
 
 ```bash
-docker build -f examples/cloud_native_deploy/Dockerfile -t mindie-pymotor-deployer:latest .
+docker build -f examples/cloud_native_deploy/Dockerfile -t mindie-motor-deployer:latest .
 ```
 
 也可以使用仓库根目录的 Makefile：
@@ -57,37 +57,37 @@ make buildx-cloud-native-deployer TAG=latest
 先复制并修改默认配置，至少设置 deployer 镜像、Motor 运行镜像、模型路径和实际集群参数：
 
 ```bash
-cp examples/cloud_native_deploy/helm/values.yaml /tmp/pymotor-values.yaml
+cp examples/cloud_native_deploy/helm/values.yaml /tmp/motor-values.yaml
 ```
 
 执行部署：
 
 ```bash
-helm upgrade --install pymotor examples/cloud_native_deploy/helm \
+helm upgrade --install motor examples/cloud_native_deploy/helm \
   --namespace mindie \
   --create-namespace \
-  --values /tmp/pymotor-values.yaml \
+  --values /tmp/motor-values.yaml \
   --set operation=deploy
 ```
 
 扩缩容时修改 values 中的 `p_instances_num` 和/或 `d_instances_num`，然后执行：
 
 ```bash
-helm upgrade pymotor examples/cloud_native_deploy/helm \
+helm upgrade motor examples/cloud_native_deploy/helm \
   --namespace mindie \
-  --values /tmp/pymotor-values.yaml \
+  --values /tmp/motor-values.yaml \
   --set operation=scale
 ```
 
 清理运行时资源并卸载 Chart：
 
 ```bash
-helm upgrade pymotor examples/cloud_native_deploy/helm \
+helm upgrade motor examples/cloud_native_deploy/helm \
   --namespace mindie \
-  --values /tmp/pymotor-values.yaml \
+  --values /tmp/motor-values.yaml \
   --set operation=cleanup
 
-helm uninstall pymotor --namespace mindie
+helm uninstall motor --namespace mindie
 ```
 
 详细参数见 [Helm Chart 使用说明](helm/README.zh.md)。
@@ -105,7 +105,7 @@ kubectl apply -f examples/cloud_native_deploy/k8s/job.yaml
 查看日志：
 
 ```bash
-kubectl logs job/mindie-pymotor-deploy -n mindie
+kubectl logs job/mindie-motor-deploy -n mindie
 ```
 
 ## 扩缩容
@@ -114,7 +114,7 @@ kubectl logs job/mindie-pymotor-deploy -n mindie
 
 ```bash
 kubectl apply -f examples/cloud_native_deploy/k8s/scale-job.yaml
-kubectl logs job/mindie-pymotor-scale -n mindie
+kubectl logs job/mindie-motor-scale -n mindie
 ```
 
 ## 清理
@@ -123,5 +123,5 @@ cleanup Job 只需要传入目标 namespace。
 
 ```bash
 kubectl apply -f examples/cloud_native_deploy/k8s/cleanup-job.yaml
-kubectl logs job/mindie-pymotor-cleanup -n mindie
+kubectl logs job/mindie-motor-cleanup -n mindie
 ```

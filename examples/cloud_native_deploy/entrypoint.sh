@@ -6,4 +6,4 @@ CONFIG_DIR=${CONFIG_DIR:-/config}
 
 cd "$WORKDIR"
 
-python3 deploy.py --config_dir "$CONFIG_DIR" --nostep
+python3 deploy.py --config_dir "$CONFIG_DIR" --nostep "$@"

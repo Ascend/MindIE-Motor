@@ -101,3 +101,17 @@ def test_parse_arguments_accepts_skip_check(monkeypatch):
     args = deploy_module.parse_arguments()
 
     assert args.skip_check
+
+
+def test_main_updates_scaling_policy_without_deploy_config(monkeypatch):
+    updated = []
+    monkeypatch.setattr(
+        deploy_module.sys,
+        "argv",
+        ["deploy.py", "--update_scaling_policy", "policy.json"],
+    )
+    monkeypatch.setattr(deploy_module, "update_scaling_policy", updated.append)
+
+    deploy_module.main()
+
+    assert updated == ["policy.json"]

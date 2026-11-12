@@ -2,9 +2,9 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "mindie-pymotor.jobName" (dict "root" . "name" .Values.jobs.scale.name) }}
+  name: {{ include "mindie-motor.jobName" (dict "root" . "name" .Values.jobs.scale.name) }}
   labels:
-    {{- include "mindie-pymotor.labels" . | nindent 4 }}
+    {{- include "mindie-motor.labels" . | nindent 4 }}
   annotations:
     # 在 Helm 首次安装或版本升级完成后执行该 Job，保证 rbac 等资源先创建。
     helm.sh/hook: post-install,post-upgrade
@@ -16,9 +16,9 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "mindie-pymotor.labels" . | nindent 8 }}
+        {{- include "mindie-motor.labels" . | nindent 8 }}
     spec:
-      serviceAccountName: {{ include "mindie-pymotor.serviceAccountName" . }}
+      serviceAccountName: {{ include "mindie-motor.serviceAccountName" . }}
       restartPolicy: Never
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
@@ -31,6 +31,10 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/app/examples/cloud_native_deploy/entrypoint-scale.sh"]
+          {{- with .Values.jobs.scale.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           env:
             - name: CONFIG_DIR
               value: {{ .Values.jobs.configDir | quote }}
@@ -41,7 +45,7 @@ spec:
       volumes:
         - name: deploy-config
           configMap:
-            name: {{ include "mindie-pymotor.configMapName" . }}
+            name: {{ include "mindie-motor.configMapName" . }}
             items:
               - key: user_config.json
                 path: user_config.json

@@ -2,9 +2,9 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "mindie-pymotor.jobName" (dict "root" . "name" .Values.jobs.cleanup.name) }}
+  name: {{ include "mindie-motor.jobName" (dict "root" . "name" .Values.jobs.cleanup.name) }}
   labels:
-    {{- include "mindie-pymotor.labels" . | nindent 4 }}
+    {{- include "mindie-motor.labels" . | nindent 4 }}
   annotations:
     # 在 Helm 首次安装或版本升级完成后执行该 Job，保证 rbac 等资源先创建。
     helm.sh/hook: post-install,post-upgrade
@@ -16,9 +16,9 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "mindie-pymotor.labels" . | nindent 8 }}
+        {{- include "mindie-motor.labels" . | nindent 8 }}
     spec:
-      serviceAccountName: {{ include "mindie-pymotor.serviceAccountName" . }}
+      serviceAccountName: {{ include "mindie-motor.serviceAccountName" . }}
       restartPolicy: Never
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
@@ -33,5 +33,5 @@ spec:
           command: ["/app/examples/cloud_native_deploy/entrypoint-cleanup.sh"]
           env:
             - name: NAMESPACE
-              value: {{ include "mindie-pymotor.targetNamespace" . | quote }}
+              value: {{ include "mindie-motor.targetNamespace" . | quote }}
 {{- end }}

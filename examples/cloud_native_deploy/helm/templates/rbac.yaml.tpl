@@ -2,9 +2,9 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "mindie-pymotor.rbacName" . }}
+  name: {{ include "mindie-motor.rbacName" . }}
   labels:
-    {{- include "mindie-pymotor.labels" . | nindent 4 }}
+    {{- include "mindie-motor.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
     resources: ["configmaps", "serviceaccounts"]
@@ -31,15 +31,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "mindie-pymotor.rbacName" . }}
+  name: {{ include "mindie-motor.rbacName" . }}
   labels:
-    {{- include "mindie-pymotor.labels" . | nindent 4 }}
+    {{- include "mindie-motor.labels" . | nindent 4 }}
 subjects:
   - kind: ServiceAccount
-    name: {{ include "mindie-pymotor.serviceAccountName" . }}
+    name: {{ include "mindie-motor.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "mindie-pymotor.rbacName" . }}
+  name: {{ include "mindie-motor.rbacName" . }}
 {{- end }}

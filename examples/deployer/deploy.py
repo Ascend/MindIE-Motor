@@ -22,6 +22,7 @@ import lib.constant as C
 from lib.tui.step import start_monitor
 from lib.utils import logger, read_json, set_env_to_shell, get_deploy_paths
 from lib.update_config_whitelist import apply_whitelist_update
+from lib.scaling_policy_updater import update_scaling_policy
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import (
     get_baseline_config_from_configmap,
@@ -458,6 +459,11 @@ def parse_arguments():
         help="Scale instances by comparing ConfigMap baseline with current user_config",
     )
     parser.add_argument(
+        "--update_scaling_policy",
+        metavar="POLICY_FILE",
+        help="Update scalingPolicy from the specified JSON file",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Generate YAML only: skip set_env_to_shell and kubectl apply (normal deploy path only)",
@@ -540,6 +546,10 @@ def main():
             logger.error("In general_config mode, the --deploy-scenario and --hardware-type parameters are required.")
             sys.exit(2)
         handle_general_config(args)
+        return
+
+    if args.update_scaling_policy:
+        update_scaling_policy(args.update_scaling_policy)
         return
 
     # No configuration at all → launch TUI directly (undeployed mode)

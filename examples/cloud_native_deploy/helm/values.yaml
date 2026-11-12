@@ -1,7 +1,7 @@
 operation: deploy
 
 image:
-  repository: mindie-pymotor-deployer
+  repository: mindie-motor-deployer
   tag: latest
   pullPolicy: IfNotPresent
   pullSecrets: []
@@ -24,9 +24,11 @@ jobs:
   deploy:
     enabled: true
     name: deploy
+    args: []
   scale:
     enabled: true
     name: scale
+    args: []
   cleanup:
     enabled: true
     name: cleanup
@@ -153,3 +155,7 @@ envConfig: |
     "motor_kv_cache_store_env": {},
     "motor_kv_conductor_env": {}
   }
+
+# Partial P/D scalingPolicy updates; omitted fields remain unchanged.
+# Supply policyUpdate.roles when operation=update-scaling-policy.
+policyUpdate: {}

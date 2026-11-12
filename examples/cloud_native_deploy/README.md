@@ -28,7 +28,7 @@ The deploy implementation itself is still the existing `examples/deployer/deploy
 From repo root:
 
 ```bash
-docker build -f examples/cloud_native_deploy/Dockerfile -t mindie-pymotor-deployer:latest .
+docker build -f examples/cloud_native_deploy/Dockerfile -t mindie-motor-deployer:latest .
 ```
 
 Or use the root Makefile:
@@ -57,12 +57,12 @@ The community `helm/` chart creates the ConfigMap, ServiceAccount, RBAC, and dep
 Copy and edit the default values, including both the deployer image and the Motor runtime image:
 
 ```bash
-cp examples/cloud_native_deploy/helm/values.yaml /tmp/pymotor-values.yaml
+cp examples/cloud_native_deploy/helm/values.yaml /tmp/motor-values.yaml
 
-helm upgrade --install pymotor examples/cloud_native_deploy/helm \
+helm upgrade --install motor examples/cloud_native_deploy/helm \
   --namespace mindie \
   --create-namespace \
-  --values /tmp/pymotor-values.yaml \
+  --values /tmp/motor-values.yaml \
   --set operation=deploy
 ```
 
@@ -83,7 +83,7 @@ kubectl apply -f examples/cloud_native_deploy/k8s/job.yaml
 Check logs:
 
 ```bash
-kubectl logs job/mindie-pymotor-deploy -n mindie
+kubectl logs job/mindie-motor-deploy -n mindie
 ```
 
 ## Scale
@@ -92,7 +92,7 @@ Update `p_instances_num` and/or `d_instances_num` in `k8s/configmap-user-config.
 
 ```bash
 kubectl apply -f examples/cloud_native_deploy/k8s/scale-job.yaml
-kubectl logs job/mindie-pymotor-scale -n mindie
+kubectl logs job/mindie-motor-scale -n mindie
 ```
 
 ## Cleanup
@@ -101,5 +101,5 @@ The cleanup Job only requires a target namespace.
 
 ```bash
 kubectl apply -f examples/cloud_native_deploy/k8s/cleanup-job.yaml
-kubectl logs job/mindie-pymotor-cleanup -n mindie
+kubectl logs job/mindie-motor-cleanup -n mindie
 ```

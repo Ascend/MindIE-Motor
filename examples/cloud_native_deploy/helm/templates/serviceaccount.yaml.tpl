@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ include "mindie-pymotor.serviceAccountName" . }}
+  name: {{ include "mindie-motor.serviceAccountName" . }}
   labels:
-    {{- include "mindie-pymotor.labels" . | nindent 4 }}
+    {{- include "mindie-motor.labels" . | nindent 4 }}
 {{- end }}

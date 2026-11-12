@@ -7,23 +7,27 @@ Runtime Controller, Coordinator, Engine, KV Pool, and KV Conductor resources are
 ## Deploy
 
 ```bash
-cp examples/cloud_native_deploy/helm/values.yaml /tmp/pymotor-values.yaml
+cp examples/cloud_native_deploy/helm/values.yaml /tmp/motor-values.yaml
 
-helm upgrade --install pymotor examples/cloud_native_deploy/helm \
+helm upgrade --install motor examples/cloud_native_deploy/helm \
   --namespace mindie \
   --create-namespace \
-  --values /tmp/pymotor-values.yaml \
+  --values /tmp/motor-values.yaml \
   --set operation=deploy
 ```
 
 Set `image.repository`/`image.tag` to the deployer image and set `motor_deploy_config.image_name` in the `userConfig` JSON string to the Motor runtime image before deployment. Both `userConfig` and `envConfig` are JSON strings embedded in `values.yaml`.
+
+The chart and default deployer image are named `mindie-motor-deployer`.
+When upgrading an existing release, retain its release name and set
+`fullnameOverride` to its existing resource prefix if resource names must stay the same.
 
 ## Scale and cleanup
 
 After changing instance counts, run the same command with `--set operation=scale`. Before uninstalling, run it with `--set operation=cleanup`, then execute:
 
 ```bash
-helm uninstall pymotor --namespace mindie
+helm uninstall motor --namespace mindie
 ```
 
 The cleanup script deletes Deployments and Services in the namespace configured by `userConfig.motor_deploy_config.job_id`. Use a dedicated namespace for each deployment.
@@ -31,3 +35,39 @@ The cleanup script deletes Deployments and Services in the namespace configured 
 ## Autoscaling (HPA)
 
 Set the optional `scalingPolicy` value to render an HPA `scalingPolicy` field into the InferServiceSet engine roles (prefill/decode/union). It is injected into the deployer `user_config` as the `scaling_policy` section; each role entry accepts `min_replicas`, `max_replicas`, `metric` (defaults to `motor_prefill_utilization` / `motor_decode_utilization` by role), and `target` (default `0.8`). When left empty, no `scalingPolicy` is rendered and the deploy artifacts stay unchanged. See `values.yaml` for an example and `docs/zh/user_guide/features/auto_scaling.md` for the full HPA setup (External Metrics Adaptor, recommended metrics).
+
+## Update P/D scaling policies
+
+Use `helm upgrade` with `--set operation=update-scaling-policy` and
+`policyUpdate.roles.prefill` and/or `policyUpdate.roles.decode` in your values file.
+The post-upgrade Hook Job discovers the single InferServiceSet in the deployment
+namespace; zero or multiple matches fail explicitly. Object fields are merged,
+arrays are replaced, and omitted fields are unchanged. A missing scalingPolicy
+requires a complete HPA policy. The Job validates with a server-side dry-run,
+applies a guarded JSON Patch, and verifies the result. It does not redeploy engines.
+The Job runs `examples/deployer/deploy.py --update_scaling_policy /policy/policy.json`
+from the deployer image. The ConfigMap carries only `policy.json`; later policy
+parameter updates reuse the same image. The same command can be run manually;
+outside a Pod it uses the current kubectl context.
+Use Helm's `--timeout` to allow time for Pod scheduling and image pulling as well
+as policy updates. The Job has no fixed active deadline; each kubectl request
+retains its 30-second timeout.
+
+Helm first merges the chart defaults, each `-f` values file, and command-line
+`--set` values. The Hook Job consumes `policyUpdate.roles` from that merged result.
+Using only `--set operation=update-scaling-policy` applies the policy updates
+already present in the values file; missing `policyUpdate.roles` is an error.
+To update one field, keep `policyUpdate` empty in the values file and specify the
+full field path, for example:
+
+```bash
+--set operation=update-scaling-policy \
+--set policyUpdate.roles.prefill.spec.behavior.scaleUp.selectPolicy=Min
+```
+
+For an existing policy this changes only that field. If the role has no policy,
+a complete HPA policy is required before it can be created.
+See README.zh.md for field details and examples.
+Additional deploy.py arguments are passed through `jobs.deploy.args` or `jobs.scale.args`. Without arguments, the existing behavior and security pre-check remain unchanged.
+Both values default to empty arrays and accept only arrays of strings, for example
+`--set 'jobs.scale.args[0]=--skip-check'`.
