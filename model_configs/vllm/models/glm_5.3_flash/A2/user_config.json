@@ -1,0 +1,133 @@
+{
+  "version": "v2.0",
+  "motor_deploy_config": {
+    "p_instances_num": 1,
+    "d_instances_num": 1,
+    "single_p_instance_pod_num": 2,
+    "single_d_instance_pod_num": 2,
+    "p_pod_npu_num": 8,
+    "d_pod_npu_num": 8,
+    "image_name": "<请按实际情况填写镜像名称>",
+    "job_id": "mindie-motor",
+    "hardware_type": "800I_A2",
+    "weight_mount_path": "<请按实际情况填写模型权重文件的访问路径>"
+  },
+  "motor_controller_config": {},
+  "motor_coordinator_config": {},
+  "motor_engine_prefill_config": {
+    "engine_type": "vllm",
+    "engine_config": {
+      "data_parallel_size": 2,
+      "tensor_parallel_size": 8,
+      "pipeline_parallel_size": 1,
+      "data_parallel_rpc_port": 9000,
+      "served_model_name": "glm",
+      "model": "<请按实际情况填写模型权重文件的访问路径>",
+      "seed": 1024,
+      "enable_expert_parallel": true,
+      "max-model-len": 1048576,
+      "max-num-batched-tokens": 4096,
+      "max-num-seqs": 64,
+      "async-scheduling": true,
+      "enable-prefix-caching": true,
+      "trust-remote-code": true,
+      "gpu_memory_utilization": 0.9,
+      "quantization": "ascend",
+      "safetensors-load-strategy": "prefetch",
+      "tool-call-parser": "glm47",
+      "enable-auto-tool-choice": true,
+      "reasoning-parser": "glm45",
+      "speculative-config": {
+        "num_speculative_tokens": 5,
+        "method": "deepseek_mtp",
+        "enforce_eager": true
+      },
+      "additional-config": {
+        "enable_shared_expert_dp": true,
+        "enable_dsa_cp": true,
+        "multistream_overlap_shared_expert": true,
+        "mc2_comm_alg": "hierarchy",
+        "enable_flashcomm1": true
+      },
+      "kv_transfer_config": {
+        "kv_connector": "MooncakeConnectorV2",
+        "kv_role": "kv_producer",
+        "kv_port": "36000",
+        "engine_id": "0",
+        "kv_connector_extra_config": {
+          "use_ascend_direct": true
+        }
+      },
+      "enable-chunked-prefill": true,
+      "kv-cache-dtype": "int8",
+      "attention_config": {
+        "indexer_kv_dtype": "int8"
+      },
+      "prefix-cache-retention-interval": "None",
+      "skip-mm-profiling": true,
+      "limit-mm-per-prompt": {
+        "image": 1,
+        "video": 0
+      }
+    }
+  },
+  "motor_engine_decode_config": {
+    "engine_type": "vllm",
+    "engine_config": {
+      "data_parallel_size": 8,
+      "tensor_parallel_size": 2,
+      "pipeline_parallel_size": 1,
+      "data_parallel_rpc_port": 9000,
+      "served_model_name": "glm",
+      "model": "<请按实际情况填写模型权重文件的访问路径>",
+      "seed": 1024,
+      "enable_expert_parallel": true,
+      "max-model-len": 1048576,
+      "max-num-batched-tokens": 192,
+      "max-num-seqs": 60,
+      "async-scheduling": true,
+      "safetensors-load-strategy": "prefetch",
+      "trust-remote-code": true,
+      "tool-call-parser": "glm47",
+      "enable-auto-tool-choice": true,
+      "reasoning-parser": "glm45",
+      "gpu_memory_utilization": 0.9,
+      "quantization": "ascend",
+      "compilation-config": {
+        "cudagraph_mode": "FULL_DECODE_ONLY"
+      },
+      "speculative-config": {
+        "num_speculative_tokens": 5,
+        "method": "deepseek_mtp",
+        "enforce_eager": false
+      },
+      "additional-config": {
+        "mc2_comm_alg": "hierarchy",
+        "multistream_overlap_shared_expert": true,
+        "ascend_compilation_config": {
+          "enable_static_kernel": true
+        }
+      },
+      "kv_transfer_config": {
+        "kv_connector": "MooncakeConnectorV2",
+        "kv_role": "kv_consumer",
+        "kv_port": "37000",
+        "engine_id": "1",
+        "kv_connector_extra_config": {
+          "use_ascend_direct": true
+        }
+      },
+      "enable-chunked-prefill": true,
+      "enable-prefix-caching": true,
+      "kv-cache-dtype": "int8",
+      "attention_config": {
+        "indexer_kv_dtype": "int8"
+      },
+      "skip-mm-profiling": true,
+      "limit-mm-per-prompt": {
+        "image": 1,
+        "video": 0
+      }
+    }
+  }
+}
