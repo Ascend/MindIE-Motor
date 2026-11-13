@@ -53,11 +53,15 @@ case "${KV_STORE_BACKEND:-}" in
     mooncake)
         gen_kv_store_config
         set_kv_store_env
-        ROLE=kv_store mooncake_master --port "$KV_CACHE_STORE_PORT" \
-            --eviction_high_watermark_ratio "$KV_STORE_EVICTION_HIGH_WATERMARK_RATIO" \
-            --eviction_ratio "$KV_STORE_EVICTION_RATIO" --default_kv_lease_ttl "$DEFAULT_KV_LEASE_TTL" \
-            --metrics_port "${MOONCAKE_METRICS_PORT:-50090}" &
-        motor_track_child $!
+        if [ "${KV_STORE_EXTERNAL:-0}" = "1" ]; then
+            echo "KV_STORE_EXTERNAL=1: using external mooncake master, skip local mooncake_master"
+        else
+            ROLE=kv_store mooncake_master --port "$KV_CACHE_STORE_PORT" \
+                --eviction_high_watermark_ratio "$KV_STORE_EVICTION_HIGH_WATERMARK_RATIO" \
+                --eviction_ratio "$KV_STORE_EVICTION_RATIO" --default_kv_lease_ttl "$DEFAULT_KV_LEASE_TTL" \
+                --metrics_port "${MOONCAKE_METRICS_PORT:-50090}" &
+            motor_track_child $!
+        fi
         ;;
     memcache)
         sync_mmc_local_config

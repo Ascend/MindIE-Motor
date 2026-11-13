@@ -120,6 +120,10 @@ MOTOR_COMMON_ENV = "motor_common_env"
 WEIGHT_MOUNT = "weight-mount"
 KV_CACHE_STORE_CONFIG = "kv_cache_store_config"
 TARGET_JOB_ID = "target_job_id"
+# Explicit mooncake master address. Accepts "host:port", "etcd://h1:2379;h2:2379" (HA) or
+# "redis://host:6379" (HA). When set, both mooncake clients use it verbatim and the deployer
+# does not create a local kv-store pod.
+MASTER_SERVER_ADDRESS = "master_server_address"
 KV_STORE_BACKEND = "backend"
 KV_CACHE_STORE_PORT = "port"
 KV_STORE_EVICTION_HIGH_WATERMARK_RATIO = "eviction_high_watermark_ratio"
@@ -255,6 +259,7 @@ ENV_COORDINATOR_SERVICE = "COORDINATOR_SERVICE"
 ENV_COORDINATOR_INFER_SERVICE = "COORDINATOR_INFER_SERVICE"
 ENV_COORDINATOR_OBS_SERVICE = "COORDINATOR_OBS_SERVICE"
 ENV_KVS_MASTER_SERVICE = "KVS_MASTER_SERVICE"
+ENV_KV_STORE_EXTERNAL = "KV_STORE_EXTERNAL"
 ENV_KV_CONDUCTOR_SERVICE = "KV_CONDUCTOR_SERVICE"
 ENV_KV_CACHE_STORE_PORT = "KV_CACHE_STORE_PORT"
 ENV_KV_STORE_EVICTION_HIGH_WATERMARK_RATIO = "KV_STORE_EVICTION_HIGH_WATERMARK_RATIO"

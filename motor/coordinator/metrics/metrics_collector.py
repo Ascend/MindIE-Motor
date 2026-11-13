@@ -1132,12 +1132,22 @@ class MetricsCollector(ThreadSafeSingleton):
                 )
             return
         if not endpoint:
-            self._rl.error_window(
-                "kv_store_metrics.no_endpoint",
-                "KV store metrics enabled but endpoint is empty (service unreachable)",
-                window_sec=120,
-                level="WARNING",
-            )
+            if cfg.enable_kv_store_metrics:
+                # Explicit opt-in without a scrape target: keep warning.
+                self._rl.error_window(
+                    "kv_store_metrics.no_endpoint",
+                    "KV store metrics enabled but endpoint is empty (service unreachable)",
+                    window_sec=120,
+                    level="WARNING",
+                )
+            elif not self._kv_store_disabled_logged:
+                # Auto mode (backend only) with no derivable host, e.g. an HA master
+                # address ("etcd://..."). Stay quiet instead of warning every cycle.
+                self._kv_store_disabled_logged = True
+                logger.info(
+                    "KV store metrics skipped: no scrape endpoint (backend=%r)",
+                    cfg.kv_store_backend,
+                )
             self._kv_store_metrics_text = ""
             return
         logger.debug("Fetching KV store metrics from %s", endpoint)

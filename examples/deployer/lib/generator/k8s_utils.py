@@ -33,6 +33,9 @@ g_kv_store_service = "mindie-motor-kvs-master"
 g_kv_conductor_service = "kv-conductor"
 g_kv_store_enabled = False
 g_kv_store_deploy_pod = True
+# True when kv_cache_store_config.master_server_address points at a master managed outside this
+# deployment (same-cluster or external, including etcd:// / redis:// HA forms).
+g_kv_store_external = False
 g_kv_conductor_enabled = False
 g_kv_cache_store_port = C.DEFAULT_KV_CACHE_STORE_PORT
 g_kv_store_backend = C.DEFAULT_KV_STORE_BACKEND
@@ -77,11 +80,16 @@ def set_user_config_path(path):
 
 
 def build_kv_store_env_items():
-    """Return KV-store runtime environment items."""
-    items = [
-        {C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: g_kv_store_service},
-        {C.NAME: C.ENV_KV_STORE_BACKEND, C.VALUE: g_kv_store_backend},
-    ]
+    """Return KV-store env items that cannot be derived from config."""
+    items = []
+    if g_kv_store_service:
+        # Empty when an explicit HA master address is used: there is no in-cluster service
+        # whose name the engine / coordinator could append a port to.
+        items.append({C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: g_kv_store_service})
+    items.append({C.NAME: C.ENV_KV_STORE_BACKEND, C.VALUE: g_kv_store_backend})
+    if g_kv_store_external:
+        # Tells the single-container bootstrap not to start a local master.
+        items.append({C.NAME: C.ENV_KV_STORE_EXTERNAL, C.VALUE: "1"})
     if g_kv_store_backend == C.MMC_STORE_BACKEND:
         # memcache C++ layer reads this env var directly at engine startup
         items.append(
@@ -125,6 +133,11 @@ def set_kv_store_service(service_name):
     g_kv_store_service = service_name
 
 
+def set_kv_store_external(external: bool):
+    global g_kv_store_external
+    g_kv_store_external = external
+
+
 def set_kv_conductor_service(service_name):
     global g_kv_conductor_service
     g_kv_conductor_service = service_name
@@ -143,8 +156,10 @@ def set_engine_base_name(engine_name):
 def update_kv_store_enabled_flag(user_config):
     global g_kv_store_enabled
     global g_kv_store_deploy_pod
+    global g_kv_store_external
     g_kv_store_enabled = False
     g_kv_store_deploy_pod = True
+    g_kv_store_external = False
 
     engine_section = user_config.get(C.MOTOR_ENGINE_PREFILL_CONFIG) or user_config.get(C.MOTOR_ENGINE_UNION_CONFIG, {})
     kv_connector = engine_section.get(C.ENGINE_CONFIG, {}).get(C.KV_TRANSFER_CONFIG, {}).get(C.KV_CONNECTOR, "")

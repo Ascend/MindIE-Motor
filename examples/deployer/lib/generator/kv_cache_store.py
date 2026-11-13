@@ -64,12 +64,81 @@ def build_kv_store_service_fqdn(service_name, job_id):
     return f"{service_name}.{job_id}.svc.cluster.local"
 
 
+def resolve_external_master(kv_config):
+    """Return the explicit ``master_server_address`` (stripped), or ``""`` when unset."""
+    value = kv_config.get(C.MASTER_SERVER_ADDRESS, "")
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def split_plain_master_address(address):
+    """Return ``(host, port)`` for a plain ``host:port`` address.
+
+    HA connection strings (``etcd://...`` / ``redis://...``) have no single host to expose,
+    so they return ``("", 0)`` and ancillary consumers stay unconfigured. An unbracketed
+    IPv6 literal is not a valid ``host:port`` either and returns ``("", 0)``; bracketed
+    ``[IPv6]:port`` is accepted.
+    """
+    if not address or "://" in address:
+        return "", 0
+    if address.startswith("["):
+        end = address.find("]")
+        if end == -1 or end + 1 >= len(address) or address[end + 1] != ":":
+            return "", 0
+        host, port_text = address[1:end], address[end + 2 :]
+        if ":" not in host:
+            return "", 0
+    else:
+        host, sep, port_text = address.rpartition(":")
+        if not sep or ":" in host:
+            return "", 0
+    if not host or not port_text.isdigit():
+        return "", 0
+    port = int(port_text)
+    if not 1 <= port <= 65535:
+        return "", 0
+    return host, port
+
+
+def apply_external_master(kv_config):
+    """Apply the effects of an explicit ``master_server_address``; return True when configured.
+
+    * skips the local kv-store pod (the master is managed outside this deployment);
+    * keeps the legacy service/port globals in sync for a plain ``host:port`` address so
+      Coordinator metrics and the kv-events pool endpoint keep working;
+    * clears them for HA connection strings, where no single host exists.
+    """
+    explicit = resolve_external_master(kv_config)
+    if not explicit:
+        return False
+    host, port = split_plain_master_address(explicit)
+    k8s_utils.set_kv_store_external(True)
+    k8s_utils.g_kv_store_deploy_pod = False
+    k8s_utils.set_kv_store_service(host)
+    if port:
+        k8s_utils.g_kv_cache_store_port = port
+    return True
+
+
 def apply_kv_store_service_domain(deploy_config, user_config, *, paths=None, infer_service_template_yaml=None):
     """Configure kv_store service FQDN and whether to deploy a local kv_store pod."""
     current_job_id = deploy_config[C.CONFIG_JOB_ID]
     kv_config = user_config.get(C.KV_CACHE_STORE_CONFIG, {}) if user_config else {}
     if not isinstance(kv_config, dict):
         kv_config = {}
+
+    if apply_external_master(kv_config):
+        logger.info(
+            "Using explicit mooncake master_server_address '%s'; skip deploying local kv-store pod",
+            resolve_external_master(kv_config),
+        )
+        if kv_config.get(C.TARGET_JOB_ID):
+            logger.info(
+                "master_server_address is set; target_job_id '%s' is ignored",
+                kv_config[C.TARGET_JOB_ID],
+            )
+        return
 
     if infer_service_template_yaml:
         service_name = get_infer_service_kv_store_service_name(infer_service_template_yaml)
@@ -112,7 +181,9 @@ def normalize_kv_cache_store_config(user_config):
         kv_config[C.KV_STORE_BACKEND] = C.DEFAULT_KV_STORE_BACKEND
 
     # Store for use by engine generator
-    k8s_utils.g_kv_cache_store_port = kv_config[C.KV_CACHE_STORE_PORT]
+    if not apply_external_master(kv_config):
+        k8s_utils.set_kv_store_external(False)
+        k8s_utils.g_kv_cache_store_port = kv_config[C.KV_CACHE_STORE_PORT]
     k8s_utils.g_kv_store_backend = kv_config[C.KV_STORE_BACKEND]
     k8s_utils.g_mmc_config_store_port = kv_config.get(C.MMC_CONFIG_STORE_PORT_KEY, C.DEFAULT_MMC_CONFIG_STORE_PORT)
     k8s_utils.g_mmc_metrics_port = kv_config.get(C.MMC_METRICS_PORT_KEY, C.DEFAULT_MMC_METRICS_PORT)
@@ -128,11 +199,31 @@ def gen_kv_store_env(kv_store_config):
     service_port = kv_store_config.get(C.KV_CACHE_STORE_PORT)
     backend = kv_store_config.get(C.KV_STORE_BACKEND, C.DEFAULT_KV_STORE_BACKEND)
 
-    kv_store_env = [
-        {C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_store_service},
-        {C.NAME: C.ENV_KV_STORE_BACKEND, C.VALUE: backend},
-        {C.NAME: C.ENV_KV_CACHE_STORE_PORT, C.VALUE: str(service_port)},
-    ]
+    if k8s_utils.g_kv_store_external:
+        # The master is external: no local master/eviction flags are needed. The legacy
+        # host/port globals keep the same contract as k8s_utils.build_kv_store_env_items():
+        # a plain "host:port" address exposes one host, an HA connection string does not,
+        # because no single host exists. Coordinator kv-store metrics and the kv-events pool
+        # registration still read them, so only the eviction flags are dropped here.
+        kv_store_env = []
+        if k8s_utils.g_kv_store_service:
+            kv_store_env.append({C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_store_service})
+            # The port only makes sense together with the single host. An HA connection string
+            # has no host, so it must not expose a port derived from the module global.
+            kv_store_env.append({C.NAME: C.ENV_KV_CACHE_STORE_PORT, C.VALUE: str(k8s_utils.g_kv_cache_store_port)})
+        kv_store_env.append({C.NAME: C.ENV_KV_STORE_BACKEND, C.VALUE: backend})
+        kv_store_env.append({C.NAME: C.ENV_KV_STORE_EXTERNAL, C.VALUE: "1"})
+        return kv_store_env
+
+    kv_store_env = []
+    if k8s_utils.g_kv_store_service:
+        kv_store_env.append({C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_store_service})
+    kv_store_env.extend(
+        [
+            {C.NAME: C.ENV_KV_STORE_BACKEND, C.VALUE: backend},
+            {C.NAME: C.ENV_KV_CACHE_STORE_PORT, C.VALUE: str(service_port)},
+        ]
+    )
 
     if backend == "mooncake":
         # mooncake: eviction params are required

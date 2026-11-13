@@ -174,6 +174,7 @@ P/D传输Connector选型如下表所示：
     | --- | --- | --- | --- | --- | --- |
     | `backend` | string | `mooncake`、`memcache`、`yuanrong` | 选填 | `memcache` | 池化后端；未配置时默认 `memcache` |
     | `target_job_id` | string | 目标服务的 motor_deploy_config.job_id（即目标 namespace） | 选填 | 未配置 | 复用其他 K8s 推理服务的 kv_store |
+    | `master_server_address` | string | `10.0.0.5:50088`、`etcd://h1:2379;h2:2379`、`redis://h:6379` | 选填 | 未配置 | 显式指定 Mooncake master 地址（支持外部与 HA 部署）。配置后引擎侧与 standalone store 侧都原样使用该值，且不再部署本 namespace 的 kv-store Pod；未配置时由 `KVS_MASTER_SERVICE` + `port` 推导 |
 
     **表 3** Mooncake 专属参数
 
@@ -295,6 +296,59 @@ P/D传输Connector选型如下表所示：
     - 集群中会创建/更新 ConfigMap `motor-config`（内容来自当前输入的 `user_config.json`），作为后续扩缩容与刷新的基线。
     - `output_yamls/` 下会生成各服务 YAML 文件。
     - 使用 UCM 时，还需按 UCM 部署文档为 Prefill 安装 UCM、挂载 UCM Store 所需目录；当前样例同时生成 Mooncake kv_store/master 资源。
+
+#### 连接外部 / HA Mooncake master（可选）
+
+当 Mooncake master 由外部运维（包括 Primary-Standby HA 集群）时，用 `master_server_address` 显式指定客户端要连接的地址，而不是让 deployer 推导：
+
+```json
+"kv_cache_store_config": {
+  "enable": true,
+  "backend": "mooncake",
+  "store_mode": "standalone",
+  "metadata_server": "etcd://10.0.0.11:2379,10.0.0.12:2379",
+  "master_server_address": "etcd://10.0.0.11:2379;10.0.0.12:2379;10.0.0.13:2379",
+  "global_segment_size": "200GB",
+  "eviction_high_watermark_ratio": 0.9,
+  "eviction_ratio": 0.1
+}
+```
+
+支持的取值：
+
+| 部署形态 | `master_server_address` | 说明 |
+| --- | --- | --- |
+| 单 master | `10.0.0.5:50088` 或 `[2001:db8::1]:50088` | 与 `KVS_MASTER_SERVICE` + `port` 的结果等价 |
+| etcd-backed HA | `etcd://10.0.0.11:2379;10.0.0.12:2379;...` | 客户端通过 etcd 发现当前 leader，failover 后无需重启 |
+| redis-backed HA | `redis://10.0.0.11:6379` | 同上，但 OpLog 复制仍需 etcd |
+
+行为说明：
+
+- 该值会**原样**写入推理 Pod 内的两份配置：引擎侧 `kv_cache_store_config.json` 与 standalone store 侧 `mooncake_store_config.json`，不会再拼接端口；
+- 配置后 deployer **不再部署**本 namespace 的 kv-store Pod/Service（与 `target_job_id` 复用布尔一致），因此需要自行保证 master 可达；
+- 与 `target_job_id` 同时配置时，`master_server_address` 优先；
+- 该字段对 `store_mode` 不敏感：`standalone` 下引擎侧与 store 侧都使用该值；`embedded`（默认）下没有独立 store 进程，只有引擎侧客户端使用该值，但**仍会跳过本地 kv-store Pod**；
+- `metadata_server` 同样原样下发，可填 `P2PHANDSHAKE`、`etcd://h1:2379,h2:2379`、`redis://h:6379` 或 `http://h:8080/metadata`；
+- HA 地址是 etcd/redis 连接串，无法推导出单一 host，因此下面两项需要显式指向 leader（VIP/DNS），不能再用 `*` 占位：
+
+  ```json
+  "kv_conductor_config": {
+    "http_server_port": 13333,
+    "pool_endpoint": "tcp://<leader-vip>:5557"
+  },
+  "motor_coordinator_config": {
+    "prometheus_metrics_config": {
+      "kv_store_metrics_endpoint": "http://<leader-vip>:50090/metrics"
+    }
+  }
+  ```
+
+  - `pool_endpoint`：pool 后端 KV 事件的 ZMQ PUB 地址。仅当 master 发布了 KV 事件时才需要（Mooncake 需以 `--enable_kv_events=true --kv_events_bind_endpoint=tcp://0.0.0.0:5557 --kv_events_backend_id=<id>` 启动，且编译时开启 `ENABLE_KV_EVENTS`）；不启用时只保留 HBM 亲和，可省略该项。
+  - `kv_store_metrics_endpoint`：master 的 Prometheus 端点；Motor 部署的 master 默认 `:50090/metrics`，Mooncake 原生默认 `:9003`，须与外部 master 实际端口一致。
+  - 若用 VIP/DNS 暴露 leader，也可继续用 `host:port` 形态，此时 `pool_endpoint` 仍可写 `tcp://*:5557`（`*` 会替换为该 host）。
+
+> [!NOTE] 说明
+> 该字段仅影响客户端连接，不改变 Motor 自身是否部署 master。需要由 Motor 管理 HA master（etcd + Primary/Standby）属于独立特性，当前不支持。
 
 ### 验证特性
 

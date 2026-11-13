@@ -156,7 +156,11 @@ class MooncakeStoreService:
             "device_name": self._kv_cfg.device_name,
             "global_segment_size": self._kv_cfg.global_segment_size,
             "local_buffer_size": 0,
-            "master_server_address": format_address(self._kv_cfg.service, self._kv_cfg.port),
+            # Explicit address wins and is used verbatim (HA forms such as "etcd://h1:2379;h2:2379"
+            # must not be run through format_address); otherwise derive it from service + port.
+            "master_server_address": (
+                self._kv_cfg.master_server_address or format_address(self._kv_cfg.service, self._kv_cfg.port)
+            ),
         }
 
     def _ensure_store_config(self) -> str:
@@ -234,7 +238,7 @@ class MooncakeStoreService:
             logger.info(
                 "Starting mooncake_store_service (segment=%s, master=%s)",
                 self._kv_cfg.global_segment_size,
-                format_address(self._kv_cfg.service, self._kv_cfg.port),
+                self._kv_cfg.master_server_address or format_address(self._kv_cfg.service, self._kv_cfg.port),
             )
             env = os.environ.copy()
             if is_850:

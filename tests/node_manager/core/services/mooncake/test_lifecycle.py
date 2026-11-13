@@ -282,6 +282,26 @@ def test_pull_writes_store_config(mock_popen, _sleep, tmp_path, monkeypatch):
 
 @patch(f"{_MODULE}.time.sleep")
 @patch("subprocess.Popen")
+def test_pull_uses_explicit_master_server_address(mock_popen, _sleep, tmp_path, monkeypatch, caplog):
+    """An explicit master_server_address wins over service+port and is kept verbatim.
+
+    ``etcd://`` HA connection strings must not be run through ``format_address`` (that would
+    append a port to the whole string), and the startup log must show the real address.
+    """
+    mock_popen.return_value = _alive_proc()
+    monkeypatch.setenv("MOONCAKE_CONFIG_PATH", str(tmp_path / "kv_cache_store_config.json"))
+    monkeypatch.setenv("POD_IP", "10.0.0.1")
+
+    with caplog.at_level("INFO"):
+        _make_store(master_server_address="etcd://10.0.0.2:2379;10.0.0.3:2379").pull()
+
+    generated = json.loads((tmp_path / "mooncake_store_config.json").read_text(encoding="utf-8"))
+    assert generated["master_server_address"] == "etcd://10.0.0.2:2379;10.0.0.3:2379"
+    assert "master=etcd://10.0.0.2:2379;10.0.0.3:2379" in caplog.text
+
+
+@patch(f"{_MODULE}.time.sleep")
+@patch("subprocess.Popen")
 def test_pull_brackets_ipv6_master(mock_popen, _sleep, tmp_path, monkeypatch):
     """IPv6 master service FQDN is bracketed in master_server_address."""
     mock_popen.return_value = _alive_proc()

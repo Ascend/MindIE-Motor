@@ -85,6 +85,29 @@ def write_json(path: str, data: dict[str, Any]) -> None:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+def resolve_master_server_address(kv_cfg: dict[str, Any]) -> str:
+    """Return the explicit ``master_server_address`` or ``""`` when not configured.
+
+    The value is passed through verbatim so that HA connection strings such as
+    ``etcd://10.0.0.1:2379;10.0.0.2:2379`` or ``redis://10.0.0.1:6379`` survive; they must
+    never be run through ``format_address`` (that would append a port to the whole string).
+    """
+    explicit = kv_cfg.get(MASTER_SERVER_ADDRESS, "")
+    if not isinstance(explicit, str):
+        return ""
+    return explicit.strip()
+
+
+def is_self_describing(address: str) -> bool:
+    """Return True when the address already carries its own endpoints.
+
+    Both URI forms (``etcd://...`` / ``redis://...``) and semicolon-separated multi-endpoint
+    lists (``h1:2379;h2:2379``) describe themselves; appending a port or a ``tcp://`` prefix
+    would corrupt them. Only a plain ``host:port`` may be passed to ``format_address``.
+    """
+    return "://" in address or ";" in address
+
+
 def generate_kv_cache_store_config(output_path: str, user_config_path: str) -> bool:
     if not os.path.exists(user_config_path):
         logging.error("user_config.json does not exist: %s", user_config_path)
@@ -105,12 +128,16 @@ def generate_kv_cache_store_config(output_path: str, user_config_path: str) -> b
         out_cfg["global_segment_size"] = 0
         out_cfg["local_buffer_size"] = kv_cfg.get("local_buffer_size") or "1GB"
 
-    kvp_master_service = os.getenv("KVS_MASTER_SERVICE", "")
-    if not kvp_master_service:
-        logging.error("Env KVS_MASTER_SERVICE is required but not set, cannot generate kv_cache_store_config")
-        return False
-    master_server_port = kv_cfg.get(MASTER_SERVER_PORT_KEY, DEFAULT_MASTER_SERVER_PORT)
-    out_cfg[MASTER_SERVER_ADDRESS] = format_address(kvp_master_service, master_server_port)
+    explicit_master = resolve_master_server_address(kv_cfg)
+    if explicit_master:
+        out_cfg[MASTER_SERVER_ADDRESS] = explicit_master
+    else:
+        kvp_master_service = os.getenv("KVS_MASTER_SERVICE", "")
+        if not kvp_master_service:
+            logging.error("Env KVS_MASTER_SERVICE is required but not set, cannot generate kv_cache_store_config")
+            return False
+        master_server_port = kv_cfg.get(MASTER_SERVER_PORT_KEY, DEFAULT_MASTER_SERVER_PORT)
+        out_cfg[MASTER_SERVER_ADDRESS] = format_address(kvp_master_service, master_server_port)
 
     write_json(output_path, out_cfg)
     logging.info("kv_cache_store_config generated: %s", output_path)
@@ -143,12 +170,27 @@ def generate_kv_conductor_config(output_path: str, user_config_path: str) -> boo
         return False
 
     kvp_master_service = os.getenv("KVS_MASTER_SERVICE", "")
-    if not kvp_master_service:
-        logging.error("Env KVS_MASTER_SERVICE is required but not set, cannot generate kv_cache_store_config")
-        return False
-    master_server_port = kv_store_cfg.get(MASTER_SERVER_PORT_KEY, DEFAULT_MASTER_SERVER_PORT)
+    explicit_master = resolve_master_server_address(kv_store_cfg)
     mooncake_master = out_cfg[KVEVENT_INSTANCE][MOONCAKE_MASTER]
-    mooncake_master[ENDPOINT_ADDRESS] = f"tcp://{format_address(kvp_master_service, master_server_port)}"
+    if not mooncake_master.get(ENDPOINT_ADDRESS):
+        if explicit_master and not is_self_describing(explicit_master):
+            mooncake_master[ENDPOINT_ADDRESS] = f"tcp://{explicit_master}"
+        elif explicit_master:
+            # Self-describing addresses (URI or semicolon-separated endpoints) resolve to the
+            # current leader at runtime; there is no static host to derive the kv-events
+            # endpoint from.
+            logging.warning(
+                "master_server_address %r is a self-describing address; cannot derive the kv-events "
+                "endpoint. Set kvevent_instance.mooncake_master.endpoint explicitly if KV events "
+                "or pool registration are required.",
+                explicit_master,
+            )
+        else:
+            if not kvp_master_service:
+                logging.error("Env KVS_MASTER_SERVICE is required but not set, cannot generate kv_cache_store_config")
+                return False
+            master_server_port = kv_store_cfg.get(MASTER_SERVER_PORT_KEY, DEFAULT_MASTER_SERVER_PORT)
+            mooncake_master[ENDPOINT_ADDRESS] = f"tcp://{format_address(kvp_master_service, master_server_port)}"
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     mooncake_master[MODEL_NAME] = resolve_model_name(user_cfg["motor_engine_prefill_config"])

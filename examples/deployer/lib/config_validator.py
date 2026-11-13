@@ -7,6 +7,9 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
+
+from __future__ import annotations
+
 import json
 import os
 import shutil
@@ -273,3 +276,85 @@ def validate_node_selectors(user_config):
         )
         return
     _validate_node_labels_exist(base_labels, "engine")
+
+
+_ALLOWED_HA_SCHEMES = ("etcd://", "redis://")
+
+
+def _split_host_port(value: str) -> tuple[str, int] | None:
+    """Return ``(host, port)`` for ``host:port`` / ``[IPv6]:port``, else ``None``.
+
+    An unbracketed IPv6 literal is rejected: ``2001:db8::1`` would otherwise be split into
+    host ``2001:db8:`` + port ``1`` and pass validation.
+    """
+    if value.startswith("["):
+        end = value.find("]")
+        if end == -1 or end + 1 >= len(value) or value[end + 1] != ":":
+            return None
+        host, port_text = value[1:end], value[end + 2 :]
+        if ":" not in host:
+            return None
+    else:
+        host, sep, port_text = value.rpartition(":")
+        if not sep or ":" in host:
+            return None
+    if not host or not port_text.isdigit():
+        return None
+    port = int(port_text)
+    if not 1 <= port <= 65535:
+        return None
+    return host, port
+
+
+def validate_master_server_address(value: str) -> None:
+    """Validate an explicit mooncake master address.
+
+    Accepted forms:
+      * ``host:port`` / ``[IPv6]:port`` -- single master;
+      * ``etcd://h1:2379;h2:2379;...``  -- etcd-backed HA (leader discovery);
+      * ``redis://host:port``           -- redis-backed HA.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"'{C.MASTER_SERVER_ADDRESS}' in '{C.KV_CACHE_STORE_CONFIG}' must be a non-empty string")
+    address = value.strip()
+    if any(ch.isspace() for ch in address):
+        raise ValueError(f"'{C.MASTER_SERVER_ADDRESS}' must not contain whitespace: {address!r}")
+    if "://" in address:
+        scheme, _, body = address.partition("://")
+        if f"{scheme}://" not in _ALLOWED_HA_SCHEMES:
+            raise ValueError(
+                f"Unsupported scheme in '{C.MASTER_SERVER_ADDRESS}': {scheme!r}. "
+                f"Expected one of {', '.join(_ALLOWED_HA_SCHEMES)} or a plain 'host:port'"
+            )
+        endpoints = body.split(";") if scheme == "etcd" else [body]
+        if not endpoints or any(not endpoint for endpoint in endpoints):
+            raise ValueError(f"Empty endpoint in '{C.MASTER_SERVER_ADDRESS}': {address!r}")
+        for endpoint in endpoints:
+            if _split_host_port(endpoint) is None:
+                raise ValueError(f"Invalid endpoint {endpoint!r} in '{C.MASTER_SERVER_ADDRESS}'; expected 'host:port'")
+        return
+    if _split_host_port(address) is None:
+        raise ValueError(
+            f"Invalid '{C.MASTER_SERVER_ADDRESS}': {address!r}; "
+            f"expected 'host:port', 'etcd://h1:2379;h2:2379' or 'redis://host:6379'"
+        )
+
+
+def validate_kv_cache_store_config(user_config: dict) -> None:
+    """Validate the optional explicit mooncake master address in ``kv_cache_store_config``."""
+    kv_config = user_config.get(C.KV_CACHE_STORE_CONFIG) if isinstance(user_config, dict) else None
+    if not isinstance(kv_config, dict) or C.MASTER_SERVER_ADDRESS not in kv_config:
+        return
+    value = kv_config[C.MASTER_SERVER_ADDRESS]
+    if value is None or (isinstance(value, str) and not value.strip()):
+        # Runtime treats an empty value as "not configured" (resolve_external_master and
+        # mooncake_config both fall back to KVS_MASTER_SERVICE), so do not reject templates
+        # or TUI output that keep the optional field with an empty default.
+        return
+    backend = kv_config.get(C.KV_STORE_BACKEND, C.DEFAULT_KV_STORE_BACKEND)
+    if backend != "mooncake":
+        raise ValueError(
+            f"'{C.MASTER_SERVER_ADDRESS}' is only supported when "
+            f"'{C.KV_CACHE_STORE_CONFIG}.{C.KV_STORE_BACKEND}' is 'mooncake', got {backend!r}"
+        )
+    validate_master_server_address(value)

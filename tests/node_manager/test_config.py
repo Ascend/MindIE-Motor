@@ -1413,6 +1413,15 @@ def test_kv_config_mooncake_standalone_fields():
     assert kcfg.device_name == "mlx5_0"
 
 
+def test_kv_config_mooncake_explicit_master_address():
+    """The address is kept verbatim (HA forms included) and stripped like the deployer does."""
+    kcfg = _parse_kv({"backend": "mooncake", "master_server_address": "etcd://10.0.0.1:2379;10.0.0.2:2379"})
+    assert kcfg.master_server_address == "etcd://10.0.0.1:2379;10.0.0.2:2379"
+
+    kcfg = _parse_kv({"backend": "mooncake", "master_server_address": "  etcd://10.0.0.1:2379  "})
+    assert kcfg.master_server_address == "etcd://10.0.0.1:2379"
+
+
 def test_kv_config_mooncake_defaults():
     """Omitted mooncake fields fall back to embedded mode and Ascend defaults."""
     kcfg = _parse_kv({"backend": "mooncake"})
@@ -1422,6 +1431,7 @@ def test_kv_config_mooncake_defaults():
     assert kcfg.store_http_port == 0
     assert kcfg.metadata_server == "P2PHANDSHAKE"
     assert kcfg.protocol == "ascend"
+    assert kcfg.master_server_address == ""
     assert kcfg.device_name == ""
 
 

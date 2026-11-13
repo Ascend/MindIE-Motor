@@ -471,6 +471,10 @@ class KVCacheStoreConfig:
     metadata_server: str = "P2PHANDSHAKE"
     protocol: str = "ascend"
     device_name: str = ""
+    master_server_address: str = ""
+    # Explicit mooncake master endpoint, used verbatim by the standalone store process.
+    # Supports "host:port", "etcd://h1:2379;h2:2379" (HA) and "redis://host:6379" (HA);
+    # empty means "derive from service + port" (the default in-cluster path).
 
     # --- Yuanrong ---
     etcd_address: str = ""
@@ -1026,6 +1030,7 @@ class NodeManagerConfig:
             kcfg.local_buffer_size = kv.get("local_buffer_size", "") or kcfg.local_buffer_size
             kcfg.metadata_server = kv.get("metadata_server", "") or kcfg.metadata_server
             kcfg.protocol = kv.get("protocol", "") or kcfg.protocol
+            kcfg.master_server_address = str(kv.get("master_server_address", "") or kcfg.master_server_address).strip()
             if "device_name" in kv:
                 kcfg.device_name = kv["device_name"]
             store_http_port = kv.get("store_http_port", 0)
@@ -1246,6 +1251,7 @@ class NodeManagerConfig:
             f"    ├─ Enabled:              {self.kv_cache_store_config.enable}\n"
             f"    ├─ Backend:              {self.kv_cache_store_config.backend}\n"
             f"    ├─ Service:              {self.kv_cache_store_config.service or '(env: KVS_MASTER_SERVICE)'}\n"
+            f"    ├─ Master Address:       {self.kv_cache_store_config.master_server_address or '(derived)'}\n"
             f"    ├─ Deploy Mode:          {self.kv_cache_store_config.mode}\n"
             f"    ├─ Runtime Mode:         {self.kv_cache_store_config.local_service_mode or '(default)'}\n"
             f"    ├─ Store Mode:           {self.kv_cache_store_config.store_mode or '(embedded)'}\n"

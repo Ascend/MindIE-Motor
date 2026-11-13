@@ -467,7 +467,7 @@ barriers heartbeat until the container checkpoint is done. During container snap
 | `motor/common/utils/ai_cube.py` | `npu-smi info watch -s u` AI Cube usage sampling (shared, no engine_server dependency) |
 | `motor/node_manager/core/services/registry.py` | Service registration and backend discovery |
 | `motor/node_manager/core/services/memcache/` | Optional KV-store service implementation |
-| `motor/node_manager/core/services/mooncake/` | Mooncake standalone store service (`store_mode="standalone"`: prepare phase writes the store config; the official `mooncake_store_service` subprocess is launched after engines and restarted in place on death) |
+| `motor/node_manager/core/services/mooncake/` | Mooncake standalone store service (`store_mode="standalone"`: prepare phase writes the store config; the official `mooncake_store_service` subprocess is launched after engines and restarted in place on death). `kv_cache_store_config.master_server_address`, when set, is written verbatim (supports `etcd://h1:2379;h2:2379` HA forms) and takes precedence over `service` + `port` |
 | `motor/node_manager/core/heartbeat_manager.py` | Native state polling, status mapping, heartbeat and suicide threshold |
 | `motor/node_manager/core/engine_ft_manager.py` | Engine FT polling/reporting, active-endpoint validation and NodeManager-owned vLLM FT proxy |
 | `motor/node_manager/core/register_manager.py` | Controller registration, StartCmdMsg validation, ranktable and snapshot metadata/restore helpers |

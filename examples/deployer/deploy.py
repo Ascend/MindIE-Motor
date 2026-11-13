@@ -59,6 +59,7 @@ from lib.generator.mf_store import generate_yaml_mf_store
 from lib.config_validator import (
     validate_deploy_mode_consistency,
     validate_deploy_mode_value,
+    validate_kv_cache_store_config,
     validate_only_instance_changed,
     resolve_config_paths,
     validate_pd_hybrid_config,
@@ -313,6 +314,8 @@ def resolve_deploy_mode_for_services(deploy_config):
 
 def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collect=False):
     sync_decode_first_token_timeout_from_env(user_config, env_config_path)
+    # Also validate here: TUI / programmatic callers bypass main()'s pre-flight checks.
+    validate_kv_cache_store_config(user_config)
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     update_kv_store_enabled_flag(user_config)
     update_kv_conductor_enabled_flag(user_config)
@@ -587,6 +590,7 @@ def main():
 
     os.makedirs(C.OUTPUT_ROOT_PATH, exist_ok=True)
     validate_reserved_labels(user_config)
+    validate_kv_cache_store_config(user_config)
     validate_container_snapshot_config(user_config)
     if C.HYBRID_INSTANCES_NUM in user_config.get(C.MOTOR_DEPLOY_CONFIG, {}):
         validate_pd_hybrid_config(user_config)

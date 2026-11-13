@@ -2799,3 +2799,29 @@ def test_filter_motor_only_metrics_empty():
     """Empty / non-motor-only text degrade gracefully."""
     assert _filter_motor_only_metrics("") == ""
     assert _filter_motor_only_metrics("# HELP vllm:x a\n# TYPE vllm:x gauge\nvllm:x 1.0\n") == ""
+
+
+@pytest.mark.parametrize(("explicit_enable", "expected_warning"), [(False, False), (True, True)])
+@patch("threading.Thread.start", MagicMock())
+def test_fetch_kv_metrics_without_endpoint(explicit_enable, expected_warning):
+    """HA has no derivable host: auto mode stays quiet, explicit opt-in still warns."""
+    config = CoordinatorConfig()
+    config.prometheus_metrics_config.enable_kv_store_metrics = explicit_enable
+    config.prometheus_metrics_config.kv_store_backend = "mooncake"
+    config.prometheus_metrics_config.kv_store_service = ""
+    config.prometheus_metrics_config.kv_store_metrics_endpoint = ""
+    collector = MetricsCollector(config)
+    rate_limited_logger = collector._rl  # pylint: disable=protected-access
+
+    with (
+        patch.object(rate_limited_logger, "error_window") as mock_err,
+        patch("motor.coordinator.metrics.metrics_collector.requests.get") as mock_get,
+    ):
+        collector._fetch_kv_store_metrics()
+
+    mock_get.assert_not_called()
+    if expected_warning:
+        mock_err.assert_called_once()
+        assert mock_err.call_args[0][0] == "kv_store_metrics.no_endpoint"
+    else:
+        mock_err.assert_not_called()

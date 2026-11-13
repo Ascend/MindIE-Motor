@@ -799,7 +799,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 | port_allocator_config.remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | port_allocator_config.bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 | **kv_cache_store_config字段** |-|-|
-| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#场景二standalone-模式配置)。 |
+| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port`/`master_server_address` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#场景二standalone-模式配置)。 |
 
 ## motor_engine_prefill_config/motor_engine_decode_config
 
@@ -1028,7 +1028,7 @@ Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两
 | port_allocator_config.remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | port_allocator_config.bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 | **kv_cache_store_config字段** |-|-|
-| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#场景二standalone-模式配置)。 |
+| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port`/`master_server_address` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#场景二standalone-模式配置)。 |
 
 PD模式下P与D**各自独立配置**"health_check_config"，未配置时使用代码默认值。
 

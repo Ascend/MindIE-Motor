@@ -192,8 +192,10 @@ def _merge_kv_store_metrics_config(cfg: dict, raw: dict) -> None:
         os.getenv("KV_STORE_METRICS_URL", ""),
     )
     if not pm.get("enable_kv_store_metrics"):
-        # Auto-enable when an explicit kv_cache_store_config is present
-        pm["enable_kv_store_metrics"] = True
+        # Auto-enable only when there is a scrape target. An HA master address
+        # ("etcd://..."/"redis://...") exposes no single host, so the endpoint must be
+        # configured explicitly; otherwise stay disabled instead of warning every cycle.
+        pm["enable_kv_store_metrics"] = bool(pm.get("kv_store_service") or pm.get("kv_store_metrics_endpoint"))
 
 
 class SchedulerType(Enum):

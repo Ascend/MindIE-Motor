@@ -472,6 +472,28 @@ ip -br link | grep ipourma
 >- 若报 IPv6 is disabled on this device，先对该口执行 sysctl -w net.ipv6.conf.<网卡>.disable_ipv6=0。
 <!-- end id1 -->
 
+#### 场景四：连接外部 / HA master（etcd / redis）
+
+当 master 由外部运维（包括 Primary-Standby HA 集群）时，用 `master_server_address` 显式指定客户端要连接的地址；deployer 不再部署本 namespace 的 kv-store Pod：
+
+```json
+"kv_cache_store_config": {
+  "enable": true,
+  "backend": "mooncake",
+  "store_mode": "standalone",
+  "metadata_server": "etcd://10.0.0.11:2379,10.0.0.12:2379",
+  "master_server_address": "etcd://10.0.0.11:2379;10.0.0.12:2379;10.0.0.13:2379",
+  "global_segment_size": "200GB",
+  "eviction_high_watermark_ratio": 0.9,
+  "eviction_ratio": 0.1
+}
+```
+
+- 支持 `host:port`、`etcd://h1:2379;h2:2379`（HA）、`redis://h:6379`（HA）；该值会原样写入引擎侧 `kv_cache_store_config.json` 与 store 侧 `mooncake_store_config.json`，不再拼接端口。
+- 与 `target_job_id` 同时配置时，本字段优先；配置后本套服务不再创建 kv-store Pod，`metadata_server` 仍按用户配置下发。
+- HA 连接串没有单一 host，Coordinator metrics 与 kv-events 池注册需显式配置（`prometheus_metrics_config.kv_store_metrics_endpoint`、`kv_conductor_config.pool_endpoint`），详见 [KV 池化 README — 连接外部 / HA Mooncake master](../README.md#连接外部--ha-mooncake-master可选)。
+- 需要 Motor 自己部署 HA master 的能力不在本特性范围内。
+
 ### 验证特性
 
 **验证前提：** 使用长 prompt（≥ 128 token，建议 500+ token）发起请求。短请求（prompt < 128 token）不会入池，也不会产生 put 流量，此为正常现象，非故障。

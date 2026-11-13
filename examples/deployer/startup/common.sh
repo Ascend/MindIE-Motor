@@ -432,14 +432,25 @@ gen_ranktable_config() {
 }
 
 gen_kv_store_config() {
-    if [ -n "$KVS_MASTER_SERVICE" ]; then
-        echo "Updating kv cache pool configuration file..."
-        export MOONCAKE_CONFIG_PATH="$CONFIG_PATH/kv_cache_store_config.json"
-        export LD_LIBRARY_PATH="/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH"
-        if [ "$ROLE" = "SINGLE_CONTAINER" ]; then
-            KVS_MASTER_SERVICE=$POD_IP
-        fi
-        python3 "$CONFIGMAP_PATH/mooncake_config.py" pool "$MOONCAKE_CONFIG_PATH" "$USER_CONFIG_PATH"
+    # The engine-side config must be generated for both addressing modes: the legacy
+    # KVS_MASTER_SERVICE env, and an explicit kv_cache_store_config.master_server_address
+    # (which may be an HA "etcd://..." string, so it is intentionally not injected as env).
+    # mooncake_config.py validates that at least one of them is present.
+    echo "Updating kv cache pool configuration file..."
+    export MOONCAKE_CONFIG_PATH="$CONFIG_PATH/kv_cache_store_config.json"
+    export LD_LIBRARY_PATH="/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH"
+    # In single-container mode the engine and mooncake_master share one Pod, so the
+    # legacy path must use POD_IP (the default KVS_MASTER_SERVICE is a Service name that
+    # does not exist for this deployment). Skip it when an external master is configured:
+    # there the explicit master_server_address wins and POD_IP would be misleading.
+    if [ "$ROLE" = "SINGLE_CONTAINER" ] && [ "${KV_STORE_EXTERNAL:-0}" != "1" ]; then
+        export KVS_MASTER_SERVICE="$POD_IP"
+    fi
+    if ! python3 "$CONFIGMAP_PATH/mooncake_config.py" pool "$MOONCAKE_CONFIG_PATH" "$USER_CONFIG_PATH"; then
+        # Keep the legacy behaviour for a misconfigured deployment: start the engine without
+        # the pool instead of failing the whole container boot.
+        echo "Warning: kv_cache_store_config generation failed; mooncake KV pooling may be unavailable" >&2
+        unset MOONCAKE_CONFIG_PATH
     fi
 }
 

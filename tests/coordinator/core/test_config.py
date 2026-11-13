@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from motor.config.coordinator import CoordinatorConfig, SchedulerConfig, SchedulerType
+from motor.config.coordinator import CoordinatorConfig, SchedulerConfig, SchedulerType, _merge_kv_store_metrics_config
 
 
 def test_standalone_coordinator_config_needs_no_engine_or_controller_sections(tmp_path):
@@ -1776,3 +1776,37 @@ def test_kvc_lifecycle_config_rejects_invalid_values() -> None:
     config.kvc_lifecycle_config.offload_kv_usage_high_water = 1.5
     with pytest.raises(ValueError, match="offload_kv_usage_high_water must be in"):
         config.validate_config()
+
+
+# ===================================================================
+# kv-store metrics auto-enable: only when a scrape target exists
+# ===================================================================
+
+
+def test_kv_metrics_auto_disabled_without_scrape_target(monkeypatch):
+    """An HA master address has no single host; do not enable metrics without an endpoint."""
+    monkeypatch.delenv("KVS_MASTER_SERVICE", raising=False)
+    monkeypatch.delenv("KV_STORE_METRICS_URL", raising=False)
+    monkeypatch.delenv("KV_STORE_METRICS_PORT", raising=False)
+    cfg = {}
+    _merge_kv_store_metrics_config(
+        cfg,
+        {"kv_cache_store_config": {"backend": "mooncake", "master_server_address": "etcd://a:2379;b:2379"}},
+    )
+    assert cfg["prometheus_metrics_config"]["enable_kv_store_metrics"] is False
+
+
+def test_kv_metrics_auto_enabled_with_scrape_target(monkeypatch):
+    """Either the service host or an explicit metrics endpoint is enough to auto-enable."""
+    monkeypatch.setenv("KVS_MASTER_SERVICE", "kvs-master")
+    cfg = {}
+    _merge_kv_store_metrics_config(cfg, {"kv_cache_store_config": {"backend": "mooncake"}})
+    assert cfg["prometheus_metrics_config"]["enable_kv_store_metrics"] is True
+
+    monkeypatch.delenv("KVS_MASTER_SERVICE")
+    cfg = {"prometheus_metrics_config": {"kv_store_metrics_endpoint": "http://vip:50090/metrics"}}
+    _merge_kv_store_metrics_config(
+        cfg,
+        {"kv_cache_store_config": {"backend": "mooncake", "master_server_address": "etcd://a:2379;b:2379"}},
+    )
+    assert cfg["prometheus_metrics_config"]["enable_kv_store_metrics"] is True
