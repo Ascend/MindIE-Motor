@@ -162,13 +162,13 @@ MindIE Motor开启Tracing能力需修改env.json配置文件和user_config.json�
    | motor_coordinator_config.tracer_config.endpoint | string | 与协议匹配的可达 URL | 开启 Coordinator Tracing 时必填 | 空字符串 | <ul><li>HTTP 示例： `http://<接收端>:4318/v1/traces`；</li><li>gRPC 示例： `http://<接收端>:4317`；</li></ul>TLS 使用 HTTPS |
    | motor_coordinator_config.tracer_config.root_sampling_rate | number | (0, 1] | 选填 | 1.0 | 没有父 Span 时的采样比例 |
    | motor_coordinator_config.tracer_config.remote_parent_sampled | number | (0, 1] | 选填 | 1.0 | 远端父 Span 已采样时的采样比例 |
-   | motor_coordinator_config.tracer_config.remote_parent_not_sampled | number | (0, 1] | 选填 | 1.0 | 远端父 Span 未采样时的采样比例 |
+   | motor_coordinator_config.tracer_config.remote_parent_not_sampled | number | [0, 1] | 选填 | 1.0 | 远端父 Span 未采样时的采样比例 |
    | motor_coordinator_config.tracer_config.local_parent_sampled | number | (0, 1] | 选填 | 1.0 | 本地父 Span 已采样时的采样比例 |
-   | motor_coordinator_config.tracer_config.local_parent_not_sampled | number | (0, 1] | 选填 | 1.0 | 本地父 Span 未采样时的采样比例 |
+   | motor_coordinator_config.tracer_config.local_parent_not_sampled | number | [0, 1] | 选填 | 1.0 | 本地父 Span 未采样时的采样比例 |
    | motor_engine_prefill_config.engine_config.otlp-traces-endpoint | string | 与协议匹配的可达 URL | 开启该引擎 Tracing 时必填 | 未配置 | prefill 引擎上报地址，按 HTTP/gRPC 协议分别填写 |
    | motor_engine_decode_config.engine_config.otlp-traces-endpoint | string | 与协议匹配的可达 URL | 开启该引擎 Tracing 时必填 | 未配置 | decode 引擎上报地址，按 HTTP/gRPC 协议分别填写 |
 
-   当前 Motor 配置校验要求五个采样率均大于 0，OTel 采样器要求不超过 1，因此可用范围是 `(0, 1]`。关闭 Coordinator Tracing 时将 `endpoint` 置为空字符串，不要把采样率设为 0。默认值 1.0 用于全量采样，包括父 Span 未采样的情况；生产环境应评估导出和存储开销后调整采样率，并配合 TLS endpoint 使用（见上表及 env.json 说明）。Motor Tracing 无额外独立调优参数，主要配置项即表 2 所列 endpoint 与五个采样率。
+   OTel 采样器要求五个采样率均不超过 1。`remote_parent_not_sampled` 和 `local_parent_not_sampled` 可以配置为 0，表示父 Span 未采样时当前 Span 也不记录，可用范围是 `[0, 1]`；其余三个采样率 Motor 配置校验要求大于 0，可用范围是 `(0, 1]`。关闭 Coordinator Tracing 时将 `endpoint` 置为空字符串，不要用采样率关闭。默认值 1.0 用于全量采样，包括父 Span 未采样的情况；生产环境应评估导出和存储开销后调整采样率，并配合 TLS endpoint 使用（见上表及 env.json 说明）。Motor Tracing 无额外独立调优参数，主要配置项即表 2 所列 endpoint 与五个采样率。
 
 3. 启动 Jaeger 接收端。
 

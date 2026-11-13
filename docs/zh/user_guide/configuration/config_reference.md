@@ -621,9 +621,9 @@ motor_coordinator_config字段配置样例如下所示：
 | endpoint |string|链路追踪数据的上报地址或后端服务的接入点，默认值为空。|
 | root_sampling_rate |float|根采样率，针对没有父Span（即请求的入口点，如HTTP请求的第一次进入）的追踪数据的采样概率。默认值为1.0，表示所有新的根请求都会被记录。如果设置为0.5，则只有一半的新请求会被记录，另一半则会被丢弃。|
 | remote_parent_sampled |float|远程父采样率（当父Span被采样时），当前Span的父Span来自另一个服务（远程调用），且远程的父Span已经被采样时，当前Span的采样概率。默认值：1.0，表示当前调用100%被记录。|
-| remote_parent_not_sampled |float|远程父采样率（当父Span未被采样时），当前Span的父Span来自另一个服务（远程调用），但远程的父Span没有被采样时，当前Span的采样概率。默认值：1.0，表示当前调用100%被记录。|
+| remote_parent_not_sampled |float|远程父采样率（当父Span未被采样时），当前Span的父Span来自另一个服务（远程调用），但远程的父Span没有被采样时，当前Span的采样概率。默认值：1.0，表示当前调用100%被记录。可配置为0，表示当前调用完全不记录。|
 | local_parent_sampled |float|本地父采样率（当父Span被采样时），当前Span的父Span来自同一个服务实例内（本地调用），且父Span已经被采样时，当前Span的采样概率。默认值：1.0，表示当前调用100%被记录。|
-| local_parent_not_sampled |float|本地父采样率（当父Span未被采样时），当前Span的父Span来自同一个服务实例内（本地调用），但父Span未被采样时，当前Span的采样概率。默认值：1.0，表示当前调用100%被记录。|
+| local_parent_not_sampled |float|本地父采样率（当父Span未被采样时），当前Span的父Span来自同一个服务实例内（本地调用），但父Span未被采样时，当前Span的采样概率。默认值：1.0，表示当前调用100%被记录。可配置为0，表示当前调用完全不记录。|
 | **scheduler_config.kv_conductor_config字段** |-|完整 `user_config.json` 推荐配置在顶层 `kv_conductor_config`，Coordinator 加载时合并至本节所列的运行时路径；deployer 启用服务仍要求顶层显式配置 `http_server_port`。旧 `prefill_kv_event_config` 仅保留部分字段兼容，见[自动推导与兼容](#kv_conductor_config-自动推导与兼容)。|
 | conductor_service |string|conductor服务IP或域名，默认为空。|
 | http_server_port |int|KV Conductor的HTTP服务端口，默认值：13333，取值范围：[1024,65535]。|

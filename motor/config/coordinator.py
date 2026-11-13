@@ -1219,9 +1219,14 @@ class CoordinatorConfig:
         # Validate tracer_config configuration
         self._validate_positive_number(self.tracer_config.root_sampling_rate, "root_sampling_rate")
         self._validate_positive_number(self.tracer_config.remote_parent_sampled, "remote_parent_sampled")
-        self._validate_positive_number(self.tracer_config.remote_parent_not_sampled, "remote_parent_not_sampled")
+        # 0 means the child span is never recorded when its parent was not sampled.
+        self._validate_positive_number(
+            self.tracer_config.remote_parent_not_sampled, "remote_parent_not_sampled", allow_zero=True
+        )
         self._validate_positive_number(self.tracer_config.local_parent_sampled, "local_parent_sampled")
-        self._validate_positive_number(self.tracer_config.local_parent_not_sampled, "local_parent_not_sampled")
+        self._validate_positive_number(
+            self.tracer_config.local_parent_not_sampled, "local_parent_not_sampled", allow_zero=True
+        )
 
         # Validate HTTP configuration
         self._validate_port_range(self.api_config.coordinator_api_infer_port, "coordinator_api_infer_port")
