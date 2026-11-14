@@ -451,7 +451,10 @@ VOLCANO_QUEUE_ANNOTATION = "scheduling.volcano.sh/queue-name"
 # Engine / single-container templates use --shm-size=4g to match K8s dshm emptyDir sizeLimit 4Gi.
 # CTRL / KVS YAML has no dshm volume, so those templates omit --shm-size.
 # motor_deploy_config.dshm_size overrides an existing --shm-size line only (does not insert one).
+# --security-opt seccomp=unconfined matches K8s yaml_template seccompProfile.type: Unconfined
+# (avoids RuntimeError: can't start new thread when default seccomp blocks clone3).
 ENTER_DOCKER_RUN_A2 = """docker run -it --name "$NAME" -u root \\
+  --security-opt seccomp=unconfined \\
   --net=host \\
   --shm-size=4g \\
   -e ASCEND_RUNTIME_OPTIONS=NODRV \\
@@ -486,6 +489,7 @@ ENTER_DOCKER_RUN_A2 = """docker run -it --name "$NAME" -u root \\
 """
 
 ENTER_DOCKER_RUN_A3 = """docker run -it --name "$NAME" -u root \\
+  --security-opt seccomp=unconfined \\
   --net=host \\
   --shm-size=4g \\
   -e ASCEND_RUNTIME_OPTIONS=NODRV \\
@@ -528,6 +532,7 @@ ENTER_DOCKER_RUN_A3 = """docker run -it --name "$NAME" -u root \\
 """
 
 ENTER_DOCKER_RUN_A5 = """docker run -it --name "$NAME" -u root \\
+  --security-opt seccomp=unconfined \\
   --net=host \\
   --shm-size=4g \\
   -e ASCEND_RUNTIME_OPTIONS=NODRV \\
@@ -567,6 +572,7 @@ ENTER_DOCKER_RUN_A5 = """docker run -it --name "$NAME" -u root \\
 """
 
 ENTER_DOCKER_RUN_A5_POD16 = """docker run -it --name "$NAME" -u root \\
+  --security-opt seccomp=unconfined \\
   --net=host \\
   --shm-size=4g \\
   -e ASCEND_RUNTIME_OPTIONS=NODRV \\
@@ -615,6 +621,7 @@ ENTER_DOCKER_RUN_A5_POD16 = """docker run -it --name "$NAME" -u root \\
 """
 
 ENTER_DOCKER_RUN_CTRL = """docker run -it --name "$NAME" -u root \\
+  --security-opt seccomp=unconfined \\
   --net=host \\
   -e NAME="$NAME" \\
   -e WEIGHT="$WEIGHT" \\
@@ -628,6 +635,7 @@ ENTER_DOCKER_RUN_CTRL = """docker run -it --name "$NAME" -u root \\
 """
 
 ENTER_DOCKER_RUN_KVS = """docker run -it --name "$NAME" -u root \\
+  --security-opt seccomp=unconfined \\
   --net=host \\
   -e NAME="$NAME" \\
   -e WEIGHT="$WEIGHT" \\
