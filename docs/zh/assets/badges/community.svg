@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="218" height="28" viewBox="0 0 218 28" role="img" aria-label="Community: MindIE Motor">
+  <title>Community: MindIE Motor</title>
+  <defs>
+    <clipPath id="badge">
+      <rect width="218" height="28" rx="5"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#badge)">
+    <rect width="218" height="28" fill="#F3F1FA"/>
+    <rect x="94" width="124" height="28" fill="#FAF9FD"/>
+  </g>
+  <rect x="0.5" y="0.5" width="217" height="27" rx="4.5" fill="none" stroke="#E2DDEE"/>
+  <path d="M94 7v14" fill="none" stroke="#E2DDEE"/>
+  <g font-family="Arial, Helvetica, sans-serif" font-size="12" text-anchor="middle">
+    <text x="47" y="18" fill="#655F76">Community</text>
+    <text x="156" y="18" fill="#4833EB">MindIE Motor</text>
+  </g>
+</svg>
