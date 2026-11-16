@@ -35,6 +35,11 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 
 <img src="./docs/zh/imgs/MindIE-Motor-architecture-zh.png" alt="MindIE Motor 架构" width="100%"/>
 
+## 🗺️ 路线图
+
+- ✅ 2026 Q3（已完成）：[Issue 链接](https://gitcode.com/Ascend/MindIE-Motor/issues/350)
+- 🚧 2026 Q4（开发中）：[Issue 链接](https://gitcode.com/Ascend/MindIE-Motor/issues/849)
+
 ## 🖥️ 服务部署
 
 推荐部署方案，见【[链接](https://mindie-motor.readthedocs.io/zh-cn/v3.2.0/user_guide/deployment/)】。全量部署方案见下表：
