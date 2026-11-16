@@ -47,6 +47,7 @@
 
 | 日期 | 模块 | 案例 | 文件 | 关键词 |
 |------|------|------|------|--------|
+| 2026-11-17 | docker_orchestration | 原生暂停后目标不再列出导致排空阻塞 | [drain-membership-absence.md](docker_orchestration/drain-membership-absence.md) | Docker, drain, pause, instance view, count, P/D |
 | 2026-11-17 | docker_orchestration | 后台持续控制器继承忽略 SIGINT | [background-signals.md](docker_orchestration/background-signals.md) | Docker, SIGINT, SIGTERM, background shell, writer lock |
 | 2026-11-17 | tooling | 完整 Mulan 许可头未识别外部贡献者版权 | [external-contributor-license.md](tooling/external-contributor-license.md) | check-header, copyright, Mulan, external contributor |
 | 2026-11-10 | testing | Router 边缘测试未锁住失败输出与精确边界 | [router-edge-assertions.md](testing/router-edge-assertions.md) | router, terminal frame, SSE, UTF-8, abort_request |

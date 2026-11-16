@@ -111,8 +111,11 @@ historical creation results over a newer lifecycle operation. A failed command i
 ## Drain, recovery and concurrency limits
 
 Drain first records `draining`, invokes native NodeManager pause, verifies exclusion from Coordinator
-routing, and checks the returned engine targets for zero running and waiting requests across a grace
-period. Missing evidence or timeout refuses removal and attempts resume. An interrupted drain remains
+routing through a count-consistent complete instance view.
+Paused jobs may be absent from native views. After an acknowledged pause, absence establishes routing
+exclusion only; it never proves container termination or permits releasing a resource claim.
+Every returned engine metric target must show zero running and waiting requests across a grace period.
+Missing evidence or timeout refuses removal and attempts resume. An interrupted drain remains
 durable and requires explicit reconciliation. This is a bounded observed quiescence check, not a guarantee
 of preserved sessions, KV state or requests admitted through an independent bypass path.
 

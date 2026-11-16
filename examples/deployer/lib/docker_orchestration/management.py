@@ -112,7 +112,15 @@ class NativeManagement:
         value = self.request(self.origin + "/instances")
         if not isinstance(value, dict) or not isinstance(value.get("instances"), list):
             raise ManagementError("Native instance view is incomplete")
-        if len(value["instances"]) > 4096 or any(not isinstance(row, dict) for row in value["instances"]):
+        if (
+            type(value.get("count")) is not int  # pylint: disable=unidiomatic-typecheck  # bool is not a count.
+            or value["count"] != len(value["instances"])
+            or len(value["instances"]) > 4096
+            or any(
+                not isinstance(row, dict) or not isinstance(row.get("job_name"), str) or not row["job_name"].strip()
+                for row in value["instances"]
+            )
+        ):
             raise ManagementError("Native instance view is invalid")
         return value["instances"]
 
@@ -161,9 +169,11 @@ class NativeManagement:
             targets = self.pause(instance)
             while time.monotonic() < deadline:
                 rows = [row for row in self.instances() if row.get("job_name") == instance["job_name"]]
-                paused = bool(rows) and all(str(row.get("pool", "")).lower() == "paused" for row in rows)
+                # Some native views omit paused jobs. Absence after pause proves only
+                # routing exclusion; stopping/releasing still needs exact Docker receipts.
+                excluded = not rows or all(str(row.get("pool", "")).lower() == "paused" for row in rows)
                 counts = [request_counts(self.request(target, metrics=True)) for target in targets]
-                quiet = paused and all(
+                quiet = excluded and all(
                     value is not None and value["waiting"] == value["running"] == 0 for value in counts
                 )
                 now = time.monotonic()
@@ -182,10 +192,12 @@ class NativeManagement:
             raise
 
     def role_counts(self, role: str) -> dict[str, float] | None:
-        if not self.metrics_url:
+        metrics_url = self.metrics_url
+        if not isinstance(metrics_url, str) or not metrics_url:
             return None
         query = {"type": "role"}
         if role != "union":
             query["role"] = role
-        separator = "&" if "?" in self.metrics_url else "?"
-        return request_counts(self.request(self.metrics_url + separator + urllib.parse.urlencode(query), metrics=True))
+        # Pylint infers the optional attribute's initial None despite the string guard.
+        separator = "&" if "?" in metrics_url else "?"  # pylint: disable=unsupported-membership-test
+        return request_counts(self.request(metrics_url + separator + urllib.parse.urlencode(query), metrics=True))
