@@ -12,6 +12,7 @@
 
 import argparse
 import json
+import signal
 import sys
 import time
 from pathlib import Path
@@ -104,6 +105,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "worker":
         return _worker()
+    if args.command == "run":
+        # Background shells may pass SIG_IGN; still allow a controller-only shutdown.
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(signum, signal.default_int_handler)
     if args.config is None:
         raise SpecError("--config is required for controller commands")
     spec = load_spec(args.config)

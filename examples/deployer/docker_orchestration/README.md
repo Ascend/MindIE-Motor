@@ -121,7 +121,7 @@ For continuous reconciliation, use `run` instead of repeated manual commands:
 python3 examples/deployer/docker_cluster.py --config /srv/motor-demo/cluster.json --state-dir /srv/motor-demo/state run
 ```
 
-Only one writer may own a state directory. Stop `run` before using mutating manual commands, then restart it
+Only one writer may own a state directory. Stop `run` with SIGINT or SIGTERM before using mutating manual commands, then restart it
 afterwards if needed. Stopping the controller process leaves model containers running. Keep the state on a
 durable local filesystem; do not copy it to another controller while the original writer is active. Do not edit
 the cluster or native configuration under active claims: the specification digest is bound to persisted state.
