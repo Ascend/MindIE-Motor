@@ -410,7 +410,7 @@ spec:
             - name: dshm
               emptyDir:
                 medium: Memory
-                sizeLimit: 4Gi
+                sizeLimit: 256Gi
             - name: coredump
               hostPath:
                 path: /var/coredump
@@ -556,7 +556,7 @@ spec:
             - name: dshm
               emptyDir:
                 medium: Memory
-                sizeLimit: 4Gi
+                sizeLimit: 256Gi
             - name: coredump
               hostPath:
                 path: /var/coredump
@@ -702,7 +702,7 @@ spec:
             - name: dshm
               emptyDir:
                 medium: Memory
-                sizeLimit: 4Gi
+                sizeLimit: 256Gi
             - name: coredump
               hostPath:
                 path: /var/coredump
@@ -848,7 +848,7 @@ spec:
             - name: dshm
               emptyDir:
                 medium: Memory
-                sizeLimit: 4Gi
+                sizeLimit: 256Gi
             - name: coredump
               hostPath:
                 path: /var/coredump

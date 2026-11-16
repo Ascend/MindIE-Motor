@@ -10,6 +10,7 @@
     "image_name": "<请按实际情况填写镜像名称>",
     "job_id": "mindie-motor",
     "hardware_type": "800I_A3",
+    "dshm_size": "512Gi",
     "weight_mount_path": "<请按实际情况填写模型权重文件的访问路径>"
   },
   "motor_controller_config": {},

@@ -168,7 +168,7 @@ volumes:
   - name: dshm
     emptyDir:
       medium: Memory
-      sizeLimit: 4Gi
+      sizeLimit: 256Gi
   - name: hugepage-2mi
     emptyDir:
       medium: HugePages-2Mi

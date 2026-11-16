@@ -290,7 +290,7 @@ def test_deploy_services_host_ipc_matches_selected_env_across_k8s_modes(tmp_path
                 # InferServiceSet retains disabled roles in its template; only active roles are rendered.
                 if (
                     mode == C.DEPLOY_MODE_INFER_SERVICE_SET
-                    and (shm or {}).get(C.EMPTY_DIR, {}).get(C.SIZE_LIMIT) == "4Gi"
+                    and (shm or {}).get(C.EMPTY_DIR, {}).get(C.SIZE_LIMIT) == "256Gi"
                 ):
                     continue
                 engine_pods.append(pod)

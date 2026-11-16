@@ -163,15 +163,15 @@ sudo sysctl -p
 After MemCache KV pooling is enabled, short requests can be inferred normally; long-sequence requests (for example, 80k input) crash the Decode instance, and `shm_crash` appears in the logs.
 
 **Cause Analysis**
-`/dev/shm` of the engine Pod is limited by the `dshm` emptyDir in the template and defaults to only `4Gi`. MemCache pooling requires larger shared memory in long-sequence scenarios. When the default capacity is insufficient, the Decode side crashes due to insufficient shm.
+`/dev/shm` of the engine Pod is limited by the `dshm` emptyDir in the template and defaults to `256Gi` (Docker deployments default to `--shm-size=256g`). If the workload still exceeds that capacity, the Decode side crashes due to insufficient shm.
 
 **Solution**
-Increase `dshm_size` in `motor_deploy_config` of `user_config.json`. It is recommended to set it to at least `32Gi`, and then redeploy. Stress test verification: with `dshm_size=32Gi`, the service still runs normally for 128 requests (80k-1k).
+Set `dshm_size` in `motor_deploy_config` of `user_config.json` above `256Gi`, and then redeploy.
 
 ```json
 "motor_deploy_config": {
-  "dshm_size": "32Gi"
+  "dshm_size": "512Gi"
 }
 ```
 
-In K8s deployment, this field overrides the `sizeLimit` of the `dshm` emptyDir of the engine Pod; in Docker deployment, it overrides `--shm-size` of the container. The value must contain a unit (for example, `"32Gi"`) and cannot be a plain number.
+In K8s deployment, this field overrides the `sizeLimit` of the `dshm` emptyDir of the engine Pod; in Docker deployment, it overrides `--shm-size` of the container. The value must contain a unit (for example, `"512Gi"`) and cannot be a plain number.

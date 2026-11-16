@@ -27,7 +27,7 @@ Two independent, optional capabilities driven by ``motor_deploy_config``:
       a plain local dir silently breaks cross-node prefix-cache hits.
   UCM ``storage_backends`` is the first consumer; no type is UCM-specific.
 * ``dshm_size`` — raises the ``/dev/shm`` emptyDir sizeLimit (UCM's CacheStore stages there,
-  default 256GiB per DP instance for MLA models, while the templates ship only 4Gi).
+  default 256GiB per DP instance for MLA models; the templates ship 256Gi).
 """
 
 import copy
