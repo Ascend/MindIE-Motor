@@ -533,6 +533,7 @@ class Reconciler:
             self._scale_samples.clear()
             return
         counts = dict(snapshot["desired"])
+        scale_in = policy.get("scale_in", set(counts) == {"union"})
         for role, rule in policy["roles"].items():
             try:
                 values = self.management.role_counts(role)
@@ -545,7 +546,7 @@ class Reconciler:
                 1
                 if values["running"] + values["waiting"] > rule["up_running"]
                 else -1
-                if values["running"] + values["waiting"] <= rule["down_running"]
+                if scale_in and values["running"] + values["waiting"] <= rule["down_running"]
                 else 0
             )
             previous_direction, samples = self._scale_samples.get(role, (0, 0))

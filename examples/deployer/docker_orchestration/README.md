@@ -31,7 +31,7 @@ See [Design](DESIGN.md) for module responsibilities, durable operation recovery 
 | Control plane | A separate native Coordinator/Controller container (`managed`), or an existing control plane (`external`) |
 | Placement | Explicit candidate slots with physical NPU IDs; simultaneously selected instances must not overlap in devices or native ports |
 | Recovery | Confirmed owned containers that exited abnormally; fresh admission is required before restarting |
-| Scaling | Whole-instance manual scaling; optional bounded autoscaling from native running/waiting request metrics |
+| Scaling | Whole-instance manual scaling; optional P/D autoscale-out and Union autoscale-out/in from native request metrics |
 
 Multi-host *single* instances, Encode, Render, KV Store, KV Conductor orchestration and A5 are rejected in this initial example.
 Union and P/D slots cannot be mixed. An instance is never split across arbitrary hosts to satisfy a placement.
@@ -106,7 +106,6 @@ python3 examples/deployer/docker_cluster.py --config /srv/motor-demo/cluster.jso
 python3 examples/deployer/docker_cluster.py --config /srv/motor-demo/cluster.json --state-dir /srv/motor-demo/state apply --wait
 python3 examples/deployer/docker_cluster.py --config /srv/motor-demo/cluster.json --state-dir /srv/motor-demo/state status
 python3 examples/deployer/docker_cluster.py --config /srv/motor-demo/cluster.json --state-dir /srv/motor-demo/state scale --prefill 2 --decode 1 --wait
-python3 examples/deployer/docker_cluster.py --config /srv/motor-demo/cluster.json --state-dir /srv/motor-demo/state scale --prefill 1 --decode 1 --wait
 ```
 
 `plan` observes candidates without reserving resources or initializing a database. `status` reads persisted
@@ -133,6 +132,20 @@ Each decision requires `stable_samples` consecutive observations and a cooldown;
 never mean zero load. Thresholds use the sum of native running and waiting requests, not an NPU utilization target.
 Enabled autoscaling requires a minimum of at least one instance per role; this example has no scale-from-zero
 activation mechanism. An explicit manual `stop` may still set all desired counts to zero.
+The optional boolean `autoscaling.scale_in` defaults to `true` for Union and `false` for P/D.
+Enabled P/D autoscaling rejects `scale_in:true`; automatic expansion remains supported. Set
+`scale_in:false` to keep a Union deployment expansion-only as well.
+
+Before **manual P/D scale-in or stop**, quiesce business traffic at its ingress and confirm that all active
+P/D requests and KV transfers have completed. NodeManager pause, a paused Coordinator pool and empty engine
+queues do not form a cross-P/D request or KV-delivery barrier. A Decode instance may already be selected
+while Prefill is still running; Prefill may finish before Decode consumes its KV. A fixed grace period does
+not prove those dependencies are gone. The tool does not establish this external maintenance precondition.
+Once that precondition is satisfied, a manual reduction can be requested, for example:
+
+```bash
+python3 examples/deployer/docker_cluster.py --config /srv/motor-demo/cluster.json --state-dir /srv/motor-demo/state scale --prefill 1 --decode 1 --wait
+```
 
 To stop the deployment, first stop the continuous controller, then run:
 
@@ -147,6 +160,8 @@ Scale-in pauses the selected instance through NodeManager, verifies that the Coo
 routing, checks the returned engine metric targets for zero running/waiting requests, and observes a grace
 period before stopping it. Missing evidence or a timeout refuses removal and attempts to resume the instance.
 An interrupted drain remains recorded and must be reconciled; it is not silently restored to Ready.
+This is an observed quiescence check, not a general lossless online scale-in guarantee. An in-flight Union
+SSE check can validate its exercised path; it does not prove all concurrent admission and streaming races.
 
 ## Resource observations and failure handling
 

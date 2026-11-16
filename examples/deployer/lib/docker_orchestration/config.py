@@ -362,10 +362,15 @@ def load_spec(path: str | Path) -> dict:
     _integer(policy["retry_limit"], "policy.retry_limit", 0, 100)
     spec["policy"] = policy
     autoscaling = dict(_object(spec.get("autoscaling", {"enabled": False}), "autoscaling"))
-    _keys(autoscaling, {"enabled", "cooldown_seconds", "stable_samples", "roles"}, "autoscaling")
+    _keys(autoscaling, {"enabled", "scale_in", "cooldown_seconds", "stable_samples", "roles"}, "autoscaling")
     if type(autoscaling.get("enabled", False)) is not bool:
         raise SpecError("autoscaling.enabled must be a boolean")
     autoscaling["enabled"] = autoscaling.get("enabled", False)
+    if "scale_in" in autoscaling:
+        if type(autoscaling["scale_in"]) is not bool:
+            raise SpecError("autoscaling.scale_in must be a boolean")
+        if autoscaling["enabled"] and roles != {"union"} and autoscaling["scale_in"]:
+            raise SpecError("Automatic P/D scale-in is unsupported; quiesce traffic before manual scale-in or stop")
     autoscaling["cooldown_seconds"] = _number(autoscaling.get("cooldown_seconds", 120), "cooldown_seconds", 1, 86400)
     autoscaling["stable_samples"] = _integer(autoscaling.get("stable_samples", 3), "stable_samples", 1, 1000)
     scaling_roles = _object(autoscaling.get("roles", {}), "autoscaling.roles")

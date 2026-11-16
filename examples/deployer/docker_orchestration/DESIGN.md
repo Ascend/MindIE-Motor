@@ -116,6 +116,16 @@ period. Missing evidence or timeout refuses removal and attempts resume. An inte
 durable and requires explicit reconciliation. This is a bounded observed quiescence check, not a guarantee
 of preserved sessions, KV state or requests admitted through an independent bypass path.
 
+In P/D mode, a selected Decode resource can remain absent from the engine queue while its Prefill leg runs.
+A completed Prefill request can leave KV data needed by the subsequent Decode leg. The native pause API and
+engine queue gauges do not expose an atomic per-instance barrier covering those dependencies. P/D manual
+scale-in and `stop` therefore require an externally quiesced ingress and confirmation that active requests
+and KV transfers have completed. A grace interval cannot establish that maintenance precondition.
+The adapter does not replace Motor's request protocol to manufacture such a barrier.
+
+An in-flight Union SSE acceptance check establishes only the exercised routing and streaming path.
+It does not establish a universal lossless scale-in guarantee across all concurrent admission races.
+
 Confirmed abnormal terminal exits may restart within retry limits and after fresh resource admission.
 A running container with an unreachable API, an unreachable host or an ordinary external stop does not
 trigger automatic replacement. SSH failure does not prove that an old instance stopped. This example
@@ -126,6 +136,10 @@ One controller owns the SQLite directory for its entire write session. Stop cont
 mutating manual commands; its shutdown leaves models running. Keep state on durable local storage and
 retain host receipts. Read-only `plan` and `status` do not initialize a missing database. Autoscaling is
 enabled only in `run`, uses stable native request-metric samples and cooldowns, and cannot wake from zero.
+`autoscaling.scale_in` is optional: its default is enabled for Union and disabled for P/D. Enabled P/D
+autoscaling rejects an explicit `scale_in:true`; it can still expand. Union can set `scale_in:false` to
+disable automatic reduction. The default is resolved at use time without adding an omitted field to the
+stored specification, preserving the digest of existing disabled-autoscaling configurations.
 
 ## Extension boundaries
 

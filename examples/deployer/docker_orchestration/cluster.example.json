@@ -71,6 +71,7 @@
   },
   "autoscaling": {
     "enabled": false,
+    "scale_in": false,
     "cooldown_seconds": 120,
     "stable_samples": 3,
     "roles": {
