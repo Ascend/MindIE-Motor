@@ -47,6 +47,7 @@
 
 | 日期 | 模块 | 案例 | 文件 | 关键词 |
 |------|------|------|------|--------|
+| 2026-11-17 | tooling | 完整 Mulan 许可头未识别外部贡献者版权 | [external-contributor-license.md](tooling/external-contributor-license.md) | check-header, copyright, Mulan, external contributor |
 | 2026-11-10 | testing | Router 边缘测试未锁住失败输出与精确边界 | [router-edge-assertions.md](testing/router-edge-assertions.md) | router, terminal frame, SSE, UTF-8, abort_request |
 | 2026-11-10 | deployer | Helm 策略更新脚本未通过提交检查 | [helm-policy-ci-checks.md](deployer/helm-policy-ci-checks.md) | Helm, scalingPolicy, kubeconfig, Bandit, pre-commit |
 | 2026-09-29 | node_manager | Relaunch 后同一 endpoint 再次异常未触发恢复 | [relaunch-fault-episode-dedup.md](node_manager/relaunch-fault-episode-dedup.md) | NodeManager, engine relaunch, suicide freeze, abnormal dedup, repeated recovery |
