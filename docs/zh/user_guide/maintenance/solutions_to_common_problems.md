@@ -163,15 +163,15 @@ sudo sysctl -p
 开启 MemCache KV 池化后，短请求可正常推理；长序列请求（例如 80k 输入）会把 Decode 实例打挂，日志出现 `shm_crash`。
 
 **原因分析**
-引擎 Pod 的 `/dev/shm` 由模板 `dshm` emptyDir 限制，默认仅为 `4Gi`。MemCache 池化在长序列场景下需要更大的共享内存；默认容量不足时 Decode 侧会因 shm 不足崩溃。
+引擎 Pod 的 `/dev/shm` 由模板 `dshm` emptyDir 限制，默认是 `256Gi`（Docker 部署默认 `--shm-size=256g`）。若现场负载超过该容量，Decode 侧仍会因 shm 不足崩溃。
 
 **解决方案**
-在 `user_config.json` 的 `motor_deploy_config` 中增大 `dshm_size`，建议至少配置 `32Gi`，然后重新部署。压测验证：128 条请求（80k-1k）在 `dshm_size=32Gi` 下服务仍可正常运行。
+在 `user_config.json` 的 `motor_deploy_config` 中把 `dshm_size` 调到大于 `256Gi`，然后重新部署。
 
 ```json
 "motor_deploy_config": {
-  "dshm_size": "32Gi"
+  "dshm_size": "512Gi"
 }
 ```
 
-K8s 部署时该字段覆盖引擎 Pod 的 `dshm` emptyDir `sizeLimit`；Docker 部署时覆盖容器 `--shm-size`。取值须带单位（如 `"32Gi"`），不能写成纯数字。
+K8s 部署时该字段覆盖引擎 Pod 的 `dshm` emptyDir `sizeLimit`；Docker 部署时覆盖容器 `--shm-size`。取值须带单位（如 `"512Gi"`），不能写成纯数字。
