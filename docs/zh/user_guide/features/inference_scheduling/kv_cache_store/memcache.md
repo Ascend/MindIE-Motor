@@ -39,7 +39,7 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
 以下步骤展示如何配置和使用MemCache后端。
 
 >[!NOTE] 说明
->混合attention模型的 `connectors[0]` 需使用 `MooncakeHybridConnector`，详情请参见[P/D传输Connector选型](../README.md#table_Connector)。
+>混合attention模型的 `connectors[0]` 需使用 `MooncakeHybridConnector`，详情请参见[P/D传输Connector选型](README.md#table_Connector)。
 
 **操作步骤**
 
@@ -72,7 +72,7 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
     | backend | 字符串 | "memcache" | 必填 | — | 指定后端类型为 memcache |
     | local_service_mode | 字符串 | "inprocess" / "standalone" | 选填 | <ul><li>Atlas 800I A2推理服务器/Ascend 950PR系列产品：inprocess；</li><li>Atlas 800I A3超节点服务器：standalone</li></ul> | LocalService 部署模式。A2/A5 运行时强制 inprocess |
     | local_config_path | 字符串 | 容器内 conf 路径 | 选填 | `/usr/local/Ascend/pyMotor/conf/mmc-local-inprocess.conf` | worker 与 NodeManager 读取的客户端配置。standalone 也填这份 inprocess 文件，不要改成 `mmc-local-standalone.conf` |
-    | target_job_id| 字符串 | 目标服务的 `motor_deploy_config.job_id` | 选填 | — | 复用其他推理服务的 kv_store。未配置、与自身 `job_id` 相同、或目标 kv_store 不可用时，在本 namespace 新建 kv_store。详见 [KV 池化 README — 多套服务共享 kv_store](../README.md#step3) |
+    | target_job_id| 字符串 | 目标服务的 `motor_deploy_config.job_id` | 选填 | — | 复用其他推理服务的 kv_store。未配置、与自身 `job_id` 相同、或目标 kv_store 不可用时，在本 namespace 新建 kv_store。详见 [KV 池化 README — 多套服务共享 kv_store](README.md#step3) |
 
     >[!NOTE] 说明
     >DRAM、协议和 SSD 参数写在两份模板里，位于 `examples/deployer/startup/roles/kv_store_backends/memcache/`。部署时 `common.sh` 把它们同步到 `$CONFIG_PATH/`，引擎容器内对应 `/usr/local/Ascend/pyMotor/conf/`。
@@ -92,7 +92,7 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
 4. （可选）开启 KV events 广播。<a id="kv-events-affinity"></a>
 
     启用缓存感知 prefill 调度：
-    Motor 侧配置及验收见 [池化亲和配置](../../kvcache_affinity.md#pool-affinity)。
+    Motor 侧配置及验收见 [池化亲和配置](../kvcache_affinity.md#pool-affinity)。
 
     1. 开启 MetaService 广播。
       解除examples/deployer/startup/roles/kv_store_backends/memcache/memcache_meta_service.py 中「KV events 广播」配置块的注释，并按需填写 kv_events_model_name / kv_events_block_size。（需与 kv_conductor_config 中注册的 model_path / block_size 一致，否则事件无法命中索引）
@@ -111,7 +111,7 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
     块设备准备以 [DRAM + SSD 多级池化 Kubernetes 配置示例](https://gitcode.com/Ascend/memcache/wiki/DRAM+%20SSD%20多级池化%20Kubernetes%20配置示例.md) 为准。下面是按该示例，用 `examples/deployer/deploy.py` 启用 MemCache SSD 的步骤。`kv_cache_store_config.backend` 为 `memcache`。Atlas 800I A2 与 Ascend 950PR 使用 `inprocess`，Atlas 800I A3 使用 `standalone`。
 
     >[!NOTE] 说明
-    >- 标准 attention 的 `connectors[0]` 使用 `MooncakeConnectorV1` 或 `MooncakeConnectorV2`，`connectors[1]` 使用 `AscendStoreConnector` 且 `"backend": "memcache"`。混合 attention 的 `connectors[0]` 使用 `MooncakeHybridConnector`。选型见 [P/D传输Connector选型](../README.md#table_Connector)。
+    >- 标准 attention 的 `connectors[0]` 使用 `MooncakeConnectorV1` 或 `MooncakeConnectorV2`，`connectors[1]` 使用 `AscendStoreConnector` 且 `"backend": "memcache"`。混合 attention 的 `connectors[0]` 使用 `MooncakeHybridConnector`。选型见 [P/D传输Connector选型](README.md#table_Connector)。
     >- 协议按硬件填写：A2 为 `device_rdma`，A3 为 `device_sdma`，A5 为 `device_urma`。conf 模板默认值不能直接套到其他硬件。
     >- `storage.enabled` 只在 `ubsio.disk.path` 非空且本进程 `dram.size > 0` 时由该进程打开 SSD。A3 standalone 的 worker 读 inprocess 文件，其中 `dram.size = 0GB`，因此 worker 不打开 SSD。SSD 只由独立 LocalService 按 standalone 文件打开。
     >- `ubsio.disk.path` 填容器内路径，单盘为 `/dev/memcache-ubsio0`，多盘用冒号拼接，例如 `/dev/memcache-ubsio0:/dev/memcache-ubsio1`。不要把宿主机 `/dev/nvme*` 或 `/dev/loop*` 写进 conf。
@@ -174,7 +174,7 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
         `dram.size = 2GB` 是模板量级。96K 前缀、多个 worker 同时 put 时，2GB DRAM 很容易占到 90% 以上并出现连续空间不足。要减少 put 失败，按并发写入量加大这份 standalone 文件里的 `dram.size`。加大 DRAM 不会绕过“新数据先写入 DRAM”这条路径。
 
         `common.sh` 会把两份文件同步到 ConfigMap。引擎启动后，worker 读 `/usr/local/Ascend/pyMotor/conf/mmc-local-inprocess.conf`。standalone 子进程再改读同目录的 `mmc-local-standalone.conf`。模板和字段注释在 `examples/deployer/startup/roles/kv_store_backends/memcache/`。
-    5. `user_config.json` 中 `kv_cache_store_config.backend` 设为 `memcache`。A3 的 `local_service_mode` 设为 `standalone`，`local_config_path` 仍指向 `mmc-local-inprocess.conf`。P/D connector 与 [P/D传输Connector选型](../README.md#table_Connector) 保持一致。
+    5. `user_config.json` 中 `kv_cache_store_config.backend` 设为 `memcache`。A3 的 `local_service_mode` 设为 `standalone`，`local_config_path` 仍指向 `mmc-local-inprocess.conf`。P/D connector 与 [P/D传输Connector选型](README.md#table_Connector) 保持一致。
     6. 执行 `examples/deployer/deploy.py` 做全量部署。修改模式、`local_config_path` 或上述两份 conf 后，不要只执行 `--update_config`。prompt 不少于 128 token 才会按 chunk 入池。部署前确认推理 NodePort 不与集群里已有服务冲突。
 
 ### 验证特性

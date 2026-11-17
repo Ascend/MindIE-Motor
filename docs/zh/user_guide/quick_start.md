@@ -6,7 +6,7 @@
 
 ## 什么是PD分离？
 
-模型推理的Prefill阶段和Decode阶段分别实例化部署在不同的硬件资源上进行推理，提升推理性能，其特性介绍详情请参考[PD分离说明](./features/pd_disaggregation.md)。
+模型推理的Prefill阶段和Decode阶段分别实例化部署在不同的硬件资源上进行推理，提升推理性能，其特性介绍详情请参考[PD分离说明](./features/inference_scheduling/pd_disaggregation.md)。
 
 ## 环境要求
 

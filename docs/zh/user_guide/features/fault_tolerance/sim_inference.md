@@ -104,7 +104,7 @@
    | health_collector_timeout                | int   | > 0          | 选填      | 5      | 推理面`GET /health`探测超时（秒）；vLLM与SGLang心跳均使用                                                                                                                                                                                                                             |
    | health_collector_timeout_retry_attempts | int   | ≥ 1         | 选填      | 3      | 推理面`GET /health`超时重试次数（含首次，仅超时触发）；vLLM与SGLang心跳均使用                                                                                                                                                                                                         |
 
-   完整字段说明请参见[user_config.json配置文件全量参数说明](../configuration/config_reference.md#health_check_config)。
+   完整字段说明请参见[user_config.json配置文件全量参数说明](../../configuration/config_reference.md#health_check_config)。
 2. 原生拉起路径下虚拟推理由NodeManager执行并启动。
    配置启用后，NodeManager 在检测到 vLLM 引擎 `/health` 首次 READY 后幂等启动虚拟推理循环。
    在 NodeManager 容器/Pod 日志中，出现以下关键字表示虚拟推理已正常启动。

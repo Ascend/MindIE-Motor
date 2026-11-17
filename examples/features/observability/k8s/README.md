@@ -30,7 +30,7 @@ metadata:
 ## External Metrics Adaptor 对接（HPA 契约指标）
 
 HPA 经 External Metrics Adaptor 消费 Coordinator `/metrics`，Adaptor 部署与 HPA 配置详见
-`docs/zh/user_guide/features/auto_scaling.md`。Motor 在 `/metrics` 中为以下契约指标同时暴露
+`docs/zh/user_guide/features/scaling_deployment/auto_scaling.md`。Motor 在 `/metrics` 中为以下契约指标同时暴露
 **无冒号别名**（`:` → `_`），作为 External Metrics 的稳定契约：
 
 | 别名指标 | 语义 | 用途 |

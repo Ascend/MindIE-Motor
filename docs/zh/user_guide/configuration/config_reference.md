@@ -502,7 +502,7 @@ motor_coordinator_config字段配置样例如下所示：
 | enable | bool | 是否启用与数据混淆权重配套的 token 混淆。默认值：`false`。要求 `render_config.enable=true` 且 `render_config.enable_token_only_decode=true`。开启后支持流式和非流式 vLLM Render token-only 请求，任何混淆或 Render 失败都会拒绝请求，不回退原生 OpenAI 推理。 |
 | model_path | string | 可选，显式指定被服务的权重目录（用于从其中读取 `vocab_size`）。默认值为空，此时使用 `motor_engine_{prefill,decode,encode,union}_config.engine_config.model`（多模型共存时必须显式指定）。 |
 | vocab_size | int | 混淆词表大小。**默认值：`0`（未配置）**，未配置时从权重目录 `config.json` 读取（多模态模型取 `text_config.vocab_size`，纯文本模型取顶层 `vocab_size`），显式配置始终优先。必须与权重混淆参数一致（Qwen3-32B / Qwen3-VL 为 `151936`）。 |
-| token_white_list | list[int] | 不参与置换的 token ID（特殊 token 等）。默认值为空，启用 token 混淆时必须显式配置，且必须与权重混淆参数一致；Qwen3-32B / Qwen3-VL 验证权重使用的 37 个白名单 token 见 [数据混淆推理（PMCC）](../features/data_obfuscation.md#使用样例)。该参数**无法从模型目录推导**，只能由权重混淆方提供。 |
+| token_white_list | list[int] | 不参与置换的 token ID（特殊 token 等）。默认值为空，启用 token 混淆时必须显式配置，且必须与权重混淆参数一致；Qwen3-32B / Qwen3-VL 验证权重使用的 37 个白名单 token 见 [数据混淆推理（PMCC）](../features/maintenance_testing_security/data_obfuscation.md#使用样例)。该参数**无法从模型目录推导**，只能由权重混淆方提供。 |
 | seed_content | string | 数据混淆因子。默认值为空；启用 token 混淆时必须显式配置。该值可还原词表置换，必须与混淆权重同权限保管，通过受控配置注入，禁止提交到代码仓库或写入日志。 |
 | **token_obfuscation_config.image_config字段** |-|-|
 | enable | bool | 是否对 Render 返回的多模态图像张量做数据混淆（与数据混淆权重的视觉部分配套）。默认值：`false`。开启后 Coordinator 对 `features.kwargs_data` 中每个模态的张量载荷调用 SDK 的 `image_render_obf`，再把混淆后的载荷转发给引擎；Render 未启用或 SDK 抛错时请求失败（fail closed），不会把明文张量送进引擎。混淆结果的正确性（置换内容与载荷格式）由 SDK 保证，Coordinator 不做解析与结构校验。**要求 `render_config.enable=true` 且 `render_config.enable_token_only_decode=true`**，与 `token_obfuscation_config.enable` 相互独立，共用同一个 `seed_content`。 |
@@ -545,7 +545,7 @@ motor_coordinator_config字段配置样例如下所示：
 | max_timeout_s | float | 熔断时长上限（秒）。默认值：`300.0`。 |
 | **scheduler_config字段** |-|-|
 | prefill_scheduler_type | string | Prefill / encode / union 实例的调度类型，默认值：load_balance。可选 `load_balance` / `round_robin` / `kv_cache_affinity`；不支持 `dynamic_bucket`。 |
-| decode_scheduler_type | string | Decode 实例的调度类型，默认值：load_balance。可选 `load_balance` / `round_robin` / `dynamic_bucket`，动态分桶详见[动态分桶调度](../features/dynamic_bucket.md)。枚举也接受 `kv_cache_affinity`，但 Decode 实例仍按 load_balance 选择并在启动时打印 warning。 |
+| decode_scheduler_type | string | Decode 实例的调度类型，默认值：load_balance。可选 `load_balance` / `round_robin` / `dynamic_bucket`，动态分桶详见[动态分桶调度](../features/inference_scheduling/dynamic_bucket.md)。枚举也接受 `kv_cache_affinity`，但 Decode 实例仍按 load_balance 选择并在启动时打印 warning。 |
 | scheduler_type | string | **已废弃**。存量配置仍可使用，读取时把值迁移到未单独配置的 `prefill_scheduler_type` 和 `decode_scheduler_type` 并打 warning。由于 Prefill 不支持 `dynamic_bucket`，动态分桶必须改用 `decode_scheduler_type` 单独配置。 |
 | enable_pd_separation_fallback_to_hybrid | bool | PD 分离场景下，当不存在兼容且未熔断的 P/D pair 时，是否允许降级使用混部路由，默认值为 `true`。候选优先级为 Union → Prefill → Decode；Decode 兜底仅适用于上报 `decode_colocation` capability 的 vLLM 实例，关闭后无兼容 pair 时返回 503。 |
 | endpoint_instance_score_weight | float | endpoint 优先负载均衡时实例平均负载权重。默认值：`0.05`。 |
@@ -588,7 +588,7 @@ motor_coordinator_config字段配置样例如下所示：
 | **mgmt_api_key_config字段** |-|管理面独立 API Key 配置，仅保护实例查询、实例刷新和精度告警状态清理接口。启动、存活和就绪探针不鉴权。请求头固定为 `X-Motor-Management-Key`。|
 | enable_api_key | bool | 是否开启管理面 API Key 鉴权。可选：`true` / `false`。默认值：`false`。|
 | api_key_file | string | API Key 文件路径。开启鉴权时必填；文件必须仅含一行非空密钥。Controller 与 Coordinator 分开部署时需挂载内容相同的密钥文件。|
-| **rate_limit_config字段** |-|行为与示例见 [服务限流](../features/rate_limiting.md)。|
+| **rate_limit_config字段** |-|行为与示例见 [服务限流](../features/fault_tolerance/rate_limiting.md)。|
 | enable_rate_limit | bool | 是否开启请求限流。可选：`true` / `false`。默认值：`false` |
 | provider |string|限流提供者。simple使用内置令牌桶；OLC使用过载控制库（需额外安装及配置）。|
 | max_requests | int | 限流时间窗口内允许的最大请求数。默认值：`1000`。 |
@@ -639,7 +639,7 @@ motor_coordinator_config字段配置样例如下所示：
 | conductor_service |string|conductor服务IP或域名，默认为空。|
 | http_server_port |int|KV Conductor的HTTP服务端口，默认值：13333，取值范围：[1024,65535]。|
 | query_encoding |string|Conductor `/query` 请求编码，默认 `msgpack`，合法值为 `msgpack` / `json`。响应按服务器 Content-Type 解码，请求不自动降级。先升级 conductor 再升级 Coordinator；新 Coordinator 对接仅支持 JSON 的旧 conductor 时显式设为 `json`。不要写在旧 `prefill_kv_event_config` 下，该字段不在旧配置迁移列表中。|
-| block_size |int|正整数，默认 `128`。必须对齐主注意力组 KV 事件的粒度；DeepSeek V4 / 混合 KV 不一定等于引擎 `--block-size`，也不固定为 512，见[混合 KV 配置](../features/kvcache_affinity.md#deepseek-v4)。|
+| block_size |int|正整数，默认 `128`。必须对齐主注意力组 KV 事件的粒度；DeepSeek V4 / 混合 KV 不一定等于引擎 `--block-size`，也不固定为 512，见[混合 KV 配置](../features/inference_scheduling/kvcache_affinity.md#deepseek-v4)。|
 | endpoint |string|HBM 事件端口的回退模式，默认为空；从 Prefill 或 Union 的 `kv-events-config.endpoint` 推导。格式 `tcp://*:<port>`，注册 HBM 时替换 IP 并加 DP 秩。|
 | replay_endpoint |string|引擎回放端口模式，默认为空；从 Prefill 或 Union 事件配置推导。格式 `tcp://*:<port>`，注册 HBM 时替换 IP 并加 DP 秩。回放受历史缓冲及首次实例注册限制，不保证每个 DP 自动恢复。|
 | engine_type |string|引擎类型，默认值：vLLM。|
@@ -810,7 +810,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 | port_allocator_config.remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | port_allocator_config.bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 | **kv_cache_store_config字段** |-|-|
-| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port`/`master_server_address` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#场景二standalone-模式配置)。 |
+| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port`/`master_server_address` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/inference_scheduling/kv_cache_store/README.md)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/inference_scheduling/kv_cache_store/mooncake.md#场景二standalone-模式配置)。 |
 
 ## motor_engine_prefill_config/motor_engine_decode_config
 
@@ -1039,7 +1039,7 @@ Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两
 | port_allocator_config.remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | port_allocator_config.bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 | **kv_cache_store_config字段** |-|-|
-| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port`/`master_server_address` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#场景二standalone-模式配置)。 |
+| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port`/`master_server_address` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/inference_scheduling/kv_cache_store/README.md)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/inference_scheduling/kv_cache_store/mooncake.md#场景二standalone-模式配置)。 |
 
 PD模式下P与D**各自独立配置**"health_check_config"，未配置时使用代码默认值。
 
@@ -1069,7 +1069,7 @@ PD模式下P与D**各自独立配置**"health_check_config"，未配置时使用
 
 ### health_check_config
 
-可选虚推（虚拟推理）健康探测配置，位于 `motor_engine_prefill_config` / `motor_engine_decode_config` 模块，默认关闭，机制说明见 [虚推健康探测](../features/sim_inference.md)。
+可选虚推（虚拟推理）健康探测配置，位于 `motor_engine_prefill_config` / `motor_engine_decode_config` 模块，默认关闭，机制说明见 [虚推健康探测](../features/fault_tolerance/sim_inference.md)。
 
 **表7** health_check_config字段参数说明
 

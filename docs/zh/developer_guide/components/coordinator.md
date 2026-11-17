@@ -93,8 +93,8 @@ Trigger 的 P/D 两端都使用原生 OpenAI API，Prefill 在请求中注入 Re
 
 `context_budget_mode=on` 时，最终输出预算会同步到 Render 参数。配置与边界说明见
 [user_config.json配置文件全量参数说明](../../user_guide/configuration/config_reference.md)、
-[max_tokens 自适应](../../user_guide/features/max_tokens_adaptation.md) 与
-[KV Cache 亲和调度](../../user_guide/features/kvcache_affinity.md)。
+[max_tokens 自适应](../../user_guide/features/inference_scheduling/max_tokens_adaptation.md) 与
+[KV Cache 亲和调度](../../user_guide/features/inference_scheduling/kvcache_affinity.md)。
 
 ### Responses 的 PD 请求参数
 

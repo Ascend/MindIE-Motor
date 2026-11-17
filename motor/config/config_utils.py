@@ -375,7 +375,7 @@ def _redirect_prefill_kv_event_config(updated_config: dict[str, Any], user_confi
             logger.warning(
                 "prefill_kv_event_config is deprecated and will be removed in a future version. "
                 "Please migrate to top-level kv_conductor_config (or scheduler_config.kv_conductor_config). "
-                "See docs/zh/user_guide/features/kvcache_affinity.md for details."
+                "See docs/zh/user_guide/features/inference_scheduling/kvcache_affinity.md for details."
             )
             for key in (
                 "conductor_service",

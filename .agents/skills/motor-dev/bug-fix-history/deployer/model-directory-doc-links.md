@@ -7,3 +7,9 @@
 - **测试拦截 (Test interception)**：`tests/docs/test_model_config_links.py` 遍历真实文档，验证 master/v3.2.0 链接和错误路径拦截，覆盖 PR 预览、代码块与普通文档链接；另通过实际 MkDocs 构建检查输出链接，并比较模型 JSON 内容及迁移差异。
 - **场景 (Scenario)**：文档引用 `docs/zh` 外的模型配置，目录重排后需要兼容仓库浏览、PR 门禁及分版本站点。
 - **关键词 (Keywords)**：model_configs, link-validity-check, MkDocs, CRLF, 目录迁移
+
+## 2026-11-17 特性文档迁移后的反向链接和站点链接
+
+- 模型配置 README 在上游新增后仍使用旧的 KV Cache Store 路径。同步上游时，用仓库相对路径指向迁移后的 `memcache.md`。
+- 特性支持表使用 HTML 链接。MkDocs 钩子按目标文档重写相对链接，并保留 HTML 属性、查询参数和页内锚点。
+- `tests/docs/test_feature_support_links.py` 覆盖链接格式、缺失目标和非特性页。用 MkDocs 实际构建验证特性支持表。

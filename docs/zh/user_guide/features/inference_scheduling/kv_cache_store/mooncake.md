@@ -116,7 +116,7 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
     | eviction_ratio | 无 | 是 | 单次驱逐比例，建议值为：0.1；`deploy.py` 强制校验，缺失报错。 |
 
     >[!NOTE] 说明
-    >可选配置 `target_job_id` 复用其他推理服务的 kv_store（值为目标服务的 `job_id`），详情请参见[多套服务共享kv_store](../README.md#table_Connector)。
+    >可选配置 `target_job_id` 复用其他推理服务的 kv_store（值为目标服务的 `job_id`），详情请参见[多套服务共享kv_store](README.md#table_Connector)。
 
 2. 参考[环境准备](#环境准备)章节在 `env.json` 中配置通用环境变量，确保 Prefill 和 Decode 配置一致。
 
@@ -134,7 +134,7 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
 
 #### 场景二：standalone 模式配置
 
-下方示例 `connectors[0]` 为标准 attention 配置，混合 attention 须换为 `MooncakeHybridConnector`，详情请参见 [P/D传输Connector选型](../README.md#table_Connector)。
+下方示例 `connectors[0]` 为标准 attention 配置，混合 attention 须换为 `MooncakeHybridConnector`，详情请参见 [P/D传输Connector选型](README.md#table_Connector)。
 
 1. 在 user_config.json 配置文件中配置 kv_cache_store_config 字段。
 
@@ -491,7 +491,7 @@ ip -br link | grep ipourma
 
 - 支持 `host:port`、`etcd://h1:2379;h2:2379`（HA）、`redis://h:6379`（HA）；该值会原样写入引擎侧 `kv_cache_store_config.json` 与 store 侧 `mooncake_store_config.json`，不再拼接端口。
 - 与 `target_job_id` 同时配置时，本字段优先；配置后本套服务不再创建 kv-store Pod，`metadata_server` 仍按用户配置下发。
-- HA 连接串没有单一 host，Coordinator metrics 与 kv-events 池注册需显式配置（`prometheus_metrics_config.kv_store_metrics_endpoint`、`kv_conductor_config.pool_endpoint`），详见 [KV 池化 README — 连接外部 / HA Mooncake master](../README.md#连接外部--ha-mooncake-master可选)。
+- HA 连接串没有单一 host，Coordinator metrics 与 kv-events 池注册需显式配置（`prometheus_metrics_config.kv_store_metrics_endpoint`、`kv_conductor_config.pool_endpoint`），详见 [KV 池化 README — 连接外部 / HA Mooncake master](README.md#连接外部--ha-mooncake-master可选)。
 - 需要 Motor 自己部署 HA master 的能力不在本特性范围内。
 
 ### 验证特性

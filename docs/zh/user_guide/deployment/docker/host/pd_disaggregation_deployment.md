@@ -160,7 +160,7 @@
 
 不开启池化可跳过本节。
 
-开启后，还需要单独部署一个 kv_store 容器。执行[启动服务](#启动服务)中的 `--show-commands` 后，回显会在服务器 1 增加容器名为 `motor-kvs` 的 kv_store 命令，管理面和 Prefill、Decode 命令增加 `--kv-store-ip`。user_config.json 的池化配置见 [KV池化能力](../../../features/kv_cache_store/README.md)。
+开启后，还需要单独部署一个 kv_store 容器。执行[启动服务](#启动服务)中的 `--show-commands` 后，回显会在服务器 1 增加容器名为 `motor-kvs` 的 kv_store 命令，管理面和 Prefill、Decode 命令增加 `--kv-store-ip`。user_config.json 的池化配置见 [KV池化能力](../../../features/inference_scheduling/kv_cache_store/README.md)。
 
 ## 推理验证
 

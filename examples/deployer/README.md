@@ -8,7 +8,7 @@
 
 👉 **[PD Disaggregation 完整部署指南](../../docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation)**
 
-Ascend 950PR&950DT系列产品的 RoCE 现场改法见 **[950系列服务器跨超节点场景memcache池化后端服务部署指导](../../docs/zh/user_guide/features/kv_cache_store/backend/memcache_950.md)**。按文件清单改部署副本，不直接合入主干。
+Ascend 950PR&950DT系列产品的 RoCE 现场改法见 **[950系列服务器跨超节点场景memcache池化后端服务部署指导](../../docs/zh/user_guide/features/inference_scheduling/kv_cache_store/memcache_950.md)**。按文件清单改部署副本，不直接合入主干。
 
 建议在正式部署前先阅读上述文档，按文档完成环境准备与配置后再使用本目录中的工具进行部署。
 
@@ -253,7 +253,7 @@ vLLM Render 支持配置 `launch_args`，如启用多个 render worker thread �
 `vocab_size` 与 `token_white_list` 都没有内置默认值：`vocab_size` 未配置时由 Coordinator 从被服务权重目录的
 `config.json` 自动读取（多模态取 `text_config.vocab_size`，可用 `model_path` 指定目录），显式配置优先；
 `token_white_list` 必须按离线权重混淆参数显式配置（Qwen3-32B /
-Qwen3-VL 验证权重使用的 37 个白名单 token 见 [数据混淆推理（PMCC）](../../docs/zh/user_guide/features/data_obfuscation.md)，也可从混淆权重目录的
+Qwen3-VL 验证权重使用的 37 个白名单 token 见 [数据混淆推理（PMCC）](../../docs/zh/user_guide/features/maintenance_testing_security/data_obfuscation.md)，也可从混淆权重目录的
 `obf_config.json` 中抄录）；`seed_content` 默认留空，开启时必须通过受控配置显式注入。
 Seed 可用于还原词表置换，必须与混淆权重同权限保管，禁止提交到代码仓库或写入日志。
 该功能要求 `render_config.enable=true` 且 `render_config.enable_token_only_decode=true`。开启后支持流式和非流式 vLLM Render token-only 链路；Render、混淆或 token-only endpoint 失败时请求直接失败，不回退原生 OpenAI 路径。

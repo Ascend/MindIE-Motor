@@ -73,7 +73,7 @@ cp -n .env.example .env   # launch.sh 在无 .env 时也会自动从 .env.exampl
   - `motor_engine_prefill_config.engine_config.otlp-traces-endpoint = http://<obs-host>:4318/v1/traces`
   - `motor_engine_decode_config.engine_config.otlp-traces-endpoint = http://<obs-host>:4318/v1/traces`
 
-> `4318` 为栈内 OTel Collector 的 OTLP HTTP 端口。完整片段见 `config/tracing.example.json`，详细部署见 `docs/zh/user_guide/features/tracing.md`。
+> `4318` 为栈内 OTel Collector 的 OTLP HTTP 端口。完整片段见 `config/tracing.example.json`，详细部署见 `docs/zh/user_guide/features/maintenance_testing_security/tracing.md`。
 
 #### 1.4.2 Profiling 接入（让「引擎性能剖析」看板有数据）
 

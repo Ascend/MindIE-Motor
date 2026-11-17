@@ -34,7 +34,7 @@ The cleanup script deletes Deployments and Services in the namespace configured 
 
 ## Autoscaling (HPA)
 
-Set the optional `scalingPolicy` value to render an HPA `scalingPolicy` field into the InferServiceSet engine roles (prefill/decode/union). It is injected into the deployer `user_config` as the `scaling_policy` section; each role entry accepts `min_replicas`, `max_replicas`, `metric` (defaults to `motor_prefill_utilization` / `motor_decode_utilization` by role), and `target` (default `0.8`). When left empty, no `scalingPolicy` is rendered and the deploy artifacts stay unchanged. See `values.yaml` for an example and `docs/zh/user_guide/features/auto_scaling.md` for the full HPA setup (External Metrics Adaptor, recommended metrics).
+Set the optional `scalingPolicy` value to render an HPA `scalingPolicy` field into the InferServiceSet engine roles (prefill/decode/union). It is injected into the deployer `user_config` as the `scaling_policy` section; each role entry accepts `min_replicas`, `max_replicas`, `metric` (defaults to `motor_prefill_utilization` / `motor_decode_utilization` by role), and `target` (default `0.8`). When left empty, no `scalingPolicy` is rendered and the deploy artifacts stay unchanged. See `values.yaml` for an example and `docs/zh/user_guide/features/scaling_deployment/auto_scaling.md` for the full HPA setup (External Metrics Adaptor, recommended metrics).
 
 ## Update P/D scaling policies
 

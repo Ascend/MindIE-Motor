@@ -58,7 +58,7 @@ flowchart LR
 
 ### 环境准备
 
-1. 已使用 MindIE Motor 完成基础推理服务部署（PD 分离），服务运行正常。参考 [PD 分离部署](pd_disaggregation.md)。
+1. 已使用 MindIE Motor 完成基础推理服务部署（PD 分离），服务运行正常。参考 [PD 分离部署](../inference_scheduling/pd_disaggregation.md)。
 2. 镜像/环境内的 vLLM 提供 Render token-only 接口（Coordinator 通过 `render_config.endpoint` 访问），
    且 `render_config.enable=true`。
 3. 使用 MindIE Motor 官方镜像部署时，运行环境已内置 `ai-asset-obfuscate`（版本与仓库 `requirements.txt` 一致），须与离线生成混淆权重的 SDK **版本一致**。

@@ -57,7 +57,7 @@ Docker / Slurm 环境分别使用 `docker_deploy.py` / `slurm_deploy.py`。参�
 `motor_coordinator_config.tracer_config.endpoint` 与两个引擎的
 `engine_config.otlp-traces-endpoint` 指向 `http://<obs-host>:4318/v1/traces`。
 完整片段见 [`stack/config/tracing.example.json`](stack/config/tracing.example.json)，
-部署说明见 `docs/zh/user_guide/features/tracing.md`。
+部署说明见 `docs/zh/user_guide/features/maintenance_testing_security/tracing.md`。
 
 **Profiling**：Engine 侧执行 `pip install ms_service_metric`，启动前设置
 `PROMETHEUS_MULTIPROC_DIR=/dev/shm/vllm_metrics`，Engine ready 后执行 `ms-service-metric on`。

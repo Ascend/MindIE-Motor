@@ -169,7 +169,7 @@ PD混部场景不需要配置Coordinator调度模式。Coordinator会根据运�
 
 **配置示例（KV Cache亲和调度，可选）**：
 
-启用KV Cache亲和调度时，在 model_configs/vllm/pd_hybrid/user_config.json配置文件中按以下示例修改motor_coordinator_config、motor_engine_union_config字段，并增加 kv_conductor_config字段即可。详情请参考[KV Cache亲和性调度](../../features/kvcache_affinity.md)。
+启用KV Cache亲和调度时，在 model_configs/vllm/pd_hybrid/user_config.json配置文件中按以下示例修改motor_coordinator_config、motor_engine_union_config字段，并增加 kv_conductor_config字段即可。详情请参考[KV Cache亲和性调度](../../features/inference_scheduling/kvcache_affinity.md)。
 
 ```json
 "motor_coordinator_config": {
@@ -233,7 +233,7 @@ motor_engine_union_config字段用于配置PD混部原生引擎。其结构与PD
 | engine_config.enable_expert_parallel | bool | 是否启用EP。 |
 | engine_config.data_parallel_rpc_port | int | DP侧RPC端口。 |
 | engine_config.max_model_len | int | 最大模型上下文长度。 |
-| engine_config.kv-events-config | object | 启用KV Cache亲和时配置KV事件发布（请参考[KV Cache 亲和部署](../../features/kvcache_affinity.md)）。 |
+| engine_config.kv-events-config | object | 启用KV Cache亲和时配置KV事件发布（请参考[KV Cache 亲和部署](../../features/inference_scheduling/kvcache_affinity.md)）。 |
 | engine_config.enable-prefix-caching | bool | 启用KV Cache亲和时建议开启前缀缓存。 |
 | 其它键 | - | 引擎原生参数，按所选引擎文档直接填写。 |
 
@@ -412,7 +412,7 @@ python3 deploy.py --config_dir ../../model_configs/vllm/pd_hybrid --update_insta
 >- 只能修改user_config.json配置文件中motor_deploy_config字段下hybrid_instances_num参数，不允许同时修改其他参数。
 >- CRD默认方式下，脚本更新infer_service.yaml中union角色的replicas后执行apply，由 CRD controller完成扩缩容。
 
-手动扩缩容更多详细说明请参考[手动扩缩容](../../features/manual_scaling.md)。
+手动扩缩容更多详细说明请参考[手动扩缩容](../../features/scaling_deployment/manual_scaling.md)。
 
 ## 卸载
 

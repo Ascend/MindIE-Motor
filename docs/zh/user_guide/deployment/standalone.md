@@ -248,7 +248,7 @@ curl http://127.0.0.1:1025/v1/completions \
 
 ## 附录 B：KV Cache 亲和（可选）
 
-仅 `scheduler_type=kv_cache_affinity` 时需要。完整字段见 [KV Cache 亲和](../features/kvcache_affinity.md)。
+仅 `scheduler_type=kv_cache_affinity` 时需要。完整字段见 [KV Cache 亲和](../features/inference_scheduling/kvcache_affinity.md)。
 
 ```json
 {

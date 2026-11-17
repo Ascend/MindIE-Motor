@@ -21,7 +21,7 @@ MindIE Motor 在 Coordinator 中记录请求处理与路由 Span，并通过 W3C
 
 ### 环境准备
 
-- 以[MindIE Motor快速开始](../quick_start.md)中的env.json与user_config.json示例为配置基线。
+- 以[MindIE Motor快速开始](../../quick_start.md)中的env.json与user_config.json示例为配置基线。
 - 准备 Jaeger 可执行文件，或采用 Docker 容器部署（参考 [Jaeger 官网](https://www.jaegertracing.io/download/)及所用版本的文档）。也可使用其他兼容 OTLP 的 Trace 后端。按下文的接收端启动方法先启动接收端，再部署推理服务。
 - 确保部署环境可访问Jaeger的OTLP接收端口（4318/4317）及Jaeger页面端口（16686）。
 
@@ -31,7 +31,7 @@ MindIE Motor开启Tracing能力需修改env.json配置文件和user_config.json�
 
 **操作步骤**
 
-1. 配置env.json配置文件，以[MindIE Motor快速开始](../quick_start.md)中env.json为参考基线，在`motor_coordinator_env`、`motor_engine_prefill_env`、`motor_engine_decode_env`三个配置项下新增`OTEL_SERVICE_NAME`、`OTEL_EXPORTER_OTLP_TRACES_INSECURE`、`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`三个环境变量。
+1. 配置env.json配置文件，以[MindIE Motor快速开始](../../quick_start.md)中env.json为参考基线，在`motor_coordinator_env`、`motor_engine_prefill_env`、`motor_engine_decode_env`三个配置项下新增`OTEL_SERVICE_NAME`、`OTEL_EXPORTER_OTLP_TRACES_INSECURE`、`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`三个环境变量。
 
    示例如下：
 
@@ -72,7 +72,7 @@ MindIE Motor开启Tracing能力需修改env.json配置文件和user_config.json�
 
    `env.json` 中环境变量值使用字符串。示例为不加密的测试链路；生产环境使用 `https://` endpoint，并在接收端启用 TLS，按需要配置 `OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE` 和证书挂载。仅将 `OTEL_EXPORTER_OTLP_TRACES_INSECURE` 改为 `"false"`，不会把 `http://` 的 OTLP/HTTP 请求变成 HTTPS。协议与证书语义见 [OTel exporter 配置](https://opentelemetry.io/docs/specs/otel/protocol/exporter/)。
 
-2. 配置user_config.json配置文件，以[MindIE Motor快速开始](../quick_start.md)中user_config.json为参考基线，配置以下参数。
+2. 配置user_config.json配置文件，以[MindIE Motor快速开始](../../quick_start.md)中user_config.json为参考基线，配置以下参数。
 
    - 需要在`motor_coordinator_config`字段下新增`tracer_config`子字段，其中`tracer_config`下的`endpoint`为开启Tracing能力必填，其值根据env.json配置文件中的`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`环境变量值配置。
    - `motor_engine_prefill_config`、`motor_engine_decode_config`的`engine_config`下新增`otlp-traces-endpoint`配置，其值根据env.json配置文件中的`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`环境变量值配置。

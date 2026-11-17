@@ -623,7 +623,7 @@ prefill_cost = max(0, isl − overlap_credit × affinity_matched_tokens)
 
 P/U 亲和分配的记账量是 `max(0, isl − affinity_matched_tokens)`；策略的 `overlap_credit`、
 `prefill_load_scale` 和 `load_weight` 不直接写入账本。回退到负载均衡时使用需求负载计算。
-使用条件、配置与验收见[亲和调度用户指南](../user_guide/features/kvcache_affinity.md)。
+使用条件、配置与验收见[亲和调度用户指南](../user_guide/features/inference_scheduling/kvcache_affinity.md)。
 
 ## 相关文件索引
 
@@ -638,5 +638,5 @@ P/U 亲和分配的记账量是 `max(0, isl − affinity_matched_tokens)`；策�
 | `motor/kv_conductor/__main__.py` | `python -m motor.kv_conductor` 入口 |
 | `build.sh` | 条件编译，`KV_CONDUCTOR_PREBUILT` 支持预构建二进制 |
 | `setup.py` | 条件 `package_data`，按需打包二进制到 wheel |
-| `docs/zh/user_guide/features/kvcache_affinity.md` | 用户部署文档 |
+| `docs/zh/user_guide/features/inference_scheduling/kvcache_affinity.md` | 用户部署文档 |
 | `motor/kv_conductor/README.md` | 功能简介 |

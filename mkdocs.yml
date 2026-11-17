@@ -59,6 +59,7 @@ hooks:
   - docs/mkdocs/hooks/github_admonition.py
   - docs/mkdocs/hooks/img_width.py
   - docs/mkdocs/hooks/model_config_links.py
+  - docs/mkdocs/hooks/feature_support_links.py
 
 plugins:
   - search

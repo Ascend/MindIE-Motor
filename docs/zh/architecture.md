@@ -62,7 +62,7 @@ MindIE Motor核心组件定义如下：
 
 ### 周边组件
 
-- **[vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)**: 原生推理引擎，提供模型实例加速能力。支持范围见[支持的推理引擎](./user_guide/features/supported_inference_engines.md)。
-- **[SGLang](https://github.com/sgl-project/sglang)**: 原生推理引擎，提供模型实例加速能力。支持范围见[支持的推理引擎](./user_guide/features/supported_inference_engines.md)。
+- **[vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)**: 原生推理引擎，提供模型实例加速能力。支持范围见[支持的推理引擎](./user_guide/supported_inference_engines.md)。
+- **[SGLang](https://github.com/sgl-project/sglang)**: 原生推理引擎，提供模型实例加速能力。支持范围见[支持的推理引擎](./user_guide/supported_inference_engines.md)。
 - **[MindCluster](https://gitcode.com/Ascend/mind-cluster)**: 昇腾集群使能组件，提供Kubernetes底层支持能力，PD分离 CRD定义和配套Operator
 - **[CCAE](https://www.hiascend.com/software/ccae)**(可选)：华为算存网一体化运维可视化平台。

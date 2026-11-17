@@ -19,7 +19,7 @@
 
 ### 环境准备
 
-- 已参见[PD混部服务部署](../deployment/k8s/pd_aggregation_deployment.md)、[PD分离服务部署](../deployment/README.md#k8s-pd-disaggregation)或[SGLang PD分离服务部署](../deployment/README.md#k8s-pd-disaggregation-sglang)完成环境部署。
+- 已参见[PD混部服务部署](../../deployment/k8s/pd_aggregation_deployment.md)、[PD分离服务部署](../../deployment/README.md#k8s-pd-disaggregation)或[SGLang PD分离服务部署](../../deployment/README.md#k8s-pd-disaggregation-sglang)完成环境部署。
 - 已成功完成至少一次全量部署（集群内会存在ConfigMap `motor-config`，其中含当前已部署的user_config，作为基线）。
 - 具备K8s集群管理员的kubectl权限。
 
@@ -58,7 +58,7 @@
    - 集群中会创建/更新ConfigMap `motor-config`（内容来自当前输入的user_config.json），作为后续扩缩容与刷新的基线；
    - 部署成功时日志出现`all deploy end.`和`Deploy complete.`。
 
-2. 根据实际情况修改`user_config.json`中的实例数，需要修改的参数为`p_instances_num`和`d_instances_num`。更多参数解释请参见[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_deploy_config)。
+2. 根据实际情况修改`user_config.json`中的实例数，需要修改的参数为`p_instances_num`和`d_instances_num`。更多参数解释请参见[user_config.json配置文件全量参数说明](../../configuration/config_reference.md#motor_deploy_config)。
 
    **表 1** PD分离实例数参数说明
 

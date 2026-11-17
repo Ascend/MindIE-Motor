@@ -21,7 +21,7 @@ Motor 负责故障收集、缩容门禁（FtGate）、向 NodeManager 下发 FT 
 | 推理引擎 | 仅 **vLLM** 在开启引擎侧 `enable_fault_tolerance` 时具备 DP 域缩容执行能力；SGLang 不支持。**Prefill 角色不支持**本特性。引擎侧 `user_config` / `env.json` 及版本组合等**详细约束见下表「引擎使用约束」**。 |
 | Motor 开关 | `motor_controller_config.fault_tolerance_config.enable_fault_tolerance` 与 `enable_dp_scale_down` 须同时为 true；关闭总 FT 开关时 DP 缩容不执行。 |
 | 部署方式 | 推荐 K8s + Infer Operator / InferServiceSet。启用 DP 缩容且 Decode/Union 开启引擎 FT 时，Deployer 为推理 Pod 生成 `fault-scheduling: external-force-pod-failed` 与 `pod-rescheduling: on`，详见[实例重调度](./instance_rescheduling.md)。 |
-| 特性互斥 | 与[容器快照](../container_snapshot.md)不可叠加；引擎 `fault_tolerance_config.auto_recovery` 须为 false（与 DP 缩容互斥，FtGate 校验）。 |
+| 特性互斥 | 与[容器快照](../scaling_deployment/container_snapshot.md)不可叠加；引擎 `fault_tolerance_config.auto_recovery` 须为 false（与 DP 缩容互斥，FtGate 校验）。 |
 | 业务连续性 | 缩容执行期间实例会短暂摘流；成功后以较小 DP 规模继续服务，需评估可接受的最小 DP 数与专家冗余。 |
 
 #### 引擎使用约束
@@ -48,17 +48,17 @@ Motor 负责故障收集、缩容门禁（FtGate）、向 NodeManager 下发 FT 
 | 粒度 | 能力 | 与 DP 域缩容叠加 |
 | ---- | ---- | ---------------- |
 | 服务级 | RAS-Monitor | 支持 |
-| 实例级 | [虚推健康探测](../sim_inference.md) | 支持 |
+| 实例级 | [虚推健康探测](sim_inference.md) | 支持 |
 | 实例级 | 引擎重拉（Engine Relaunch） | 支持 |
 | 实例级 | [实例重调度](./instance_rescheduling.md) | 支持 |
 | 实例级 | PD 分离降级混部 | 支持 |
 | 实例级 | [ScaleP2D 故障恢复](./scale_p2d.md) | 支持 |
 | 实例级 | [主备倒换](./standby.md) | 支持 |
-| 实例级 | [D2D 权重加载](../startup_acceleration.md) | 支持 |
-| 实例级 | [容器快照](../container_snapshot.md) | **不支持** |
-| 请求级 | [请求重调度](./rescheduler.md) | 支持 |
+| 实例级 | [D2D 权重加载](../scaling_deployment/startup_acceleration.md) | 支持 |
+| 实例级 | [容器快照](../scaling_deployment/container_snapshot.md) | **不支持** |
+| 请求级 | [请求重调度](./request_rescheduler.md) | 支持 |
 | 请求级 | 故障实例熔断 | 支持 |
-| 高阶 RAS | [精度检测](../precision_detection.md) | 支持 |
+| 高阶 RAS | [精度检测](../maintenance_testing_security/precision_detection.md) | 支持 |
 
 ## 特性使用
 
@@ -181,7 +181,7 @@ kubectl get pod -n {namespace} \
     响应中的 `phase` 会经历 `DECIDING`、`SCALING_DOWN`、`POST_SCALE_CLEANUP`、`SCALED_DOWN_RUNNING` 等状态；`enable_dp_scale_down` 为 false 时返回 `DISABLED`。
 
 4. 观察 Controller / NodeManager 日志中 `DpScaleDownStrategy` 与 `scale-down` 相关记录，确认 `removed_dp_ranks` 与幸存 rank 符合预期。
-5. 缩容完成后向 Coordinator 发送推理请求，确认实例在较小 DP 规模下仍可服务；若启用[虚推健康探测](../sim_inference.md)，NodeManager 会在 DP master 变更后迁移虚推 monitor。
+5. 缩容完成后向 Coordinator 发送推理请求，确认实例在较小 DP 规模下仍可服务；若启用[虚推健康探测](sim_inference.md)，NodeManager 会在 DP master 变更后迁移虚推 monitor。
 
 ## 常见问题
 
@@ -210,4 +210,4 @@ kubectl get pod -n {namespace} \
 
 ### 与容器快照同时开启
 
-容器快照与 DP 域扩缩容互斥。若业务需要快照加速重调度，请勿在同一服务上开启 `enable_dp_scale_down`；参见[容器快照](../container_snapshot.md)约束表。
+容器快照与 DP 域扩缩容互斥。若业务需要快照加速重调度，请勿在同一服务上开启 `enable_dp_scale_down`；参见[容器快照](../scaling_deployment/container_snapshot.md)约束表。

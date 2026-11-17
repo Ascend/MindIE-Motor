@@ -32,35 +32,39 @@ nav:
       - 配置说明:
           - 全量配置参数说明: user_guide/configuration/config_reference.md
           - 热更新配置项说明: user_guide/configuration/update_config_whitelist.md
+      - 推理引擎对接说明: user_guide/supported_inference_engines.md
       - 特性指南:
           - 特性支持列表: user_guide/features/supported_features.md
-          - 推理引擎对接说明: user_guide/features/supported_inference_engines.md
-          - EPD 分离: user_guide/features/EPD_disaggregation.md
-          - PD 分离: user_guide/features/pd_disaggregation.md
-          - 动态分桶调度: user_guide/features/dynamic_bucket.md
-          - KV Cache 亲和: user_guide/features/kvcache_affinity.md
-          - Agent Hint 会话亲和与调度: user_guide/features/agent_hint.md
-          - KV Cache Store:
-              - 概述: user_guide/features/kv_cache_store/README.md
-              - MemCache 后端: user_guide/features/kv_cache_store/backend/memcache.md
-              - Mooncake 后端: user_guide/features/kv_cache_store/backend/mooncake.md
-              - UCM 部署: user_guide/features/kv_cache_store/backend/ucm.md
-              - Yuanrong 后端: user_guide/features/kv_cache_store/backend/yuanrong.md
-          - max_tokens自适应: user_guide/features/max_tokens_adaptation.md
-          - 自动弹性扩缩容: user_guide/features/auto_scaling.md
-          - 手动扩缩容: user_guide/features/manual_scaling.md
-          - 主备倒换: user_guide/features/fault_tolerance/standby.md
-          - 链路追踪: user_guide/features/tracing.md
-          - ScaleP2D 故障恢复: user_guide/features/fault_tolerance/scale_p2d.md
-          - DP 域缩容: user_guide/features/fault_tolerance/dp_scale_down.md
-          - 容器快照: user_guide/features/container_snapshot.md
-          - D2D 权重加载加速: user_guide/features/startup_acceleration.md
-          - 虚推健康探测: user_guide/features/sim_inference.md
-          - 实例重调度: user_guide/features/fault_tolerance/instance_rescheduling.md
-          - 请求重调度: user_guide/features/fault_tolerance/rescheduler.md
-          - 精度检测: user_guide/features/precision_detection.md
-          - 服务限流: user_guide/features/rate_limiting.md
-          - 数据混淆推理（PMCC）: user_guide/features/data_obfuscation.md
+          - 推理与调度:
+              - PD 分离: user_guide/features/inference_scheduling/pd_disaggregation.md
+              - EPD 分离: user_guide/features/inference_scheduling/EPD_disaggregation.md
+              - 动态分桶调度: user_guide/features/inference_scheduling/dynamic_bucket.md
+              - KV Cache 亲和性调度: user_guide/features/inference_scheduling/kvcache_affinity.md
+              - Agent Hint 会话亲和与调度: user_guide/features/inference_scheduling/agent_hint.md
+              - KV 池化能力部署:
+                  - 概述: user_guide/features/inference_scheduling/kv_cache_store/README.md
+                  - MemCache 后端: user_guide/features/inference_scheduling/kv_cache_store/memcache.md
+                  - Mooncake 后端: user_guide/features/inference_scheduling/kv_cache_store/mooncake.md
+                  - UCM 部署: user_guide/features/inference_scheduling/kv_cache_store/ucm.md
+                  - Yuanrong 后端: user_guide/features/inference_scheduling/kv_cache_store/yuanrong.md
+              - max_tokens 自适应: user_guide/features/inference_scheduling/max_tokens_adaptation.md
+          - 扩缩容与部署:
+              - 自动弹性扩缩容: user_guide/features/scaling_deployment/auto_scaling.md
+              - 手动扩缩容: user_guide/features/scaling_deployment/manual_scaling.md
+              - 容器快照: user_guide/features/scaling_deployment/container_snapshot.md
+              - D2D 权重加载: user_guide/features/scaling_deployment/startup_acceleration.md
+          - 故障与恢复:
+              - 请求重调度: user_guide/features/fault_tolerance/request_rescheduler.md
+              - 实例重调度与故障实例重启: user_guide/features/fault_tolerance/instance_rescheduling.md
+              - ScaleP2D 故障恢复: user_guide/features/fault_tolerance/scale_p2d.md
+              - DP 域缩容: user_guide/features/fault_tolerance/dp_scale_down.md
+              - 主备倒换特性: user_guide/features/fault_tolerance/standby.md
+              - 虚推健康探测: user_guide/features/fault_tolerance/sim_inference.md
+              - 服务限流: user_guide/features/fault_tolerance/rate_limiting.md
+          - 维测与安全:
+              - 精度检测特性: user_guide/features/maintenance_testing_security/precision_detection.md
+              - Tracing 能力部署: user_guide/features/maintenance_testing_security/tracing.md
+              - 数据混淆推理: user_guide/features/maintenance_testing_security/data_obfuscation.md
       - 服务维护:
           - 镜像制作: user_guide/maintenance/build_motor_image_from_vllm_ascend.md
           - 基于麒麟系统的镜像制作: user_guide/maintenance/build_motor_image_on_kylin.md

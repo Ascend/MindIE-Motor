@@ -4,7 +4,7 @@
 
 实例重调度用于在推理实例的Pod或所在节点发生不可恢复故障时，自动回收故障实例并在健康节点上创建新实例，减少人工介入和服务容量损失。该能力由MindIE Motor与Kubernetes、MindCluster协同完成：Motor负责发现实例异常、从调度池隔离故障实例并使异常Pod退出，MindCluster负责回收原实例、重新分配NPU资源并创建Pod，Motor再完成新实例的注册、组装和引擎拉起。
 
-实例重调度与[请求重调度](./rescheduler.md)作用于不同层级。实例重调度恢复推理实例容量，请求重调度将受影响的推理请求转发到其他健康实例。两项能力可以同时使用，以缩短故障期间的请求中断时间。
+实例重调度与[请求重调度](./request_rescheduler.md)作用于不同层级。实例重调度恢复推理实例容量，请求重调度将受影响的推理请求转发到其他健康实例。两项能力可以同时使用，以缩短故障期间的请求中断时间。
 
 > [!NOTE] 说明
 > Motor当前部署模板默认为推理Pod配置`fault-scheduling: grace`和`fault-retry-times: "10000"`。使用Infer Operator管理工作负载时，`fault-scheduling`还支持由Infer Operator接管Pod删除的`external-*`模式。实例重调度不需要在`user_config.json`中单独开启。
@@ -41,7 +41,7 @@
 - 已按照[环境准备](../../environment_preparation.md)完成Kubernetes、Volcano和MindCluster组件安装，Infer Operator运行正常。
 - 已使用Motor提供的K8s部署方式创建推理服务，Controller、Coordinator和推理实例均已就绪。
 - 集群中有满足故障实例资源和调度约束的空闲健康节点；多Pod实例还需要一次性满足完整实例的资源需求。
-- 如果需要在恢复期间继续处理请求，至少保留一个同角色的健康实例，并根据业务需要开启[请求重调度](./rescheduler.md)。
+- 如果需要在恢复期间继续处理请求，至少保留一个同角色的健康实例，并根据业务需要开启[请求重调度](./request_rescheduler.md)。
 
 ### 使用样例
 

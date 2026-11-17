@@ -61,7 +61,7 @@ MindIE Motor部署EPD分离特性支持`infer_service_set`和`multi_deployment`�
 
 ### 环境准备
 
-- 已参考[MindIE Motor快速开始](../quick_start.md)完成基础部署。
+- 已参考[MindIE Motor快速开始](../../quick_start.md)完成基础部署。
 - 部署EPD分离使用的模型权重需支持多模态理解能力，本文以Qwen3-VL-30B-A3B-Instruct模型为例进行说明。
 - 当前vLLM Ascend的EPD分离特性支持两种connector，本文以`ECExampleConnector`为例进行说明。
 
@@ -71,7 +71,7 @@ MindIE Motor部署EPD分离只需修改user_config.json配置文件后，通过d
 
 1. 修改user_config.json配置文件。
 
-   以[MindIE Motor快速开始](../quick_start.md)中实例user_config.json为参考基线，适配EPD分离部署的配置。
+   以[MindIE Motor快速开始](../../quick_start.md)中实例user_config.json为参考基线，适配EPD分离部署的配置。
 
    ```json
    {
@@ -237,7 +237,7 @@ MindIE Motor部署EPD分离只需修改user_config.json配置文件后，通过d
 
    除Controller、Coordinator外，`multi_deployment`模式下可以看到E实例Deployment生成的Pod（engine_type为vllm时命名为`vllm-e0`、`vllm-e1`，即`{引擎基础名}-e{实例序号}`），以及P/D实例Pod（`vllm-p0`、`vllm-d0`），均处于Running状态；`infer_service_set`模式下InferServiceSet的encode角色副本数与`e_instances_num`一致。
 
-2. 发送多模态推理请求，验证请求经过E实例编码后再由P/D实例完成预填充与解码（将`{coordinator_ip}:{port}`替换为Coordinator服务地址与端口，参考[MindIE Motor快速开始](../quick_start.md)）。
+2. 发送多模态推理请求，验证请求经过E实例编码后再由P/D实例完成预填充与解码（将`{coordinator_ip}:{port}`替换为Coordinator服务地址与端口，参考[MindIE Motor快速开始](../../quick_start.md)）。
 
    ```bash
    curl -X POST http://{coordinator_ip}:{port}/v1/chat/completions \

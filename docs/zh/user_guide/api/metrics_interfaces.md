@@ -317,7 +317,7 @@ vllm:num_requests_running{pod_ip="192.168.1.10",role="prefill",model_name="Qwen2
   `replicas_required` 始终输出（容量未标定或无需求时取值为 `0`），Decode 侧取
   吞吐约束 `N_d_tp` 与 KV 约束 `N_d_kv` 的较大者；`kv_demand_tokens` 仅在 `K`
   已知时输出。`utilization` 取值 >1 表示供给不足，适合直接作为 HPA 的 target
-  指标（target 即 ρ，推荐配置见[自动弹性扩缩容](../features/auto_scaling.md)）。
+  指标（target 即 ρ，推荐配置见[自动弹性扩缩容](../features/scaling_deployment/auto_scaling.md)）。
 - **保守性（安全方向）**：`C_p` 与 `C_d` 均为真实容量的下界估计——并发 / chunked
   场景下各请求的 prefill_time 存在重叠使 `C_p` 系统性偏低，需求不足时则观测不到
   `C_d` 的真实峰值——因此 `utilization` 偏高、扩容倾向偏多，且自矫正：多扩后承接

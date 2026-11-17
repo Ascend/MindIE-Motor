@@ -128,3 +128,72 @@
     overflow-x: auto;
     max-width: 100%;
   }
+
+/* Feature support matrix */
+#feature-support .feature-support-table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+#feature-support .md-typeset__table {
+  display: block;
+}
+
+#feature-support table {
+  display: table;
+  width: 100%;
+  min-width: 23em;
+  table-layout: fixed;
+  font-size: 0.875em;
+  line-height: 1.5;
+}
+
+#feature-support :is(th, td) {
+  padding: 0.5em 0.6em;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+
+#feature-support th {
+  background-color: rgba(100, 116, 139, 0.14);
+}
+
+#feature-support .feature-name {
+  width: 33%;
+}
+
+#feature-support .feature-status {
+  width: max(10%, 3.1em);
+}
+
+#feature-support th,
+#feature-support td:not(:first-child) {
+  text-align: center;
+}
+
+#feature-support th[rowspan]:first-child {
+  text-align: left;
+}
+
+#feature-support td:not(:first-child) {
+  white-space: nowrap;
+}
+
+@media screen and (max-width: 30em) {
+  #feature-support :is(th, td) {
+    padding-inline: 0.3em;
+  }
+
+  #feature-support th {
+    font-size: 0.875em;
+    overflow-wrap: normal;
+  }
+
+  #feature-support .feature-name {
+    width: 30%;
+  }
+
+  #feature-support .feature-status {
+    width: 11%;
+  }
+}

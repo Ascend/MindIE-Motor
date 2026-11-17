@@ -79,7 +79,7 @@ flowchart LR
 
 ### 环境准备
 
-- 已使用 MindIE Motor 完成基础推理服务部署，服务运行正常，参考 [服务部署](../deployment/README.md)。
+- 已使用 MindIE Motor 完成基础推理服务部署，服务运行正常，参考 [服务部署](../../deployment/README.md)。
 - 所有开关通过 Coordinator 的环境变量与 `user_config.json` 配置。K8s/Helm 场景将环境变量写入 `env.json` 的 `motor_coordinator_env`（ConfigMap `user-config` 内或 Helm `envConfig`）；Docker 场景写入 `env.json` 后由 deployer 注入。
 - 修改环境变量后需重启 Coordinator；`user_config.json` 中的新增配置段均有默认值，热更新行为见各小节说明。
 - 使用共享亲和表（`MOTOR_SESSION_AFFINITY_SHARED=1`）时，确认 Coordinator 容器内 `/dev/shm` 可写（默认可用）。
@@ -524,4 +524,4 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 2. 将 TTL 设在 [60, 3600] 区间；如需更大值，调整 `MOTOR_CACHE_CONTROL_TTL_MAX_S`。
 3. 需要真正的 KV 驻留/置换控制时，等待引擎侧块级 retain/offload/prefetch 能力（当前为后续能力）。
 
-> 详细设计见 [Agent Hint 设计文档](../../design/agent_hint.md)，测试与验证记录见 [Agent Hint 验证记录](../../design/agent_hint_verification.md)。
+> 详细设计见 [Agent Hint 设计文档](../../../design/agent_hint.md)，测试与验证记录见 [Agent Hint 验证记录](../../../design/agent_hint_verification.md)。

@@ -137,4 +137,4 @@ transaction. Never use a guessed `hccn_tool ... up` command.
 Do not interpret virtual-inference health success as proof that the physical
 link was restored. Relevant source semantics:
 `docs/zh/design/fault_tolerance/overview.md` and
-`docs/zh/user_guide/features/sim_inference.md`.
+`docs/zh/user_guide/features/fault_tolerance/sim_inference.md`.

@@ -49,15 +49,16 @@ def test_bad_model_links_fail_build_but_code_and_other_links_are_unchanged(monke
     config = DocsConfig(repo_url="https://gitcode.com/Ascend/MindIE-Motor")
     page = SimpleNamespace(
         file=SimpleNamespace(
-            abs_src_path=ROOT / "docs/zh/user_guide/features/kvcache_affinity.md", src_uri="kvcache_affinity.md"
+            abs_src_path=ROOT / "docs/zh/user_guide/features/inference_scheduling/kvcache_affinity.md",
+            src_uri="user_guide/features/inference_scheduling/kvcache_affinity.md",
         )
     )
-    invalid = "[config](../../../../../model_configs/vllm/user_config.json)"
+    invalid = "[config](../../../../../../model_configs/vllm/user_config.json)"
     with pytest.raises(ValueError, match="Invalid model configuration link"):
         on_page_markdown(invalid, page=page, config=config)
-    unchanged = f"```markdown\n{invalid}\n```\n`{invalid}`\n[docs](../quick_start.md)\n"
+    unchanged = f"```markdown\n{invalid}\n```\n`{invalid}`\n[docs](../../quick_start.md)\n"
     assert on_page_markdown(unchanged, page=page, config=config) == unchanged
-    valid = "[`config`](../../../../model_configs/vllm/user_config.json#example)"
+    valid = "[`config`](../../../../../model_configs/vllm/user_config.json#example)"
     assert "/blob/v3.2.0/model_configs/vllm/user_config.json#example" in on_page_markdown(
         valid, page=page, config=config
     )

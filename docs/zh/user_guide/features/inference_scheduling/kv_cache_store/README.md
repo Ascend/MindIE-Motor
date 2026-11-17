@@ -25,10 +25,10 @@ KV 池化通过 `MultiConnector` 组合传输 Connector 和 Store Connector。�
 
 MindIE Motor 使用 `MultiConnector` 组合 P/D 传输 Connector 与 Store Connector。当前支持以下池化功能：
 
-- **基于 Mooncake 的共享 KV Pool**：P/D 均加载 `AscendStoreConnector`，并配置 `backend: "mooncake"`，分别写入和读取共享 KV Cache。详细信息请参见 [Mooncake Backend](./backend/mooncake.md)。
-- **基于 MemCache 的共享 KV Pool**：P/D 均加载 `AscendStoreConnector`，并配置 `backend: "memcache"`，分别写入和读取共享 KV Cache。详细信息请参见 [MemCache Backend](./backend/memcache.md)。
-- **基于 Yuanrong 的共享 KV Pool**：P/D 均加载 `AscendStoreConnector`，并配置 `backend: "yuanrong"`；NodeManager 在每个 P/D Pod 内启动 Yuanrong Worker。详细信息请参见 [Yuanrong 后端](./backend/yuanrong.md)。
-- **UCM**：通过 `UCMConnector` 的 `store_pipeline` 组合 Cache、POSIX 等 UCM Store。当前分布式 P/D 方案在 Prefill 保存和加载跨请求前缀，Decode 不加载 UCM。详细信息请参见 [MindIE Motor 中部署 UCM](./backend/ucm.md)。
+- **基于 Mooncake 的共享 KV Pool**：P/D 均加载 `AscendStoreConnector`，并配置 `backend: "mooncake"`，分别写入和读取共享 KV Cache。详细信息请参见 [Mooncake Backend](./mooncake.md)。
+- **基于 MemCache 的共享 KV Pool**：P/D 均加载 `AscendStoreConnector`，并配置 `backend: "memcache"`，分别写入和读取共享 KV Cache。详细信息请参见 [MemCache Backend](./memcache.md)。
+- **基于 Yuanrong 的共享 KV Pool**：P/D 均加载 `AscendStoreConnector`，并配置 `backend: "yuanrong"`；NodeManager 在每个 P/D Pod 内启动 Yuanrong Worker。详细信息请参见 [Yuanrong 后端](./yuanrong.md)。
+- **UCM**：通过 `UCMConnector` 的 `store_pipeline` 组合 Cache、POSIX 等 UCM Store。当前分布式 P/D 方案在 Prefill 保存和加载跨请求前缀，Decode 不加载 UCM。详细信息请参见 [MindIE Motor 中部署 UCM](./ucm.md)。
 
 > [!NOTE] 说明
 >
@@ -50,9 +50,9 @@ MindIE Motor 使用 `MultiConnector` 组合 P/D 传输 Connector 与 Store Conne
 
 ### 环境准备
 
-- 已按照[PD 分离服务部署](../../deployment/README.md#k8s-pd-disaggregation) 完成P/D分离推理服务部署，并且服务运行正常。KV池化在该服务基础上开启，不会改变Controller和Coordinator的部署方式。
-- KV池化的通用约束请参见[vllm-ascend kv_pool](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_cache_pool_ascend_store.html)。启用UCM功能时，还需满足[UCM 部署文档](../../features/kv_cache_store/backend/ucm.md) 中的要求。
-- 开启前请先参考[MindIE Motor 快速开始](../../quick_start.md)，确保基础P/D分离服务可以正常部署。
+- 已按照[PD 分离服务部署](../../../deployment/README.md#k8s-pd-disaggregation) 完成P/D分离推理服务部署，并且服务运行正常。KV池化在该服务基础上开启，不会改变Controller和Coordinator的部署方式。
+- KV池化的通用约束请参见[vllm-ascend kv_pool](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_cache_pool_ascend_store.html)。启用UCM功能时，还需满足[UCM 部署文档](ucm.md) 中的要求。
+- 开启前请先参考[MindIE Motor 快速开始](../../../quick_start.md)，确保基础P/D分离服务可以正常部署。
 - 后续所有操作只在K8s集群的管理节点（master节点）执行。
 
 ### 使用场景
@@ -199,9 +199,9 @@ P/D传输Connector选型如下表所示：
     | `local_service_mode` | string | `inprocess`、`standalone` | 选填 | Atlas 800I A2推理服务器/Ascend 950PR系列产品：`inprocess`；Atlas 800I A3超节点服务器：`standalone` | LocalService 部署模式：`inprocess`（与 vLLM 同进程）或 `standalone`（独立进程） |
 
     > [!NOTE] 说明
-    > 所有 MemCache 内部配置项（DRAM 池大小、通信协议、MetaService 端口、SSD 缓存、UBSIO 参数等）均由用户在对应模式的 `mmc-local-inprocess.conf` 或 `mmc-local-standalone.conf` 中管理，无需在 `user_config.json` 中配置。请参见 [MemCache 后端文档](./backend/memcache.md)。
+    > 所有 MemCache 内部配置项（DRAM 池大小、通信协议、MetaService 端口、SSD 缓存、UBSIO 参数等）均由用户在对应模式的 `mmc-local-inprocess.conf` 或 `mmc-local-standalone.conf` 中管理，无需在 `user_config.json` 中配置。请参见 [MemCache 后端文档](./memcache.md)。
 
-    Yuanrong 使用外部 ETCD，并由 NodeManager 在每个 P/D Pod 内执行固定的 `dscli start` 启动 Worker。`worker_launcher.start_args` 和 `worker_launcher.worker_args` 分别配置 `-w` 前后的有序参数，完整结构和保留参数规则请参见 [Yuanrong 后端](./backend/yuanrong.md)。
+    Yuanrong 使用外部 ETCD，并由 NodeManager 在每个 P/D Pod 内执行固定的 `dscli start` 启动 Worker。`worker_launcher.start_args` 和 `worker_launcher.worker_args` 分别配置 `-w` 前后的有序参数，完整结构和保留参数规则请参见 [Yuanrong 后端](./yuanrong.md)。
 
 3. （可选）<a id="step3"></a>配置多套服务共享kv_store。
 
@@ -278,7 +278,7 @@ P/D传输Connector选型如下表所示：
 
 2. 当前 Motor UCM 样例仍配置了 `kv_cache_store_config.backend: "mooncake"`，用于当前 deployer 生成 Mooncake kv_store/master 资源；这是部署适配配置，不表示 UCM 变成了 Mooncake Backend。UCM 的实际 Store 由 `UCMConnector` 中的 `store_pipeline` 决定。
    > [!NOTE] 说明
-   > 完整配置、存储挂载、部署及验证步骤请参见 [MindIE Motor 中部署 UCM](./backend/ucm.md)。
+   > 完整配置、存储挂载、部署及验证步骤请参见 [MindIE Motor 中部署 UCM](./ucm.md)。
 3. 使用以下命令在 `examples/deployer` 目录下通过 `deploy.py` 脚本部署服务。
 
     ```bash

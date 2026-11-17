@@ -287,7 +287,7 @@ YuanRong CPU/Disk 按 `(节点 IP, model_name)` 注册，使用 `cpu_endpoint` /
 和 YuanRong 节点池；Mooncake/Memcache 中心 pool 不在当前周期补注册分支中。
 回放只在首次实例注册携带回放地址时启动，查询不会等待回放完成，不能以注册成功代替索引恢复验收。
 
-详见 [KV Cache 亲和性调度文档](../../docs/zh/user_guide/features/kvcache_affinity.md)。
+详见 [KV Cache 亲和性调度文档](../../docs/zh/user_guide/features/inference_scheduling/kvcache_affinity.md)。
 
 ## 详细设计
 

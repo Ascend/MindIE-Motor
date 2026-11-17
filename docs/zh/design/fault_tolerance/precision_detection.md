@@ -6,7 +6,7 @@
 
 | 项 | 说明 |
 |----|------|
-| 用户指南 | [精度检测功能](../../user_guide/features/precision_detection.md) |
+| 用户指南 | [精度检测功能](../../user_guide/features/maintenance_testing_security/precision_detection.md) |
 | Coordinator 数据采集 | `motor/coordinator/router/precision_sample/` |
 | Coordinator 检测编排 | `motor/coordinator/fault_tolerance/precision/` |
 | Coordinator 拨测告警 | `motor/coordinator/fault_tolerance/probe/`、`motor/coordinator/fault_tolerance/alarm/` |

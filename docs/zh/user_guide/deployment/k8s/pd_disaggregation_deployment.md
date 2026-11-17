@@ -235,7 +235,7 @@ Coordinator记录一段时间内接收到的请求数量，达到阈值后停止
 删除rate_limit_config参数配置块，或将enable_rate_limit参数设置为：false。
 
 >[!NOTE] 说明
->该特性详细文档请参考[服务限流](../../features/rate_limiting.md)。字段说明请参考 [user_config.json配置文件全量参数说明](../../configuration/config_reference.md#motor_coordinator_config)中的rate_limit_config字段。
+>该特性详细文档请参考[服务限流](../../features/fault_tolerance/rate_limiting.md)。字段说明请参考 [user_config.json配置文件全量参数说明](../../configuration/config_reference.md#motor_coordinator_config)中的rate_limit_config字段。
 
 ### 虚拟推理健康探测
 
@@ -267,7 +267,7 @@ NodeManager负责原生引擎的就绪探测、进程监管和虚推健康探测
 
 **日志级别限制**
 
-vLLM虚推仅允许在最终引擎环境ASCEND_GLOBAL_LOG_LEVEL=3（未配置时默认为ERROR）时开启。该特性详细文档请参考[虚拟推理健康探测](../../features/sim_inference.md)。
+vLLM虚推仅允许在最终引擎环境ASCEND_GLOBAL_LOG_LEVEL=3（未配置时默认为ERROR）时开启。该特性详细文档请参考[虚拟推理健康探测](../../features/fault_tolerance/sim_inference.md)。
 
 ### KV Cache亲和调度
 
@@ -310,7 +310,7 @@ MindIE Motor的KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake C
 删除上述配置项。
 
 >[!NOTE] 说明
->需要确保镜像中已安装KV Conductor组件，该特性详细文档请参考[KV Cache亲和性调度](../../features/kvcache_affinity.md)。
+>需要确保镜像中已安装KV Conductor组件，该特性详细文档请参考[KV Cache亲和性调度](../../features/inference_scheduling/kvcache_affinity.md)。
 
 ### PD异构（PR/DT）调度
 
@@ -368,7 +368,7 @@ Ascend 950PR&950DT系列产品分为PR、DT两类，两者的内存存在差异�
 
 **开启特性**
 
-该特性详细文档请参考[KV池化能力](../../features/kv_cache_store/README.md)。
+该特性详细文档请参考[KV池化能力](../../features/inference_scheduling/kv_cache_store/README.md)。
 
 **关闭特性**
 

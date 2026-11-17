@@ -408,7 +408,7 @@ scalingPolicy:
 
 ### 容量规划利用率（推荐）
 
-当前 Motor 还提供 `motor_prefill_utilization` 和 `motor_decode_utilization`，分别表示各角色的需求/供给比，计算式为 `demand_tps / (活跃实例数 × 单实例容量 capacity_tps)`，冒号原始名与无冒号别名同时输出。它们已按当前实例数归一化，HPA 应使用 `Value`，初始目标可设为 `0.8`。相关容量先验、标定状态与计算方式见 [监控接口](../api/metrics_interfaces.md)。未标定时该利用率不会输出（容量为 0 或没有活跃实例时同样不输出），所以不要把“指标缺失”当作零负载；反过来，**指标非零也不代表当前有负载**：需求侧是 EMA，空闲时不会衰减到 0（实测空闲时该值可长期保持同一非零值），且标定早期容量估计偏小时利用率会虚高，可能在没有负载时也触发一次扩容、随后容量被抬高再按稳定窗口缩回。可先用 `motor:capacity_calibrated{role="prefill"}` 与 `motor:capacity_calibrated{role="decode"}` 确认对应角色是否已标定（1 为已标定）；该指标只在默认 `full` 视图输出，按角色请求的 `type=role` 视图里没有它，且按 role 标签成对出现，角色从未出现过时本身也缺失。
+当前 Motor 还提供 `motor_prefill_utilization` 和 `motor_decode_utilization`，分别表示各角色的需求/供给比，计算式为 `demand_tps / (活跃实例数 × 单实例容量 capacity_tps)`，冒号原始名与无冒号别名同时输出。它们已按当前实例数归一化，HPA 应使用 `Value`，初始目标可设为 `0.8`。相关容量先验、标定状态与计算方式见 [监控接口](../../api/metrics_interfaces.md)。未标定时该利用率不会输出（容量为 0 或没有活跃实例时同样不输出），所以不要把“指标缺失”当作零负载；反过来，**指标非零也不代表当前有负载**：需求侧是 EMA，空闲时不会衰减到 0（实测空闲时该值可长期保持同一非零值），且标定早期容量估计偏小时利用率会虚高，可能在没有负载时也触发一次扩容、随后容量被抬高再按稳定窗口缩回。可先用 `motor:capacity_calibrated{role="prefill"}` 与 `motor:capacity_calibrated{role="decode"}` 确认对应角色是否已标定（1 为已标定）；该指标只在默认 `full` 视图输出，按角色请求的 `type=role` 视图里没有它，且按 role 标签成对出现，角色从未出现过时本身也缺失。
 
 除修改 YAML 模板外，也可在 `user_config.json` 顶层加入以下配置，由 deployer 生成策略；同一角色的该配置会覆盖模板中的 scalingPolicy，请选择一种方式维护：
 
@@ -440,7 +440,7 @@ scalingPolicy:
 
 **解决步骤**
 
-1. 确认服务运行于 `infer_service_set` 模式；不支持的模式改见[手动扩缩容](../features/manual_scaling.md)。
+1. 确认服务运行于 `infer_service_set` 模式；不支持的模式改见[手动扩缩容](manual_scaling.md)。
 2. 执行[步骤 4](#step-4)生成并应用配置，检查 `output_yamls/infer_service.yaml` 中各角色是否包含 `scalingPolicy`。
 3. 检查 InferServiceSet 实际资源、Infer Operator 事件与日志。
 
@@ -459,7 +459,7 @@ scalingPolicy:
 **解决步骤**
 
 1. 部署后按[步骤 2.3](#step-2-3)查询 External Metrics API，以实际返回值为准填写 `external.metric.name`。
-2. 契约指标集合见[监控接口](../api/metrics_interfaces.md)；使用 mindcluster-deploy Adaptor 示例时，非契约指标须填带冒号的原始名（如 `vllm:num_requests_waiting`）。
+2. 契约指标集合见[监控接口](../../api/metrics_interfaces.md)；使用 mindcluster-deploy Adaptor 示例时，非契约指标须填带冒号的原始名（如 `vllm:num_requests_waiting`）。
 3. 按角色扩缩容时，External Metrics Adaptor 走 `type=role` 视图；Prometheus 路径须在抓取或 PromQL 中按角色聚合，并在 HPA 侧用 selector 限定本服务。
 
 ### TARGETS 显示 unknown，或提示 FailedGetExternalMetric

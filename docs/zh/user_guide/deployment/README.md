@@ -184,7 +184,8 @@
     bash delete.sh <namespace>
     ```
 
-如需查阅常用特性的开启方式，请参见[PD分离服务部署常用特性使用指导](./k8s/pd_disaggregation_deployment.md#特性配置)。
+如需查阅常用特性的开启方式，请参见[PD分离服务部署常用特性使用指导](./k8s/pd_disaggregation_deployment.md#特性配置)；
+若要查看 Motor 已支持的全部特性，请点击[motor特性支持](../features/supported_features.md)。
 
 <a id="docker-pd-disaggregation"></a>
 
@@ -375,7 +376,8 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 运行日志：examples/motor_workspace/motor-ctrl/ctrl/log/docker-coordinator-controller-<时间戳>.log
 ```
 
-要开启特性（如 KV 池化、Render），或查看调优指导，请参见[基于Docker的多容器PD分离服务部署](./docker/host/pd_disaggregation_deployment.md)。
+如需查阅常用特性的开启方式，请参见[PD分离服务部署常用特性使用指导](./k8s/pd_disaggregation_deployment.md#特性配置)；
+若要查看 Motor 已支持的全部特性，请点击[motor特性支持](../features/supported_features.md)。
 
 <a id="k8s-pd-disaggregation-sglang"></a>
 

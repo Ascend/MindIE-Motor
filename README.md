@@ -101,36 +101,36 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
     <td valign="top">
       <table>
         <tr><th style="font-size:18px" align="center" colspan="2">⚡ 极致性能</th></tr>
-        <tr><td align="left" width="320">PD 分离</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/pd_disaggregation.md">链接</a></td></tr>
-        <tr><td align="left" width="320">EPD 分离（多模态）</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/EPD_disaggregation.md">链接</a></td></tr>
-        <tr><td align="left" width="320">KV Cache 亲和性调度</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/kvcache_affinity.md">链接</a></td></tr>
-        <tr><td align="left" width="320">Agent Hint 会话亲和与调度</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/agent_hint.md">链接</a></td></tr>
-        <tr><td align="left" width="320">动态分桶调度</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/dynamic_bucket.md">链接</a></td></tr>
-        <tr><td align="left" width="320">Mooncake KV Cache 池化后端</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/kv_cache_store/backend/mooncake.md">链接</a></td></tr>
-        <tr><td align="left" width="320">MemCache KV Cache 池化后端</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/kv_cache_store/backend/memcache.md">链接</a></td></tr>
-        <tr><td align="left" width="320">Yuanrong KV Cache 池化后端</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/kv_cache_store/backend/yuanrong.md">链接</a></td></tr>
-        <tr><td align="left" width="320">UCM KV Cache 池化后端</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/kv_cache_store/backend/ucm.md">链接</a></td></tr>
-        <tr><td align="left" width="320">max_tokens 自适应</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/max_tokens_adaptation.md">链接</a></td></tr>
+        <tr><td align="left" width="320">PD 分离</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/inference_scheduling/pd_disaggregation.md">链接</a></td></tr>
+        <tr><td align="left" width="320">EPD 分离（多模态）</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/inference_scheduling/EPD_disaggregation.md">链接</a></td></tr>
+        <tr><td align="left" width="320">KV Cache 亲和性调度</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/inference_scheduling/kvcache_affinity.md">链接</a></td></tr>
+        <tr><td align="left" width="320">Agent Hint 会话亲和与调度</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/inference_scheduling/agent_hint.md">链接</a></td></tr>
+        <tr><td align="left" width="320">动态分桶调度</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/inference_scheduling/dynamic_bucket.md">链接</a></td></tr>
+        <tr><td align="left" width="320">Mooncake KV Cache 池化后端</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/inference_scheduling/kv_cache_store/mooncake.md">链接</a></td></tr>
+        <tr><td align="left" width="320">MemCache KV Cache 池化后端</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/inference_scheduling/kv_cache_store/memcache.md">链接</a></td></tr>
+        <tr><td align="left" width="320">Yuanrong KV Cache 池化后端</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/inference_scheduling/kv_cache_store/yuanrong.md">链接</a></td></tr>
+        <tr><td align="left" width="320">UCM KV Cache 池化后端</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/inference_scheduling/kv_cache_store/ucm.md">链接</a></td></tr>
+        <tr><td align="left" width="320">max_tokens 自适应</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/inference_scheduling/max_tokens_adaptation.md">链接</a></td></tr>
       </table>
     </td>
     <td class="gap" width="24" style="border:none;padding:0;background:transparent"><img alt="" src="./docs/zh/imgs/gap.png" width="24" height="1"></td>
     <td valign="top">
       <table>
         <tr><th style="font-size:18px" align="center" colspan="2">🛡️ 稳定可靠</th></tr>
-        <tr><td align="left" width="320">请求重调度</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/rescheduler.md">链接</a></td></tr>
+        <tr><td align="left" width="320">请求重调度</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/request_rescheduler.md">链接</a></td></tr>
         <tr><td align="left" width="320">缩P保D</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/scale_p2d.md">链接</a></td></tr>
         <tr><td align="left" width="320">主备倒换</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/standby.md">链接</a></td></tr>
         <tr><td align="left" width="320">异常实例重启</td><td align="center" width="72"><a href="./docs/zh/design/fault_tolerance/overview.md">链接</a></td></tr>
-        <tr><td align="left" width="320">虚推健康探测</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/sim_inference.md">链接</a></td></tr>
-        <tr><td align="left" width="320">服务限流</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/rate_limiting.md">链接</a></td></tr>
+        <tr><td align="left" width="320">虚推健康探测</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/sim_inference.md">链接</a></td></tr>
+        <tr><td align="left" width="320">服务限流</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/fault_tolerance/rate_limiting.md">链接</a></td></tr>
         <tr><td align="left" width="320">RAS monitor 服务健康监控</td><td align="center" width="72"><a href="./examples/features/fault_tolerance/ras_monitor/readme.md">链接</a></td></tr>
-        <tr><td align="left" width="320">自动弹性扩缩容</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/auto_scaling.md">链接</a></td></tr>
-        <tr><td align="left" width="320">手动扩缩容</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/manual_scaling.md">链接</a></td></tr>
-        <tr><td align="left" width="320">容器快照</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/container_snapshot.md">链接</a></td></tr>
-        <tr><td align="left" width="320">D2D 权重加载</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/startup_acceleration.md">链接</a></td></tr>
-        <tr><td align="left" width="320">数据混淆推理（PMCC）</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/data_obfuscation.md">链接</a></td></tr>
-        <tr><td align="left" width="320">精度检测</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/precision_detection.md">链接</a></td></tr>
-        <tr><td align="left" width="320">请求耗时追踪</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/tracing.md">链接</a></td></tr>
+        <tr><td align="left" width="320">自动弹性扩缩容</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/scaling_deployment/auto_scaling.md">链接</a></td></tr>
+        <tr><td align="left" width="320">手动扩缩容</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/scaling_deployment/manual_scaling.md">链接</a></td></tr>
+        <tr><td align="left" width="320">容器快照</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/scaling_deployment/container_snapshot.md">链接</a></td></tr>
+        <tr><td align="left" width="320">D2D 权重加载</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/scaling_deployment/startup_acceleration.md">链接</a></td></tr>
+        <tr><td align="left" width="320">数据混淆推理（PMCC）</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/maintenance_testing_security/data_obfuscation.md">链接</a></td></tr>
+        <tr><td align="left" width="320">精度检测</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/maintenance_testing_security/precision_detection.md">链接</a></td></tr>
+        <tr><td align="left" width="320">请求耗时追踪</td><td align="center" width="72"><a href="./docs/zh/user_guide/features/maintenance_testing_security/tracing.md">链接</a></td></tr>
       </table>
     </td>
   </tr>
