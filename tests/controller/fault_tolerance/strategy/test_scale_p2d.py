@@ -488,3 +488,52 @@ def test_stop_sets_event_and_finished(strategy, recovery_context):
 
     assert strategy.event.is_set()
     assert strategy.is_finished()
+
+
+# =============================================================================
+# 7. P instances without reported node managers (issue #475)
+# =============================================================================
+
+
+def test_select_p_instances_skips_prefill_without_node_managers(bind_context):
+    """A 0-node P instance (node managers not yet reported) must be skipped, not used as the
+    representative per-instance node count (issue #475)."""
+    bind_context.context.num_required_node = 1
+    p_instances = [
+        _prefill_instance(2, node_count=0, status=InsStatus.INITIAL),
+        _prefill_instance(3, node_count=1, status=InsStatus.ACTIVE),
+        _prefill_instance(4, node_count=1, status=InsStatus.ACTIVE),
+    ]
+    with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
+        mock_im_cls.return_value.get_instances_by_role.return_value = p_instances
+        assert bind_context._select_p_instances_to_kill() is True
+
+    # representative must be a real (1-node) instance, and the 0-node one is not a kill candidate
+    assert bind_context.context.num_node_per_instance_P == 1
+    assert bind_context.context.selected_p_instances
+    assert all(inst.id != 2 for inst in bind_context.context.selected_p_instances)
+
+
+def test_select_p_instances_fails_when_all_prefill_without_node_managers(bind_context):
+    """All P instances unreported -> graceful failure with a clear error, no ZeroDivisionError."""
+    bind_context.context.num_required_node = 1
+    p_instances = [
+        _prefill_instance(2, node_count=0, status=InsStatus.INITIAL),
+        _prefill_instance(3, node_count=0, status=InsStatus.ACTIVE),
+    ]
+    with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
+        mock_im_cls.return_value.get_instances_by_role.return_value = p_instances
+        assert bind_context._select_p_instances_to_kill() is False
+
+    assert "node managers" in bind_context.context.last_error
+
+
+def test_select_instances_algorithm_no_zero_division(bind_context):
+    """num_node_per_instance_P=0 must not raise ZeroDivisionError (issue #475)."""
+    bind_context.context.num_required_node = 0
+    bind_context.context.num_node_per_instance_P = 0
+    instances = [_prefill_instance(5, node_count=0)]
+
+    selected = bind_context._select_instances_algorithm(instances)
+
+    assert selected == []
