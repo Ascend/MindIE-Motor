@@ -86,6 +86,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
         <tr><td>DeepSeek-V4-Pro</td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_pro/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_pro/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_pro/A5">A5</a></td></tr>
         <tr><td>GLM-5</td><td align="center"><a href="./model_configs/vllm/models/glm_5/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5/A5">A5</a></td></tr>
         <tr><td>Qwen3-235B</td><td align="center"><a href="./model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td></tr>
+        <tr><td>Qwen3.8-Flash-Next</td><td align="center"><a href="./model_configs/vllm/models/qwen3.8_flash_next/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/qwen3.8_flash_next/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/qwen3.8_flash_next/A5">A5</a></td></tr>
       </table>
     </td>
   </tr>
