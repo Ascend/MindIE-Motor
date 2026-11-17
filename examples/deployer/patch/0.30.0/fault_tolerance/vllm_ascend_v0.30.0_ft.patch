@@ -114,7 +114,7 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 ===================================================================
 diff --git a/vllm_ascend/models/deepseek_v4/model.py b/vllm_ascend/models/deepseek_v4/model.py
 --- a/vllm_ascend/models/deepseek_v4/model.py	(revision 26b4eb74f89b0052c0169c4e13b216bd7909e897)
-+++ b/vllm_ascend/models/deepseek_v4/model.py	(revision 8a09df4073aa37849dba32a88b6a0cdec0741c26)
++++ b/vllm_ascend/models/deepseek_v4/model.py	(revision 21902472506a72b7614afb6b2a4d9f75be9a7a6d)
 @@ -28,6 +28,7 @@
  from collections.abc import Callable, Iterable
  from itertools import islice
@@ -123,7 +123,15 @@ diff --git a/vllm_ascend/models/deepseek_v4/model.py b/vllm_ascend/models/deepse
  import torch
  import torch.nn.functional as F
  import vllm.envs as envs
-@@ -66,6 +67,7 @@
+@@ -44,6 +45,7 @@
+ )
+ from vllm.distributed.utils import get_pp_indices
+ from vllm.forward_context import get_forward_context, is_forward_context_available
++from vllm.logger import init_logger
+ from vllm.model_executor.layers.activation import SiluAndMul, SiluAndMulWithClamp
+ from vllm.model_executor.layers.fused_moe import FusedMoEFactory, fused_moe_make_expert_params_mapping
+ from vllm.model_executor.layers.layernorm import RMSNorm
+@@ -66,6 +68,7 @@
  )
  from vllm.model_executor.models.utils import (
      PPMissingLayer,
@@ -131,7 +139,43 @@ diff --git a/vllm_ascend/models/deepseek_v4/model.py b/vllm_ascend/models/deepse
      is_pp_missing_parameter,
      make_layers,
      maybe_prefix,
-@@ -1046,6 +1048,25 @@
+@@ -106,7 +109,7 @@
+ from vllm_ascend.worker.v2.pp_transport import (
+     make_empty_intermediate_tensors as make_pp_empty_intermediate_tensors,
+ )
+-
++logger = init_logger(__name__)
+ sequence_parallel_chunk = sp_shard
+ 
+ 
+@@ -217,6 +220,26 @@
+     return None
+ 
+ 
++# Decoder-layer weights are named ``model.layers.<index>.*`` after the
++# checkpoint-name mapping; this segment yields the decoder-layer index.
++_LAYER_WEIGHT_NAME_PATTERN = re.compile(r"(?:^|\.)layers\.(\d+)\.")
++
++
++def is_trimmed_layer_weight(weight_name: str, num_model_layers: int) -> bool:
++    """Whether a checkpoint weight belongs to a decoder layer that was not built.
++
++    DeepSeek-V4 layer trimming builds only the first ``num_hidden_layers``
++    decoder layers (``--hf-overrides '{"num_hidden_layers": N}'``), while the
++    checkpoint still ships the full stack. The tail-layer weights have no
++    destination parameter, so ``load_weights`` must skip them instead of
++    raising a ``KeyError``.
++    """
++    match = _LAYER_WEIGHT_NAME_PATTERN.search(weight_name)
++    if match is None:
++        return False
++    return int(match.group(1)) >= num_model_layers
++
++
+ class DeepseekV2MLP(nn.Module):
+     def __init__(
+         self,
+@@ -1046,6 +1069,25 @@
      }
      model_cls = DeepseekV4Model
  
@@ -157,7 +201,18 @@ diff --git a/vllm_ascend/models/deepseek_v4/model.py b/vllm_ascend/models/deepse
      def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
          super().__init__()
          config = vllm_config.model_config.hf_config
-@@ -1173,33 +1194,10 @@
+@@ -1160,6 +1202,10 @@
+ 
+         params_dict = dict(self.named_parameters())
+         loaded_params: set[str] = set()
++        # ``make_layers`` pads non-local pipeline stages with PPMissingLayer, so
++        # this is always the configured (possibly trimmed) layer count.
++        num_model_layers = len(self.model.layers)
++        trimmed_layer_weight_count = 0
+ 
+         tp_rank = get_tensor_model_parallel_rank()
+         tp_size = get_tensor_model_parallel_world_size()
+@@ -1173,34 +1219,14 @@
              if spec_layer is not None:
                  continue  # skip spec decode layers for main model
  
@@ -171,7 +226,11 @@ diff --git a/vllm_ascend/models/deepseek_v4/model.py b/vllm_ascend/models/deepse
 -                name = name.replace(".w2.", ".down_proj.")
 -            if ".w3." in name:
 -                name = name.replace(".w3.", ".up_proj.")
--
++            mapped_name = self.hf_to_vllm_mapper._map_name(name)
++            if mapped_name is None:
++                continue  # mapper-declared drop (none today; parity with AutoWeightsLoader)
++            name = mapped_name
+ 
 -            if "model.head." in name and "model.lm_head." not in name:
 -                name = name.replace("model.head.", "lm_head.")
 -            if "model.lm_head." in name:
@@ -188,13 +247,26 @@ diff --git a/vllm_ascend/models/deepseek_v4/model.py b/vllm_ascend/models/deepse
 -                name = name.replace(".attn_norm.", ".input_layernorm.")
 -            if name.endswith(".scale"):
 -                name = name.replace(".scale", ".weight_scale")
-+            mapped_name = self.hf_to_vllm_mapper._map_name(name)
-+            if mapped_name is None:
-+                continue  # mapper-declared drop (none today; parity with AutoWeightsLoader)
-+            name = mapped_name
- 
+-
++            if is_trimmed_layer_weight(name, num_model_layers):
++                trimmed_layer_weight_count += 1
++                continue
              if "rotary_emb.inv_freq" in name:
                  continue
+             if ".gate.bias_vl" in name:
+@@ -1369,4 +1395,12 @@
+             if not is_fusion_moe_shared_experts_layer:
+                 loaded_params.add(name)
+ 
++        if trimmed_layer_weight_count:
++            logger.warning_once(
++                "Skipped %d checkpoint weights for decoder layers >= %d: the "
++                "model was built with a trimmed layer stack "
++                "(num_hidden_layers override). Output quality is reduced.",
++                trimmed_layer_weight_count,
++                num_model_layers,
++            )
+         return loaded_params
 Index: vllm_ascend/ops/fused_moe/routed_experts.py
 IDEA additional info:
 Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
@@ -273,10 +345,79 @@ diff --git a/vllm_ascend/ops/fused_moe/token_dispatcher.py b/vllm_ascend/ops/fus
          if self.global_bs == 0:
              kwargs_mc2["x_active_mask"] = combine_metadata.mc2_mask
  
-Index: vllm_ascend/patch/worker/patch_v2/patch_async_output.py
+Index: vllm_ascend/patch/platform/patch_eplb.py
 IDEA additional info:
 Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
+===================================================================
+diff --git a/vllm_ascend/patch/platform/patch_eplb.py b/vllm_ascend/patch/platform/patch_eplb.py
+--- a/vllm_ascend/patch/platform/patch_eplb.py	(revision 21902472506a72b7614afb6b2a4d9f75be9a7a6d)
++++ b/vllm_ascend/patch/platform/patch_eplb.py	(revision 2e3d8d2b0c23a151063ee4b45bc1ecaa9f727b1b)
+@@ -643,6 +643,20 @@
+                     consumed_event.wait(stream=stream)
+                     assert model_state.pending_result is None
+ 
++    def _wait_for_recovery_round(state, stream, failed_epoch) -> bool:
++        """Consume wakeups until FT recovery bumps ``ft_reset_epoch``.
++
++        ``rearrange_event`` is a one-shot handshake, so an unconsumed wakeup
++        makes the foreground's next ``record()`` raise. Waiting also avoids
++        retrying the failed cycle before the groups are rebuilt.
++
++        Returns False when the async loop is asked to stop.
++        """
++        while state.wait_for_rearrangement(stream):
++            if failed_epoch is None or getattr(state, "ft_reset_epoch", None) != failed_epoch:
++                return True
++        return False
++
+     @wraps(original_worker)
+     def _transfer_run_periodically(*args, **kwargs):
+         bound = worker_signature.bind(*args, **kwargs)
+@@ -652,17 +666,31 @@
+         is_profile = bound.arguments["is_profile"]
+         if not isinstance(state, AscendEplbState) or is_profile:
+             return original_worker(*bound.args, **bound.kwargs)
+-        try:
+-            return _run(state, stream, is_profile)
+-        except Exception as error:
+-            if state._hixl_session is not None:
+-                # Context restoration and the final stream synchronization also
+-                # belong to the migration. Preserve ownership on any failure.
+-                session = state._hixl_session
+-                if session._error is None:
+-                    session._error = error
+-                session._usable = False
+-            raise
++        parallel_config = getattr(state, "parallel_config", None)
++        fault_tolerant = bool(getattr(parallel_config, "enable_fault_tolerance", False))
++        while True:
++            reset_epoch = getattr(state, "ft_reset_epoch", None)
++            try:
++                return _run(state, stream, is_profile)
++            except Exception as error:
++                if not fault_tolerant:
++                    if state._hixl_session is not None:
++                        # Context restore and stream sync belong to the
++                        # migration: fail the session rather than release it.
++                        session = state._hixl_session
++                        if session._error is None:
++                            session._error = error
++                        session._usable = False
++                    raise
++                # Keep the loop alive so the worker survives until the recovery
++                # round. Failing the HIXL session here would make
++                # raise_if_close_failed() terminate the worker first.
++                logger.exception(
++                    "[FT] EPLB async loop failed; waiting for the recovery round: %s",
++                    error,
++                )
++                if not _wait_for_recovery_round(state, stream, reset_epoch):
++                    return
+ 
+     setattr(_transfer_run_periodically, _PATCH_MARKER, True)
+     return _transfer_run_periodically
+Index: vllm_ascend/patch/worker/patch_v2/patch_async_output.py
 ===================================================================
 diff --git a/vllm_ascend/patch/worker/patch_v2/patch_async_output.py b/vllm_ascend/patch/worker/patch_v2/patch_async_output.py
 new file mode 100644
