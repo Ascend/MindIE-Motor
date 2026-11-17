@@ -33,9 +33,9 @@
         "trust-remote-code": true,
         "gpu_memory_utilization": 0.9,
         "quantization": "ascend",
-        "safetensors-load-strategy": "prefetch",
+        "safetensors-load-strategy": "lazy",
         "model-loader-extra-config": {
-          "enable_multithread_load": "true",
+          "enable_multithread_load": true,
           "num_threads": 128
         },
         "tokenizer-mode": "deepseek_v4",
@@ -54,8 +54,7 @@
         },
         "additional-config": {
           "enable_cpu_binding": true,
-          "enable_shared_expert_dp": true,
-          "enable_dsa_cp": true
+          "enable_shared_expert_dp": true
         },
         "kv_transfer_config": {
           "kv_connector": "MooncakeHybridConnector",
@@ -84,9 +83,9 @@
         "block-size": 128,
         "no-enable-prefix-caching": true,
         "no_disable_hybrid_kv_cache_manager": true,
-        "safetensors-load-strategy": "prefetch",
+        "safetensors-load-strategy": "lazy",
         "model-loader-extra-config": {
-          "enable_multithread_load": "true",
+          "enable_multithread_load": true,
           "num_threads": 128
         },
         "trust-remote-code": true,

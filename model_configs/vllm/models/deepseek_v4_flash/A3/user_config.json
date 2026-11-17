@@ -17,37 +17,32 @@
     "motor_engine_prefill_config": {
       "engine_type": "vllm",
       "engine_config": {
-        "data_parallel_size": 4,
-        "tensor_parallel_size": 4,
+        "data_parallel_size": 2,
+        "tensor_parallel_size": 1,
         "pipeline_parallel_size": 1,
         "data_parallel_rpc_port": 9000,
         "served_model_name": "dsv4",
         "model": "<请按实际情况填写模型权重文件的访问路径>",
         "seed": 1024,
         "enable_expert_parallel": true,
-        "max-model-len": 1048576,
-        "max-num-batched-tokens": 8192,
+        "max-model-len": 512000,
+        "max-num-batched-tokens": 16384,
         "max-num-seqs": 16,
-        "block-size": 128,
+        "block-size": 32,
         "enforce-eager": true,
         "no_disable_hybrid_kv_cache_manager": true,
         "trust-remote-code": true,
-        "gpu_memory_utilization": 0.9,
+        "gpu_memory_utilization": 0.94,
         "quantization": "ascend",
-        "safetensors-load-strategy": "prefetch",
+        "safetensors-load-strategy": "lazy",
         "model-loader-extra-config": {
-          "enable_multithread_load": "true",
+          "enable_multithread_load": true,
           "num_threads": 128
         },
         "tokenizer-mode": "deepseek_v4",
         "tool-call-parser": "deepseek_v4",
         "enable-auto-tool-choice": true,
         "reasoning-parser": "deepseek_v4",
-        "speculative-config": {
-          "num_speculative_tokens": 1,
-          "method": "mtp",
-          "enforce_eager": true
-        },
         "profiler-config": {
           "profiler": "torch",
           "torch_profiler_dir": "./vllm_profile",
@@ -55,16 +50,19 @@
         },
         "additional-config": {
           "enable_cpu_binding": true,
-          "enable_shared_expert_dp": true,
-          "enable_dsa_cp": true
+          "enable_fused_mc2": 1
         },
         "kv_transfer_config": {
           "kv_connector": "MooncakeHybridConnector",
           "kv_role": "kv_producer",
           "kv_port": "30000",
-          "engine_id": "0"
+          "engine_id": "0",
+          "kv_connector_extra_config": {}
         },
-        "no-enable-prefix-caching": true
+        "prefill-context-parallel-size": 8,
+        "attention_config": {
+          "indexer_kv_dtype": "int8"
+        }
       }
     },
     "motor_engine_decode_config": {
@@ -78,16 +76,16 @@
         "model": "<请按实际情况填写模型权重文件的访问路径>",
         "seed": 1024,
         "enable_expert_parallel": true,
-        "max-model-len": 1048576,
-        "max-num-batched-tokens": 120,
+        "max-model-len": 512000,
+        "max-num-batched-tokens": 480,
         "max-num-seqs": 60,
         "async-scheduling": true,
-        "block-size": 128,
+        "block-size": 32,
         "no-enable-prefix-caching": true,
         "no_disable_hybrid_kv_cache_manager": true,
-        "safetensors-load-strategy": "prefetch",
+        "safetensors-load-strategy": "lazy",
         "model-loader-extra-config": {
-          "enable_multithread_load": "true",
+          "enable_multithread_load": true,
           "num_threads": 128
         },
         "trust-remote-code": true,
@@ -95,15 +93,10 @@
         "tool-call-parser": "deepseek_v4",
         "enable-auto-tool-choice": true,
         "reasoning-parser": "deepseek_v4",
-        "gpu_memory_utilization": 0.9,
+        "gpu_memory_utilization": 0.95,
         "quantization": "ascend",
         "compilation-config": {
           "cudagraph_mode": "FULL_DECODE_ONLY"
-        },
-        "speculative-config": {
-          "num_speculative_tokens": 1,
-          "method": "mtp",
-          "enforce_eager": true
         },
         "profiler-config": {
           "profiler": "torch",
@@ -123,7 +116,11 @@
           "kv_connector": "MooncakeHybridConnector",
           "kv_role": "kv_consumer",
           "kv_port": "30100",
-          "engine_id": "1"
+          "engine_id": "1",
+          "kv_connector_extra_config": {}
+        },
+        "attention_config": {
+          "indexer_kv_dtype": "int8"
         }
       }
     }
