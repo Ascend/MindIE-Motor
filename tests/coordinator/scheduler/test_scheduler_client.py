@@ -324,6 +324,7 @@ class TestAsyncSchedulerClient:
             "motor.coordinator.scheduler.runtime.scheduler_client._SchedulerInstanceCache",
         )
         self.mock_cache = Mock()
+        self.mock_cache.is_recovery_paused.return_value = False
         self.mock_cache.replace_all = AsyncMock()
         self.mock_cache.get_instances.return_value = []
         self.mock_cache_cls = patcher_cache.start()

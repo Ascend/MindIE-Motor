@@ -17,10 +17,38 @@ import pytest
 
 from motor.common.resources.endpoint import Endpoint, EndpointStatus
 from motor.common.resources.instance import Instance, PDRole
+from motor.coordinator.domain.instance_status import _summarize_instance
 from motor.coordinator.scheduler.runtime.scheduler_client import (
     AsyncSchedulerClient,
     SchedulerClientConfig,
+    _collect_active_endpoints_from_cache,
 )
+
+
+@pytest.mark.asyncio
+async def test_retry_pause_blocks_scheduling_but_preserves_http_endpoint():
+    client = AsyncSchedulerClient(SchedulerClientConfig())
+    endpoint = Endpoint(id=0, ip="192.0.2.1", business_port="8000", status=EndpointStatus.NORMAL)
+    instance = Instance(
+        job_name="decode",
+        model_name="model",
+        id=1,
+        role=PDRole.ROLE_D,
+        endpoints={endpoint.ip: {0: endpoint}},
+        recovery_paused=True,
+    )
+    await client._cache.apply_add([instance])
+    assert client.is_instance_blocked(1)
+    assert _summarize_instance(instance, pool="available")["healthy"] is False
+    assert _summarize_instance(instance, pool="available")["recovery_paused"] is True
+    assert _collect_active_endpoints_from_cache(client._cache) == [(endpoint.ip, "8000")]
+    instance.recovery_paused = False
+    await client._cache.apply_add([instance])
+    assert not client.is_instance_blocked(1)
+    client._cb_blocked_instances.add(1)
+    assert client.is_instance_blocked(1)
+    await client._cache.apply_remove([instance])
+    assert not _collect_active_endpoints_from_cache(client._cache)
 
 
 # --- Live workload / instance membership refresh before selection ---

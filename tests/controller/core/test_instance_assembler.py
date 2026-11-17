@@ -3343,3 +3343,27 @@ def test_send_start_command_fails_when_cross_node_partial_endpoints(instance_ass
     assert result is False
     # Must not report success after only a subset of required nodes were started.
     assert mock_send.call_count <= 1
+
+
+@pytest.mark.parametrize("physical_ids", [["4", "5", "6", "7"], ["14", "15", "6", "7"]])
+def test_ranktable_free_registration_preserves_physical_ownership(instance_assembler, test_config, physical_ids):
+    """A5 hardware faults must match the actual DP devices, also after re-registration."""
+    from motor.controller.fault_tolerance.dp_scale_down import FaultNormalizer
+    from motor.controller.fault_tolerance.fault_types import FaultInfo
+
+    msg = create_register_msg("decode", test_config["pod_ip1"], test_config, physical_device_ids=physical_ids)
+    endpoints = instance_assembler._build_multi_endpoints(msg, 0)
+    assert [[d.device_id for d in e.device_infos] for e in endpoints.values()] == [physical_ids[:2], physical_ids[2:]]
+    instance = MagicMock(endpoints={msg.pod_ip: endpoints})
+    assert FaultNormalizer.hardware_fault_affects_instance(instance, msg.pod_ip, FaultInfo(npu_name="npu-6"))
+    assert not FaultNormalizer.hardware_fault_affects_instance(instance, msg.pod_ip, FaultInfo(npu_name="npu-0"))
+    ranks, keys = FaultNormalizer.hardware_dp_ranks(instance, [("uce", msg.pod_ip, FaultInfo(npu_name="npu-6"))])
+    assert (ranks, keys) == ({1}, {"uce"})
+    reregister = create_reregister_msg("decode", msg.pod_ip, 5, test_config, endpoints)
+    assert [d.device_id for e in reregister.endpoints for d in e.device_infos] == physical_ids
+
+
+@pytest.mark.parametrize("ids", [["6"], ["4", "5", "6", "6"], ["4", "5", "6", "bad"]])
+def test_registration_rejects_incomplete_physical_mapping(test_config, ids):
+    with pytest.raises(ValueError, match="physical_device_ids"):
+        create_register_msg("decode", test_config["pod_ip1"], test_config, physical_device_ids=ids)

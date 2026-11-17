@@ -780,3 +780,52 @@ def test_vllm_pd_hybrid_sample_is_valid():
     validate_pd_hybrid_config(user_config)
     validate_instance_nums(user_config)
     assert user_config[C.MOTOR_DEPLOY_CONFIG][C.DEPLOY_MODE_CONFIG_KEY] == C.DEPLOY_MODE_INFER_SERVICE_SET
+
+
+@pytest.mark.parametrize(
+    "fast_recovery,scale_down,expected",
+    [
+        (False, False, "grace"),
+        (True, False, C.FAULT_SCHEDULING_EXTERNAL_FORCE_POD_FAILED),
+        (True, True, C.FAULT_SCHEDULING_EXTERNAL_FORCE_POD_FAILED),
+    ],
+)
+def test_hbm_fast_recovery_labels_preserve_scale_down_and_default_policy(fast_recovery, scale_down, expected):
+    config = {
+        C.MOTOR_CONTROLLER_CONFIG: {
+            C.FAULT_TOLERANCE_CONFIG: {
+                C.ENABLE_FAULT_TOLERANCE: True,
+                "enable_fast_recovery": fast_recovery,
+                C.ENABLE_DP_SCALE_DOWN: scale_down,
+            }
+        },
+        C.MOTOR_ENGINE_PREFILL_CONFIG: {C.ENGINE_CONFIG: {C.ENABLE_FAULT_TOLERANCE: True}},
+    }
+    template = {C.METADATA: {C.LABELS: {C.FAULT_SCHEDULING_LABEL: "grace"}}}
+    apply_engine_ft_labels(template, config, C.ROLE_PREFILL)
+    assert template[C.METADATA][C.LABELS][C.FAULT_SCHEDULING_LABEL] == expected
+
+
+@pytest.mark.parametrize("fast_recovery", [False, True])
+@pytest.mark.parametrize("hybrid", [False, True])
+def test_engine_ft_fast_recovery_selects_external_force_pod_failed(tmp_path, fast_recovery, hybrid):
+    config = make_pd_hybrid_user_config() if hybrid else make_pd_separation_user_config()
+    config[C.MOTOR_CONTROLLER_CONFIG] = {C.FAULT_TOLERANCE_CONFIG: {"enable_fast_recovery": fast_recovery}}
+    for engine_key in (C.MOTOR_ENGINE_PREFILL_CONFIG, C.MOTOR_ENGINE_DECODE_CONFIG, C.MOTOR_ENGINE_UNION_CONFIG):
+        if engine_key in config:
+            config[engine_key].setdefault(C.ENGINE_CONFIG, {})[C.ENABLE_FAULT_TOLERANCE] = True
+    paths = make_deploy_paths(tmp_path)
+    generate_yaml_infer_service_set(paths["infer_service_input_yaml"], paths["infer_service_output_yaml"], config)
+    document = _find_infer_service_set_doc(load_yaml(paths["infer_service_output_yaml"], False))
+    roles = [C.ROLE_UNION] if hybrid else [C.ROLE_PREFILL, C.ROLE_DECODE]
+    expected = C.FAULT_SCHEDULING_EXTERNAL_FORCE_POD_FAILED if fast_recovery else "grace"
+    for name in roles:
+        role = get_infer_role(document, name)
+        assert role[C.SPEC][C.TEMPLATE][C.METADATA][C.LABELS][C.FAULT_SCHEDULING_LABEL] == expected
+        # Role metadata is what InstanceSet and the PodGroup inherit.
+        role_labels = role.get(C.METADATA, {}).get(C.LABELS, {})
+        assert role_labels.get(C.FAULT_SCHEDULING_LABEL) == (
+            C.FAULT_SCHEDULING_EXTERNAL_FORCE_POD_FAILED if fast_recovery else None
+        )
+        # The delayed ClusterD filter is not part of this fault model.
+        assert "huawei.com/schedule.filter.faultCode" not in role.get(C.METADATA, {}).get(C.ANNOTATIONS, {})

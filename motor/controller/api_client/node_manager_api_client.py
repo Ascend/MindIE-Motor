@@ -13,9 +13,9 @@ from typing import Any
 
 import requests
 
-from motor.common.resources import NodeManagerInfo, StartCmdMsg
 from motor.common.http.http_client import SafeHTTPSClient
 from motor.common.logger import get_logger
+from motor.common.resources import NodeManagerInfo, StartCmdMsg
 from motor.common.utils.net import format_address
 from motor.config.controller import ControllerConfig
 
@@ -144,6 +144,57 @@ class NodeManagerApiClient:
                 client.close()
 
         return is_succeed
+
+    @staticmethod
+    def apply_fault_tolerance(node_mgr: NodeManagerInfo, payload: dict[str, Any]) -> bool:
+        """Forward an engine FT instruction to a NodeManager for local vLLM dispatch."""
+        is_succeed = True
+        addr = format_address(node_mgr.pod_ip, node_mgr.port)
+        client = None
+        try:
+            client_args = NodeManagerApiClient._generate_client_args(node_mgr)
+            client = SafeHTTPSClient(**client_args)
+            response = client.post("/node-manager/fault-tolerance/apply", data=payload)
+            if isinstance(response, dict) and "engines" in response:
+                entries = response["engines"]
+                if (
+                    not isinstance(entries, list)
+                    or not entries
+                    or not all(isinstance(entry, dict) and entry.get("success") is True for entry in entries)
+                ):
+                    logger.error("Fault tolerance apply rejected by engines on node manager %s", addr)
+                    return False
+            logger.info("Fault tolerance apply command sent to node manager %s", addr)
+        except (requests.RequestException, RuntimeError) as e:
+            is_succeed = False
+            logger.error("Error sending fault tolerance apply command to node manager %s: %s", addr, e)
+        finally:
+            if client is not None:
+                client.close()
+
+        return is_succeed
+
+    @staticmethod
+    def query_fault_tolerance_status(node_mgr: NodeManagerInfo) -> dict[str, Any]:
+        """GET vLLM FT status for every engine managed by this NodeManager."""
+        addr = format_address(node_mgr.pod_ip, node_mgr.port)
+        client = None
+        try:
+            client_args = NodeManagerApiClient._generate_client_args(node_mgr)
+            client = SafeHTTPSClient(**client_args)
+            response = client.get("/node-manager/fault-tolerance/status")
+            if not isinstance(response, dict):
+                logger.error(
+                    "Unexpected FT status payload type from node manager %s: %s", addr, type(response).__name__
+                )
+                return {}
+            return response
+        except (requests.RequestException, RuntimeError) as e:
+            logger.error("Error querying fault tolerance status from node manager %s: %s", addr, e)
+            return {}
+        finally:
+            if client is not None:
+                client.close()
 
     @classmethod
     def query_status(cls, node_mgr: NodeManagerInfo, relaxed: bool = False) -> dict[str, Any]:

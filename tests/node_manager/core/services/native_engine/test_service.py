@@ -487,3 +487,28 @@ def test_stop_waits_for_inflight_pull_and_monitor_stays_cleared():
     # stop() must have waited for the in-flight pull and cleared its monitor;
     # otherwise the pull would install the monitor after stop() returned.
     assert service._virtual_monitor is None
+
+
+@pytest.mark.parametrize(
+    "device_env,expected",
+    [
+        ({"MOTOR_START_DEVICES": "11,8,10,9"}, ["11,8", "10,9"]),
+        ({"ASCEND_ALLOCATED_DEVICES": "Ascend910-8,Ascend910-9,Ascend910-10,Ascend910-11"}, ["8,9", "10,11"]),
+        ({}, ["0,1", "2,3"]),
+    ],
+)
+def test_pull_preserves_explicit_device_order_and_plugin_allocation(device_env, expected):
+    """Explicit --devices order and privileged-pod allocation both survive per-DP slicing."""
+    service = _native_engine_service(engine_type="vllm")
+    service.enable_multi_endpoints = True
+    service.device_num = 4
+    service.parallel_config.local_world_size = 2
+    service.backend.prepare.return_value = _make_launch_spec(_fake_deploy_config(enable_virtual_inference=False))
+    service.supervisor.start.return_value = True
+    with (
+        patch.dict(os.environ, device_env, clear=True),
+        patch("motor.node_manager.core.services.native_engine.ascend_device_ids.glob.glob", return_value=[]),
+    ):
+        service.pull(PDRole.ROLE_U, [_make_endpoint(0), _make_endpoint(1)], instance_id=1, master_dp_ip="127.0.0.1")
+    environments = [call.args[0].environment for call in service.backend.prepare.call_args_list]
+    assert [env["ASCEND_RT_VISIBLE_DEVICES"] for env in environments] == expected

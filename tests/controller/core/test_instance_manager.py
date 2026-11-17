@@ -1507,17 +1507,19 @@ def test_partial_loss_is_deferred_during_scale_down_transaction():
         store.clear()
 
 
-def test_abnormal_heartbeat_is_deferred_while_collecting_engine_ft_status():
+@pytest.mark.parametrize("fast_recovery_only", [False, True])
+def test_abnormal_heartbeat_is_deferred_while_collecting_engine_ft_status(fast_recovery_only):
     manager = create_instance_manager_with_config()
     manager.enable_fault_tolerance = True
-    manager.enable_dp_scale_down = True
+    manager.enable_dp_scale_down = not fast_recovery_only
+    manager.enable_fast_recovery = fast_recovery_only
     instance = create_test_instance(308, "test_ft_collection", ["192.168.1.1"])
     manager.add_instance(instance)
     instance.update_instance_status(InsStatus.ACTIVE)
     next(iter(instance.get_all_endpoints())).status = EndpointStatus.ABNORMAL
     store = get_ft_runtime_store()
     store.clear()
-    store.transition(instance.id, phase=FtPhase.WAITING_ENGINE_FAULT)
+    store.transition(instance.id, phase=FtPhase.WAITING_ENGINE_FAULT, preserve_recovery_streams=fast_recovery_only)
 
     try:
         assert manager._handle_state_transition(instance) is True

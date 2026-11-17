@@ -562,38 +562,6 @@ def test_missing_node_manager_topology_fails_closed():
         DpScaleDownStrategy._build_node_manager_groups(instance, {1})
 
 
-def test_fast_recovery_retries_all_unhealthy_dp_ranks():
-    strategy = EngineFastRecoveryStrategy()
-    strategy.bind_config(SimpleNamespace(fault_tolerance_config=_config()))
-    instance = _instance(_endpoints())
-    groups = DpScaleDownStrategy._build_node_manager_groups(instance, set())
-    with (
-        patch(
-            "motor.controller.fault_tolerance.strategy.dp_scale_down._get_instance",
-            return_value=instance,
-        ),
-        patch.object(DpScaleDownStrategy, "_build_node_manager_groups", return_value=groups),
-        patch.object(DpScaleDownStrategy, "_guard_node_managers") as guard,
-        patch.object(
-            DpScaleDownStrategy,
-            "_query_via_node_managers",
-            side_effect=[
-                {0: {"status": "unhealthy"}, 1: {"status": "unhealthy"}},
-                {0: {"status": "healthy"}, 1: {"status": "healthy"}},
-            ],
-        ),
-        patch.object(DpScaleDownStrategy, "_apply_via_node_managers") as apply,
-        patch.object(DpScaleDownStrategy, "_finalize_node_managers") as finalize,
-    ):
-        strategy.execute(5)
-
-    assert strategy.is_finished()
-    assert not strategy.is_failed()
-    guard.assert_called_once()
-    assert apply.call_args.kwargs["instruction"] == "retry"
-    finalize.assert_called_once()
-
-
 def test_fast_recovery_without_config_hands_off():
     strategy = EngineFastRecoveryStrategy()
     strategy.execute(5)

@@ -62,7 +62,12 @@ def _summarize_instance(
     cb_view = circuit_breaker or dict(_CB_CLOSED_VIEW)
     status = _controller_status_value(instance)
     role = instance.role.value if hasattr(instance.role, "value") else instance.role
-    healthy = pool_name == "available" and status == InsStatus.ACTIVE.value and cb_view.get("state") == "closed"
+    healthy = (
+        pool_name == "available"
+        and status == InsStatus.ACTIVE.value
+        and cb_view.get("state") == "closed"
+        and not instance.recovery_paused
+    )
     return {
         "id": instance.id,
         "role": role,
@@ -70,6 +75,7 @@ def _summarize_instance(
         "model_name": instance.model_name,
         "status": status,
         "pool": pool_name,
+        "recovery_paused": instance.recovery_paused,
         "healthy": healthy,
         "circuit_breaker": cb_view,
         "endpoints": endpoints,

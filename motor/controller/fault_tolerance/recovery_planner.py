@@ -1,11 +1,47 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
 from dataclasses import dataclass, replace
 from enum import Enum
 
 from motor.config.controller import ControllerConfig
 from motor.controller.fault_tolerance.dp_scale_down import ScaleDownContext
-from motor.controller.fault_tolerance.fault_types import FaultLevel
+from motor.controller.fault_tolerance.fault_types import (
+    FaultLevel,
+    RecoveryCause,
+    classify_recovery_cause,
+)
 from motor.controller.fault_tolerance.strategy.base import StrategyBase
+
+
+def fast_recovery_policy(config: ControllerConfig, context: ScaleDownContext) -> type[StrategyBase] | None:
+    """Select the entry point from hardware evidence before software fallback."""
+    from motor.controller.fault_tolerance.strategy.fast_recovery import (
+        HbmUceRecoveryStrategy,
+        GenericFastRecoveryStrategy,
+        TokenReinferenceStrategy,
+    )
+
+    ft = config.fault_tolerance_config
+    if (
+        not ft.enable_fault_tolerance
+        or not ft.enable_fast_recovery
+        or context.hardware_fault_observed
+        or context.recovery_hardware_severe
+    ):
+        return None
+    cause = classify_recovery_cause(context.hardware_fault_codes)
+    if cause == RecoveryCause.HBM:
+        return HbmUceRecoveryStrategy if ft.enable_hbm_uce_recovery else None
+    if cause == RecoveryCause.TOKEN_REINFERENCE:
+        return TokenReinferenceStrategy if ft.enable_token_reinference else None
+    return GenericFastRecoveryStrategy if ft.enable_no_fault_code_recovery else None
 
 
 class RecoverySource(str, Enum):
@@ -43,7 +79,9 @@ def build_recovery_plan(
         EngineRelaunchStrategy,
         InstanceReconfigurationStrategy,
     )
-    from motor.controller.fault_tolerance.strategy.fast_recovery import FastRecoveryContext
+    from motor.controller.fault_tolerance.strategy.fast_recovery import (
+        FastRecoveryContext,
+    )
 
     fallback = InstanceReconfigurationStrategy
     source = RecoverySource(context.source)
@@ -55,6 +93,10 @@ def build_recovery_plan(
     # original controller strategy for inactive instances and for hardware
     # evidence that cannot be mapped to a DP rank.
     if not context.engine_recovery_eligible:
+        if generated_strategy is not None and issubclass(generated_strategy, EngineFastRecoveryStrategy):
+            # An isolated/stopped instance cannot execute in-place fast recovery.
+            # Keep native high-severity strategies below unchanged.
+            return RecoveryPlan(source, None, context, fallback, evidence)
         # Heartbeat isolation is only a symptom: the instance is already
         # INACTIVE, but no engine or hardware evidence may have arrived yet.
         # Keep the original strategy (normally no-op for L1) so pod
@@ -70,6 +112,12 @@ def build_recovery_plan(
     ):
         return RecoveryPlan(source, generated_strategy or fallback, context, fallback, evidence)
 
+    policy = fast_recovery_policy(config, context)
+    if context.hardware_fault_codes and policy is not None and not context.engine_fault_observed:
+        # Recognized recoverable hardware is recorded first. The software report
+        # opens collection; the short L4 hardware correlation timer is unrelated.
+        return RecoveryPlan(source, None, context, fallback, evidence)
+
     if source == RecoverySource.HARDWARE and context.hardware_fault_observed:
         # A complete engine snapshot is authoritative even when its ranks
         # arrive after the short hardware-correlation window. The window only
@@ -80,6 +128,12 @@ def build_recovery_plan(
             return RecoveryPlan(source, None, context, fallback, evidence)
 
     if context.all_dp_unhealthy:
+        if context.hardware_fault_observed and config.fault_tolerance_config.enable_fast_recovery:
+            return RecoveryPlan(source, generated_strategy or fallback, context, fallback, evidence)
+        if policy is not None:
+            return RecoveryPlan(source, policy, context, fallback, evidence)
+        if config.fault_tolerance_config.enable_fast_recovery:
+            return RecoveryPlan(source, fallback, context, fallback, evidence)
         fast_context = FastRecoveryContext(
             fault_level=fault_level,
             fault_code=fault_code,

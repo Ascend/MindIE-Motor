@@ -9,7 +9,7 @@ MindIE Motor 提供多层级的可靠性保障机制，覆盖硬件故障感知�
 | 实例故障隔离 | 硬件故障（NPU/网络）+ 软件故障（节点重启）感知与隔离 | `FaultManager` + `ResourceMonitor` |
 | 自动重拉起注册 | Pod 重启后 NodeManager 自动重新注册，Controller 组装实例并拉起引擎 | `InstanceAssembler` + `InstanceManager` |
 | 缩P保D（Scale P2D） | Decode 实例故障时，释放 Prefill 节点以恢复 Decode | `ScaleP2DStrategy` |
-| token级重推 | L2 级别网络故障检测与token级重推恢复 | `TokenReinferenceStrategy` |
+| 引擎快恢 | 按 HBM / 灵衢 / 无故障码快恢区分，共用快恢编排与调度暂停 | `EngineFastRecoveryStrategy` |
 | Atlas 800I A2推理服务器 linkdown 整实例自杀 | Atlas 800I A2推理服务器 上 `0x81078603` 保持 L6，对 Prefill / Decode / 多 Pod union 下发 `/node-manager/stop` | `NmSuicideStrategy` |
 
 ## 实例故障隔离
@@ -179,56 +179,30 @@ scale_p2d()：选择一个 P 实例，释放其占用的节点资源
 # L6 → 委托 L4
 ```
 
-## token级重推
+## 引擎软件故障快恢
 
-### 背景
+三种快恢共用 `EngineFastRecoveryStrategy` 的调度暂停、活动 DP 实时校验、NodeManager 并发广播、同轮 request_id 和状态轮询。`recovery_planner` 按硬件证据选择具体策略，不通过最高故障码单值猜测原因。
 
-在 Ascend 集群的推理过程中，NPU 之间的高速互连网络（"灵衢"，Lingqu）可能出现 L2 级别的瞬时故障（如链路抖动、瞬断），导致部分 token 的推理结果异常或丢失。为避免整卡重启或节点隔离带来的巨大开销，引入 **token级重推** 机制：当检测到网络故障时，仅对受影响的 token 进行重新推理，在保障推理正确性的同时最小化故障恢复成本。
+| 分支 | 进入条件（所有活动 DP 均 UNHEALTHY 后下发） | retry 参数 | 成功与失败 |
+|------|------|------|------|
+| HBM UCE | 软件 UNHEALTHY + 本实例设备的 `0x80E01801` | 单次 `abort=true`，不支持 resume | retry 后无论成功失败都等待所在节点全部设备 1801 清除；retry 成功且清码成功才结束；retry 失败但清码成功转 relaunch；清码超时/证据缺失转重配置 |
+| 灵衢 token 重推 | 软件 UNHEALTHY + `0x00F1FEF5` 或 `0x08520003` | 先不携带 abort，明确失败后 `abort=true` | 完全复用无故障码快恢流程；失败转 relaunch，不等待灵衢清码 |
+| 无故障码快恢 | 软件 UNHEALTHY，且未命中 HBM/灵衢专用码，也没有严重硬件阻断 | 第一轮不携带 abort；全 DP 明确失败后第二轮 `abort=true` | 全部 DP HEALTHY 即成功；再次失败、DEAD、失联、超时或部分下发失败转 relaunch；硬件证据失效则重配置 |
 
-### 核心流程
+`enable_fast_recovery` 总开关默认关闭，未配置该键的环境升级后仍走常规恢复路径；新增 `enable_hbm_uce_recovery=true`、`enable_token_reinference=true`、`enable_no_fault_code_recovery=true` 三个独立分支开关，需同时开启 FT、总开关和相应分支。关闭某一分支不会转入另一种快恢；软件故障到齐时转重配置。
 
-```text
-网络出现故障（链路抖动/瞬断）
-        │
-        ▼
-驱动/固件上报故障 → ConfigMap 更新
-        │
-        ▼
-Controller ResourceMonitor 感知 ConfigMap 变更
-解析 DeviceInfoCfg / SwitchInfoCfg 中的网络故障信息
-        │
-        ▼
-FaultManager._handle_fault_info_update()
-刷新故障信息，评估实例故障等级为 L2
-        │
-        ▼
-故障等级 ≤ L2 → 不触发隔离，实例保持 ACTIVE 继续服务
-        │
-        ▼
-策略中心根据 fault_code 匹配策略：
-故障码 ∈ {0x00f1fef5, 0x08520003} → TokenReinferenceStrategy
-        │
-        ▼
-策略与推理引擎协同，对受影响 token 进行重新推理
-（网络故障自愈 + token重推）
-        │
-        ▼
-Token 重推完成，故障消除
-        │
-        ▼
-FaultManager._refresh_instance_fault_level()
-重新评估：实例已无可评估故障 → fault_level 重置为 HEALTHY、fault_code 置 0
-        │
-        ▼
-实例全程保持 ACTIVE，持续提供推理服务
-```
+硬件先到时保存在 ConfigMap 故障视图中，已识别的 L1–L3 硬件码不单独发起快恢；首个软件故障打开共用的 120 秒收集窗口，不使用 5 秒严重硬件关联窗口去否定正常的 HBM/灵衢延迟上报。已清除的码不作为后来的分类依据；严重故障处理保留 ready 基线和已处理过滤；快恢原因分类仍检查当前存在的基线/已处理硬件码，避免误判为无故障码快恢，只排除已缩除设备。L4–L6 优先保留原有严重故障处理；其余按 HBM > 灵衢 > 无故障码快恢分类。1801 与灵衢码同时出现优先 HBM；其他低等级告警（包括未命中专用码的 `0x80E01809`）不阻断快恢。执行下发前和结束时复核严重硬件故障，迟到的严重故障阻止原分支继续下发及宣告成功。执行期间新增的可快恢故障码不改变本轮分支，也不因原因优先级变化将本轮判为失败；灵衢与无故障码快恢以全部引擎 HEALTHY 为成功条件，不等待新增 1801 清码。新增硬件故障保留到下一轮重新规划；仅有 1801、引擎仍 HEALTHY 时不立即发起 HBM 快恢，待所有 DP 再次 UNHEALTHY 后进入 HBM 分支。HBM 分支仍需等待 1801 清码。
 
-### 关键设计点
+无故障码快恢在当前协议里是“无专用快恢码、无严重硬件阻断的 UNHEALTHY”分类，不能仅凭这一状态证明异常一定是内存耗尽；该策略不限定具体软件异常原因。第二轮仍只接受所有 DP 对同一 request_id 明确报告 `ft_state=failed`，超时不代表上一轮 collective 已结束。
 
-- **白名单机制**：仅特定故障码 `0x00f1fef5` 和 `0x08520003` 触发该策略，非白名单内的 L2 故障不执行恢复策略。
-- **不可中断**：策略 `stop()` 不执行任何操作——token级重推需要等待网络自行恢复或故障升级，不应被人为中断。
-- **故障检测来源**：同时支持 `DeviceInfoCfg`（卡间网络故障 `CardNetworkUnhealthy`）和 `SwitchInfoCfg`（交换机故障）两条检测路径。
-- **策略代码**：[token_reinference.py](https://gitcode.com/Ascend/MindIE-Motor/blob/master/motor/controller/fault_tolerance/strategy/token_reinference.py)
+每轮引擎恢复使用 `recovery_round_timeout_sec=60` 秒；HBM 独立清码阶段使用 `hbm_uce_clearance_timeout_sec=60` 秒，成功或失败均进入该阶段。HBM 清码成功后的 relaunch 复用已有引擎重拉策略；关闭 `enable_engine_relaunch` 时转重配置。默认整体保护预算仍为 870 秒，按启用分支的最坏耗时计算：收集 + max(无故障码快恢两轮、HBM 一轮+清码、灵衢两轮) + max(组装、relaunch) + 30 秒余量。
+
+无故障码快恢和 token 重推共用两轮 retry 与 relaunch 回退，保留独立入口和开关。
+关闭 `enable_engine_relaunch` 则失败直接重配置。relaunch 失败、加载期间或稳定观察期内再次软件报错
+均转重配置，不重新进入快恢。全部引擎 NORMAL 后连续健康 `engine_relaunch_stability_sec`（默认 60 秒）
+才解除保护；探测失败会重新计时。
+
+HBM 内存分类和 KV 清理见 [HBM UCE 原地快恢设计](hbm_uce_recover.md)；三种快恢的触发条件、分支选择、执行与回退见 [引擎快恢执行策略](fast_recovery_strategy.md)。
 
 ## 组件交互全景
 
@@ -254,7 +228,7 @@ FaultManager._refresh_instance_fault_level()
 │                                                                    │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │ 策略中心                                                      │  │
-│  │  L2 + 白名单故障码  →  TokenReinferenceStrategy               │  │
+│  │  全部 DP UNHEALTHY → EngineFastRecoveryStrategy               │  │
 │  │  L6 Atlas 800I A2推理服务器 Prefill/Decode/多Pod union 隔离码 → NmSuicideStrategy │  │
 │  │  L4/L5/L6 + decode（非 linkdown）→  ScaleP2DStrategy          │  │
 │  └──────────────────────────────────────────────────────────────┘  │

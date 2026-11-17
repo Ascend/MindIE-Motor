@@ -78,8 +78,7 @@ def config_data():
 def daemon(config_data):
     # Clear singleton instance (Daemon is still singleton)
     if hasattr(Daemon, '_instances') and Daemon in Daemon._instances:
-        if Daemon in Daemon._instances:
-            del Daemon._instances[Daemon]
+        del Daemon._instances[Daemon]
 
     config_path = os.path.join(os.path.dirname(__file__), '..', 'jsons', 'user_config.json')
     with patch.dict('os.environ', {'JOB_NAME': 'test_job', 'USER_CONFIG_PATH': config_path, 'ROLE': 'both'}):
@@ -109,6 +108,25 @@ def endpoints():
 
 
 class TestDaemon:
+    def test_apply_fault_tolerance_forwards_to_matching_endpoint(self, daemon, endpoints):
+        daemon._endpoints_info = endpoints
+        daemon._config.fault_tolerance_config.poll_timeout_sec = 7.0
+        payload = {"instruction": "retry", "params": {"engine_id": 1}}
+
+        with patch(
+            "motor.node_manager.core.daemon.apply_engine_ft_instruction", return_value={"accepted": True}
+        ) as mock_apply:
+            response = daemon.apply_fault_tolerance(payload)
+
+        assert response == {"accepted": True}
+        mock_apply.assert_called_once_with(endpoints[1], "retry", {"engine_id": 1}, "", 7.0)
+
+    def test_apply_fault_tolerance_requires_engine_id_for_multiple_endpoints(self, daemon, endpoints):
+        daemon._endpoints_info = endpoints
+
+        with pytest.raises(ValueError, match="engine_id is required"):
+            daemon.apply_fault_tolerance({"instruction": "retry", "params": {}})
+
     def test_engine_ft_manager_starts_only_after_engines_are_ready(self, daemon, endpoints):
         engine = daemon._services[SERVICE_ENGINE]
         daemon._engine_ft_manager = MagicMock()
@@ -200,9 +218,9 @@ class TestDaemon:
         with (
             patch.object(engine.supervisor, "start", side_effect=[False, True, RuntimeError("start failed")]),
             patch.object(engine.supervisor, "stop") as stop,
+            pytest.raises(RuntimeError, match="start failed"),
         ):
-            with pytest.raises(RuntimeError, match="start failed"):
-                daemon.pull_engine(PDRole.ROLE_P, endpoints, instance_id=1, master_dp_ip="192.168.1.100")
+            daemon.pull_engine(PDRole.ROLE_P, endpoints, instance_id=1, master_dp_ip="192.168.1.100")
 
         stop.assert_called_once_with(endpoints[1].id)
 
@@ -497,6 +515,7 @@ def test_successful_relaunch_allows_same_endpoint_fault_to_be_reported_again(dae
     engine = MagicMock()
     engine.wait_ready.return_value = True
     daemon._engine_ft_manager = MagicMock()
+    daemon._engine_ft_manager.is_fast_recovery_guard_active.return_value = False
     daemon._instance_id = 7
     daemon._seen_normal_ep_ids.add(0)
     daemon._reported_abnormal_ep_ids.add(0)
@@ -536,13 +555,18 @@ def test_successful_relaunch_allows_same_endpoint_fault_to_be_reported_again(dae
 )
 def test_restart_engine_rejects_invalid_requests(daemon, prepare, error):
     """Overlapping relaunches and missing launch params are rejected, not raced."""
-    from motor.node_manager.core.daemon import EngineRestartInProgressError, EngineRestartParamError
+    from motor.node_manager.core.daemon import (
+        EngineRestartInProgressError,
+        EngineRestartParamError,
+    )
 
     expected = EngineRestartInProgressError if error == "EngineRestartInProgressError" else EngineRestartParamError
     prepare(daemon)
-    with _patch_restart_params(None if error == "EngineRestartParamError" else _restart_params()):
-        with pytest.raises(expected):
-            daemon.restart_engine(1)
+    with (
+        _patch_restart_params(None if error == "EngineRestartParamError" else _restart_params()),
+        pytest.raises(expected),
+    ):
+        daemon.restart_engine(1)
 
 
 def test_suicide_after_threshold_abnormal_observations(daemon):
@@ -900,3 +924,38 @@ def test_abnormal_after_normal_reported_until_recovery(daemon):
         mock_hb.has_abnormal_endpoints.return_value = True
         daemon._check_suicide_condition()
         assert mock_client_cls.report_software_fault.call_count == 2
+
+
+def test_fast_recovery_guard_prevents_health_probe_suicide(daemon):
+    daemon._engine_ft_manager.is_fast_recovery_guard_active = MagicMock(return_value=True)
+    with patch("motor.node_manager.core.daemon.HeartbeatManager") as heartbeat_cls:
+        heartbeat = heartbeat_cls.return_value
+        heartbeat.endpoints_generation.return_value = daemon._last_endpoints_generation
+        heartbeat.has_abnormal_endpoints.return_value = True
+        daemon._check_suicide_condition()
+    heartbeat.has_abnormal_endpoints.assert_not_called()
+    assert not daemon._should_suicide
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_ft_excludes_headless_and_retired_endpoints(daemon, endpoints, explicit):
+    daemon._endpoints_info = endpoints
+    endpoints[1].headless = True
+    daemon._retired_endpoint_ids.add(2)
+    with (
+        patch("motor.node_manager.core.daemon.query_engine_ft_status", return_value={"engines": []}) as query,
+        patch("motor.node_manager.core.daemon.apply_engine_ft_instruction", return_value={}) as apply,
+    ):
+        status = daemon.query_fault_tolerance_status()
+        assert [entry["engine_id"] for entry in status["engines"]] == [0]
+        assert query.call_args.args[0] == endpoints[0]
+        query.assert_called_once()
+        if explicit:
+            for rank in (1, 2):
+                with pytest.raises(ValueError):
+                    daemon.apply_fault_tolerance({"instruction": "retry", "params": {"engine_ids": [rank]}})
+            apply.assert_not_called()
+        else:
+            daemon.apply_fault_tolerance({"instruction": "retry", "params": {"scope": "all_local_endpoints"}})
+            apply.assert_called_once()
+            assert apply.call_args.args[0] == endpoints[0]

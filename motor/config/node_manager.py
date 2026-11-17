@@ -32,6 +32,8 @@ from motor.common.utils.env import Env
 from motor.common.utils.patch_check import safe_open
 from motor.common.logger import get_logger
 from motor.config.config_utils import (
+    FAULT_TOLERANCE_CONFIG_KEY,
+    fast_recovery_budget,
     ConfigKey,
     format_config_summary_header,
     raise_if_config_errors,
@@ -59,7 +61,6 @@ MOTOR_ENGINE_DECODE_CONFIG_KEY = "motor_engine_decode_config"
 MOTOR_ENGINE_UNION_CONFIG_KEY = "motor_engine_union_config"
 MOTOR_CONTAINER_SNAPSHOT_CONFIG_KEY = "motor_container_snapshot_config"
 MOTOR_CONTROLLER_CONFIG_KEY = "motor_controller_config"
-FAULT_TOLERANCE_CONFIG_KEY = "fault_tolerance_config"
 VLLM_STARTUP_ACCELERATION_CONFIG_KEY = "vllm_startup_acceleration_config"
 ENGINE_CONFIG_KEY = "engine_config"
 KV_TRANSFER_CONFIG_KEY = "kv_transfer_config"
@@ -369,6 +370,7 @@ class NodeManagerFaultToleranceConfig:
     # Internal execution gate derived from the Controller-level switches in
     # the shared user_config. It is not a NodeManager user-facing switch.
     enable_dp_scale_down_proxy: bool = False
+    enable_fast_recovery_proxy: bool = False
     # Copied from Controller fault_tolerance_config.enable_dp_scale_up.
     # When true, vLLM launch sets VLLM_ASCEND_ENABLE_MOE_DISTRIBUTE_V3=1.
     enable_dp_scale_up: bool = False
@@ -418,6 +420,8 @@ class NodeManagerFaultToleranceConfig:
     #: per NodeManager (retries + backoff). A false alarm unfreezes when the
     #: deadline expires.
     engine_restart_wait_timeout_sec: float = 180.0
+    #: Derived from Controller budgets; zero disables the software fast-recovery guard.
+    fast_recovery_budget_sec: float = 0.0
     #: Suicide-freeze window while engines are being re-pulled. Must exceed
     #: the Controller relaunch completion timeout (600s) plus margin; the
     #: deadline (not a boolean) keeps the container-restart fallback alive
@@ -652,6 +656,11 @@ class NodeManagerConfig:
             node_manager_ft = {}
             config_data[FAULT_TOLERANCE_CONFIG_KEY] = node_manager_ft
         node_manager_ft["enable_dp_scale_down_proxy"] = proxy_enabled
+        node_manager_ft["enable_fast_recovery_proxy"] = controller_ft.get("enable_fault_tolerance", True) in (
+            True,
+            1,
+        ) and controller_ft.get("enable_fast_recovery", False) in (True, 1)
+        node_manager_ft["fast_recovery_budget_sec"] = fast_recovery_budget(user_cfg)
         node_manager_ft["enable_dp_scale_up"] = controller_ft.get("enable_dp_scale_up", False) in (True, 1)
 
         if BASIC_CONFIG_KEY not in config_data:

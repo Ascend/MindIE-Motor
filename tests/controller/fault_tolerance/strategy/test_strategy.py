@@ -29,10 +29,14 @@ Test cases are organized according to the following logical blocks:
 import pytest
 from unittest.mock import Mock, patch
 
-from motor.controller.fault_tolerance.fault_types import FaultLevel, SpecialFaultCode
+from motor.controller.fault_tolerance.fault_types import (
+    FaultLevel,
+    SpecialFaultCode,
+)
 from motor.controller.fault_tolerance.strategy.strategy import (
     StrategyBase,
     healthy_strategy,
+    level1_strategy,
     level2_strategy,
     level3_strategy,
     level4_strategy,
@@ -40,12 +44,10 @@ from motor.controller.fault_tolerance.strategy.strategy import (
     level6_strategy,
     generate_strategy_map,
 )
-from motor.controller.fault_tolerance.strategy.token_reinference import (
-    TokenReinferenceStrategy,
-)
 from motor.controller.fault_tolerance.strategy.nm_suicide import NmSuicideStrategy
 from motor.controller.fault_tolerance.strategy.scale_p2d import ScaleP2DStrategy
 from motor.controller.fault_tolerance.strategy.engine_relaunch import EngineRelaunchStrategy
+from motor.controller.fault_tolerance.strategy.fast_recovery import EngineFastRecoveryStrategy
 from motor.config.controller import ControllerConfig
 
 
@@ -55,7 +57,7 @@ def mock_config():
     """Fixture for creating a mock config with strategies enabled"""
     config = ControllerConfig()
     config.fault_tolerance_config.enable_scale_p2d = True
-    config.fault_tolerance_config.enable_token_reinference = True
+    config.fault_tolerance_config.enable_fast_recovery = True
     config.hardware_type = "800I_A2"
     return config
 
@@ -65,16 +67,15 @@ def mock_config_scale_p2d_disabled():
     """Fixture for creating a mock config with scale_p2d disabled"""
     config = ControllerConfig()
     config.fault_tolerance_config.enable_scale_p2d = False
-    config.fault_tolerance_config.enable_token_reinference = True
     return config
 
 
 @pytest.fixture
-def mock_config_token_reinference_disabled():
-    """Fixture for creating a mock config with token reinference disabled"""
+def mock_config_fast_recovery_disabled():
+    """Fixture for creating a mock config with fast recovery disabled"""
     config = ControllerConfig()
     config.fault_tolerance_config.enable_scale_p2d = True
-    config.fault_tolerance_config.enable_token_reinference = False
+    config.fault_tolerance_config.enable_fast_recovery = False
     return config
 
 
@@ -136,19 +137,19 @@ def test_general_l0_strategy_returns_none_for_any_fault_code(fault_code, mock_co
 @pytest.mark.parametrize(
     "fault_code,expected",
     [
-        (0x00F1FEF5, TokenReinferenceStrategy),
-        (0x08520003, TokenReinferenceStrategy),
+        (0x00F1FEF5, None),
+        (0x08520003, None),
         (0, None),
-        (0x0000, None),
     ],
 )
-def test_level2_strategy_returns_correct_class(fault_code, expected, mock_config):
-    """L2 strategy should return TokenReinferenceStrategy for known codes, None otherwise"""
+def test_level2_strategy_returns_correct_class(fault_code, expected, mock_config, mock_instance_manager):
+    """L2 link faults use fast recovery; obsolete and unknown codes have no strategy"""
+    mock_instance_manager.return_value.get_instance.return_value = Mock(role="decode")
     assert level2_strategy(fault_code, 1, mock_config) is expected
 
 
 # L3 Strategy Tests
-@pytest.mark.parametrize("fault_code", [0x0000, 0x00F1FEF5, 0x08520003, 0x12345678])
+@pytest.mark.parametrize("fault_code", [0x0000, 0x00F1FEF5, 0x12345678])
 def test_level3_strategy_returns_none_for_any_fault_code(fault_code, mock_config):
     """L3 strategy should always return None since it calls L1 strategy logic"""
     assert level3_strategy(fault_code, 1, mock_config) is None
@@ -210,14 +211,15 @@ def test_strategy_map_level_returns_none_for_l0_l1_and_l3(level, mock_config):
     assert strategy_func(0x0000, 1, mock_config) is None
 
 
-def test_strategy_map_l2_returns_token_reinference_for_known_codes(mock_config):
-    """L2 strategy should return TokenReinferenceStrategy for known error codes"""
+def test_strategy_map_l2_does_not_admit_hardware_fast_recovery(mock_config, mock_instance_manager):
+    """Hardware codes no longer select fast recovery."""
     strategies = generate_strategy_map()
+    mock_instance_manager.return_value.get_instance.return_value = Mock(role="decode")
     l2_func = strategies[2]
 
     assert callable(l2_func)
-    assert l2_func(0x00F1FEF5, 1, mock_config) is TokenReinferenceStrategy
-    assert l2_func(0x08520003, 1, mock_config) is TokenReinferenceStrategy
+    assert l2_func(0x00F1FEF5, 1, mock_config) is None
+    assert l2_func(0x08520003, 1, mock_config) is None
     assert l2_func(0, 1, mock_config) is None
 
 
@@ -254,12 +256,12 @@ def test_strategy_map_l6_returns_scale_p2d_for_decode_role(mock_instance_manager
     assert strategy_func(0x0000, 1, mock_config) is ScaleP2DStrategy
 
 
-def test_level2_strategy_respects_config_switch(mock_config_token_reinference_disabled):
-    """L2 strategy should return None when token reinference is disabled in config"""
-    result = level2_strategy(0x00F1FEF5, 1, mock_config_token_reinference_disabled)
+def test_level2_strategy_respects_config_switch(mock_config_fast_recovery_disabled):
+    """L2 strategy should return None when fast recovery is disabled in config"""
+    result = level2_strategy(0x00F1FEF5, 1, mock_config_fast_recovery_disabled)
     assert result is None
 
-    result = level2_strategy(0x08520003, 1, mock_config_token_reinference_disabled)
+    result = level2_strategy(0x08520003, 1, mock_config_fast_recovery_disabled)
     assert result is None
 
 
@@ -434,10 +436,27 @@ def test_level2_engine_fault_strategy_switch_matrix(mock_config, fault_code, sca
     assert level2_strategy(int(fault_code), 1, mock_config) is expected
 
 
+def test_level2_hbm_uce_is_not_handled_at_l2(mock_config):
+    """HBM UCE hardware fault maps to L3 RestartBusiness, not L2."""
+    assert level2_strategy(0x80E01801, 1, mock_config) is None
+
+
+@pytest.mark.parametrize("selector", [level1_strategy, level2_strategy, level3_strategy])
+def test_lingqu_companion_does_not_independently_select_fast_recovery(mock_config, selector):
+    assert selector(0x80CB8009, 1, mock_config) is None
+
+
 def test_strategy_base_failed_semantics():
     """mark_failed/is_failed round-trip; finished stays independent."""
-    strategy = TokenReinferenceStrategy()
+    strategy = EngineFastRecoveryStrategy()
     assert not strategy.is_failed()
     strategy.mark_failed()
     assert strategy.is_failed()
     assert not strategy.is_finished()
+
+
+@pytest.mark.parametrize("code", [0x80E01801, 0x80E01809, 0x08520003, 0x80CB8009])
+@pytest.mark.parametrize("selector", [level2_strategy, level3_strategy])
+def test_hardware_codes_never_select_fast_recovery(mock_config, code, selector):
+    mock_config.fault_tolerance_config.enable_fast_recovery = True
+    assert selector(code, 1, mock_config) is None

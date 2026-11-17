@@ -422,7 +422,7 @@ def test_access_log_endpoints_excluded_by_default():
     config.initialize()
     flattened = config._flatten_config()
 
-    expected = "/health,/metrics,/snapshot/health,/v1/fault_tolerance/status"
+    expected = "/health,/metrics,/snapshot/health,/fault_tolerance/status,/v1/fault_tolerance/status"
     assert flattened["disable_access_log_for_endpoints"] == expected
     cli_args = config.get_cli_args()
     assert cli_args[cli_args.index("--disable-access-log-for-endpoints") + 1] == expected
@@ -493,3 +493,27 @@ def test_deploy_config_derives_render_enable_from_root(tmp_path):
     config_path.write_text(json.dumps(user_config), encoding="utf-8")
 
     assert DeployConfig.load(config_path, role="union").render_enabled is True
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("timeout,expected", [(None, 870), (120, 870), (2000, 2000)])
+def test_fast_recovery_extends_native_timeout_without_overriding_resume(tmp_path, timeout, expected, as_json):
+    native_ft = {"resume_requests_after_recovery": False}
+    native_ft["engine_recovery_timeout_sec"] = timeout
+    user_config = {
+        "motor_deploy_config": {},
+        "motor_controller_config": {"fault_tolerance_config": {"enable_fast_recovery": True}},
+        "motor_engine_union_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "model": "/weights/model",
+                "fault_tolerance_config": json.dumps(native_ft) if as_json else native_ft,
+            },
+        },
+    }
+    config_path = tmp_path / "user_config.json"
+    config_path.write_text(json.dumps(user_config), encoding="utf-8")
+    config = DeployConfig.load(config_path, role="union")
+    ft = config.engine_config.get("fault_tolerance_config")
+    assert ft["engine_recovery_timeout_sec"] == expected
+    assert ft["resume_requests_after_recovery"] is False

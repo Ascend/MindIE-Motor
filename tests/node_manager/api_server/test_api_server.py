@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 """Tests for the NodeManager API server routes (engine-restart, stop, ...)."""
 
+import logging
 import os
 import sys
 from types import SimpleNamespace
@@ -21,7 +22,10 @@ os.environ["USER_CONFIG_PATH"] = "tests/jsons/useruser_config.json"
 os.environ["ROLE"] = "both"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from motor.node_manager.api_server.node_manager_api import app
+from motor.node_manager.api_server.node_manager_api import (
+    FaultToleranceStatusAccessFilter,
+    app,
+)
 
 # pylint: disable=redefined-outer-name
 
@@ -31,10 +35,11 @@ def client():
     return TestClient(app)
 
 
-def _ft_config(enabled=True, scale_up=False):
+def _ft_config(enabled=True, scale_up=False, fast_recovery=False):
     return SimpleNamespace(
         fault_tolerance_config=SimpleNamespace(
             enable_dp_scale_down_proxy=enabled,
+            enable_fast_recovery_proxy=fast_recovery,
             enable_dp_scale_up=scale_up,
             poll_timeout_sec=3,
             engine_restart_freeze_sec=30,
@@ -80,7 +85,8 @@ def test_disabled_engine_ft_guard_rejects_before_parsing_payload(client):
     daemon.return_value.engine_ft_manager.guard.assert_not_called()
 
 
-def test_engine_ft_apply_guard_and_finalize_routes(client):
+@pytest.mark.parametrize("instruction", ["retry", "scale_down"])
+def test_engine_ft_apply_guard_and_finalize_routes(client, instruction):
     with patch("motor.node_manager.api_server.node_manager_api.Daemon") as daemon:
         daemon.return_value.config = _ft_config()
         manager = daemon.return_value.engine_ft_manager
@@ -89,7 +95,7 @@ def test_engine_ft_apply_guard_and_finalize_routes(client):
             "/node-manager/fault-tolerance/apply",
             json={
                 "endpoint_ids": [0],
-                "instruction": "scale_down",
+                "instruction": instruction,
                 "params": {"removed_dp_ranks": [1]},
                 "request_id": "request",
             },
@@ -104,11 +110,45 @@ def test_engine_ft_apply_guard_and_finalize_routes(client):
         )
 
     assert apply_response.status_code == 200
-    apply.assert_called_once_with([0], "scale_down", {"removed_dp_ranks": [1]}, "request", 3, 29500, None)
+    apply.assert_called_once_with([0], instruction, {"removed_dp_ranks": [1]}, "request", 3, 29500, None)
     assert guard_response.status_code == 200
     guard.assert_called_once_with("request", 45)
     assert finalize_response.json() == {"status": "committed"}
     finalize.assert_called_once_with("request", [], True, 2)
+
+
+@pytest.mark.parametrize("proxy_enabled", [False, True])
+def test_fast_recovery_broadcast_does_not_require_scale_down_proxy(client, proxy_enabled):
+    """HBM fast recovery reaches the broadcast handler through the registered HTTP route."""
+    payload = {
+        "instruction": "retry",
+        "params": {"scope": "all_local_endpoints"},
+        "request_id": "hbm-recovery",
+    }
+    with patch("motor.node_manager.api_server.node_manager_api.Daemon") as daemon:
+        daemon.return_value.config = _ft_config(proxy_enabled, fast_recovery=True)
+        apply = daemon.return_value.apply_fault_tolerance
+        apply.return_value = {"engines": [{"engine_id": 0, "success": True}]}
+        response = client.post("/node-manager/fault-tolerance/apply", json=payload)
+
+    assert response.status_code == 200
+    assert response.json() == apply.return_value
+    apply.assert_called_once_with(payload)
+    daemon.return_value.engine_ft_manager.apply.assert_not_called()
+
+
+@pytest.mark.parametrize("instruction", ["retry", "scale_down"])
+def test_explicit_endpoint_apply_still_requires_scale_down_proxy(client, instruction):
+    with patch("motor.node_manager.api_server.node_manager_api.Daemon") as daemon:
+        daemon.return_value.config = _ft_config(False)
+        response = client.post(
+            "/node-manager/fault-tolerance/apply",
+            json={"instruction": instruction, "endpoint_ids": [0], "params": {}},
+        )
+
+    assert response.status_code == 404
+    daemon.return_value.engine_ft_manager.apply.assert_not_called()
+    daemon.return_value.apply_fault_tolerance.assert_not_called()
 
 
 def test_engine_ft_apply_sends_coord_store_port_when_scale_up_enabled(client):
@@ -268,3 +308,48 @@ def test_node_manager_stop_sigterms_self(client, route_mocks):
     mock_daemon_cls.return_value.stop.assert_called_once()
     mock_timer_cls.assert_called_once_with(0.5, mock_terminate)
     mock_timer_cls.return_value.start.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "method,path,status_code,visible",
+    [
+        ("GET", "/node-manager/fault-tolerance/status", 200, False),
+        ("GET", "/node-manager/fault-tolerance/status?fresh=true", 200, False),
+        ("GET", "/node-manager/fault-tolerance/status", 502, True),
+        ("POST", "/node-manager/fault-tolerance/status", 200, True),
+        ("POST", "/node-manager/fault-tolerance/apply", 200, True),
+        ("GET", "/node-manager/fault-tolerance/status-extra", 200, True),
+    ],
+)
+def test_ft_poll_access_filter_preserves_errors_and_control_requests(method, path, status_code, visible):
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        "",
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:1234", method, path, "1.1", status_code),
+        None,
+    )
+    access_filter = FaultToleranceStatusAccessFilter()
+    assert access_filter.filter(record) is visible
+    record.levelno = logging.WARNING
+    assert access_filter.filter(record)
+    record.args = ()
+    assert access_filter.filter(record)
+
+
+@pytest.mark.parametrize("fast_recovery,scale_down", [(False, False), (False, True), (True, False), (True, True)])
+def test_fast_recovery_and_status_feature_gates(client, fast_recovery, scale_down):
+    with patch("motor.node_manager.api_server.node_manager_api.Daemon") as daemon:
+        daemon.return_value.config = _ft_config(scale_down, fast_recovery=fast_recovery)
+        daemon.return_value.query_fault_tolerance_status.return_value = {"engines": []}
+        daemon.return_value.apply_fault_tolerance.return_value = {"engines": []}
+        status = client.get("/node-manager/fault-tolerance/status")
+        apply = client.post("/node-manager/fault-tolerance/apply", json={"instruction": "retry", "params": {}})
+        assert status.status_code == (200 if fast_recovery or scale_down else 404)
+        assert apply.status_code == (200 if fast_recovery else 404)
+        if not fast_recovery:
+            daemon.return_value.apply_fault_tolerance.assert_not_called()
+        if not (fast_recovery or scale_down):
+            daemon.return_value.query_fault_tolerance_status.assert_not_called()

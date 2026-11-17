@@ -81,6 +81,25 @@ def test_update_bypasses_serving_overlay_when_scale_down_is_disabled(event_pushe
     assert event.instance.id == 100
 
 
+@pytest.mark.parametrize("resume", [False, True])
+def test_fast_recovery_enables_isolation_projection_without_scale_down(event_pusher, resume):
+    config = ControllerConfig()
+    config.fault_tolerance_config.enable_fault_tolerance = True
+    config.fault_tolerance_config.enable_fast_recovery = True
+    config.fault_tolerance_config.enable_dp_scale_down = False
+    config.fault_tolerance_config.resume_requests_after_recovery = resume
+    event_pusher.update_config(config)
+    instance = ReadOnlyInstance(Instance(job_name="prefill", model_name="model", id=100, role="prefill"))
+    with patch("motor.controller.core.event_pusher._get_serving_overlay") as overlay:
+        overlay.return_value.project.return_value = None
+        assert event_pusher._project_instance(instance) is None
+        overlay.return_value.project.assert_called_once_with(instance)
+        overlay.return_value.project_many.return_value = []
+        event_pusher.instances["prefill"] = instance
+        projected, _ = event_pusher._serving_snapshot()
+        assert projected == []
+
+
 def test_start():
     """test start method creates and starts threads"""
     with patch("threading.Thread") as mock_thread_class:

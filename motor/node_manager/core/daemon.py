@@ -12,6 +12,7 @@ import threading
 import time
 from typing import Any
 
+from motor.common.http.engine_ft_client import apply_engine_ft_instruction, query_engine_ft_status
 from motor.common.resources.instance import PDRole
 from motor.common.resources.endpoint import Endpoint
 from motor.node_manager.core.services.native_engine.models import RuntimeState
@@ -308,7 +309,9 @@ class Daemon(ThreadSafeSingleton):
         Lazy import: register_manager pulls in controller_api_client which
         pulls in more of the module graph; keep it out of daemon import time.
         """
-        from motor.node_manager.core.register_manager import RegisterManager  # pylint: disable=cyclic-import
+        from motor.node_manager.core.register_manager import (
+            RegisterManager,  # pylint: disable=cyclic-import
+        )
 
         return RegisterManager()
 
@@ -410,6 +413,109 @@ class Daemon(ThreadSafeSingleton):
         if engine is None:
             return None
         return engine.metrics_target(endpoint)  # type: ignore[attr-defined]
+
+    def _active_ft_endpoints(self) -> list[Endpoint]:
+        with self._retired_endpoint_lock:
+            retired = set(self._retired_endpoint_ids)
+        return [endpoint for endpoint in self._endpoints_info if not endpoint.headless and endpoint.id not in retired]
+
+    def _resolve_ft_endpoint(self, engine_id: int | None) -> Endpoint:
+        endpoints = self._active_ft_endpoints()
+        if not endpoints:
+            raise ValueError("no engine endpoints recorded")
+        if engine_id is None:
+            if len(endpoints) != 1:
+                raise ValueError("engine_id is required when multiple endpoints are managed")
+            return endpoints[0]
+        for endpoint in endpoints:
+            if endpoint.id == int(engine_id):
+                return endpoint
+        raise ValueError("engine endpoint %s not found" % engine_id)
+
+    def _resolve_ft_endpoints(self, params: dict) -> list[Endpoint]:
+        endpoints = self._active_ft_endpoints()
+        if not endpoints:
+            raise ValueError("no engine endpoints recorded")
+
+        scope = params.get("scope")
+        if scope is not None:
+            if scope != "all_local_endpoints":
+                raise ValueError("unsupported fault tolerance scope: %s" % scope)
+            return endpoints
+
+        engine_ids = params.get("engine_ids")
+        if engine_ids is not None:
+            if not isinstance(engine_ids, list) or not engine_ids:
+                raise ValueError("engine_ids must be a non-empty list")
+            resolved = []
+            seen: set[int] = set()
+            for engine_id in engine_ids:
+                endpoint = self._resolve_ft_endpoint(engine_id)
+                if endpoint.id in seen:
+                    continue
+                seen.add(endpoint.id)
+                resolved.append(endpoint)
+            return resolved
+
+        return [self._resolve_ft_endpoint(params.get("engine_id"))]
+
+    @staticmethod
+    def _payload_for_ft_endpoint(payload: dict, engine_id: int) -> dict:
+        endpoint_payload = dict(payload)
+        endpoint_params = dict(payload.get("params", {}))
+        endpoint_params.pop("engine_ids", None)
+        endpoint_params.pop("scope", None)
+        endpoint_params["engine_id"] = engine_id
+        endpoint_payload["params"] = endpoint_params
+        return endpoint_payload
+
+    @staticmethod
+    def _apply_engine_ft_command(endpoint: Endpoint, payload: dict, timeout: float) -> dict:
+        return apply_engine_ft_instruction(
+            endpoint,
+            str(payload.get("instruction", "")),
+            payload.get("params") if isinstance(payload.get("params"), dict) else {},
+            str(payload.get("request_id") or ""),
+            timeout,
+        )
+
+    def apply_fault_tolerance(self, payload: dict) -> dict:
+        """Forward a vLLM FT instruction to one or more local engine endpoints."""
+        params = payload.get("params", {})
+        if not isinstance(params, dict):
+            raise TypeError("params must be a dict")
+        endpoints = self._resolve_ft_endpoints(params)
+        with self.config_lock:
+            timeout = self._config.fault_tolerance_config.poll_timeout_sec
+        if len(endpoints) == 1 and "engine_ids" not in params and params.get("scope") != "all_local_endpoints":
+            return self._apply_engine_ft_command(endpoints[0], payload, timeout)
+
+        results: list[dict] = []
+        for endpoint in endpoints:
+            endpoint_payload = self._payload_for_ft_endpoint(payload, endpoint.id)
+            try:
+                response = self._apply_engine_ft_command(endpoint, endpoint_payload, timeout)
+                results.append({"engine_id": endpoint.id, "success": True, "response": response})
+            except Exception as e:  # noqa: BLE001
+                results.append({"engine_id": endpoint.id, "success": False, "error": str(e)})
+        return {"engines": results}
+
+    def query_fault_tolerance_status(self) -> dict:
+        """Return vLLM FT status for every local engine endpoint."""
+        with self.config_lock:
+            timeout = self._config.fault_tolerance_config.poll_timeout_sec
+        engines: list[dict] = []
+        for endpoint in self._active_ft_endpoints():
+            try:
+                payload = query_engine_ft_status(endpoint, timeout)
+                inner = payload.get("engines") if isinstance(payload, dict) else []
+                if not isinstance(inner, list):
+                    inner = []
+                engines.append({"engine_id": endpoint.id, "engines": inner})
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Failed to query FT status for engine %s: %s", endpoint.id, e)
+                engines.append({"engine_id": endpoint.id, "engines": [], "query_error": str(e)})
+        return {"engines": engines}
 
     def kill_engine_workers(self, endpoint_ids: list[int] | None = None) -> dict[str, list[int]]:
         """SIGKILL local VLLM::Worker processes; leave engine API/EngineCore up."""
@@ -617,7 +723,11 @@ class Daemon(ThreadSafeSingleton):
                 self._should_suicide = False
             return
 
-        if self.is_suicide_frozen() or hb.is_within_grace_period():
+        if (
+            self.is_suicide_frozen()
+            or self._engine_ft_manager.is_fast_recovery_guard_active()
+            or hb.is_within_grace_period()
+        ):
             with self._suicide_lock:
                 self._suicide_abnormal_count = 0
             return
@@ -681,7 +791,7 @@ class Daemon(ThreadSafeSingleton):
                         "Engine death reported to Controller: endpoint_id=%s (ABNORMAL, relaunch expected)",
                         ep_id,
                     )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.error("Failed to report abnormal engine endpoint %s: %s", ep_id, e)
 
     def freeze_suicide(self, seconds: float) -> None:

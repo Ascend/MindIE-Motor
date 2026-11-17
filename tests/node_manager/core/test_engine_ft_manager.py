@@ -152,7 +152,7 @@ def test_query_refreshes_all_endpoints_without_treating_transport_error_as_dead(
     assert send.call_count == 1
 
 
-def test_apply_retry_uses_same_ft_manager_without_scale_down_port(reporter, endpoints):
+def test_apply_retry_instruction_uses_same_ft_manager_without_scale_down_port(reporter, endpoints):
     reporter._endpoints = endpoints
     with patch("motor.node_manager.core.engine_ft_manager.apply_engine_ft_instructions") as apply:
         reporter.apply([0, 1], "retry", {}, "request", 3, 29500)
@@ -382,7 +382,7 @@ def test_process_reports_ft_state_transition_without_health_change(mock_report, 
             "id": 0,
             "status": "unhealthy",
             "ft_state": "recovering",
-            "last_ft_request_id": "retry-1",
+            "last_ft_request_id": "recovery-1",
         },
     )
     reporter._process_engine_status(
@@ -391,7 +391,7 @@ def test_process_reports_ft_state_transition_without_health_change(mock_report, 
             "id": 0,
             "status": "unhealthy",
             "ft_state": "failed",
-            "last_ft_request_id": "retry-1",
+            "last_ft_request_id": "recovery-1",
             "ft_error": "timeout",
         },
     )
@@ -794,3 +794,18 @@ def test_main_loop_excludes_headless_and_retired_without_mutating_endpoints(repo
         poll.assert_not_called()
     assert reporter._endpoints is endpoints
     assert reporter._endpoints == ([headless, retired, http] if include_http else [headless, retired])
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+def test_fast_recovery_guard_is_bounded_and_clears_on_healthy(reporter, accepted):
+    reporter._config.fault_tolerance_config.fast_recovery_budget_sec = 930
+    with (
+        patch.object(reporter, "_send_fault_to_controller", return_value=accepted),
+        patch("motor.node_manager.core.engine_ft_manager.time.monotonic", return_value=100),
+    ):
+        reporter._process_engine_status(0, {"id": 0, "status": "unhealthy"})
+        assert reporter.is_fast_recovery_guard_active() is accepted
+    with patch("motor.node_manager.core.engine_ft_manager.time.monotonic", return_value=1031):
+        assert not reporter.is_fast_recovery_guard_active()
+    reporter._process_engine_status(0, {"id": 0, "status": "healthy"})
+    assert not reporter._recovery_deadlines

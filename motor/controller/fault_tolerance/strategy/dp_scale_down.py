@@ -1652,7 +1652,7 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
         try:
             with urllib.request.urlopen(req, timeout=max(10.0, float(timeout))) as resp:
                 payload = resp.read()[:300]
-                logger.info(
+                logger.debug(
                     "survivor probe rank=%s %s -> %s %r",
                     target.id,
                     url,
@@ -1660,7 +1660,7 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
                     payload,
                 )
         except urllib.error.HTTPError as e:
-            logger.info(
+            logger.debug(
                 "survivor probe rank=%s %s -> HTTP %s",
                 target.id,
                 url,

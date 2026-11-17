@@ -38,6 +38,23 @@ from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapsho
 logger = get_logger(__name__)
 
 
+class FaultToleranceStatusAccessFilter(logging.Filter):
+    """Hide successful status polling while retaining failures and control requests."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if record.name != "uvicorn.access" or not isinstance(args, tuple) or len(args) != 5:
+            return True
+        _, method, path, _, status_code = args
+        return not (
+            record.levelno < logging.WARNING
+            and method == "GET"
+            and isinstance(path, str)
+            and path.split("?", 1)[0] == "/node-manager/fault-tolerance/status"
+            and status_code == 200
+        )
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Lifespan context manager for FastAPI app"""
@@ -136,8 +153,11 @@ async def fault_tolerance_status(request: Request):
 
 @app.post("/node-manager/fault-tolerance/apply")
 async def fault_tolerance_apply(request: Request):
-    """Apply FT instruction after NodeManager adds its configured DP store port."""
-    payload, manager, config = await _ft_request_context(request, "apply")
+    """Dispatch the broadcast fast-recovery instruction or the explicit-endpoint scale-down protocol."""
+    payload = await _parse_ft_payload(request, "apply")
+    if payload.get("instruction") == "retry" and "endpoint_ids" not in payload:
+        return await _apply_fast_recovery_payload(payload)
+    manager, config = _require_ft_proxy("apply")
     endpoint_ids = _require_int_list(payload, "endpoint_ids")
     instruction = payload.get("instruction")
     if instruction not in {"retry", "scale_down"}:
@@ -425,6 +445,44 @@ async def engine_restart(request: Request):
     return {"message": "engine restart accepted"}
 
 
+def _require_fast_recovery_proxy(*, status_query: bool = False) -> Any:
+    daemon = Daemon()
+    config = daemon.config.fault_tolerance_config
+    enabled = config.enable_fast_recovery_proxy or (status_query and config.enable_dp_scale_down_proxy)
+    if not enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Engine FT fast-recovery proxy is disabled")
+    return daemon
+
+
+async def _apply_fast_recovery_payload(payload: dict) -> dict:
+    """Forward a Controller-selected FT instruction to the local vLLM engine."""
+    daemon = _require_fast_recovery_proxy()
+    try:
+        return await asyncio.to_thread(daemon.apply_fault_tolerance, payload)
+    except (TypeError, ValueError) as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
+    except Exception as err:
+        logger.error("Failed to apply fault tolerance instruction: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to apply fault tolerance instruction",
+        ) from err
+
+
+@app.get("/node-manager/fault-tolerance/status")
+async def query_fault_tolerance_status():
+    """Return vLLM FT status for every engine managed by this NodeManager."""
+    daemon = _require_fast_recovery_proxy(status_query=True)
+    try:
+        return await asyncio.to_thread(daemon.query_fault_tolerance_status)
+    except Exception as err:
+        logger.error("Failed to query fault tolerance status: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to query fault tolerance status",
+        ) from err
+
+
 @app.post("/node-manager/pause")
 async def pause_instance(request: Request):
     """
@@ -587,6 +645,7 @@ class NodeManagerAPI:
             }
         )
         logging.getLogger("uvicorn.access").addFilter(probe_filter)
+        logging.getLogger("uvicorn.access").addFilter(FaultToleranceStatusAccessFilter())
 
     def _serve_in_thread(self):
         loop = asyncio.new_event_loop()

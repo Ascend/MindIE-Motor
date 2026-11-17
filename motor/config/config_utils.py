@@ -9,8 +9,9 @@
 # See the Mulan PSL v2 for more details.
 
 import json
+import math
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import fields
 from enum import Enum
 from pathlib import Path
@@ -28,6 +29,9 @@ MOTOR_DEPLOY_CONFIG = "motor_deploy_config"
 MOTOR_ENGINE_PREFILL_CONFIG = "motor_engine_prefill_config"
 MOTOR_ENGINE_UNION_CONFIG = "motor_engine_union_config"
 DEFAULT_KV_CONDUCTOR_HTTP_PORT = 13333
+FAULT_TOLERANCE_CONFIG_KEY = "fault_tolerance_config"
+INSTANCE_CONFIG_KEY = "instance_config"
+
 TLS_CONFIG = "tls_config"
 MGMT_TLS_CONFIG = "mgmt_tls_config"
 INFER_TLS_CONFIG = "infer_tls_config"
@@ -602,3 +606,68 @@ def save_instance_config_to_json(
 def format_config_summary_header(title: str) -> str:
     separator = "=" * 80
     return f"{separator}\n{title}\n{separator}\n"
+
+
+def _section(config: Mapping, key: str) -> Mapping:
+    value = config.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("%s must be a JSON object or null" % key)
+    return value
+
+
+def _timeout(config: Mapping, key: str, default: float) -> float:
+    value = config.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise ValueError("%s must be a finite non-negative number" % key)
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("%s must be a finite non-negative number" % key) from error
+    if not math.isfinite(number) or number < 0:
+        raise ValueError("%s must be a finite non-negative number" % key)
+    return number
+
+
+def fast_recovery_budget(user_config: Mapping) -> int:
+    """Cover status collection, two recovery rounds and instance reassembly, with margin."""
+    from motor.config.controller import (  # pylint: disable=import-outside-toplevel,cyclic-import
+        FaultToleranceConfig,
+        InstanceConfig,
+    )
+
+    defaults = FaultToleranceConfig()
+    instance_defaults = InstanceConfig()
+    controller = _section(user_config, ConfigKey.MOTOR_CONTROLLER.value)
+    ft = dict(_section(controller, FAULT_TOLERANCE_CONFIG_KEY))
+    if not ft.get("enable_fault_tolerance", defaults.enable_fault_tolerance) or not ft.get(
+        "enable_fast_recovery", defaults.enable_fast_recovery
+    ):
+        return 0
+    policies = ("enable_hbm_uce_recovery", "enable_token_reinference", "enable_no_fault_code_recovery")
+    if not any(ft.get(policy, getattr(defaults, policy)) for policy in policies):
+        return 0
+    instance = _section(controller, INSTANCE_CONFIG_KEY)
+    return math.ceil(
+        _timeout(ft, "fault_collection_timeout_seconds", defaults.fault_collection_timeout_seconds)
+        + max(
+            2 * _timeout(ft, "recovery_round_timeout_sec", defaults.recovery_round_timeout_sec)
+            if ft.get("enable_no_fault_code_recovery", defaults.enable_no_fault_code_recovery)
+            or ft.get("enable_token_reinference", defaults.enable_token_reinference)
+            else 0,
+            _timeout(ft, "recovery_round_timeout_sec", defaults.recovery_round_timeout_sec)
+            + _timeout(ft, "hbm_uce_clearance_timeout_sec", defaults.hbm_uce_clearance_timeout_sec)
+            if ft.get("enable_hbm_uce_recovery", defaults.enable_hbm_uce_recovery)
+            else 0,
+        )
+        + max(
+            _timeout(instance, "instance_assemble_timeout", instance_defaults.instance_assemble_timeout),
+            _timeout(ft, "engine_relaunch_complete_timeout_sec", defaults.engine_relaunch_complete_timeout_sec)
+            if ft.get("enable_engine_relaunch", defaults.enable_engine_relaunch)
+            else 0,
+        )
+        + 30
+    )

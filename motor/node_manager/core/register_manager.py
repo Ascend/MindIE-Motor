@@ -33,6 +33,10 @@ from motor.common.utils.snapshot_utils import (
 from motor.config.node_manager import HardwareType, NodeManagerConfig
 from motor.node_manager.api_client.controller_api_client import ControllerApiClient
 from motor.node_manager.core.api_ready_event import wait_until_api_ready
+from motor.node_manager.core.services.native_engine.ascend_device_ids import (
+    calc_endpoint_visible_device_ids,
+    list_runtime_device_ids,
+)
 
 logger = get_logger(__name__)
 
@@ -408,6 +412,21 @@ class RegisterManager(ThreadSafeSingleton):
             device_num = self._config.basic_config.device_num
             nnodes = self._config.basic_config.nnodes
 
+        physical_device_ids = []
+        if self.ranktable is None:
+            runtime_ids = list_runtime_device_ids(device_num=device_num)
+            with self.config_lock:
+                single = self._config.single_container_config
+                if runtime_ids or single.single_container_flag:
+                    physical_device_ids = calc_endpoint_visible_device_ids(
+                        0,
+                        device_num,
+                        device_num,
+                        pod_physical_ids=runtime_ids,
+                        single_container_flag=single.single_container_flag,
+                        device_offset=single.device_offset,
+                    ).split(",")
+
         register_msg = RegisterMsg(
             job_name=job_name,
             model_name=model_name,
@@ -423,6 +442,7 @@ class RegisterManager(ThreadSafeSingleton):
             enable_multi_endpoints=enable_multi_endpoints,
             device_num=device_num,
             ranktable=self.ranktable,
+            physical_device_ids=physical_device_ids,
             nnodes=nnodes,
             is_master=self.is_snapshot_master,
         )

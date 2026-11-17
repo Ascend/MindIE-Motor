@@ -248,7 +248,7 @@ class ControllerAPI:
             "/controller/register": logging.INFO,
             "/controller/reregister": logging.INFO,
             "/controller/terminate_instance": logging.INFO,
-            "/controller/report_software_fault": logging.INFO,
+            "/controller/report_software_fault": logging.ERROR,
             "/controller/fault_tolerance/recover": logging.INFO,
             "/observability/add_alarm": logging.INFO,
             "/startup": logging.ERROR,

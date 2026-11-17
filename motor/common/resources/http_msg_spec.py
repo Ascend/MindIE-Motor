@@ -71,12 +71,25 @@ class RegisterMsg(BaseModel):
     parallel_config: ParallelConfig = Field(..., description="Parallel configuration")
     enable_multi_endpoints: bool = Field(default=True, description="Whether to enable multi-endpoints mode")
     device_num: int = Field(..., description="Number of visible devices in the container")
+    physical_device_ids: list[str] = Field(
+        default_factory=list, description="Physical NPU IDs in the same order used by native engine launch"
+    )
     ranktable: Ranktable | None = Field(default=None, description="Ranktable managed by this nm")
     nnodes: int = Field(default=1, description="PCP cross-node count, from engine_config")
     is_master: bool = Field(
         default=False,
         description="Whether this node hosts the DP0 engine (snapshot master node)",
     )
+
+    @model_validator(mode="after")
+    def validate_physical_device_ids(self) -> "RegisterMsg":
+        if self.physical_device_ids and (
+            len(self.physical_device_ids) != self.device_num
+            or any(not device.isdigit() for device in self.physical_device_ids)
+            or len(set(map(int, self.physical_device_ids))) != self.device_num
+        ):
+            raise ValueError("physical_device_ids must contain device_num distinct nonnegative NPU IDs")
+        return self
 
 
 class StartCmdMsg(BaseModel):

@@ -420,34 +420,30 @@ class ResourceMonitor:
             logger.warning("No configmap change handler configured for node %s", self.node_name)
 
     def _has_fault_info_changed(self, new_fault_infos: list[FaultInfo]) -> bool:
-        """
-        Check if the fault information has actually changed compared to the last processed data.
+        """按设备和故障码比较有效快照，忽略顺序、重复项及时间戳。
 
-        Comparison is done on the deduplicated dict (keyed by fault_code), matching the
-        storage model used by FaultManager.  This prevents spurious "changed" triggers when
-        only the set of affected NPU names shifts but the unique fault codes stay the same.
+        只按故障码去重会遗漏设备归属变化：卡 0、卡 1 都有 1801，卡 0 清码后，
+        码集合仍为 {1801}，但必须通知 Controller 更新卡 0 的故障状态。
+        set 签名仍去除相同设备上的重复记录；不同卡同码不合并。
+        本方法只决定是否上报新快照，不负责识别连带故障或触发多次恢复。
         """
         if self.last_fault_infos is None:
-            return True  # First time processing
-
-        def _build_dedup_dict(infos: list[FaultInfo]) -> dict[int, FaultInfo]:
-            return {int(f.fault_code): f for f in infos}
-
-        new_dict = _build_dedup_dict(new_fault_infos)
-        last_dict = _build_dedup_dict(self.last_fault_infos)
-
-        # Different sets of fault codes → changed
-        if new_dict.keys() != last_dict.keys():
             return True
 
-        # Same fault codes: compare level and type (the fields that affect behavior)
-        for code in new_dict:
-            new_f = new_dict[code]
-            old_f = last_dict[code]
-            if new_f.fault_level != old_f.fault_level or new_f.fault_type != old_f.fault_type:
-                return True
+        def signatures(infos: list[FaultInfo]) -> set[tuple]:
+            return {
+                (
+                    int(f.fault_code),
+                    f.npu_name,
+                    f.fault_level,
+                    f.fault_type,
+                    f.origin_fault_level,
+                    f.fault_category,
+                )
+                for f in infos
+            }
 
-        return False
+        return signatures(new_fault_infos) != signatures(self.last_fault_infos)
 
     def _process_configmap_data(self, config_data: dict[str, Any]) -> list[FaultInfo]:
         """Process ConfigMap configuration data and extract fault information"""

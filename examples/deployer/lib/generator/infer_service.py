@@ -337,7 +337,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     selector[C.APP] = infer_name
     template = workload_spec.setdefault(C.TEMPLATE, {})
     template.setdefault(C.METADATA, {}).setdefault(C.LABELS, {})[C.APP] = infer_name
-    apply_engine_ft_labels(template, user_config, role_name)
+    apply_engine_ft_labels(role, user_config, role_name)
     apply_volcano_queue_annotations(template.setdefault(C.METADATA, {}), deploy_config)
     pod_spec = template.setdefault(C.SPEC, {})
     containers = pod_spec.get(C.CONTAINERS, [])

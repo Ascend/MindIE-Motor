@@ -563,6 +563,9 @@ def test_process_switch_info_with_sub_health_fault_level():
         ("not_hex,also_bad", 0x1001),
         ("", 0x1001),
         (None, 0x1001),
+        ("0x80e18400", 0x80E18400),
+        ("0X80E01809", 0x80E01809),
+        ("80e01801", 0x80E01801),
     ],
 )
 def test_parse_device_fault_code(value, expected):
@@ -695,16 +698,19 @@ def test_process_device_info_with_new_key_naming():
     device_info_json = json.dumps(device_info_dict)
     result = process_device_info(device_info_json)
 
-    assert len(result) == 2
+    assert len(result) == 3
     assert result[0].npu_name == "npu-0"
     assert result[0].fault_code == 0x110001024
     assert result[0].fault_level == FaultLevel.L1  # NotHandleFault → L1
     assert result[0].fault_type == HardwareFaultType.CARD_UNHEALTHY
 
     assert result[1].npu_name == "npu-1"
-    assert result[1].fault_code == 0x8F180E00  # first of comma-separated
+    assert result[1].fault_code == 0x8F180E00
     assert result[1].fault_level == FaultLevel.L1
     assert result[1].fault_type == HardwareFaultType.CARD_UNHEALTHY
+
+    assert result[2].npu_name == "npu-1"
+    assert result[2].fault_code == 0x110001024
 
 
 def test_process_device_info_with_new_network_unhealthy_key():
@@ -774,15 +780,13 @@ def test_process_device_info_new_key_json_string_format():
 
     # All 3 fault devices should be parsed from npu-Fault (nested JSON string)
     # npu-NetworkUnhealthy is empty string → skipped
-    assert len(result) == 3
+    assert len(result) == 4
     npu_names = [f.npu_name for f in result]
     assert "npu-0" in npu_names
     assert "npu-1" in npu_names
     assert "npu-5" in npu_names
 
-    # npu-1 has comma-separated fault code → first one wins
-    npu1 = next(f for f in result if f.npu_name == "npu-1")
-    assert npu1.fault_code == 0x8F180E00
+    assert {f.fault_code for f in result if f.npu_name == "npu-1"} == {0x8F180E00, 0x110001024}
 
 
 def test_process_device_info_new_fault_and_old_network_unhealthy():
@@ -1003,3 +1007,39 @@ def test_process_switch_info_mixed_old_and_new_key_formats():
     result = process_switch_info(switch_info_json)
 
     assert len(result) == 2
+
+
+@pytest.mark.parametrize("codes", ["80E01801,8F19A017", "8F19A017,80E01801"])
+@pytest.mark.parametrize("key", ["huawei.com/npu-Fault", "huawei.com/Ascend910-NetworkUnhealthy"])
+def test_device_mixed_faults_preserve_individual_levels(codes, key):
+    """An unrelated card isolation alarm must not hide or reclassify HBM UCE."""
+    entry = {
+        "fault_type": "CardUnhealthy",
+        "npu_name": "npu-6",
+        "fault_code": codes,
+        "fault_level": "PreSeparateNPU",
+        "fault_time_and_level_map": {
+            "0x80e01801": {"fault_level": "RestartBusiness", "fault_time": 1},
+            "8F19A017": {"fault_level": "PreSeparateNPU", "fault_time": 1},
+        },
+    }
+    result = process_device_info(json.dumps({"DeviceInfo": {"DeviceList": {key: json.dumps([entry])}}}))
+    assert {(f.npu_name, f.fault_code, f.origin_fault_level, f.fault_level) for f in result} == {
+        ("npu-6", 0x80E01801, OriginFaultLevel.RESTART_BUSINESS, FaultLevel.L3),
+        ("npu-6", 0x8F19A017, OriginFaultLevel.PRE_SEPARATE_NPU, FaultLevel.L6),
+    }
+
+
+@pytest.mark.parametrize("details", [None, [], {"80E01801": None}, {"80E01801": {"fault_level": ""}}])
+def test_device_fault_missing_detail_uses_card_level(details):
+    entry = {
+        "fault_type": "CardUnhealthy",
+        "npu_name": "npu-6",
+        "fault_code": "invalid,80E01801,0x80e01801",
+        "fault_level": "RestartBusiness",
+        "fault_time_and_level_map": details,
+    }
+    result = process_device_info(json.dumps({"DeviceInfo": {"DeviceList": {"huawei.com/npu-Fault": [entry]}}}))
+    assert len(result) == 1
+    assert result[0].fault_code == 0x80E01801
+    assert result[0].fault_level == FaultLevel.L3

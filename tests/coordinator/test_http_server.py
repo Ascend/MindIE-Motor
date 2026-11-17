@@ -502,6 +502,7 @@ class TestCoordinatorServer:
             "model_name": "Qwen3-8B",
             "status": "active",
             "pool": "unknown",
+            "recovery_paused": False,
             "healthy": False,
             "circuit_breaker": {
                 "state": "closed",

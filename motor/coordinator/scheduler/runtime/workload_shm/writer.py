@@ -27,6 +27,7 @@ from motor.coordinator.scheduler.runtime.workload_shm.layout import (
     ROLE_HYBRID,
     ROLE_ENCODE,
     FLAG_VALID,
+    FLAG_BLOCKED,
     DEFAULT_WORKLOAD_SHM_MAX_ENTRIES,
 )
 from motor.coordinator.scheduler.runtime.workload_shm.native import NativeWorkloadShmError, WorkloadShm
@@ -101,6 +102,8 @@ class WorkloadSharedMemoryOwner:
         self._native = native if native is not None else WorkloadShm.create_v4(name, max_entries)
         self._slot_map: dict[tuple[int, int], int] = {}
         self._generation: dict[tuple[int, int], int] = {}
+        self._circuit_blocked: set[int] = set()
+        self._recovery_blocked: set[int] = set()
 
     @property
     def shm_name(self) -> str:
@@ -139,7 +142,13 @@ class WorkloadSharedMemoryOwner:
         """Set/clear BLOCKED on all VALID slots of an instance. Returns slots touched."""
         if self._native is None:
             return 0
-        return self._native.set_blocked(instance_id, blocked)
+        paused = self._im.get_available_instances().get(instance_id)
+        count = self._native.set_blocked(instance_id, blocked or bool(paused and paused.recovery_paused))
+        if blocked:
+            self._circuit_blocked.add(instance_id)
+        else:
+            self._circuit_blocked.discard(instance_id)
+        return count
 
     def write_snapshot(self) -> None:
         """Full membership snapshot. Preserves in-flight tokens and bumps generation on reuse."""
@@ -147,6 +156,9 @@ class WorkloadSharedMemoryOwner:
             return
         entries = _collect_entries_and_slot_map(self._im, self._max_entries)[0]
         existing = self._load_existing_pairs()
+        recovery_blocked = {
+            instance.id for instance in self._im.get_available_instances().values() if instance.recovery_paused
+        }
         live: dict[tuple[int, int], tuple[int, float]] = {}
         for iid, eid, role, im_tokens in entries:
             live[(iid, eid)] = (role, im_tokens)
@@ -185,8 +197,15 @@ class WorkloadSharedMemoryOwner:
                 gen = self._generation.get(pair, -1) + 1
                 self._generation[pair] = gen
                 v4[slot] = (iid, eid, role, gen, FLAG_VALID, im_tokens)
+            iid, eid, role, gen, flags, tokens = v4[slot]
+            if iid in recovery_blocked or iid in self._circuit_blocked:
+                flags |= FLAG_BLOCKED
+            elif iid in self._recovery_blocked:
+                flags &= ~FLAG_BLOCKED
+            v4[slot] = (iid, eid, role, gen, flags, tokens)
         self._slot_map = assignments
         self._native.write_snapshot_v4(v4, bump_instance_version=True)
+        self._recovery_blocked = recovery_blocked
 
     def _load_existing_pairs(self) -> dict[tuple[int, int], tuple[int, int]]:
         """Read current VALID slots: (iid, eid) -> (generation, flags)."""

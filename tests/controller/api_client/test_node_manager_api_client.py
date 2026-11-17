@@ -114,3 +114,34 @@ def test_stop_http_error_is_failed_not_unreachable(node_mgr, mock_http_client):
     mock_http_client.post.side_effect = RuntimeError("http response error 500, boom")
     assert NodeManagerApiClient.stop_status(node_mgr) == NodeManagerStopStatus.FAILED
     assert NodeManagerApiClient.stop(node_mgr) is False
+
+
+def test_apply_fault_tolerance_posts_payload(node_mgr, mock_http_client):
+    payload = {"instruction": "retry", "params": {"engine_id": 1}}
+    assert NodeManagerApiClient.apply_fault_tolerance(node_mgr, payload) is True
+    posted = mock_http_client.post.call_args
+    assert posted.args[0] == "/node-manager/fault-tolerance/apply"
+    assert posted.kwargs["data"] == payload
+
+
+def test_apply_fault_tolerance_failure_returns_false(node_mgr, mock_http_client):
+    mock_http_client.post.side_effect = RuntimeError("unreachable")
+    assert NodeManagerApiClient.apply_fault_tolerance(node_mgr, {"instruction": "retry"}) is False
+
+
+def test_query_fault_tolerance_status_returns_payload(node_mgr, mock_http_client):
+    mock_http_client.get.return_value = {"engines": [{"engine_id": 1, "engines": [{"status": "unhealthy"}]}]}
+    payload = NodeManagerApiClient.query_fault_tolerance_status(node_mgr)
+    assert payload["engines"][0]["engine_id"] == 1
+    mock_http_client.get.assert_called_once_with("/node-manager/fault-tolerance/status")
+
+
+def test_query_fault_tolerance_status_failure_returns_empty(node_mgr, mock_http_client):
+    mock_http_client.get.side_effect = RuntimeError("unreachable")
+    assert NodeManagerApiClient.query_fault_tolerance_status(node_mgr) == {}
+
+
+@pytest.mark.parametrize("entries", [[], [{"engine_id": 0, "success": False}], [{"success": True}, {"success": False}]])
+def test_apply_recovery_instruction_rejects_partial_engine_acknowledgements(node_mgr, mock_http_client, entries):
+    mock_http_client.post.return_value = {"engines": entries}
+    assert not NodeManagerApiClient.apply_fault_tolerance(node_mgr, {"instruction": "retry"})

@@ -16,20 +16,26 @@ __all__ = [
     "StrategyBase",
     "generate_strategy_map",
     "ScaleP2DStrategy",
-    "TokenReinferenceStrategy",
     "EngineRelaunchStrategy",
     "EngineFastRecoveryStrategy",
     "DpScaleDownStrategy",
     "InstanceReconfigurationStrategy",
     "NmSuicideStrategy",
+    "HbmUceRecoveryStrategy",
+    "GenericFastRecoveryStrategy",
+    "TokenReinferenceStrategy",
 ]
 
 from .base import StrategyBase
 from .strategy import generate_strategy_map
 from .scale_p2d import ScaleP2DStrategy
-from .token_reinference import TokenReinferenceStrategy
 from .engine_relaunch import EngineRelaunchStrategy
 from .dp_scale_down import DpScaleDownStrategy
 from .reconfiguration import InstanceReconfigurationStrategy
-from .fast_recovery import EngineFastRecoveryStrategy
 from .nm_suicide import NmSuicideStrategy
+from .fast_recovery import (
+    HbmUceRecoveryStrategy,
+    GenericFastRecoveryStrategy,
+    EngineFastRecoveryStrategy,
+    TokenReinferenceStrategy,
+)

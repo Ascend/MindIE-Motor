@@ -24,30 +24,35 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from motor.common.resources.endpoint import DeviceInfo, Endpoint
-from motor.common.resources.instance import Instance, InsStatus, NodeManagerInfo, ParallelConfig
+from motor.common.resources.instance import InsStatus, Instance, NodeManagerInfo, ParallelConfig
 from motor.config.controller import ControllerConfig
 from motor.controller.core import ObserverEvent
 from motor.controller.fault_tolerance.dp_scale_down import FtPhase, ScaleDownContext, get_ft_runtime_store
 from motor.controller.fault_tolerance.fault_manager import FaultManager
-from motor.controller.fault_tolerance.recovery_planner import build_recovery_plan
-from motor.controller.fault_tolerance.serving_overlay import ServingOverlay
 from motor.controller.fault_tolerance.fault_types import (
     FaultCategory,
     FaultInfo,
     FaultLevel,
     HardwareFaultType,
-    hardware_fault_identity,
     InstanceMetadata,
     NodeMetadata,
     NodeStatus,
     OriginFaultLevel,
     SpecialFaultCode,
+    hardware_fault_identity,
 )
+from motor.controller.fault_tolerance.recovery_planner import build_recovery_plan
+from motor.controller.fault_tolerance.strategy.fast_recovery import (
+    HbmUceRecoveryStrategy,
+    GenericFastRecoveryStrategy,
+    TokenReinferenceStrategy,
+)
+from motor.controller.fault_tolerance.serving_overlay import ServingOverlay
 from motor.controller.fault_tolerance.strategy import (
     DpScaleDownStrategy,
-    EngineFastRecoveryStrategy,
     EngineRelaunchStrategy,
     InstanceReconfigurationStrategy,
+    EngineFastRecoveryStrategy,
     ScaleP2DStrategy,
 )
 
@@ -556,17 +561,16 @@ def test_fault_manager_start_with_persistence_disabled(fault_manager):
     """Test starting FaultManager with persistence disabled"""
     fault_manager.etcd_config.enable_etcd_persistence = False
 
-    with patch.object(fault_manager, "restore_data") as mock_restore:
-        with patch("threading.Thread") as mock_thread:
-            fault_manager.start()
+    with patch.object(fault_manager, "restore_data") as mock_restore, patch("threading.Thread") as mock_thread:
+        fault_manager.start()
 
-            mock_thread.assert_called_once_with(
-                target=fault_manager._ft_strategy_center,
-                daemon=True,
-                name="FaultToleranceStrategyCenter",
-            )
-            mock_restore.assert_not_called()
-            mock_thread.return_value.start.assert_called_once()
+        mock_thread.assert_called_once_with(
+            target=fault_manager._ft_strategy_center,
+            daemon=True,
+            name="FaultToleranceStrategyCenter",
+        )
+        mock_restore.assert_not_called()
+        mock_thread.return_value.start.assert_called_once()
 
 
 def test_fault_manager_start_restore_data_failed(fault_manager):
@@ -594,26 +598,24 @@ def test_fault_manager_start_with_stop_event_reset(fault_manager):
     """Test starting FaultManager when stop_event was previously set"""
     fault_manager.stop_event.set()
 
-    with patch.object(fault_manager, "restore_data", return_value=True):
-        with patch("threading.Thread"):
-            fault_manager.start()
-            assert not fault_manager.stop_event.is_set()
+    with patch.object(fault_manager, "restore_data", return_value=True), patch("threading.Thread"):
+        fault_manager.start()
+        assert not fault_manager.stop_event.is_set()
 
 
 def test_fault_manager_start_creates_resource_monitors(fault_manager_with_instances):
     """Test that starting FaultManager creates ResourceMonitors for all nodes"""
     manager = fault_manager_with_instances
 
-    with patch.object(manager, "restore_data", return_value=True):
-        with patch("threading.Thread"):
-            with patch.object(manager, "_create_resource_monitor_for_node") as mock_create_monitor:
-                manager.start()
+    with patch.object(manager, "restore_data", return_value=True), patch("threading.Thread"):
+        with patch.object(manager, "_create_resource_monitor_for_node") as mock_create_monitor:
+            manager.start()
 
-                # Verify ResourceMonitors were created for all nodes (3 nodes in test setup)
-                assert mock_create_monitor.call_count == 3
-                mock_create_monitor.assert_any_call("node_0")
-                mock_create_monitor.assert_any_call("node_1")
-                mock_create_monitor.assert_any_call("node_2")
+            # Verify ResourceMonitors were created for all nodes (3 nodes in test setup)
+            assert mock_create_monitor.call_count == 3
+            mock_create_monitor.assert_any_call("node_0")
+            mock_create_monitor.assert_any_call("node_1")
+            mock_create_monitor.assert_any_call("node_2")
 
 
 def test_update_instance_initial(fault_manager, mock_instance):
@@ -1137,7 +1139,7 @@ def test_refresh_instance_fault_level_with_device_faults(fault_manager_with_inst
 
             mock_im.separate_instance.assert_called_once_with(1)
 
-            mock_logger.info.assert_called_once_with(
+            mock_logger.info.assert_any_call(
                 "Instance %d fault level updated to %s (code: 0x%x, category: %s)",
                 1,
                 FaultLevel.L3.name,
@@ -1237,7 +1239,7 @@ def test_software_faults_are_isolated_between_instances_sharing_pod_ip(fault_man
     assert len(manager.instances[2].software_fault_infos) == 1
     with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
         instance_manager_cls.return_value.get_instance.return_value = _hardware_dp_instance()
-        context = manager._build_scale_down_context(2)
+        context = manager._build_recovery_context(2)
     assert context.pending_removed_ranks == (1,)
 
 
@@ -1319,7 +1321,7 @@ def test_report_software_fault_logs_dp_rank_and_status(fault_manager_with_instan
 
     assert result.accepted
     assert list(manager.instances[1].software_fault_infos) == ["192.168.1.1:1026:3"]
-    mock_logger.info.assert_any_call(
+    mock_logger.debug.assert_any_call(
         "Reported software fault for instance %d (key=%s): dp_rank=%s, type=%s, engine_status=%s(%s), fault_level=%s",
         1,
         "192.168.1.1:1026:3",
@@ -1332,24 +1334,96 @@ def test_report_software_fault_logs_dp_rank_and_status(fault_manager_with_instan
 
 
 @pytest.mark.parametrize("engine_status", [1, 2])
-def test_first_engine_fault_immediately_withdraws_instance(fault_manager_with_instances, engine_status):
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("role", ["prefill", "decode", "union"])
+@pytest.mark.parametrize("scale_down", [False, True])
+def test_first_engine_fault_immediately_withdraws_instance(
+    fault_manager_with_instances, engine_status, resume, role, scale_down
+):
     manager = fault_manager_with_instances
-    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    manager.config.fault_tolerance_config.enable_dp_scale_down = scale_down
+    manager.config.fault_tolerance_config.enable_fast_recovery = True
+    manager.config.fault_tolerance_config.resume_requests_after_recovery = resume
     fault = FaultInfo.from_exception(RuntimeError("engine fault"), engine_id=0, engine_status=engine_status)
     instance = _reportable_instance("192.168.1.1", engine_ids=(0,))
+    instance.role = role
 
     with (
         patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls,
         patch.object(ServingOverlay, "withdraw", return_value=True) as withdraw,
+        patch.object(ServingOverlay, "pause_for_recovery", return_value=True) as pause,
     ):
         instance_manager_cls.return_value.get_instance.return_value = instance
         assert manager.report_software_fault(fault, pod_ip="192.168.1.1", instance_id=1).accepted
         assert manager.report_software_fault(fault, pod_ip="192.168.1.1", instance_id=1).accepted
 
-    withdraw.assert_called_once_with(instance)
+    preserve = engine_status == 2
+    if preserve:
+        pause.assert_called_once_with(instance)
+        withdraw.assert_not_called()
+    else:
+        withdraw.assert_called_once_with(instance)
+        pause.assert_not_called()
     runtime = get_ft_runtime_store().get(1)
     assert runtime["phase"] == FtPhase.WAITING_ENGINE_FAULT.value
     assert runtime["serving_published"] is False
+    assert runtime["preserve_recovery_streams"] is preserve
+
+
+@pytest.mark.parametrize("fault_level", [FaultLevel.HEALTHY, FaultLevel.L1])
+@pytest.mark.parametrize("dead_committed", [[], [1]])
+def test_not_handle_fault_allows_serving_republication(fault_manager_with_instances, fault_level, dead_committed):
+    """Fast-recovery completion must restore routing even with background NotHandle evidence."""
+    manager = fault_manager_with_instances
+    manager.instances[1].fault_level = fault_level
+    instance = Instance(
+        job_name="decode-0", model_name="model", id=1, role="decode", parallel_config=ParallelConfig(dp_size=2)
+    )
+    instance.add_endpoints(
+        "192.168.1.1", {rank: Endpoint(id=rank, ip="192.168.1.1", business_port=str(8000 + rank)) for rank in (0, 1)}
+    )
+    store = get_ft_runtime_store()
+    store.transition(1, phase=FtPhase.WAITING_ENGINE_FAULT, dead_committed=dead_committed, serving_published=False)
+    with (
+        patch.object(manager, "_is_superseded_instance", return_value=False),
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls,
+        patch(
+            "motor.controller.fault_tolerance.serving_overlay.CoordinatorApiClient.send_instance_refresh",
+            side_effect=[False, True],
+        ) as refresh,
+    ):
+        instance_manager_cls.return_value.get_instance.return_value = instance
+        manager._process_instance_strategy(1)
+        assert store.get(1)["serving_published"] is False
+        manager._process_instance_strategy(1)
+    assert refresh.call_count == 2
+    assert store.get(1)["can_serve"] is True
+    assert store.get(1)["dead_committed"] == dead_committed
+    published = refresh.call_args.args[0].instances[0]
+    assert {endpoint.id for endpoint in published.get_all_endpoints()} == {0, 1} - set(dead_committed)
+
+
+@pytest.mark.parametrize("blocked_by", ["running", "failed", "actionable", "superseded", "reconfigured"])
+def test_serving_republication_keeps_recovery_safety_guards(fault_manager_with_instances, blocked_by):
+    manager = fault_manager_with_instances
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L2 if blocked_by == "actionable" else FaultLevel.L1
+    metadata.prev_strategy_failed = blocked_by == "failed"
+    if blocked_by == "running":
+        metadata.strategy = Mock()
+        metadata.strategy.is_finished.return_value = False
+    store = get_ft_runtime_store()
+    store.transition(1, phase=FtPhase.WAITING_ENGINE_FAULT, serving_published=False)
+    if blocked_by == "reconfigured":
+        store.mark_instance_reconfiguration_dispatched(1)
+    with (
+        patch.object(manager, "_is_superseded_instance", return_value=blocked_by == "superseded"),
+        patch.object(manager, "_build_recovery_context", return_value=ScaleDownContext()),
+        patch.object(ServingOverlay, "publish") as publish,
+    ):
+        manager._process_instance_strategy(1)
+    publish.assert_not_called()
+    assert store.get(1)["can_serve"] is False
 
 
 def test_engine_fault_does_not_withdraw_when_dp_scale_down_is_disabled(fault_manager_with_instances):
@@ -2080,6 +2154,9 @@ def test_pre_separate_l6_triggers_scale_p2d(fault_manager_with_instances):
         ("EngineFastRecoveryStrategy", False, False, InstanceReconfigurationStrategy),
         ("DpScaleDownStrategy", True, False, InstanceReconfigurationStrategy),
         ("EngineRelaunchStrategy", True, True, InstanceReconfigurationStrategy),
+        ("EngineFastRecoveryStrategy", True, False, InstanceReconfigurationStrategy),
+        ("EngineFastRecoveryStrategy", False, True, InstanceReconfigurationStrategy),
+        ("EngineFastRecoveryStrategy", False, False, InstanceReconfigurationStrategy),
         ("InstanceReconfigurationStrategy", True, True, None),
     ],
     ids=[
@@ -2090,6 +2167,9 @@ def test_pre_separate_l6_triggers_scale_p2d(fault_manager_with_instances):
         "fast-recovery-to-reconfiguration",
         "scale-down-to-reconfiguration",
         "relaunch-to-reconfiguration",
+        "fast-recovery-to-reconfiguration",
+        "fast-recovery-skips-enabled-relaunch",
+        "fast-recovery-without-scale-down-to-reconfiguration",
         "reconfiguration-not-repeated",
     ],
 )
@@ -2194,7 +2274,7 @@ def test_late_hardware_fault_escalates_failed_reconfiguration_to_scale_p2d(fault
         patch.object(manager, "_is_superseded_instance", return_value=False),
         patch.object(
             manager,
-            "_build_scale_down_context",
+            "_build_recovery_context",
             return_value=ScaleDownContext(source="hardware", hardware_fault_observed=True),
         ),
         patch.object(manager.executor, "submit") as submit,
@@ -2215,7 +2295,7 @@ def test_disabled_scale_down_falls_back_to_reconfiguration(fault_manager_with_in
     with (
         patch.object(
             manager,
-            "_build_scale_down_context",
+            "_build_recovery_context",
             return_value=ScaleDownContext(
                 pending_removed_ranks=(1,),
                 source="software",
@@ -2420,7 +2500,7 @@ def test_strategy_completion_records_failure_flag(fault_manager_with_instances, 
     with (
         patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as mock_im_class,
         patch.object(manager, "_clear_software_faults") as mock_clear,
-        patch.object(manager, "_build_scale_down_context") as build_context,
+        patch.object(manager, "_build_recovery_context") as build_context,
         patch.object(manager, "_refresh_instance_fault_level"),
     ):
         mock_im_class.return_value = MagicMock()
@@ -2654,7 +2734,7 @@ def test_next_collection_excludes_previously_committed_dead_rank(
 
     with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
         instance_manager_cls.return_value.get_instance.return_value = instance
-        context = manager._build_scale_down_context(1)
+        context = manager._build_recovery_context(1)
 
     assert context.pending_removed_ranks == (1,)
     assert context.collection_complete is False
@@ -2825,7 +2905,7 @@ def test_hardware_scale_down_waits_for_dead_and_survivor_evidence(fault_manager_
 
     with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
         instance_manager_cls.return_value.get_instance.return_value = instance
-        context = manager._build_scale_down_context(1)
+        context = manager._build_recovery_context(1)
 
     assert context.pending_removed_ranks == ()
     assert context.hardware_affected_ranks == (1,)
@@ -2861,7 +2941,7 @@ def test_node_hardware_fault_selects_all_dp_ranks_on_faulty_nodes(
 
     with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
         instance_manager_cls.return_value.get_instance.return_value = instance
-        context = manager._build_scale_down_context(1)
+        context = manager._build_recovery_context(1)
 
     assert context.pending_removed_ranks == (0,)
     assert context.hardware_affected_ranks == (0, 1)
@@ -2886,7 +2966,7 @@ def test_l2_hardware_fault_covering_all_dp_is_not_actionable(
 
     with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
         instance_manager_cls.return_value.get_instance.return_value = instance
-        context = manager._build_scale_down_context(1)
+        context = manager._build_recovery_context(1)
 
     assert context.source == "software"
     assert context.pending_removed_ranks == ()
@@ -2910,7 +2990,7 @@ def test_node_hardware_fault_keeps_dp_on_other_nodes_as_survivor(fault_manager_w
 
     with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
         instance_manager_cls.return_value.get_instance.return_value = instance
-        context = manager._build_scale_down_context(1)
+        context = manager._build_recovery_context(1)
 
     assert context.pending_removed_ranks == ()
     assert context.hardware_affected_ranks == (1,)
@@ -3261,7 +3341,7 @@ def test_scale_p2d_handled_node_is_not_resubmitted(fault_manager_with_instances,
     manager.strategies[FaultLevel.L6] = lambda *_: ScaleP2DStrategy
     with (
         patch.object(manager, "_is_superseded_instance", return_value=superseded),
-        patch.object(manager, "_build_scale_down_context", return_value=ScaleDownContext()),
+        patch.object(manager, "_build_recovery_context", return_value=ScaleDownContext()),
         patch.object(manager.executor, "submit") as submit,
     ):
         manager._process_instance_strategy(1)
@@ -3387,6 +3467,87 @@ def test_linkdown_warning_is_rate_limited(caplog, fault_manager, hardware_type, 
     assert bool(node.hardware_fault_infos) is stored
     assert all(fragment in caplog.text for fragment in fragments)
     assert caplog.text.count(count_message) == 1
+
+
+def _seed_l3_hardware_fault(manager, fault_code, *, instance_id=1, node_name="node_0"):
+    """Seed a hardware CardUnhealthy L3 fault on a node owned by the instance."""
+    manager.instances[instance_id] = InstanceMetadata(instance_id=instance_id)
+    fault = FI(
+        fault_type=HardwareFaultType.CARD_UNHEALTHY,
+        npu_name="npu0",
+        fault_code=fault_code,
+        fault_level=FaultLevel.L3,
+    )
+    node = NodeMetadata(
+        node_name=node_name,
+        instance_ids={instance_id},
+        instance_pod_ips={instance_id: "10.0.0.1"},
+        instance_job_names={instance_id: "job1"},
+    )
+    node.hardware_fault_infos = {fault.fault_code: fault.model_copy()}
+    manager.nodes[node_name] = node
+    return node, fault
+
+
+@pytest.mark.parametrize(
+    "all_unhealthy,removed,complete,timed_out,expected",
+    [
+        (True, (), True, False, GenericFastRecoveryStrategy),
+        (False, (0,), True, False, DpScaleDownStrategy),
+        (False, (), False, False, None),
+        (False, (), False, True, InstanceReconfigurationStrategy),
+    ],
+)
+def test_recovery_planner_preserves_scale_down_priority(all_unhealthy, removed, complete, timed_out, expected):
+    config = ControllerConfig()
+    config.fault_tolerance_config.enable_fast_recovery = True
+    config.fault_tolerance_config.enable_dp_scale_down = True
+    context = ScaleDownContext(
+        all_dp_unhealthy=all_unhealthy,
+        pending_removed_ranks=removed,
+        collection_complete=complete,
+        collection_timed_out=timed_out,
+        engine_fault_observed=True,
+    )
+    plan = build_recovery_plan(
+        1, config, context, EngineRelaunchStrategy, FaultLevel.L2, int(SpecialFaultCode.ENGINE_UNHEALTHY)
+    )
+    assert plan.strategy is expected
+
+
+@pytest.mark.parametrize("fault_cleared", [False, True])
+def test_dispatched_reconfiguration_does_not_rearm_old_hbm_recovery(fault_manager_with_instances, fault_cleared):
+    manager = fault_manager_with_instances
+    node, _ = _seed_l3_hardware_fault(manager, 0x80E01801)
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L3
+    metadata.fault_code = 0x80E01801
+    store = get_ft_runtime_store()
+    store.mark_instance_reconfiguration_dispatched(1)
+    if fault_cleared:
+        node.hardware_fault_infos.clear()
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager,
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        manager._refresh_instance_fault_level(1)
+        manager._process_instance_strategy(1)
+    submit.assert_not_called()
+    instance_manager.return_value.recover_instance.assert_not_called()
+    assert store.is_reconfiguration_dispatched(1)
+    assert not store.is_reconfiguration_dispatched(2)
+
+
+def test_inactive_instance_planner_does_not_return_generated_recovery():
+    plan = build_recovery_plan(
+        1,
+        ControllerConfig(),
+        ScaleDownContext(engine_recovery_eligible=False),
+        EngineFastRecoveryStrategy,
+        FaultLevel.L3,
+        0x80E01801,
+    )
+    assert plan.strategy is None
 
 
 def _kill_recover_kwargs(instance_id: int, metadata: InstanceMetadata) -> dict:
@@ -3549,3 +3710,404 @@ def test_empty_shell_scale_up_clears_reservation_when_submit_fails(fault_manager
     assert metadata.strategy is None
     assert metadata.strategy_future is None
     assert metadata.recovery_plan_source == "kept"
+
+
+def test_scale_up_warming_keeps_recovery_ownership(fault_manager_with_instances):
+    """An active scale-up owns recovery even when an HBM L3 fault arrives."""
+    manager = fault_manager_with_instances
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L3
+    metadata.fault_code = 0x80E01801
+    get_ft_runtime_store().transition(1, phase=FtPhase.WARMING_UP)
+    with (
+        patch.object(manager, "_build_recovery_context", return_value=ScaleDownContext()),
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        manager._process_instance_strategy(1)
+    submit.assert_not_called()
+    assert metadata.strategy is None
+
+
+@pytest.mark.parametrize("level", [FaultLevel.L2, FaultLevel.L3, FaultLevel.L4, FaultLevel.L5, FaultLevel.L6])
+def test_fast_recovery_ignores_low_severity_hardware_but_retains_severe_faults(fault_manager_with_instances, level):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_fast_recovery = True
+    fault = FAULT_DEVICE_L3.model_copy(update={"fault_level": level})
+    manager.nodes["node_0"].hardware_fault_infos = {fault.fault_code: fault}
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as im:
+        manager._refresh_instance_fault_level(1)
+    assert manager.instances[1].fault_level == (FaultLevel.HEALTHY if level <= FaultLevel.L3 else level)
+    if level <= FaultLevel.L3:
+        im.return_value.separate_instance.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "statuses,elapsed,expected",
+    [
+        ((2, 2), 1, GenericFastRecoveryStrategy),
+        ((1, 2), 1, DpScaleDownStrategy),
+        ((2, 1), 119, DpScaleDownStrategy),
+        ((2, None), 119, None),
+        ((1, None), 119, None),
+        ((2, None), 120, InstanceReconfigurationStrategy),
+        ((1, None), 120, InstanceReconfigurationStrategy),
+    ],
+)
+def test_shared_collection_selects_recovery_or_scale_down_with_one_deadline(
+    fault_manager_with_instances, statuses, elapsed, expected
+):
+    manager = fault_manager_with_instances
+    config = manager.config.fault_tolerance_config
+    config.enable_fast_recovery = True
+    config.enable_dp_scale_down = True
+    assert config.fault_collection_timeout_seconds == 120
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L2
+    metadata.fault_code = int(SpecialFaultCode.ENGINE_UNHEALTHY)
+    metadata.fault_collection_started_at = 100.0
+    for rank, state in enumerate(statuses):
+        manager.nodes[f"node_{rank}"].software_fault_infos = (
+            {str(rank): FaultInfo.from_exception(RuntimeError("fault"), rank, state, instance_id=1)}
+            if state is not None
+            else {}
+        )
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as im,
+        patch("motor.controller.fault_tolerance.fault_manager.time.time", return_value=100 + elapsed),
+        patch.object(manager.executor, "submit"),
+    ):
+        im.return_value.get_instance.return_value = _hardware_dp_instance()
+        manager._process_instance_strategy(1)
+    assert (type(metadata.strategy) if metadata.strategy is not None else None) is expected
+    assert metadata.fault_collection_started_at == 100.0
+
+
+@pytest.mark.parametrize("cleared", [False, True])
+@pytest.mark.parametrize("other_code", [0x08520003, 0x80CB8009, 0x80E01809])
+def test_uce_clearance_does_not_filter_mismatched_device_ownership(fault_manager, cleared, other_code):
+    """A runtime chip outside registered endpoint IDs must still block success."""
+    fault = FaultInfo(
+        fault_category=FaultCategory.HARDWARE,
+        fault_type=HardwareFaultType.CARD_UNHEALTHY,
+        npu_name="Ascend910-2",
+        fault_code=0x80E01801,
+        fault_level=FaultLevel.L1,
+    )
+    node = NodeMetadata(node_name="node-a", instance_ids={7}, instance_pod_ips={7: "10.0.0.1"})
+    other_fault = fault.model_copy(update={"fault_code": other_code})
+    node.hardware_fault_infos = {other_code: other_fault}
+    if not cleared:
+        node.hardware_fault_infos[fault.fault_code] = fault
+    unrelated = NodeMetadata(node_name="node-b", instance_ids={8})
+    unrelated.hardware_fault_infos = {fault.fault_code: fault}
+    fault_manager.nodes = {"node-a": node, "node-b": unrelated}
+    fault_manager.instances[7] = InstanceMetadata(instance_id=7)
+    with patch(
+        "motor.controller.fault_tolerance.fault_manager.FaultNormalizer.hardware_fault_affects_instance",
+        return_value=False,
+    ) as ownership:
+        pending = fault_manager.get_pending_hbm_uce_faults(7)
+    assert pending == ([] if cleared else [hardware_fault_identity("node-a", fault)])
+    ownership.assert_not_called()
+
+
+@pytest.mark.parametrize("registered", [False, True])
+def test_uce_clearance_missing_instance_evidence_is_not_clean(fault_manager, registered):
+    if registered:
+        fault_manager.instances[999] = InstanceMetadata(instance_id=999)
+    with pytest.raises(RuntimeError, match="missing node evidence"):
+        fault_manager.get_pending_hbm_uce_faults(999)
+
+
+@pytest.mark.parametrize(
+    "codes,expected",
+    [
+        ((), GenericFastRecoveryStrategy),
+        ((0x80E01801,), HbmUceRecoveryStrategy),
+        ((0x00F1FEF5,), TokenReinferenceStrategy),
+        ((0x08520003,), TokenReinferenceStrategy),
+        ((0x00F1FEF5, 0x08520003), TokenReinferenceStrategy),
+        ((0x80E01809,), GenericFastRecoveryStrategy),
+        ((0x80E01801, 0x08520003), HbmUceRecoveryStrategy),
+        ((0x80E01801, 123), HbmUceRecoveryStrategy),
+        ((123,), GenericFastRecoveryStrategy),
+        ((0x08520003, 123), TokenReinferenceStrategy),
+    ],
+)
+def test_recovery_planner_prioritizes_recognized_causes_and_ignores_observational_codes(codes, expected):
+    config = ControllerConfig()
+    config.fault_tolerance_config.enable_fast_recovery = True
+    context = ScaleDownContext(all_dp_unhealthy=True, engine_fault_observed=True, hardware_fault_codes=codes)
+    plan = build_recovery_plan(1, config, context, EngineRelaunchStrategy, FaultLevel.L2, 0)
+    assert plan.strategy is expected
+
+
+@pytest.mark.parametrize(
+    "switch,codes",
+    [
+        ("enable_hbm_uce_recovery", (0x80E01801,)),
+        ("enable_hbm_uce_recovery", (0x80E01801, 0x08520003)),
+        ("enable_token_reinference", (0x08520003,)),
+        ("enable_no_fault_code_recovery", ()),
+    ],
+)
+def test_disabled_recovery_policy_does_not_fall_through_to_another_policy(switch, codes):
+    config = ControllerConfig()
+    config.fault_tolerance_config.enable_fast_recovery = True
+    setattr(config.fault_tolerance_config, switch, False)
+    context = ScaleDownContext(all_dp_unhealthy=True, engine_fault_observed=True, hardware_fault_codes=codes)
+    assert build_recovery_plan(1, config, context, None, FaultLevel.L2, 0).strategy is InstanceReconfigurationStrategy
+
+
+@pytest.mark.parametrize("code", [0x80E01801, 0x00F1FEF5, 0x08520003])
+def test_known_hardware_first_records_then_waits_for_software(code):
+    config = ControllerConfig()
+    config.fault_tolerance_config.enable_fast_recovery = True
+    context = ScaleDownContext(source="hardware", hardware_fault_codes=(code,), hardware_wait_timed_out=True)
+    assert build_recovery_plan(1, config, context, None, FaultLevel.L3, code).strategy is None
+
+
+@pytest.mark.parametrize("code,policy", [(0x80E01801, HbmUceRecoveryStrategy), (0x08520003, TokenReinferenceStrategy)])
+@pytest.mark.parametrize("level", [FaultLevel.L1, FaultLevel.L2, FaultLevel.L3])
+def test_software_report_selects_recorded_low_level_hardware_policy(fault_manager_with_instances, code, policy, level):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_fast_recovery = True
+    node, fault = _seed_l3_hardware_fault(manager, code)
+    node.hardware_fault_infos = {code: fault.model_copy(update={"fault_level": level})}
+    for rank in (0, 1):
+        manager.nodes[f"node_{rank}"].software_fault_infos = {
+            str(rank): FaultInfo.from_exception(RuntimeError("software unhealthy"), rank, 2, instance_id=1)
+        }
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L2
+    metadata.fault_code = int(SpecialFaultCode.ENGINE_UNHEALTHY)
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as im,
+        patch.object(manager.executor, "submit"),
+    ):
+        im.return_value.get_instance.return_value = _hardware_dp_instance()
+        manager._process_instance_strategy(1)
+    assert isinstance(metadata.strategy, policy)
+    assert metadata.strategy.strategy_context.hardware_fault_codes == (code,)
+
+
+@pytest.mark.parametrize("reverse_codes", [False, True])
+def test_hbm_companion_faults_do_not_intercept_fast_recovery(fault_manager_with_instances, reverse_codes):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_fast_recovery = True
+    node, fault = _seed_l3_hardware_fault(manager, 0x80E01801)
+    observations = [
+        (0x80CB8009, FaultLevel.L2),
+        (0x80E18400, FaultLevel.L1),
+        (0x80E01801, FaultLevel.L3),
+        (0x08520003, FaultLevel.L1),
+    ]
+    if reverse_codes:
+        observations.reverse()
+    node.hardware_fault_infos = {
+        code: fault.model_copy(update={"fault_code": code, "fault_level": level}) for code, level in observations
+    }
+    manager._refresh_instance_fault_level(1)
+    assert manager.instances[1].fault_level == FaultLevel.HEALTHY
+    for rank in (0, 1):
+        manager.nodes[f"node_{rank}"].software_fault_infos = {
+            str(rank): FaultInfo.from_exception(RuntimeError("software unhealthy"), rank, 2, instance_id=1)
+        }
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L2
+    metadata.fault_code = int(SpecialFaultCode.ENGINE_UNHEALTHY)
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as im,
+        patch.object(manager.executor, "submit"),
+    ):
+        im.return_value.get_instance.return_value = _hardware_dp_instance()
+        manager._process_instance_strategy(1)
+    assert isinstance(metadata.strategy, HbmUceRecoveryStrategy)
+    context = metadata.strategy.strategy_context
+    assert not context.hardware_fault_observed
+    assert not context.recovery_hardware_severe
+    assert set(context.hardware_fault_codes) == {code for code, _ in observations}
+
+
+@pytest.mark.parametrize(
+    "fallback,enabled,expected",
+    [
+        ("EngineRelaunchStrategy", True, EngineRelaunchStrategy),
+        ("EngineRelaunchStrategy", False, InstanceReconfigurationStrategy),
+        ("InstanceReconfigurationStrategy", True, InstanceReconfigurationStrategy),
+    ],
+)
+@pytest.mark.parametrize("policy", [HbmUceRecoveryStrategy, GenericFastRecoveryStrategy, TokenReinferenceStrategy])
+def test_recovery_failure_uses_policy_fallback_even_after_faults_clear(
+    fault_manager_with_instances, fallback, enabled, expected, policy
+):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_engine_relaunch = enabled
+    metadata = manager.instances[1]
+    strategy = policy()
+    strategy.failure_fallback = fallback
+    strategy.mark_failed()
+    strategy._is_finished = True
+    metadata.strategy = strategy
+    with patch.object(manager.executor, "submit"):
+        assert manager._complete_finished_strategy(1, metadata)
+        assert metadata.prev_strategy_fallback == fallback
+        metadata.fault_level = FaultLevel.HEALTHY
+        manager._process_instance_strategy(1)
+    assert isinstance(metadata.strategy, expected)
+
+
+@pytest.mark.parametrize("baseline", ["handled_hardware_faults", "ignored_pre_ready_hardware_faults"])
+def test_present_baseline_hardware_does_not_masquerade_as_pure_software(fault_manager_with_instances, baseline):
+    manager = fault_manager_with_instances
+    node, fault = _seed_l3_hardware_fault(manager, 0x80E01801)
+    getattr(manager.instances[1], baseline).add(hardware_fault_identity(node.node_name, fault))
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as im:
+        im.return_value.get_instance.return_value = _hardware_dp_instance()
+        codes, severe = manager.get_recovery_hardware_evidence(1)
+    assert codes == (0x80E01801,)
+    assert not severe
+
+
+def test_missing_instance_cannot_prove_recovery_hardware_is_safe(fault_manager):
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as im:
+        im.return_value.get_instance.return_value = None
+        with pytest.raises(RuntimeError, match="no longer eligible"):
+            fault_manager.get_recovery_hardware_evidence(999)
+
+
+def test_retired_device_hardware_does_not_classify_current_dp_as_hbm(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    node, _ = _seed_l3_hardware_fault(manager, 0x80E01801)
+    node.instance_pod_ips[1] = "192.168.1.1"
+    get_ft_runtime_store().transition(1, phase=FtPhase.SCALED_DOWN_RUNNING, dead_committed=[0])
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as im:
+        im.return_value.get_instance.return_value = _hardware_dp_instance()
+        codes, severe = manager.get_recovery_hardware_evidence(1)
+    assert codes == ()
+    assert not severe
+
+
+def test_token_completion_preserves_late_hbm_for_next_unhealthy_round(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_fast_recovery = True
+    node, fault = _seed_l3_hardware_fault(manager, 0x80E01801)
+    metadata = manager.instances[1]
+    metadata.strategy = TokenReinferenceStrategy()
+    metadata.strategy._is_finished = True
+    for rank in (0, 1):
+        manager.nodes[f"node_{rank}"].software_fault_infos = {
+            str(rank): FaultInfo.from_exception(RuntimeError("previous fault"), rank, 2, instance_id=1)
+        }
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as im,
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        im.return_value.get_instance.return_value = _hardware_dp_instance()
+        assert manager._complete_finished_strategy(1, metadata)
+        assert not metadata.prev_strategy_failed
+        assert node.hardware_fault_infos == {0x80E01801: fault}
+        assert all(not manager.nodes[f"node_{rank}"].software_fault_infos for rank in (0, 1))
+        manager._process_instance_strategy(1)
+        submit.assert_not_called()
+        for rank in (0, 1):
+            manager.nodes[f"node_{rank}"].software_fault_infos = {
+                str(rank): FaultInfo.from_exception(RuntimeError("new unhealthy"), rank, 2, instance_id=1)
+            }
+        manager._refresh_instance_fault_level(1)
+        manager._process_instance_strategy(1)
+    assert isinstance(metadata.strategy, HbmUceRecoveryStrategy)
+
+
+@pytest.mark.parametrize("codes", [(), (123,), (0x80E01801, 0x08520003)])
+def test_severe_hardware_still_blocks_recovery_regardless_of_cause(codes):
+    from motor.controller.fault_tolerance.recovery_planner import fast_recovery_policy
+
+    config = ControllerConfig()
+    config.fault_tolerance_config.enable_fast_recovery = True
+    context = ScaleDownContext(all_dp_unhealthy=True, hardware_fault_codes=codes, recovery_hardware_severe=True)
+    assert fast_recovery_policy(config, context) is None
+
+
+@pytest.mark.parametrize("policy", [GenericFastRecoveryStrategy, TokenReinferenceStrategy])
+def test_relaunch_relapse_reconfigures_without_another_recovery(fault_manager_with_instances, policy):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_fast_recovery = True
+    metadata = manager.instances[1]
+    metadata.prev_strategy_name = policy.__name__
+    metadata.prev_strategy_failed = True
+    metadata.prev_strategy_fallback = "EngineRelaunchStrategy"
+    with patch.object(manager.executor, "submit"):
+        manager._process_instance_strategy(1)
+        assert isinstance(metadata.strategy, EngineRelaunchStrategy)
+        assert metadata.relaunch_relapse_guard
+        metadata.strategy._is_finished = True
+        metadata.strategy_future = None
+        assert manager._complete_finished_strategy(1, metadata)
+        for rank in (0, 1):
+            manager.nodes[f"node_{rank}"].software_fault_infos = {
+                str(rank): FaultInfo.from_exception(RuntimeError("relapse"), rank, 2, instance_id=1)
+            }
+        metadata.fault_level = FaultLevel.L2
+        metadata.fault_code = int(SpecialFaultCode.ENGINE_UNHEALTHY)
+        with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as im:
+            im.return_value.get_instance.return_value = _hardware_dp_instance()
+            manager._process_instance_strategy(1)
+    assert isinstance(metadata.strategy, InstanceReconfigurationStrategy)
+
+
+def test_relaunch_relapse_guard_requires_continuous_normal_engines(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    metadata = manager.instances[1]
+    metadata.relaunch_relapse_guard = True
+    metadata.fault_level = FaultLevel.HEALTHY
+    with (
+        patch.object(manager, "_engines_normal") as probe,
+        patch("motor.controller.fault_tolerance.fault_manager.time.time") as clock,
+    ):
+        for now, status, since, guarded in [
+            (100, False, None, True),
+            (200, True, 200, True),
+            (230, False, None, True),
+            (300, True, 300, True),
+            (359, True, 300, True),
+            (360, True, None, False),
+        ]:
+            clock.return_value = now
+            probe.return_value = status
+            manager._update_relaunch_relapse_guard(1, metadata)
+            assert metadata.relaunch_relapse_guard is guarded
+            assert metadata.relaunch_healthy_since == since
+
+
+@pytest.mark.parametrize("level", [FaultLevel.HEALTHY, FaultLevel.L2])
+def test_relaunch_failure_escalates_once(fault_manager_with_instances, level):
+    manager = fault_manager_with_instances
+    metadata = manager.instances[1]
+    metadata.relaunch_relapse_guard = True
+    metadata.prev_strategy_name = "EngineRelaunchStrategy"
+    metadata.prev_strategy_failed = True
+    metadata.fault_level = level
+    with patch.object(manager.executor, "submit") as submit:
+        manager._process_instance_strategy(1)
+        assert isinstance(metadata.strategy, InstanceReconfigurationStrategy)
+        metadata.strategy.mark_failed()
+        metadata.strategy._is_finished = True
+        metadata.strategy_future = None
+        assert manager._complete_finished_strategy(1, metadata)
+        manager._process_instance_strategy(1)
+        assert metadata.strategy is None
+        assert submit.call_count == 1
+
+
+@pytest.mark.parametrize("status", [True, False, RuntimeError("unreachable"), None])
+def test_relaunch_readiness_requires_all_engines_normal(status):
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as im,
+        patch("motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.query_status") as query,
+    ):
+        nodes = [Mock(), Mock()] if status is not None else []
+        im.return_value.get_instance.return_value.get_node_managers.return_value = nodes
+        query.side_effect = [{"status": True}, status if isinstance(status, Exception) else {"status": status}]
+        assert FaultManager._engines_normal(1) is (status is True)
+        assert all("relaxed" not in call.kwargs for call in query.call_args_list)

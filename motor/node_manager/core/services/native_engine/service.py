@@ -19,6 +19,11 @@ from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
 from motor.common.utils.snapshot_utils import MOTOR_SNAPSHOT_METADATA_PATH
 from motor.config.node_manager import VLLMStartupAccelerationConfig
+from motor.node_manager.core.services.native_engine.ascend_device_ids import (
+    calc_endpoint_visible_device_ids,
+    list_pod_physical_device_ids,
+    list_runtime_device_ids,
+)
 from motor.node_manager.core.services.native_engine.factory import get_backend
 from motor.node_manager.core.services.native_engine.models import LaunchContext, LaunchSpec, RuntimeState
 from motor.node_manager.core.services.native_engine.startup_acceleration import (
@@ -190,12 +195,22 @@ class NativeEngineService:
             if base_env.get("MOONCAKE_ASCEND_IPV6_EXPERIMENT") == "1":
                 base_env["MC_USE_IPV6"] = base_env.get("MC_USE_IPV6", "1")
             device_size = self.device_num
+            plugin_device_ids = list_pod_physical_device_ids(base_env)
+            runtime_ids = list_runtime_device_ids(base_env, device_num=device_size)
+            if plugin_device_ids:
+                logger.info("Pod Ascend plugin/env device ids: %s", ",".join(plugin_device_ids))
+            if runtime_ids:
+                logger.info("Pod runtime device ids: %s", ",".join(runtime_ids))
             for i, endpoint in enumerate(endpoints_info):
                 env = base_env.copy()
                 if self.enable_multi_endpoints:
                     device_ids_str = self._endpoint_visible_device_ids(env, i, device_size)
                     logger.info("Device IDs: %s", device_ids_str)
                     env["ASCEND_RT_VISIBLE_DEVICES"] = device_ids_str
+                    # Slice must match chips this pod owns. Privileged containers see
+                    # every /dev/davinci*; VISIBLE is overwritten to the allocated slice.
+                    if runtime_ids:
+                        env["ASCEND_VISIBLE_DEVICES"] = device_ids_str
 
                 peer_ips = self._get_d2d_peer_ips(endpoint.id, d2d_peer_ips)
                 if d2d_peer_ips:
@@ -559,7 +574,14 @@ class NativeEngineService:
         start_devices = (env.get("MOTOR_START_DEVICES") or "").strip()
         if start_devices:
             return self._slice_start_devices(start_devices, index)
-        return self._calc_visible_device_ids(index, device_size)
+        return calc_endpoint_visible_device_ids(
+            index,
+            device_size,
+            self.parallel_config.local_world_size,
+            pod_physical_ids=list_runtime_device_ids(env, device_num=device_size) or None,
+            single_container_flag=self.single_container_flag,
+            device_offset=self.device_offset,
+        )
 
     def _slice_start_devices(self, start_devices: str, index: int) -> str:
         cards = [part.strip() for part in start_devices.split(",") if part.strip()]

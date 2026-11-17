@@ -234,6 +234,9 @@ class Instance(BaseModel):
     id: int = Field(..., description="Instance ID")
     role: str = Field(..., description="Instance role")
     status: InsStatus = Field(default=InsStatus.INITIAL, description="Instance status")
+    recovery_paused: bool = Field(
+        default=False, description="Block new work without closing in-flight recovery streams"
+    )
     parallel_config: ParallelConfig | None = Field(None, description="Parallel configuration")
     enable_multi_endpoints: bool = Field(default=True, description="Whether to enable multi-endpoints mode")
     node_managers: list[NodeManagerInfo] = Field(default_factory=list, description="List of node manager info")
@@ -816,6 +819,7 @@ class ReadOnlyInstance:
         )
         # Copy status and other attributes
         copied_instance.status = self._instance.status
+        copied_instance.recovery_paused = self._instance.recovery_paused
         copied_instance.parallel_config = copy.deepcopy(self._instance.parallel_config, memo)
 
         # Deep copy node managers
@@ -860,6 +864,7 @@ class ReadOnlyInstance:
         )
         # Copy status and other attributes
         copied_instance.status = self._instance.status
+        copied_instance.recovery_paused = self._instance.recovery_paused
         copied_instance.parallel_config = copy.deepcopy(self._instance.parallel_config)
         copied_instance.ft_capability = copy.deepcopy(self._instance.ft_capability)
 

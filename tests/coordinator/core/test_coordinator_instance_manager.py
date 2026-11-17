@@ -77,6 +77,31 @@ class TestInstanceManager:
         assert len(self.instance_manager._hybrid_pool) == 0
         assert len(self.instance_manager._unavailable_pool) == 0
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("role", [PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U])
+    async def test_retry_pause_add_set_resume_preserves_live_workload(self, role):
+        manager = self.instance_manager
+        instance = self.decode_instance
+        instance.role = role
+        instance.endpoints = {self.endpoint.ip: {self.endpoint.id: self.endpoint}}
+        await manager.refresh_instances(EventType.ADD, [instance])
+        self.endpoint.workload.active_tokens = 123
+        paused = instance.model_copy(update={"recovery_paused": True})
+        changed, _ = await manager.refresh_instances(EventType.ADD, [paused])
+        assert changed
+        assert instance.recovery_paused
+        assert self.endpoint.workload.active_tokens == 123
+        changed, removed = await manager.refresh_instances(EventType.SET, [paused])
+        assert not changed and not removed
+        assert manager.get_available_instances(role)[instance.id].recovery_paused
+        resumed = instance.model_copy(update={"recovery_paused": False})
+        changed, removed = await manager.refresh_instances(EventType.SET, [resumed])
+        assert changed and not removed
+        assert not instance.recovery_paused
+        assert self.endpoint.workload.active_tokens == 123
+        await manager.refresh_instances(EventType.DEL, [instance])
+        assert not manager.get_available_instances(role)
+
     def test_has_required_instances_from_role_topology(self):
         """Readiness is inferred from roles instead of a configured deploy mode."""
         assert self.instance_manager.has_required_instances() is False

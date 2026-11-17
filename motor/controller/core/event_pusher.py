@@ -74,7 +74,9 @@ class EventPusher(Observer):
             self.coordinator_heartbeat_interval = config.event_config.coordinator_heartbeat_interval
             self._set_sync_interval = config.event_config.coordinator_set_sync_interval
             ft_config = config.fault_tolerance_config
-            self.enable_dp_scale_down = ft_config.enable_fault_tolerance and ft_config.enable_dp_scale_down
+            self.enable_dp_scale_down = ft_config.enable_fault_tolerance and (
+                ft_config.enable_dp_scale_down or ft_config.enable_fast_recovery
+            )
 
         # Track last periodic SET sync time (initialized to now so first sync fires after interval)
         self._last_set_sync_time = time.time()
@@ -152,7 +154,9 @@ class EventPusher(Observer):
             self.coordinator_heartbeat_interval = config.event_config.coordinator_heartbeat_interval
             self._set_sync_interval = config.event_config.coordinator_set_sync_interval
             ft_config = config.fault_tolerance_config
-            self.enable_dp_scale_down = ft_config.enable_fault_tolerance and ft_config.enable_dp_scale_down
+            self.enable_dp_scale_down = ft_config.enable_fault_tolerance and (
+                ft_config.enable_dp_scale_down or ft_config.enable_fast_recovery
+            )
 
     def _project_instance(self, instance: ReadOnlyInstance) -> Instance | None:
         if not self.enable_dp_scale_down:

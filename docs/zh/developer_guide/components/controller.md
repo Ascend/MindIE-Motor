@@ -160,7 +160,7 @@ motor/controller/
 │   ├── strategy/                    # 恢复策略
 │   │   ├── strategy.py              # StrategyBase + 等级→策略工厂
 │   │   ├── scale_p2d.py             # 缩P保D
-│   │   └── token_reinference.py     # token级重推
+│   │   └── fast_recovery.py         # 引擎快恢编排（HBM / Token 重推 / 无故障码）
 │   ├── k8s/                         # K8s 交互
 │   │   ├── resource_monitor.py      # ConfigMap + Node 双重 Watch
 │   │   ├── configmap_parser.py      # 解析故障 ConfigMap
@@ -539,7 +539,7 @@ flowchart LR
 |------|-------------|------|----------|-------------|
 | **L0 HEALTHY** | — | 无故障 | — | — |
 | **L1** | `NotHandleFault` / `SubHealthFault` | 通知/亚健康 | 无动作 | — |
-| **L2** | `RestartRequest` | 可自愈（网络抖动、引擎异常） | Token 重推 | `enable_token_reinference` + 白名单故障码 |
+| **L2** | `RestartRequest` | 引擎软件异常 | 快恢 / 其他恢复策略 | FT 与 `enable_fast_recovery` 开启，全部活动 DP UNHEALTHY；按 HBM 1801、灵衢故障码或未命中专用码区分策略，普通告警不阻断 |
 | **L3** | `RestartBusiness` | 无法自动恢复 | 人工介入 | — |
 | **L4** | `FreeRestartNPU` | 需 NPU 隔离 | 缩P保D | `enable_scale_p2d` + Decode 角色 |
 | **L5** | `RestartNPU` | 需 NPU 重启 | 委托 L4 策略 | 同 L4 |
@@ -580,11 +580,11 @@ flowchart LR
 
 #### 3.3.4 两种恢复策略
 
-**TokenReinferenceStrategy（token 级重推）**：
+**EngineFastRecoveryStrategy（通用引擎恢复编排）**：
 
-- 触发条件：L2 故障 + 故障码在 `{0x00F1FEF5, 0x08520003}` 白名单中 + `enable_token_reinference = true`
-- 行为：等待网络自愈或故障升级，**不可中断**（`stop()` 为空实现）
-- 适用场景：灵衢（Lingqu）高速网络瞬时抖动
+公共层负责调度暂停、全 DP 实时校验、统一 request_id、并发下发与轮询；planner 根据硬件证据选择 `HbmUceRecoveryStrategy`、`TokenReinferenceStrategy` 或 `GenericFastRecoveryStrategy`。HBM 仅一次 abort retry，失败也清码；token_reinference 与无故障码快恢 完全复用两轮恢复（无 abort → 明确失败后 abort），不清码；失败回退 relaunch，relaunch 失败或稳定前复发则重配置。
+
+新增 `enable_fast_recovery` 总开关（默认关闭）和 `enable_hbm_uce_recovery`、`enable_token_reinference`、`enable_no_fault_code_recovery` 三个独立分支开关。按严重故障优先、HBM > 灵衢 > 无故障码快恢分类，普通告警不阻断快恢，执行期间复核迟到硬件。完整触发与收尾矩阵见 [容错设计](../../design/fault_tolerance/overview.md)。
 
 **ScaleP2DStrategy（缩P保D）**：
 
@@ -706,10 +706,7 @@ def level2_strategy(fault_code: int, instance_id: int, config: ControllerConfig)
         from motor.controller.fault_tolerance.strategy import MyRecoveryStrategy
         return MyRecoveryStrategy
 
-    # 检查已有策略...
-    if fault_code in [0x00F1FEF5, 0x08520003]:
-        from motor.controller.fault_tolerance.strategy import TokenReinferenceStrategy
-        return TokenReinferenceStrategy
+    # 无故障码快恢由 recovery_planner 根据全部 DP 的软件状态选择。
     return None
 ```
 
@@ -717,7 +714,7 @@ def level2_strategy(fault_code: int, instance_id: int, config: ControllerConfig)
 
 - **创建**：FaultManager 在 `_process_instance_strategy()` 中根据故障等级+故障码实例化
 - **执行**：通过 `ThreadPoolExecutor.submit()` 异步执行
-- **切换**：当故障等级升级且新等级 > 当前策略等级时，调用 `stop()` 中断旧策略
+- **串行执行**：当前策略完成前不抢占；新故障证据保留，完成后重新规划
 - **完成**：`is_finished()` 返回 True → 清除软件故障 → 重新评估故障等级
 
 ### 4.3 实现模块热更新
@@ -796,7 +793,7 @@ async def _my_metrics(self, request: Request):
 | `motor/controller/fault_tolerance/fault_types.py` | 故障类型定义：等级、分类、元数据模型 |
 | `motor/controller/fault_tolerance/strategy/strategy.py` | StrategyBase + 等级→策略映射 |
 | `motor/controller/fault_tolerance/strategy/scale_p2d.py` | 缩P保D 策略 |
-| `motor/controller/fault_tolerance/strategy/token_reinference.py` | Token 级重推策略 |
+| `motor/controller/fault_tolerance/strategy/fast_recovery.py` | 引擎快恢公共编排及三种恢复分支 |
 | `motor/controller/fault_tolerance/k8s/resource_monitor.py` | K8s ConfigMap + Node 双重 Watch |
 | `motor/controller/observability/observability.py` | 可观测性门面 |
 | `motor/controller/observability/inventory/inventory_collector.py` | 库存采集 |

@@ -224,13 +224,40 @@ def _is_engine_ft_enabled(user_config, role):
     )
 
 
-def apply_engine_ft_labels(template, user_config, role):
+def _apply_engine_scheduling_labels(workload, scheduling_labels):
+    """Write labels to the workload and its Pod template, like additional_labels does.
+
+    The role metadata reaches the PodGroup through InstanceSet, the Pod template reaches the Pods.
+    Volcano merges both, but the PodGroup label is what operators should verify.
+    """
+    for metadata in (
+        workload.setdefault(C.METADATA, {}),
+        workload.setdefault(C.SPEC, {}).setdefault(C.TEMPLATE, {}).setdefault(C.METADATA, {}),
+    ):
+        metadata.setdefault(C.LABELS, {}).update(scheduling_labels)
+
+
+def apply_engine_ft_labels(workload, user_config, role):
     """Let MindCluster reschedule a failed FT engine Pod instead of failing the whole instance."""
-    if not (_is_controller_dp_scale_down_enabled(user_config) and _is_engine_ft_enabled(user_config, role)):
+    if not _is_engine_ft_enabled(user_config, role):
         return
-    labels = template.setdefault(C.METADATA, {}).setdefault(C.LABELS, {})
-    labels[C.FAULT_SCHEDULING_LABEL] = C.FAULT_SCHEDULING_EXTERNAL_FORCE_POD_FAILED
-    labels[C.POD_RESCHEDULING_LABEL] = C.POD_RESCHEDULING_ON
+    if _is_controller_dp_scale_down_enabled(user_config):
+        _apply_engine_scheduling_labels(
+            workload,
+            {
+                C.FAULT_SCHEDULING_LABEL: C.FAULT_SCHEDULING_EXTERNAL_FORCE_POD_FAILED,
+                C.POD_RESCHEDULING_LABEL: C.POD_RESCHEDULING_ON,
+            },
+        )
+        return
+    ft_config = (user_config.get(C.MOTOR_CONTROLLER_CONFIG) or {}).get(C.FAULT_TOLERANCE_CONFIG) or {}
+    if ft_config.get(C.ENABLE_FAULT_TOLERANCE, True) and ft_config.get("enable_fast_recovery", False):
+        # external-force-pod-failed only reacts to business PodFailed faults; the Volcano plugin skips
+        # hardware faults such as HBM UCE, so Motor's FT controller owns engine recovery end to end.
+        # There is deliberately no delayed-then-evict fallback.
+        _apply_engine_scheduling_labels(
+            workload, {C.FAULT_SCHEDULING_LABEL: C.FAULT_SCHEDULING_EXTERNAL_FORCE_POD_FAILED}
+        )
 
 
 def build_engine_env_items(role, deploy_config, job_name, include_kv_store=False):
@@ -421,7 +448,7 @@ def modify_engine_yaml(deployment_data, user_config, index, node_type):
     container[C.IMAGE] = resolve_workload_image(user_config, user_config.get(get_config_key(node_type), {}))
     job_name = f"{deploy_config[C.CONFIG_JOB_ID]}-{node_type}{index}-{generate_unique_id()}"
     set_engine_metadata(deployment_data, deploy_config, index, node_type, job_name)
-    apply_engine_ft_labels(deployment_data[C.SPEC][C.TEMPLATE], user_config, _node_type_to_role(node_type))
+    apply_engine_ft_labels(deployment_data, user_config, _node_type_to_role(node_type))
     container[C.NAME] = k8s_utils.g_engine_base_name
     if C.ENV not in container:
         container[C.ENV] = []

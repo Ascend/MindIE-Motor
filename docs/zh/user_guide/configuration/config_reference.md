@@ -128,7 +128,11 @@ motor_controller_config字段配置样例如下所示：
     "configmap_prefix": "mindx-dl-deviceinfo-",
     "k8s_cert_path": "",
     "enable_scale_p2d": false,
+    "enable_fast_recovery": false,
+    "enable_hbm_uce_recovery": true,
     "enable_token_reinference": true,
+    "enable_no_fault_code_recovery": true,
+    "hbm_uce_clearance_timeout_sec": 60,
     "scale_p2d_d_instance_reinit_wait_timeout": 60
   },
   "observability_config": {
@@ -207,11 +211,18 @@ motor_controller_config字段配置样例如下所示：
 | configmap_prefix |string|configmap前缀，默认值："mindx-dl-deviceinfo-"。|
 | k8s_cert_path |string|安全证书路径，默认为空。|
 | enable_scale_p2d | bool | 是否启用ScaleP2D弹性扩缩容，默认值：true。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul> |
-| enable_token_reinference | bool | 是否启用Token Reinference 故障恢复，默认值：true。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul> |
+| enable_fast_recovery | bool | 快恢总开关，默认 false；开启后还需 enable_fault_tolerance 与相应分支开关。关闭时直接走常规恢复路径。 |
+| enable_hbm_uce_recovery | bool | 默认 true。1801 + 软件 UNHEALTHY；单次 abort retry，独立清码，失败且清码成功转 relaunch，否则重配置。 |
+| enable_token_reinference | bool | 默认 true。灵衢 0x00F1FEF5 / 0x08520003 + 软件 UNHEALTHY；复用无故障码快恢两轮及 relaunch 回退，不等待清码。 |
+| enable_no_fault_code_recovery | bool | 默认 true。未命中 HBM/灵衢码且无严重硬件阻断的 UNHEALTHY；先无 abort，全 DP 明确失败后才携带 abort 再试一次；失败回退 relaunch。 |
+| hbm_uce_clearance_timeout_sec | int | HBM 快恢之后独立等待所在节点全部设备 1801 清除的期限，默认 60 秒，引擎恢复失败也检查。 |
+| recovery_round_timeout_sec | int | 每轮等待全部 DP HEALTHY 的超时，默认 60 秒，范围 10–3600。第一轮超时不补发第二轮；无故障码/token 转 relaunch，HBM 按清码结果回退。 |
+| recovery_poll_interval_sec | float | 状态轮询间隔，默认 1 秒，范围 0.1–60。 |
+| engine_relaunch_stability_sec | int | 无故障码/token relaunch 后连续 NORMAL 的观察窗口，默认 60 秒，范围 1–3600；窗口内复发转重配置。 |
 | scale_p2d_d_instance_reinit_wait_timeout |int|ScaleP2D执行抢占前，等待D实例自恢复（重初始化）的最长时间，单位：秒，默认值：60。<br>等待期间若D实例恢复为initial/active，则不再执行ScaleP2D；超时后若D实例仍处于inactive等可抢占状态，则继续后续P实例选择流程。|
 | enable_dp_scale_up | bool | DP 扩容开关，默认值：false。必须与缩容开关 `enable_dp_scale_down` 同时开启。两者都为 true 时，扩容接口 `/controller/fault_tolerance/recover` 才可用。|
 | enable_dp_scale_down | bool | Controller 统一控制 DP 域缩容的开关，默认值：false。该开关同时适用于 Prefill 和 Decode 实例，不需要在 `motor_engine_prefill_config`、`motor_engine_decode_config` 中重复配置。既有 Controller 总开关 `enable_fault_tolerance` 默认为 true；若显式关闭，总 FT 流程（包括 DP 缩容）均不执行，但不会阻止 Controller 启动。该开关不会自动启用引擎侧 FT、external-lb、MC2 Mask、EP 或 EPLB。引擎能力不足时，FtGate 拒绝缩容并进入原故障恢复流程。<br>DP master 切换时，`engine_config.data-parallel-master-port` 作为 store 基础端口；NodeManager 按“基础端口 + 新 master 的全局 DP rank”生成本轮 `dp_store_port`。例如基础端口为 29500 时，DP1、DP2 成为 master 将分别使用 29501、29502，以避免同一 Pod 内连续切主复用仍被占用的监听端口。该端口仅在当前 master 被移除并发生 master 重选时使用；master 不变的缩容轮次不会重建 TCPStore。启用 DP 缩容时须预留 `[data-parallel-master-port, data-parallel-master-port + dp_size - 1]` 端口区间，配置加载阶段会校验该区间不超过 65535。|
-| fault_collection_timeout_seconds | float | Controller 收集同一 DP 域引擎故障状态的超时时间，单位：秒，取值范围 `(0, 600]`，默认值：60.0。收到首个 `UNHEALTHY` 或 `DEAD` 后立即通知 Coordinator 隔离实例并开始计时，不再从引擎 `cpu-distributed-timeout-seconds` 推导。|
+| fault_collection_timeout_seconds | float | Controller 收集同一 DP 域引擎故障状态的超时时间，单位：秒，取值范围 `(0, 600]`，默认值：120.0。快恢和缩容共用此窗口，从首个 `UNHEALTHY` 或 `DEAD` 开始计时，后续上报不续期；状态到齐立即选策略，超时未收齐则重配置。UNHEALTHY 的快恢暂停新调度并保留在途请求，DEAD 走撤下实例流程，不再从引擎 `cpu-distributed-timeout-seconds` 推导。|
 | dp_scale_down_config.request_timeout_sec | float | Controller 调用 NodeManager FT 接口的超时，单位：秒，取值范围 `(0, 60]`，默认值：11.0。该值须为 NodeManager 到引擎的默认 5 秒请求留出响应余量。|
 | dp_scale_down_config.poll_interval_sec | float | 缩容执行期间查询引擎 FT 状态的间隔，单位：秒，取值范围 `(0, 60]`，默认值：1.0。|
 | dp_scale_down_config.execution_deadline_sec | float | 等待引擎完成缩容恢复的 Motor 侧截止时间，单位：秒，取值范围 `[1, 600]`，默认值：30.0。达到截止时间仍为 recovering 时直接进入原故障恢复流程。这些参数仅对缩容阶段生效，扩容阶段各阶段超时时间默认为最大值。|

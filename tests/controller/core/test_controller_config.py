@@ -8,12 +8,13 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 # pylint: disable=redefined-outer-name,unspecified-encoding
-import os
-import time
 import json
-import pytest
+import os
 import tempfile
+import time
 from unittest.mock import patch
+
+import pytest
 
 from motor.config.controller import ControllerConfig
 
@@ -66,6 +67,7 @@ def test_default_config_initialization():
         assert config.mgmt_tls_config.cert_file == "security/mgmt/cert/server.crt"
         assert config.mgmt_tls_config.key_file == "security/mgmt/keys/server.key"
         assert config.fault_tolerance_config.enable_fault_tolerance is True
+        assert config.fault_tolerance_config.resume_requests_after_recovery is False
     finally:
         # Restore original environment variable
         if original_pod_ip is not None:
@@ -192,6 +194,23 @@ def test_from_json_success(_temp_json_file):
     assert config.last_modified is not None
 
 
+@pytest.mark.parametrize("master_enabled", [False, True])
+def test_token_reinference_option_is_independent_of_fast_recovery_master(_temp_json_file, master_enabled):
+    config_data = {
+        "motor_controller_config": {
+            "fault_tolerance_config": {
+                "enable_token_reinference": not master_enabled,
+                "enable_fast_recovery": master_enabled,
+            }
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as config_file:
+        json.dump(config_data, config_file)
+    config = ControllerConfig.from_json(_temp_json_file)
+    assert config.fault_tolerance_config.enable_fast_recovery is master_enabled
+    assert config.fault_tolerance_config.enable_token_reinference is (not master_enabled)
+
+
 def test_from_json_rejects_non_object_dp_scale_down_config(_temp_json_file):
     with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(
@@ -246,7 +265,7 @@ def test_from_json_defaults_fault_collection_timeout_to_sixty_seconds(_temp_json
 
     config = ControllerConfig.from_json(_temp_json_file)
 
-    assert config.fault_tolerance_config.fault_collection_timeout_seconds == 60
+    assert config.fault_tolerance_config.fault_collection_timeout_seconds == 120
 
 
 def test_from_json_file_not_exists(_temp_dir):
@@ -684,7 +703,7 @@ def create_test_config(config_path: str, log_level: str = "INFO"):
             "enable_fault_tolerance": True,
             "strategy_center_check_interval": 1,
             "enable_scale_p2d": True,
-            "enable_token_reinference": True,
+            "enable_fast_recovery": True,
         },
     }
 
@@ -706,6 +725,7 @@ def modify_config_api_port(config_path: str, new_port: int):
 def test_dynamic_config_reload_with_watcher():
     """Test dynamic config reload through ConfigWatcher"""
     import uuid
+
     from motor.common.utils.config_watcher import ConfigWatcher
 
     # Create a unique config file for this test to avoid parallel test interference
@@ -936,6 +956,14 @@ def test_config_engine_relaunch_defaults():
     config = ControllerConfig()
     ft = config.fault_tolerance_config
     assert ft.enable_engine_relaunch is True
+    assert ft.enable_fast_recovery is False
+    assert ft.enable_hbm_uce_recovery is True
+    assert ft.enable_token_reinference is True
+    assert ft.enable_no_fault_code_recovery is True
+    assert ft.hbm_uce_clearance_timeout_sec == 60
+    assert ft.recovery_round_timeout_sec == 60
+    assert ft.recovery_poll_interval_sec == 1.0
+    assert ft.engine_relaunch_stability_sec == 60
     assert ft.engine_relaunch_complete_timeout_sec == 600
     assert ft.engine_relaunch_poll_interval_sec == 5.0
     assert ft.engine_relaunch_dispatch_retries == 3
@@ -956,6 +984,7 @@ def test_config_dp_scale_down_defaults_are_conservative():
 @pytest.mark.parametrize(
     "attr,value,expected",
     [
+        ("engine_relaunch_stability_sec", 0, "engine_relaunch_stability_sec must be in range 1-3600"),
         (
             "engine_relaunch_complete_timeout_sec",
             30,
@@ -975,6 +1004,21 @@ def test_config_dp_scale_down_defaults_are_conservative():
             "engine_relaunch_nm_unreachable_threshold",
             0,
             "engine_relaunch_nm_unreachable_threshold must be in range 1-10",
+        ),
+        (
+            "hbm_uce_clearance_timeout_sec",
+            0,
+            "hbm_uce_clearance_timeout_sec must be in range 1-3600",
+        ),
+        (
+            "recovery_round_timeout_sec",
+            5,
+            "recovery_round_timeout_sec must be in range 10-3600",
+        ),
+        (
+            "recovery_poll_interval_sec",
+            0,
+            "recovery_poll_interval_sec must be in range 0.1-60",
         ),
         (
             "dp_scale_down_config.request_timeout_sec",

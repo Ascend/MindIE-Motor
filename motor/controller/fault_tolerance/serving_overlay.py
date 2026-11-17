@@ -75,6 +75,9 @@ class ServingOverlay:
         }:
             return None if snapshot.id in cls._held else snapshot
         if runtime["phase"] in cls._WITHDRAWN_PHASES:
+            if runtime["phase"] == FtPhase.WAITING_ENGINE_FAULT.value and runtime["preserve_recovery_streams"]:
+                snapshot.recovery_paused = True
+                return cls._without_dead_ranks(snapshot, set(runtime["dead_committed"]))
             return None
 
         dead_ranks = set(runtime["dead_committed"])
@@ -101,11 +104,12 @@ class ServingOverlay:
     @staticmethod
     def fingerprint(
         instances: list[Instance],
-    ) -> tuple[tuple[int, tuple[int, ...]], ...]:
+    ) -> tuple[tuple[int, bool, tuple[int, ...]], ...]:
         return tuple(
             sorted(
                 (
                     instance.id,
+                    instance.recovery_paused,
                     tuple(sorted(endpoint.id for endpoint in instance.get_all_endpoints(True))),
                 )
                 for instance in instances
@@ -128,6 +132,17 @@ class ServingOverlay:
             return False
         event = InsEventMsg(event=EventType.DEL, instances=[snapshot])
         return CoordinatorApiClient.send_instance_refresh(event)
+
+    @classmethod
+    def pause_for_recovery(cls, instance: Instance | ReadOnlyInstance) -> bool:
+        """Publish an unschedulable but live view, including in subsequent SETs."""
+        get_ft_runtime_store().transition(
+            instance.id,
+            phase=FtPhase.WAITING_ENGINE_FAULT,
+            preserve_recovery_streams=True,
+            serving_published=False,
+        )
+        return cls.publish(instance)
 
     @classmethod
     def publish(cls, instance: Instance | ReadOnlyInstance) -> bool:

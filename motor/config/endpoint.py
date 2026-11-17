@@ -9,6 +9,8 @@
 # See the Mulan PSL v2 for more details.
 
 import json
+import math
+from collections.abc import Mapping
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +18,7 @@ from typing import Any
 
 from motor.common.logger import get_logger
 from motor.common.resources.dispatch import DISPATCH_PROFILE_KEY
-from motor.config.config_utils import _update_native_engine_tls_config
+from motor.config.config_utils import _update_native_engine_tls_config, fast_recovery_budget
 from motor.config.resolver import ConfigResolver, normalize_keys
 from motor.config.tls_config import TLSConfig
 from motor.common import engine_constants as constants
@@ -37,6 +39,33 @@ RENDER_CONFIG_KEY = "render_config"
 ENCODE_PARALLEL_CONFIG_KEY = "encode_parallel_config"
 PREFILL_PARALLEL_CONFIG_KEY = "prefill_parallel_config"
 DECODE_PARALLEL_CONFIG_KEY = "decode_parallel_config"
+
+
+def with_fast_recovery_budget(value: object, budget: int) -> dict:
+    """Validate native FT options without silently dropping user recovery policy."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError("engine fault_tolerance_config must contain valid JSON") from error
+    if value is None:
+        value = {}
+    if not isinstance(value, Mapping):
+        raise ValueError("engine fault_tolerance_config must be a JSON object")
+    result = dict(value)
+    timeout = result.get("engine_recovery_timeout_sec")
+    if timeout is None:
+        timeout = 0
+    if isinstance(timeout, bool):
+        raise ValueError("engine_recovery_timeout_sec must be a finite non-negative number")
+    try:
+        timeout = float(timeout)
+    except (TypeError, ValueError) as error:
+        raise ValueError("engine_recovery_timeout_sec must be a finite non-negative number") from error
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError("engine_recovery_timeout_sec must be a finite non-negative number")
+    result["engine_recovery_timeout_sec"] = math.ceil(max(budget, timeout))
+    return result
 
 
 @dataclass
@@ -198,6 +227,12 @@ class DeployConfig:
             }
             data = raw_data.get(key_map.get(role, ""), {})
             _update_native_engine_tls_config(data, raw_data)
+
+            budget = fast_recovery_budget(raw_data)
+            if budget and data.get("engine_type") == "vllm":
+                native = data.setdefault("engine_config", {})
+                ft_key = "fault-tolerance-config" if "fault-tolerance-config" in native else "fault_tolerance_config"
+                native[ft_key] = with_fast_recovery_budget(native.get(ft_key), budget)
 
             resolver = ConfigResolver(data)
 

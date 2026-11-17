@@ -204,6 +204,14 @@ class _SchedulerInstanceCache:
     def get_instances(self, role: PDRole) -> list[Instance]:
         return self._instance_cache.get(role, [])
 
+    def is_recovery_paused(self, instance_id: int) -> bool:
+        """Constant-size role lookup; no topology copy on the scoring hot path."""
+        return any(
+            instance.recovery_paused
+            for role_map in self._instance_map.values()
+            if (instance := role_map.get(instance_id)) is not None
+        )
+
     async def replace_all(self, role: PDRole, instances: list[Instance]) -> None:
         """Update cache for one role only; incremental map update to reduce lock hold time."""
         async with self._lock:
@@ -2470,7 +2478,7 @@ class AsyncSchedulerClient:
         acceptable because the cache is best-effort — the authoritative CB state
         lives on SchedulerServer, which performs the final gate.
         """
-        return instance_id in self._cb_blocked_instances
+        return instance_id in self._cb_blocked_instances or self._cache.is_recovery_paused(instance_id)
 
     async def report_cb_event(self, instance_id: int, event: str) -> None:
         """Send a circuit-breaker event ("failure" | "success") to SchedulerServer."""

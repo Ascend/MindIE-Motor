@@ -964,7 +964,8 @@ class InstanceAssembler(ThreadSafeSingleton):
             device_idx = start_idx + j
             if device_idx < msg.device_num:
                 global_rank_id = id_offset * devices_per_endpoint + device_idx
-                device_infos.append(DeviceInfo(device_id=str(device_idx), rank_id=str(global_rank_id)))
+                physical_id = msg.physical_device_ids[device_idx] if msg.physical_device_ids else str(device_idx)
+                device_infos.append(DeviceInfo(device_id=physical_id, rank_id=str(global_rank_id)))
         return device_infos
 
     def _start_commmand_sender(self) -> None:

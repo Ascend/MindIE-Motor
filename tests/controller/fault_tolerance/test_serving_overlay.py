@@ -51,6 +51,30 @@ def test_transient_phase_withdraws_instance_from_serving_view():
     assert ServingOverlay.project(ReadOnlyInstance(instance)) is None
 
 
+@patch("motor.controller.fault_tolerance.serving_overlay.CoordinatorApiClient.send_instance_refresh", return_value=True)
+def test_recovery_pause_survives_set_and_resumes_without_mutating_topology(mock_refresh):
+    instance = _instance()
+    original = ServingOverlay.fingerprint([instance])
+    assert ServingOverlay.pause_for_recovery(ReadOnlyInstance(instance))
+    event = mock_refresh.call_args.args[0]
+    assert event.event == EventType.ADD
+    assert event.instances[0].recovery_paused
+    projected = ServingOverlay.project_many([ReadOnlyInstance(instance)])
+    assert projected[0].recovery_paused
+    assert ServingOverlay.fingerprint(projected) != original
+    assert not instance.recovery_paused
+    assert ReadOnlyInstance(projected[0]).to_instance().recovery_paused
+    get_ft_runtime_store().resume_after_fault_clear(instance.id)
+    assert not ServingOverlay.project(instance).recovery_paused
+
+
+@pytest.mark.parametrize("phase", [FtPhase.SCALING_DOWN, FtPhase.RECONFIGURING])
+def test_non_fast_recovery_never_keeps_streams(phase):
+    instance = _instance()
+    get_ft_runtime_store().transition(instance.id, phase=phase, preserve_recovery_streams=True)
+    assert ServingOverlay.project(instance) is None
+
+
 def test_scaled_down_view_filters_dead_rank_without_mutating_authoritative_topology():
     instance = _instance()
     get_ft_runtime_store().put(FtRuntime(instance_id=7, phase=FtPhase.SCALED_DOWN_RUNNING, dead_committed=[1]))

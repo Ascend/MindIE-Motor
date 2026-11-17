@@ -76,6 +76,19 @@ def _limited_device_ids():
 
 
 def get_visible_devices():
+    # Prefer the scheduler allocation injected from the pod annotation
+    # (huawei.com/Ascend910 -> ASCEND_ALLOCATED_DEVICES). Privileged pods
+    # (e.g. fault-injection deployments) see every /dev/davinci* on the host;
+    # registering foreign chips breaks the controller's card->instance mapping.
+    allocated = os.getenv('ASCEND_ALLOCATED_DEVICES', '')
+    if allocated:
+        device_ids = []
+        for part in allocated.split(','):
+            match = re.search(r'(\d+)$', part.strip())
+            if match:
+                device_ids.append(match.group(1))
+        if device_ids:
+            return sorted(device_ids, key=int)
     try:
         device_ids = _davinci_ids()
     except Exception as e:
@@ -85,7 +98,7 @@ def get_visible_devices():
         return []
     limited = _limited_device_ids()
     if not limited:
-        return sorted(device_ids)
+        return sorted(device_ids, key=int)
     present = set(device_ids)
     missing = [device_id for device_id in limited if device_id not in present]
     if missing:

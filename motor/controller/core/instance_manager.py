@@ -32,6 +32,9 @@ from motor.controller.core import Observer, ObserverEvent
 from motor.controller.fault_tolerance.dp_scale_down import (
     committed_dp_ranks,
     partial_loss_policy,
+    get_ft_runtime_store,
+    FtPhase,
+    PartialLossPolicy,
 )
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
@@ -96,6 +99,9 @@ class InstanceManager(ThreadSafeSingleton):
             self.etcd_tls_config = config.etcd_tls_config
             self.instance_manager_check_interval = config.instance_config.instance_manager_check_interval
             self.enable_fault_tolerance = config.fault_tolerance_config.enable_fault_tolerance
+            self.enable_fast_recovery = (
+                self.enable_fault_tolerance and config.fault_tolerance_config.enable_fast_recovery
+            )
             self.enable_dp_scale_down = (
                 self.enable_fault_tolerance and config.fault_tolerance_config.enable_dp_scale_down
             )
@@ -194,6 +200,9 @@ class InstanceManager(ThreadSafeSingleton):
             self.etcd_tls_config = config.etcd_tls_config
             self.instance_manager_check_interval = config.instance_config.instance_manager_check_interval
             self.enable_fault_tolerance = config.fault_tolerance_config.enable_fault_tolerance
+            self.enable_fast_recovery = (
+                self.enable_fault_tolerance and config.fault_tolerance_config.enable_fast_recovery
+            )
             self.enable_dp_scale_down = (
                 self.enable_fault_tolerance and config.fault_tolerance_config.enable_dp_scale_down
             )
@@ -664,11 +673,24 @@ class InstanceManager(ThreadSafeSingleton):
 
     # State transition callback function
 
+    def _recovery_heartbeat_policy(self, instance_id: int) -> PartialLossPolicy | None:
+        if self.enable_dp_scale_down:
+            return partial_loss_policy(instance_id)
+        if self.enable_fast_recovery:
+            runtime = get_ft_runtime_store().get(instance_id)
+            if (
+                runtime
+                and runtime["phase"] == FtPhase.WAITING_ENGINE_FAULT.value
+                and runtime["preserve_recovery_streams"]
+            ):
+                return partial_loss_policy(instance_id)
+        return None
+
     def _is_effective_heartbeat_complete(self, instance: Instance) -> bool:
         """Check heartbeat against the active Engine FT topology."""
-        if not self.enable_dp_scale_down:
+        policy = self._recovery_heartbeat_policy(instance.id)
+        if policy is None:
             return instance.is_all_endpoints_alive()
-        policy = partial_loss_policy(instance.id)
         if policy.protect_transaction:
             return True
         return instance.is_all_endpoints_alive(ignored_endpoint_ids=set(policy.ignored_dead_ranks))
@@ -729,7 +751,7 @@ class InstanceManager(ThreadSafeSingleton):
             return
 
         if condition_event == InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT:
-            policy = partial_loss_policy(instance.id) if self.enable_dp_scale_down else None
+            policy = self._recovery_heartbeat_policy(instance.id)
             if policy is not None and policy.protect_transaction:
                 logger.debug("Instance %d partial-loss handling deferred to Engine FT", instance.id)
                 return
@@ -777,7 +799,7 @@ class InstanceManager(ThreadSafeSingleton):
         marker clears when the instance recovers to ACTIVE or is deleted (a
         re-assembled instance gets a fresh id).
         """
-        policy = partial_loss_policy(instance.id) if self.enable_dp_scale_down else None
+        policy = self._recovery_heartbeat_policy(instance.id)
         if policy is not None and policy.suppress_legacy_shutdown:
             logger.info("Instance %d survivor shutdown suppressed by Engine FT", instance.id)
             return
@@ -914,7 +936,7 @@ class InstanceManager(ThreadSafeSingleton):
             bool: Whether handle state transition is successful
         """
         from_state = instance.status
-        policy = partial_loss_policy(instance.id) if self.enable_dp_scale_down else None
+        policy = self._recovery_heartbeat_policy(instance.id)
         ignored_endpoint_ids = set(policy.ignored_dead_ranks) if policy else set()
         if policy is not None and policy.protect_transaction:
             logger.debug(

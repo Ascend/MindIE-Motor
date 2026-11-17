@@ -528,7 +528,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 1: "DEAD",
                 2: "UNHEALTHY",
             }.get(fault_info.engine_status, "UNKNOWN")
-            logger.info(
+            logger.debug(
                 "Reported software fault for instance %d (key=%s): "
                 "dp_rank=%s, type=%s, engine_status=%s(%s), fault_level=%s",
                 resolved_instance_id,
@@ -544,19 +544,42 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
 
         if collection_started:
             with self.config_lock:
+                timeout = self.config.fault_tolerance_config.fault_collection_timeout_seconds
+            logger.info(
+                "Instance %d: waiting for all DP fault reports before recovery selection "
+                "(fast recovery requires all DP UNHEALTHY): first_dp=%s status=%s timeout=%ss",
+                resolved_instance_id,
+                fault_info.engine_id,
+                engine_status_name,
+                timeout,
+            )
+            instance = InstanceManager().get_instance(resolved_instance_id)
+            with self.config_lock:
+                preserve_streams = (
+                    self.config.fault_tolerance_config.enable_fault_tolerance
+                    and self.config.fault_tolerance_config.enable_fast_recovery
+                    and fault_info.engine_status == 2
+                    and instance is not None
+                )
                 enable_dp_scale_down = (
                     self.config.fault_tolerance_config.enable_fault_tolerance
                     and self.config.fault_tolerance_config.enable_dp_scale_down
                 )
-            if enable_dp_scale_down:
+                enable_fast_recovery = (
+                    self.config.fault_tolerance_config.enable_fault_tolerance
+                    and self.config.fault_tolerance_config.enable_fast_recovery
+                )
+            if enable_dp_scale_down or enable_fast_recovery:
                 store = get_ft_runtime_store()
                 store.transition(
                     resolved_instance_id,
                     phase=FtPhase.WAITING_ENGINE_FAULT,
+                    preserve_recovery_streams=preserve_streams,
                     serving_published=False,
                 )
                 instance = InstanceManager().get_instance(resolved_instance_id)
-                if instance is None or not ServingOverlay.withdraw(instance):
+                withdraw = ServingOverlay.pause_for_recovery if preserve_streams else ServingOverlay.withdraw
+                if instance is None or not withdraw(instance):
                     logger.error(
                         "Failed to withdraw instance %d after the first engine fault report",
                         resolved_instance_id,
@@ -586,8 +609,6 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                         sorted(skip),
                         prefer,
                     )
-            with self.config_lock:
-                timeout = self.config.fault_tolerance_config.fault_collection_timeout_seconds
             timer = threading.Timer(timeout, self._on_fault_collection_deadline)
             timer.daemon = True
             timer.start()
@@ -742,6 +763,23 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             software_faults=software_faults,
         )
 
+    def get_pending_hbm_uce_faults(self, instance_id: int) -> list[str]:
+        """Check UCE on hosting nodes without trusting endpoint device numbering.
+
+        Admission and scale-down keep their ownership filter. Completion is
+        conservative: logical/physical device mismatches must not hide UCE.
+        """
+        with self.lock:
+            nodes = [node for node in self.nodes.values() if instance_id in node.instance_ids]
+            if instance_id not in self.instances or not nodes:
+                raise RuntimeError(f"Cannot verify HBM UCE clearance for instance {instance_id}: missing node evidence")
+            return sorted(
+                hardware_fault_identity(node.node_name, fault)
+                for node in nodes
+                for fault in node.hardware_fault_infos.values()
+                if fault.fault_code == 0x80E01801
+            )
+
     def _refresh_instance_fault_level(self, instance_id: int) -> None:
         """Re-evaluate the fault level of an instance from all its nodes' faults.
 
@@ -876,6 +914,11 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             )
             all_sw_faults = list(snapshot.software_faults)
 
+            # In-place fast recovery is driven by engine status. L2/L3 hardware reports
+            # remain observable but cannot start recovery or tear down requests.
+            if self.config.fault_tolerance_config.enable_fast_recovery:
+                all_hw_faults = [fault for fault in all_hw_faults if fault.fault_level > FaultLevel.L3]
+
             highest_hw_fault = max(all_hw_faults, key=lambda f: f.fault_level, default=None)
             highest_sw_fault = max(all_sw_faults, key=lambda f: f.fault_level, default=None)
 
@@ -893,8 +936,15 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             else:
                 target = None
 
+            if get_ft_runtime_store().is_reconfiguration_dispatched(instance_id):
+                # Stop dispatch ended this instance's in-place recovery. Keep
+                # observing real faults, but never revive it or preserve an old
+                # L3 code while waiting for the replacement to register.
+                instance_metadata.fault_level = target.fault_level if target else FaultLevel.HEALTHY
+                instance_metadata.fault_code = int(target.fault_code) if target else 0
+                return
+
             if target is None:
-                # No faults, instance is healthy
                 instance_metadata.fault_collection_started_at = None
                 instance_metadata.hardware_fault_observed_at = None
                 instance_metadata.software_dead_observed_at.clear()
@@ -925,9 +975,8 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                     logger.info("Deferring instance %d isolation to hardware DP scale-down", instance_id)
                 else:
                     InstanceManager().separate_instance(instance_id)
-            else:
-                if InstanceManager().is_instance_separated(instance_id):
-                    InstanceManager().recover_instance(instance_id)
+            elif InstanceManager().is_instance_separated(instance_id):
+                InstanceManager().recover_instance(instance_id)
 
         # Persist data after instance fault level update
         with self.config_lock:
@@ -960,14 +1009,21 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
 
         logger.info("Fault tolerance strategy center stopped")
 
-    def _build_scale_down_context(
+    def get_recovery_hardware_evidence(self, instance_id: int) -> tuple[tuple[int, ...], bool]:
+        """Read current owned hardware evidence, retaining admission safety filters."""
+        context = self._build_recovery_context(instance_id)
+        if not context.engine_recovery_eligible:
+            raise RuntimeError("instance is no longer eligible for in-place fast recovery")
+        return context.hardware_fault_codes, context.hardware_fault_observed or context.recovery_hardware_severe
+
+    def _build_recovery_context(
         self,
         instance_id: int,
     ) -> ScaleDownContext:
-        """Freeze the authoritative fault candidates before a strategy starts."""
+        """Collect one DP domain for fast recovery or scale-down under a shared deadline."""
         snapshot = self._collect_instance_faults(instance_id)
         if snapshot is None or snapshot.instance is None:
-            return ScaleDownContext()
+            return ScaleDownContext(engine_recovery_eligible=False)
         instance = snapshot.instance
         with self.lock:
             metadata = self.instances.get(instance_id)
@@ -989,7 +1045,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
         hardware_faults = [
             (fault_key, pod_ip, fault.model_copy(deep=True))
             for fault_key, pod_ip, _, fault in snapshot.hardware_faults
-            if fault.fault_level >= FaultLevel.L2
+            if fault.fault_level >= FaultLevel.L1
             and fault_key not in handled_hardware_faults
             and fault_key not in ignored_hardware_faults
         ]
@@ -1025,6 +1081,15 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             hardware_candidates.update(active_candidates)
             mapped_fault_keys.update(keys)
             has_unmapped_hardware = has_unmapped_hardware or not candidates
+
+        # Cause classification must not turn still-present pre-ready/handled
+        # hardware into a generic software fast recovery. Only retired devices are excluded.
+        recovery_hardware_faults = []
+        for _, pod_ip, _, fault in snapshot.hardware_faults:
+            candidates, _ = FaultNormalizer.hardware_dp_ranks(instance, [("", pod_ip, fault)])
+            if candidates and candidates <= committed_ranks:
+                continue
+            recovery_hardware_faults.append(fault)
 
         engine_fault_observed = bool(dead_ranks or unhealthy_ranks)
         all_dp_unhealthy = bool(active_ranks) and not dead_ranks and active_ranks <= unhealthy_ranks
@@ -1066,7 +1131,11 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
         return ScaleDownContext(
             pending_removed_ranks=tuple(sorted(dead_ranks)),
             source="hardware" if hardware_first else "software",
-            fault_keys=tuple(sorted(mapped_fault_keys)),
+            fault_keys=tuple(
+                sorted(
+                    mapped_fault_keys | {key for key, _, fault in hardware_faults if fault.fault_level <= FaultLevel.L3}
+                )
+            ),
             all_dp_unhealthy=all_dp_unhealthy,
             collection_complete=collection_complete,
             collection_timed_out=collection_timed_out,
@@ -1079,6 +1148,8 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             already_removed_fault_keys=tuple(sorted(already_removed_fault_keys)),
             engine_recovery_eligible=instance.status == InsStatus.ACTIVE,
             hardware_mapping_complete=not has_unmapped_hardware,
+            hardware_fault_codes=tuple(sorted({fault.fault_code for fault in recovery_hardware_faults})),
+            recovery_hardware_severe=any(fault.fault_level >= FaultLevel.L4 for fault in recovery_hardware_faults),
         )
 
     def _is_superseded_instance(self, ins_id: int) -> bool:
@@ -1116,14 +1187,26 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
         if self._complete_finished_strategy(ins_id, ins_metadata):
             return
 
+        if get_ft_runtime_store().is_reconfiguration_dispatched(ins_id):
+            with ins_metadata.lock:
+                # L4-L6 native handling (notably Decode ScaleP2D) must remain
+                # available if fresh severe hardware evidence arrives later.
+                if ins_metadata.fault_level <= FaultLevel.L3:
+                    return
+
         superseded = self._is_superseded_instance(ins_id)
         plan_started = False
         with ins_metadata.lock:
-            has_fault = ins_metadata.fault_level != FaultLevel.HEALTHY
+            # A live strategy still owns recovery, even if hardware clears first.
+            if ins_metadata.strategy is not None:
+                return
+            has_fault = ins_metadata.fault_level > FaultLevel.L1
+            recovery_failed = ins_metadata.prev_strategy_failed
+        self._update_relaunch_relapse_guard(ins_id, ins_metadata)
         scale_p2d_pending = self.get_pending_scale_p2d_nodes(ins_id) if has_fault else None
         scale_down_context = ScaleDownContext()
         if has_fault and not superseded:
-            scale_down_context = self._build_scale_down_context(ins_id)
+            scale_down_context = self._build_recovery_context(ins_id)
             if scale_down_context.already_removed_fault_keys:
                 with ins_metadata.lock:
                     ins_metadata.handled_hardware_faults.update(scale_down_context.already_removed_fault_keys)
@@ -1131,13 +1214,22 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                     self._refresh_instance_fault_level(ins_id)
                     return
 
-        if not has_fault and not superseded:
+        if not has_fault and not superseded and not recovery_failed:
             runtime = get_ft_runtime_store().get(ins_id)
             if runtime is not None and runtime["phase"] == FtPhase.WAITING_ENGINE_FAULT.value:
-                restored = get_ft_runtime_store().resume_after_fault_clear(ins_id)
+                get_ft_runtime_store().resume_after_fault_clear(ins_id)
+                runtime = get_ft_runtime_store().get(ins_id)
+            if (
+                runtime is not None
+                and runtime["phase"] in {FtPhase.NORMAL.value, FtPhase.SCALED_DOWN_RUNNING.value}
+                and not runtime["serving_published"]
+            ):
                 instance = InstanceManager().get_instance(ins_id)
-                if restored is not None and instance is not None and ServingOverlay.publish(instance):
+                if instance is not None and ServingOverlay.publish(instance):
                     get_ft_runtime_store().mark_serving_published({ins_id})
+                    logger.info("Instance %d serving restored after fault recovery (HEALTHY/L1)", ins_id)
+                else:
+                    logger.warning("Instance %d serving publication pending; will retry", ins_id)
                 return
         with ins_metadata.lock:
             fault_level = ins_metadata.fault_level
@@ -1154,7 +1246,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             # Joiner faults stay on the scale-up deadline. A survivor hard fault
             # aborts inside the scale-up worker and uses its reconfiguration exit.
             runtime_guard = get_ft_runtime_store().get(ins_id)
-            # Only a scale-up failure may escalate after the fault record is already healthy.
+            # Recovery failure must still escalate after hardware/software evidence clears.
             scale_up_left_reconfiguring = (
                 self.config.fault_tolerance_config.enable_dp_scale_up
                 and ins_metadata.prev_strategy_name == "DpScaleDownStrategy"
@@ -1185,14 +1277,28 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                         "Skip strategy for superseded instance %d (job already has a newer instance)",
                         ins_id,
                     )
-            elif ins_metadata.prev_strategy_failed and (
-                fault_level != FaultLevel.HEALTHY or scale_up_left_reconfiguring
+            elif (
+                ins_metadata.relaunch_relapse_guard
+                and not ins_metadata.prev_strategy_failed
+                and ins_metadata.prev_strategy_name != "InstanceReconfigurationStrategy"
+                and scale_down_context.engine_fault_observed
+                and fault_level <= FaultLevel.L3
             ):
-                # Engine FT and relaunch are single-attempt recovery stages;
-                # failure advances to whole-instance reconfiguration. A scale-up
-                # failure does the same, including after user recover on an
-                # instance whose fault level was already cleared. Other
-                # baseline strategies retain master's optional relaunch stage.
+                from motor.controller.fault_tolerance.strategy import InstanceReconfigurationStrategy
+
+                logger.warning(
+                    "Instance %d fault recurred after fast-recovery fallback relaunch; reconfiguring", ins_id
+                )
+                new_strategy_cls = InstanceReconfigurationStrategy
+            elif ins_metadata.prev_strategy_failed and (
+                fault_level != FaultLevel.HEALTHY
+                or scale_up_left_reconfiguring
+                or ins_metadata.relaunch_relapse_guard
+                or ins_metadata.prev_strategy_name
+                in {"HbmUceRecoveryStrategy", "GenericFastRecoveryStrategy", "TokenReinferenceStrategy"}
+            ):
+                # Fast-recovery policies choose relaunch only when hardware evidence permits it.
+                # Failed relaunch and scale-down always advance to reconfiguration.
                 if ins_metadata.prev_strategy_name == "InstanceReconfigurationStrategy":
                     # Reconfiguration dispatch failure is terminal for the
                     # same evidence, but a later actionable hardware fault is
@@ -1208,10 +1314,22 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                     "DpScaleDownStrategy",
                     "EngineFastRecoveryStrategy",
                     "EngineRelaunchStrategy",
+                    "HbmUceRecoveryStrategy",
+                    "TokenReinferenceStrategy",
+                    "GenericFastRecoveryStrategy",
                 }:
                     from motor.controller.fault_tolerance.strategy import InstanceReconfigurationStrategy
 
-                    new_strategy_cls = InstanceReconfigurationStrategy
+                    from motor.controller.fault_tolerance.strategy import EngineRelaunchStrategy
+
+                    new_strategy_cls = (
+                        EngineRelaunchStrategy
+                        if ins_metadata.prev_strategy_name
+                        in {"HbmUceRecoveryStrategy", "GenericFastRecoveryStrategy", "TokenReinferenceStrategy"}
+                        and ins_metadata.prev_strategy_fallback == "EngineRelaunchStrategy"
+                        and self.config.fault_tolerance_config.enable_engine_relaunch
+                        else InstanceReconfigurationStrategy
+                    )
                 elif self.config.fault_tolerance_config.enable_engine_relaunch:
                     from motor.controller.fault_tolerance.strategy import EngineRelaunchStrategy
 
@@ -1260,6 +1378,13 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 return
 
             if new_strategy_cls is not None:
+                if new_strategy_cls.__name__ == "EngineRelaunchStrategy" and ins_metadata.prev_strategy_name in {
+                    "GenericFastRecoveryStrategy",
+                    "TokenReinferenceStrategy",
+                }:
+                    ins_metadata.relaunch_relapse_guard = True
+                    ins_metadata.relaunch_healthy_since = None
+                    logger.info("Instance %d fast-recovery fallback relaunch: relapse protection enabled", ins_id)
                 new_strategy = new_strategy_cls()
                 new_strategy.bind_config(self.config)
                 new_strategy.bind_context(strategy_context)
@@ -1287,6 +1412,44 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             if enable_persistence and not self.persist_data():
                 logger.debug("Failed to persist recovery plan for instance %d", ins_id)
 
+    @staticmethod
+    def _engines_normal(ins_id: int) -> bool:
+        """Probe strict readiness; loading or unreachable engines are not healthy."""
+        from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient
+
+        instance = InstanceManager().get_instance(ins_id)
+        nodes = list(instance.get_node_managers()) if instance is not None else []
+        try:
+            return bool(nodes) and all(NodeManagerApiClient.query_status(node).get("status") for node in nodes)
+        except Exception as error:
+            logger.debug("Instance %d readiness probe failed: %s", ins_id, error)
+            return False
+
+    def _update_relaunch_relapse_guard(self, ins_id: int, metadata: InstanceMetadata) -> None:
+        """Keep relapse protection through model loading and a stable healthy window."""
+        with metadata.lock:
+            if not metadata.relaunch_relapse_guard:
+                return
+            if metadata.fault_level > FaultLevel.L1 or metadata.prev_strategy_failed:
+                metadata.relaunch_healthy_since = None
+                return
+        healthy = self._engines_normal(ins_id)
+        now = time.time()
+        window = self.config.fault_tolerance_config.engine_relaunch_stability_sec
+        with metadata.lock:
+            since = metadata.relaunch_healthy_since
+            if not healthy or metadata.fault_level > FaultLevel.L1:
+                metadata.relaunch_healthy_since = None
+                if since is not None:
+                    logger.info("Instance %d relaunch stability window reset", ins_id)
+            elif since is None:
+                metadata.relaunch_healthy_since = now
+                logger.info("Instance %d engines NORMAL; observing health for %ss", ins_id, window)
+            elif now - since >= window:
+                metadata.relaunch_relapse_guard = False
+                metadata.relaunch_healthy_since = None
+                logger.info("Instance %d healthy for %ss; relaunch relapse protection released", ins_id, window)
+
     def _complete_finished_strategy(self, ins_id: int, ins_metadata: InstanceMetadata) -> bool:
         """Finish one returned strategy before evaluating the next recovery round."""
         clear_software_faults = False
@@ -1308,7 +1471,9 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 ins_metadata.prev_strategy_failed = strategy.is_failed()
                 ins_metadata.prev_strategy_name = strategy.__class__.__name__
                 ins_metadata.prev_strategy_fallback = (
-                    completed_context.fallback_strategy
+                    strategy.failure_fallback
+                    if ins_metadata.prev_strategy_failed and hasattr(strategy, "failure_fallback")
+                    else completed_context.fallback_strategy
                     if ins_metadata.prev_strategy_failed and isinstance(completed_context, ScaleDownContext)
                     else (
                         ins_metadata.recovery_plan_fallback
@@ -1644,7 +1809,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 continue
             with metadata.lock:
                 faulted = metadata.fault_level != FaultLevel.HEALTHY
-            context = self._build_scale_down_context(instance_id)
+            context = self._build_recovery_context(instance_id)
             ranks = set(context.pending_removed_ranks)
             if not faulted and not ranks and not context.engine_fault_observed and not context.hardware_fault_observed:
                 continue

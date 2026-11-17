@@ -53,6 +53,20 @@ class EngineFtApplyError(RuntimeError):
         super().__init__(message % (engine_id, status_code))
 
 
+def _request_ft(request: Callable[[str], _Result], path: str) -> _Result:
+    """Prefer B090 routes; only an explicit 404 permits the legacy route.
+
+    Never replay a recovery after a timeout or server error: it may already
+    have started collective operations on the engine.
+    """
+    try:
+        return request(path)
+    except HttpStatusError as error:
+        if error.status_code != 404:
+            raise
+        return request(path.removeprefix("/v1"))
+
+
 def query_engine_ft_status(ep: Endpoint, timeout: float = ENGINE_FT_TIMEOUT) -> dict:
     """GET one engine's FT status payload; raises ValueError on a non-dict body.
 
@@ -64,7 +78,7 @@ def query_engine_ft_status(ep: Endpoint, timeout: float = ENGINE_FT_TIMEOUT) -> 
     address = format_address(ep.ip, ep.business_port)
     try:
         with SafeHTTPSClient(address=address, tls_config=None, timeout=timeout) as client:
-            payload = client.get(FT_STATUS_PATH)
+            payload = _request_ft(client.get, FT_STATUS_PATH)
     except HttpStatusError as e:
         if e.status_code == 404:
             raise EngineFtEndpointUnsupported(
@@ -131,8 +145,11 @@ def apply_engine_ft_instruction(
         "params": params or {},
         "request_id": request_id,
     }
-    with SafeHTTPSClient(address=address, tls_config=None, timeout=timeout) as client:
-        response = client.do_post(FT_APPLY_PATH, data=body)
+    try:
+        with SafeHTTPSClient(address=address, tls_config=None, timeout=timeout) as client:
+            response = _request_ft(partial(client.do_post, data=body), FT_APPLY_PATH)
+    except HttpStatusError as error:
+        raise EngineFtApplyError(ep.id, error.status_code) from error
     if response.status_code != 202:
         raise EngineFtApplyError(ep.id, response.status_code)
     payload = response.json()

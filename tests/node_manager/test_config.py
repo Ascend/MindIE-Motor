@@ -1445,3 +1445,151 @@ def test_kv_config_memcache_ignores_mooncake_fields():
     kcfg = _parse_kv({"backend": "memcache", "store_mode": "standalone", "global_segment_size": "1GB"})
     assert kcfg.store_mode == ""
     assert kcfg.global_segment_size == ""
+
+
+@patch.dict("os.environ", {"ROLE": "prefill"})
+def test_fast_recovery_budget_is_derived_from_two_attempts_and_reassembly():
+    user_config = {
+        "motor_deploy_config": {"hardware_type": "800I-A3"},
+        "motor_controller_config": {"fault_tolerance_config": {"enable_fast_recovery": True}},
+        "motor_engine_prefill_config": {"engine_type": "vllm", "engine_config": {}},
+    }
+    config_data = NodeManagerConfig._load_node_manager_config_data(user_config)
+    assert config_data["fault_tolerance_config"]["fast_recovery_budget_sec"] == 870
+    assert config_data["fault_tolerance_config"]["enable_fast_recovery_proxy"] is True
+    user_config["motor_controller_config"]["fault_tolerance_config"]["enable_fast_recovery"] = False
+    config_data = NodeManagerConfig._load_node_manager_config_data(user_config)
+    assert config_data["fault_tolerance_config"]["fast_recovery_budget_sec"] == 0
+    assert config_data["fault_tolerance_config"]["enable_fast_recovery_proxy"] is False
+
+
+@pytest.mark.parametrize("enabled,expected", [(False, 0), (True, 84)])
+def test_fast_recovery_budget_covers_custom_controller_deadlines(enabled, expected):
+    from motor.config.config_utils import fast_recovery_budget
+
+    config = {
+        "motor_controller_config": {
+            "fault_tolerance_config": {
+                "enable_fault_tolerance": enabled,
+                "enable_fast_recovery": True,
+                "fault_collection_timeout_seconds": 3,
+                "recovery_round_timeout_sec": 7.5,
+                "hbm_uce_clearance_timeout_sec": 7.5,
+                "engine_relaunch_complete_timeout_sec": 36,
+            },
+            "instance_config": {"instance_assemble_timeout": 36},
+        }
+    }
+    assert fast_recovery_budget(config) == expected
+
+
+@pytest.mark.parametrize("controller", [None, {"fault_tolerance_config": None}])
+def test_fast_recovery_budget_accepts_null_optional_sections(controller):
+    from motor.config.config_utils import fast_recovery_budget
+
+    assert fast_recovery_budget({"motor_controller_config": controller}) == 0
+
+
+@pytest.mark.parametrize("instance", [None, {"instance_assemble_timeout": None}])
+def test_fast_recovery_budget_uses_default_for_null_assembly(instance):
+    from motor.config.config_utils import fast_recovery_budget
+
+    assert (
+        fast_recovery_budget(
+            {
+                "motor_controller_config": {
+                    "fault_tolerance_config": {"enable_fast_recovery": True, "recovery_round_timeout_sec": None},
+                    "instance_config": instance,
+                }
+            }
+        )
+        == 870
+    )
+
+
+@pytest.mark.parametrize(
+    "value", [None, {}, {"engine_recovery_timeout_sec": None}, '{"resume_requests_after_recovery": true}']
+)
+def test_native_fast_recovery_budget_preserves_options(value):
+    from motor.config.endpoint import with_fast_recovery_budget
+
+    result = with_fast_recovery_budget(value, 870)
+    assert result["engine_recovery_timeout_sec"] == 870
+    if isinstance(value, str):
+        assert result["resume_requests_after_recovery"] is True
+    assert with_fast_recovery_budget({"engine_recovery_timeout_sec": 999}, 870)["engine_recovery_timeout_sec"] == 999
+
+
+@pytest.mark.parametrize(
+    "value", ["{broken", [], {"engine_recovery_timeout_sec": "bad"}, {"engine_recovery_timeout_sec": float("inf")}]
+)
+def test_native_fast_recovery_budget_rejects_invalid_policy_explicitly(value):
+    from motor.config.endpoint import with_fast_recovery_budget
+
+    with pytest.raises(ValueError, match="fault_tolerance_config|engine_recovery_timeout_sec"):
+        with_fast_recovery_budget(value, 870)
+
+
+@pytest.mark.parametrize(
+    "hbm,no_fault_code,token,clearance,expected",
+    [
+        (False, False, False, 60, 0),
+        (False, False, True, 60, 870),
+        (False, True, False, 60, 870),
+        (True, False, False, 120, 930),
+    ],
+)
+def test_fast_recovery_budget_covers_only_enabled_policies(hbm, no_fault_code, token, clearance, expected):
+    from motor.config.config_utils import fast_recovery_budget
+
+    ft = {
+        "enable_fast_recovery": True,
+        "enable_hbm_uce_recovery": hbm,
+        "enable_no_fault_code_recovery": no_fault_code,
+        "enable_token_reinference": token,
+        "hbm_uce_clearance_timeout_sec": clearance,
+    }
+    assert fast_recovery_budget({"motor_controller_config": {"fault_tolerance_config": ft}}) == expected
+
+
+@pytest.mark.parametrize("policy", ["enable_no_fault_code_recovery", "enable_token_reinference"])
+def test_fast_recovery_budget_includes_relaunch_without_hbm(policy):
+    from motor.config.config_utils import fast_recovery_budget
+
+    ft = {
+        "enable_fast_recovery": True,
+        "enable_hbm_uce_recovery": False,
+        "enable_token_reinference": False,
+        "enable_no_fault_code_recovery": False,
+        "engine_relaunch_complete_timeout_sec": 1200,
+        policy: True,
+    }
+    config = {"motor_controller_config": {"fault_tolerance_config": ft}}
+    assert fast_recovery_budget(config) == 1470
+    ft["enable_engine_relaunch"] = False
+    assert fast_recovery_budget(config) == 870
+    ft[policy] = False
+    assert fast_recovery_budget(config) == 0
+
+
+def test_fast_recovery_budget_uses_controller_default_timeouts(monkeypatch):
+    """Keep implicit engine/NM budgets aligned when Controller defaults change."""
+    from motor.config.controller import FaultToleranceConfig, InstanceConfig
+    from motor.config.config_utils import fast_recovery_budget
+
+    class UpdatedFaultToleranceConfig(FaultToleranceConfig):
+        def __init__(self):
+            super().__init__()
+            self.fault_collection_timeout_seconds = 150
+            self.recovery_round_timeout_sec = 80
+            self.engine_relaunch_complete_timeout_sec = 700
+
+    class UpdatedInstanceConfig(InstanceConfig):
+        def __init__(self):
+            super().__init__()
+            self.instance_assemble_timeout = 800
+
+    monkeypatch.setattr("motor.config.controller.FaultToleranceConfig", UpdatedFaultToleranceConfig)
+    monkeypatch.setattr("motor.config.controller.InstanceConfig", UpdatedInstanceConfig)
+    config = {"motor_controller_config": {"fault_tolerance_config": {"enable_fast_recovery": True}}}
+    assert fast_recovery_budget(config) == 1140

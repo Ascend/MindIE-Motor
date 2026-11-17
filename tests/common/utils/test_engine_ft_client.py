@@ -9,12 +9,24 @@
 # See the Mulan PSL v2 for more details.
 """Tests for the vLLM fault-tolerance HTTP contract."""
 
-from unittest.mock import patch
+import ast
+import logging
+import os
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, call, patch
+from urllib.parse import urlsplit
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from pydantic import BaseModel
+from requests import Response
 
 import pytest
 
 from motor.common.http.engine_ft_client import (
     EngineFtApplyError,
+    EngineFtEndpointUnsupported,
     apply_engine_ft_instruction,
     apply_engine_ft_instructions,
     query_engine_ft_entries,
@@ -30,7 +42,7 @@ def _endpoint() -> Endpoint:
 
 
 @patch("motor.common.http.engine_ft_client.SafeHTTPSClient")
-def test_query_uses_versioned_status_path(mock_client_cls):
+def test_query_uses_status_path(mock_client_cls):
     client = mock_client_cls.return_value
     client.__enter__.return_value = client
     client.get.return_value = {"engines": []}
@@ -68,7 +80,7 @@ def test_apply_uses_vllm_async_contract(mock_client_cls):
 
 
 @patch("motor.common.http.engine_ft_client.SafeHTTPSClient")
-def test_status_does_not_fall_back_when_versioned_path_fails(mock_client_cls):
+def test_status_does_not_fall_back_when_path_fails(mock_client_cls):
     client = mock_client_cls.return_value
     client.__enter__.return_value = client
     client.get.side_effect = RuntimeError("http response error 404, missing")
@@ -113,7 +125,7 @@ def test_apply_accepts_retry_instruction(mock_client_cls):
     client.do_post.return_value.status_code = 202
     client.do_post.return_value.json.return_value = {"message": "accepted"}
 
-    apply_engine_ft_instruction(_endpoint(), "retry", request_id="retry-1")
+    apply_engine_ft_instruction(_endpoint(), "retry", request_id="recovery-1")
 
     assert client.do_post.call_args.kwargs["data"]["instruction"] == "retry"
 
@@ -185,3 +197,117 @@ def test_apply_instructions_dispatches_once_to_every_endpoint(mock_apply):
     )
 
     assert mock_apply.call_count == 2
+
+
+@patch("motor.common.http.engine_ft_client.SafeHTTPSClient")
+def test_status_legacy_fallback_only_on_typed_404(mock_client_cls):
+    client = mock_client_cls.return_value.__enter__.return_value
+    client.get.side_effect = [HttpStatusError(404, "missing"), {"engines": []}]
+    assert query_engine_ft_status(_endpoint()) == {"engines": []}
+    assert client.get.call_args_list == [call("/v1/fault_tolerance/status"), call("/fault_tolerance/status")]
+
+
+@patch("motor.common.http.engine_ft_client.SafeHTTPSClient")
+def test_status_unsupported_requires_both_paths_missing(mock_client_cls):
+    client = mock_client_cls.return_value.__enter__.return_value
+    client.get.side_effect = HttpStatusError(404, "missing")
+    with pytest.raises(EngineFtEndpointUnsupported):
+        query_engine_ft_status(_endpoint())
+    assert client.get.call_count == 2
+
+
+@pytest.mark.parametrize("status", [401, 403, 500, 503])
+@patch("requests.Session.request")
+def test_real_http_errors_are_classified_without_replaying_apply(mock_request, status):
+    response = Response()
+    response.status_code = status
+    response._content = b'{"detail":"rejected"}'
+    mock_request.return_value = response
+    with pytest.raises(EngineFtApplyError) as error:
+        apply_engine_ft_instruction(_endpoint(), "retry", request_id="round-1")
+    assert error.value.status_code == status
+    assert mock_request.call_count == 1
+    with pytest.raises(HttpStatusError):
+        query_engine_ft_status(_endpoint())
+    assert mock_request.call_count == 2
+
+
+@patch("requests.Session.request")
+def test_apply_legacy_fallback_preserves_recovery_round(mock_request):
+    missing, accepted = Response(), Response()
+    missing.status_code = 404
+    missing._content = b'{"detail":"Not Found"}'
+    accepted.status_code = 202
+    accepted._content = b'{"request_id":"round-1"}'
+    mock_request.side_effect = [missing, accepted]
+    assert apply_engine_ft_instruction(_endpoint(), "retry", request_id="round-1") == {"request_id": "round-1"}
+    first, second = mock_request.call_args_list
+    assert first.kwargs["url"].endswith("/v1/fault_tolerance/apply")
+    assert second.kwargs["url"].endswith("/fault_tolerance/apply")
+    assert first.kwargs["json"] == second.kwargs["json"]
+
+
+@patch("requests.Session.request")
+def test_apply_transport_failure_never_replays_recovery(mock_request):
+    mock_request.side_effect = TimeoutError("response lost")
+    with pytest.raises(RuntimeError, match="response lost"):
+        apply_engine_ft_instruction(_endpoint(), "retry", request_id="round-1")
+    assert mock_request.call_count == 1
+
+
+@pytest.mark.parametrize("instruction", ["retry", "scale_down"])
+def test_motor_client_against_b090_router(monkeypatch, instruction):
+    """Execute sibling B090 production routes/schema, stubbing only engine imports.
+
+    Set VLLM_FT_SOURCE_ROOT in standalone Motor CI to enable this cross-repo
+    contract. NPU execution is intentionally outside this HTTP test.
+    """
+    default_root = Path(__file__).resolve().parents[4] / "vllm"
+    source_root = Path(os.environ.get("VLLM_FT_SOURCE_ROOT", default_root))
+    router_path = source_root / "vllm/entrypoints/serve/fault_tolerance/api_router.py"
+    if not router_path.exists():
+        if "VLLM_FT_SOURCE_ROOT" in os.environ:
+            pytest.fail("configured B090 FT source is missing")
+        pytest.skip("B090 vLLM source checkout is not available")
+
+    namespace = {"__name__": "b090_ft_contract"}
+    utils_path = source_root / "vllm/v1/fault_tolerance/utils.py"
+    exec(compile(utils_path.read_text(), str(utils_path), "exec"), namespace)  # pylint: disable=exec-used
+    # Keep real decorators, validation, serialization and background dispatch.
+    # Avoid importing the CUDA/NPU engine package into the CPU Motor test run.
+    tree = ast.parse(router_path.read_text(), filename=str(router_path))
+    tree.body = [
+        node for node in tree.body if not (isinstance(node, ast.ImportFrom) and (node.module or "").startswith("vllm."))
+    ]
+    namespace.update(
+        EngineClient=object,
+        ErrorResponse=BaseModel,
+        init_logger=logging.getLogger,
+        validate_json_request=lambda: None,
+    )
+    exec(compile(tree, str(router_path), "exec"), namespace)  # pylint: disable=exec-used
+    app = FastAPI()
+    status = {"engines": [{"id": 2, "status": "unhealthy"}]}
+    engine = SimpleNamespace(
+        get_status=AsyncMock(return_value=status),
+        handle_fault=AsyncMock(return_value=SimpleNamespace(success=True)),
+    )
+    app.state.engine_client = engine
+    namespace["register_fault_tolerance_api_router"](app)
+    with TestClient(app) as server:
+
+        def send_http(_session, method, url, **kwargs):
+            result = server.request(method, urlsplit(url).path, json=kwargs["json"])
+            response = Response()
+            response.status_code = result.status_code
+            response._content = result.content
+            return response
+
+        monkeypatch.setattr("requests.Session.request", send_http)
+        assert query_engine_ft_entry(_endpoint()) == status["engines"][0]
+        params = {"removed_dp_ranks": [1]} if instruction == "scale_down" else {}
+        result = apply_engine_ft_instruction(_endpoint(), instruction, params, "round-1")
+        assert result["request_id"] == "round-1"
+        engine.handle_fault.assert_awaited_once()
+        request = engine.handle_fault.call_args.args[0]
+        assert (request.instruction, request.params, request.request_id) == (instruction, params, "round-1")

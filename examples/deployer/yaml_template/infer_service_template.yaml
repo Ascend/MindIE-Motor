@@ -347,6 +347,10 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: status.hostIP
+              - name: ASCEND_ALLOCATED_DEVICES
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['huawei.com/Ascend910']
               - name: CONFIGMAP_PATH
                 value: /mnt/configmap
               - name: CONFIG_PATH
@@ -500,6 +504,10 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: status.hostIP
+              - name: ASCEND_ALLOCATED_DEVICES
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['huawei.com/Ascend910']
               - name: CONFIGMAP_PATH
                 value: /mnt/configmap
               - name: CONFIG_PATH
@@ -653,6 +661,10 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: status.hostIP
+              - name: ASCEND_ALLOCATED_DEVICES
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['huawei.com/Ascend910']
               - name: CONFIGMAP_PATH
                 value: /mnt/configmap
               - name: CONFIG_PATH
@@ -806,6 +818,10 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: status.hostIP
+              - name: ASCEND_ALLOCATED_DEVICES
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['huawei.com/Ascend910']
               - name: CONFIGMAP_PATH
                 value: /mnt/configmap
               - name: CONFIG_PATH

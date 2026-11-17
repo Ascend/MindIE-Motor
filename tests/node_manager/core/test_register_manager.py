@@ -754,3 +754,28 @@ class TestEngineRelaunchParams:
         assert params["master_dp_ip"] == "192.168.1.100"
         assert params["role"] == "both"
         assert [ep.id for ep in params["endpoints"]] == [0, 1]
+
+
+def test_ranktable_free_registration_reports_launch_device_ids(register_manager):
+    from motor.node_manager.core.services.native_engine.ascend_device_ids import calc_endpoint_visible_device_ids
+
+    register_manager._config.basic_config.job_name = "a5-decode"
+    register_manager._config.basic_config.device_num = 4
+    register_manager._config.single_container_config.single_container_flag = False
+    with (
+        patch.object(register_manager, "_get_ranktable", return_value=None),
+        patch("motor.node_manager.core.register_manager.list_runtime_device_ids", return_value=["4", "5", "6", "7"]),
+    ):
+        msg = register_manager._gen_register_msg()
+    assert msg.physical_device_ids == ["4", "5", "6", "7"]
+    assert msg.ranktable is None
+    for dp_rank in range(2):
+        launch_ids = calc_endpoint_visible_device_ids(
+            dp_rank,
+            4,
+            2,
+            pod_physical_ids=msg.physical_device_ids,
+            single_container_flag=False,
+            device_offset=0,
+        )
+        assert launch_ids.split(",") == msg.physical_device_ids[dp_rank * 2 : dp_rank * 2 + 2]

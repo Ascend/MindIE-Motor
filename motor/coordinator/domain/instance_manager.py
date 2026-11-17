@@ -548,6 +548,9 @@ class InstanceManager:
             if existing_by_id is not None:
                 if not _same_add_identity(existing_by_id, instance):
                     raise InstanceIdConflictError(f"instance ID {instance.id} already belongs to another instance")
+                if existing_by_id.recovery_paused != instance.recovery_paused:
+                    existing_by_id.recovery_paused = instance.recovery_paused
+                    modified = True
                 logger.warning(
                     "Instance ID %d (role: %s, job_name: %s) already exists in instance pool, cannot add again",
                     instance.id,
@@ -762,13 +765,19 @@ class InstanceManager:
 
     def _apply_set_diff(self, instances: list[Instance]) -> tuple[bool, list[int]]:
         """Apply SET as diff: delete removed, add new."""
+        pause_changed = False
+        for instance in instances:
+            existing = self._find_instance_by_id(instance.id)
+            if existing is not None and existing.recovery_paused != instance.recovery_paused:
+                existing.recovery_paused = instance.recovery_paused
+                pause_changed = True
         to_add, to_remove = self._compute_set_diff(instances)
         new_ids = {inst.id for inst in instances}
         # CB cleanup applies only to ids dropped from the Controller snapshot, not in-place refresh.
         removed_ids = [inst.id for inst in to_remove if inst.id not in new_ids]
         if not to_remove and not to_add:
             logger.debug("SET: no diff, instance set unchanged")
-            return False, removed_ids
+            return pause_changed, removed_ids
         if to_remove:
             logger.info("SET: removing %d instance(s), adding %d", len(to_remove), len(to_add))
             self._delete_instances(to_remove)

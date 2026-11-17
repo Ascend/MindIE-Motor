@@ -40,19 +40,11 @@ def level2_strategy(fault_code: int, instance_id: int, config: ControllerConfig)
 
         return EngineRelaunchStrategy
 
-    # Hardware L2 faults: only handle whitelisted fault codes (token reinference)
-    if not config.fault_tolerance_config.enable_token_reinference:
-        return None
-
-    if fault_code in [0x00F1FEF5, 0x08520003]:
-        from motor.controller.fault_tolerance.strategy.token_reinference import TokenReinferenceStrategy
-
-        return TokenReinferenceStrategy
     return None
 
 
 def level3_strategy(fault_code: int, instance_id: int, config: ControllerConfig) -> type[StrategyBase] | None:
-    # L3 faults call L1 strategy logic
+    # Other L3 faults call L1 strategy logic
     return level1_strategy(fault_code, instance_id, config)
 
 

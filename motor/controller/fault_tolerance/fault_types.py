@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
@@ -33,6 +33,29 @@ class FaultCategory(str, Enum):
     SOFTWARE = "software"
 
 
+HBM_UCE_FAULT_CODES = frozenset({0x80E01801})
+# Restored from level2_strategy before ae0600bf unified the fast-recovery policies.
+TOKEN_REINFERENCE_FAULT_CODES = frozenset({0x00F1FEF5, 0x08520003})
+
+
+class RecoveryCause(IntEnum):
+    """Recovery priority; unrelated observational codes do not identify a cause."""
+
+    SOFTWARE = 0
+    TOKEN_REINFERENCE = 1
+    HBM = 2
+
+
+def classify_recovery_cause(codes: tuple[int, ...]) -> RecoveryCause:
+    """Classify recognized codes by HBM > token_reinference > generic software priority."""
+    observed = set(codes)
+    if observed & HBM_UCE_FAULT_CODES:
+        return RecoveryCause.HBM
+    if observed & TOKEN_REINFERENCE_FAULT_CODES:
+        return RecoveryCause.TOKEN_REINFERENCE
+    return RecoveryCause.SOFTWARE
+
+
 class SpecialFaultCode(int, Enum):
     NODE_REBOOT = 0x0000001
     ENGINE_DEAD = 0x1000001
@@ -40,6 +63,23 @@ class SpecialFaultCode(int, Enum):
     # Device-plugin CardNetworkUnhealthy / linkdown (ConfigMap).
     # A2: PD-disagg isolation trigger; A3/A5: false-positive noise.
     CARD_NETWORK_LINKDOWN = 0x81078603
+
+
+def parse_fault_code(value: int | str | None, default: int | None = None) -> int | None:
+    """Parse a ConfigMap/int fault code; hex digits are case-insensitive."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return int(value)
+    if not isinstance(value, str):
+        return default
+    text = value.strip().lower()
+    if not text:
+        return default
+    try:
+        return int(text, 16)
+    except ValueError:
+        return default
 
 
 # A2 PD-disagg isolation codes. Membership means ALL of: keep PreSeparateNPU at L6,
@@ -477,6 +517,10 @@ class InstanceMetadata(BaseModel):
     prev_strategy_failed: bool = Field(default=False, description="Last strategy failed to recover")
     prev_strategy_name: str = Field(default="", description="Last completed recovery strategy")
     prev_strategy_fallback: str = Field(default="", description="Original fallback after scale-down failure")
+    relaunch_relapse_guard: bool = Field(
+        default=False, description="Reconfigure on relapse after a fast-recovery fallback relaunch"
+    )
+    relaunch_healthy_since: float | None = Field(default=None, description="Start of stable post-relaunch health")
     handled_hardware_faults: set[str] = Field(
         default_factory=set,
         description="Hardware fault identities already committed by DP scale-down",

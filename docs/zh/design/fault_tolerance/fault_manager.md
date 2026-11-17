@@ -144,7 +144,7 @@ PreSeparateNPU 故障感知
 - **ConfigMap 更新时** (`_handle_fault_info_update`)：首次接收故障即判定
 - **故障等级刷新时** (`_refresh_instance_fault_level`)：重新评估，覆盖"实例离开节点后无 ConfigMap 变更"的场景
 
-软件故障等级映射: `DEAD(1) → L2 (ENGINE_DEAD)`, `UNHEALTHY(2) → L2 (ENGINE_UNHEALTHY)`。软件故障会更新实例的 fault_level，但目前不触发自动恢复策略。
+软件故障等级映射: `DEAD(1) → L2 (ENGINE_DEAD)`, `UNHEALTHY(2) → L2 (ENGINE_UNHEALTHY)`。软件故障更新实例 fault_level，并由统一 planner 根据 DP 状态和功能开关选择快恢、缩容、relaunch 或重配置。
 
 ### NodeMetadata
 
@@ -177,11 +177,8 @@ class InstanceMetadata(BaseModel):
     lock: threading.Lock              # 互斥锁 (不可序列化)
 ```
 
-`strategy_fault_level` 用于：
-
-- **策略降级保护**: 新故障等级 < 当前策略等级时忽略
-- **同级去重**: 同等级不切换策略，避免 L2 内多策略互相抖动
-- **清理范围**: 策略完成后清除所有软件故障
+`strategy_fault_level` 记录当前策略启动时的故障等级，用于完成日志与状态清理。
+策略运行期间不抢占，新故障证据留待完成后重新规划；成功后清除软件故障并重新评估。
 
 ## 节点所有权交换
 
@@ -362,21 +359,14 @@ d1_3: job_name="" (旧节点无 job_name) → 跳过外来源检测 (node_job �
 
 ## 策略中心核心逻辑
 
-`_process_instance_strategy()` 按 fault_level 比较决定策略行为：
+`_build_recovery_context()` 共用 120 秒软件状态收集窗口：全 UNHEALTHY 选择快恢；至少一个 DEAD 且其余存活 DP 全 UNHEALTHY 选择缩容；超时未收齐则重配置。策略执行前只做一次实时校验，不重复等待。`_process_instance_strategy()` 通过统一恢复规划器选择策略。一轮恢复执行期间保留新证据，等待当前策略结束后再评估，避免重叠恢复。
 
-| 条件 | 行为 | 说明 |
-|---|---|---|
-| `new_level > current_level` | **升级** | 停止旧策略，启动新策略 |
-| `new_level == current_level` | **同级保持** | 不切换，避免同类内策略抖动 |
-| `new_level < current_level` | **降级忽略** | 保护高优先级策略继续运行 |
-| 策略完成 | **清理** | 清除实例全部软件故障 → 重新评估故障等级 |
+规划器使用 `ScaleDownContext.hardware_fault_codes` 保存本实例当前硬件码集合，按 HBM（1801）、灵衢（00F1FEF5 / 08520003）、未命中专用码且无严重硬件阻断的 OOM 三类选择具体策略；1801 优先于灵衢码，其他非阻断告警不影响选择。三种分支的开关、下发参数和收尾矩阵见 [快恢策略](overview.md)。
 
-L2 策略按 fault_code 分发:
-
-- 软件故障（`ENGINE_DEAD`, `ENGINE_UNHEALTHY`）→ 暂不实现自动恢复，仅更新实例故障等级
-- 白名单硬件码 `0x00F1FEF5`, `0x08520003` → TokenReinferenceStrategy
-- PreSeparateNPU 动态降级到 L2（有活跃业务）→ 走 L2 正常分发
-- 其它 → None
+- HBM 的清码阶段与引擎恢复独立，引擎恢复失败也执行清码；失败且清码成功时保存 `EngineRelaunchStrategy` 作为后续策略，否则重配置。
+- `_complete_finished_strategy()` 保留具体策略给出的失败后续动作；即使故障等级已恢复 HEALTHY，也必须完成 HBM 失败后的重拉或重配置。
+- 成功时只确认本次绑定的硬件故障身份，清理软件故障，再重新评估路由；迟到硬件仍保留，执行下发和收尾会复核其是否与当前分支兼容。
+- L4–L6 严重硬件故障、DEAD 和缩容继续走原有处理。
 
 L4/L5 → decode → ScaleP2DStrategy
 
@@ -435,7 +425,7 @@ L6 → A2 隔离码集合的 Prefill / Decode / 多 Pod union → NmSuicideStrat
 | `enable_fault_tolerance` | bool | 是否启用故障容错。默认: `true` |
 | `strategy_center_check_interval` | int | 策略中心检查间隔(秒)。默认: `1` |
 | `enable_scale_p2d` | bool | 是否启用 Scale P2D 策略。默认: `true` |
-| `enable_token_reinference` | bool | 是否启用 Token Reinference 策略。默认: `true` |
+| `enable_fast_recovery` | bool | 快恢总开关，开启后由分支开关决定策略。默认: `false` |
 
 ### NodeManager 侧 (FaultToleranceConfig)
 

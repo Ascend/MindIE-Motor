@@ -21,6 +21,8 @@ Test cases are organized according to the following logical blocks:
 8. Node status extraction
 """
 
+import json
+
 import pytest
 from unittest.mock import patch, Mock
 
@@ -307,10 +309,7 @@ def test_handle_configmap_change_added_modified():
 def test_handle_configmap_change_deduplication_with_actual_change():
     """Test that handler is called when fault information actually changes.
 
-    "Actual change" means a change visible at the storage level (unique fault_code
-    or associated fault_level/type changes).  Mere NPU name rotation with the same
-    code+level is NOT an actual change, because the storage model uses a dict keyed
-    by fault_code.
+    Fault codes, affected devices, and fault policy levels affect recovery.
 
     NOTE: fault_level in ConfigMap JSON uses OriginFaultLevel string values
     (e.g. "RestartNPU", "SeparateNPU"), NOT "L5"/"L6" shorthand.
@@ -586,3 +585,60 @@ def test_get_node_ready_status(condition_type, status, expected):
         node.status.conditions = [condition]
 
     assert monitor._get_node_ready_status(node) == expected
+
+
+@pytest.mark.parametrize(
+    "before,after,changed",
+    [
+        (["Ascend910-0", "Ascend910-2"], ["Ascend910-2"], True),
+        (["Ascend910-2"], ["Ascend910-0", "Ascend910-2"], True),
+        (["Ascend910-0"], ["Ascend910-2"], True),
+        (["Ascend910-0", "Ascend910-2"], ["Ascend910-2", "Ascend910-0"], False),
+        (["Ascend910-0"], ["Ascend910-0", "Ascend910-0"], False),
+        (["Ascend910-0"], [], True),
+    ],
+    ids=["clear-one", "new-device", "move-device", "reorder", "duplicate", "clear-all"],
+)
+def test_configmap_hbm_device_membership_changes(before, after, changed):
+    """A cleared UCE must reach Motor even when another NPU retains the same code."""
+    monitor = create_test_monitor()
+    monitor.configmap_change_handler = Mock()
+    cm = Mock()
+    cm.metadata.name = "fault-config-test-node"
+    for names, update_time in [(before, 1), (after, 2)]:
+        faults = [
+            {
+                "fault_type": "CardUnhealthy",
+                "npu_name": name,
+                "fault_level": "RestartBusiness",
+                "fault_code": "80E01801",
+            }
+            for name in names
+        ]
+        cm.data = {
+            "DeviceInfoCfg": json.dumps(
+                {
+                    "DeviceInfo": {
+                        "DeviceList": {"huawei.com/Ascend910-Fault": faults},
+                        "UpdateTime": update_time,
+                    },
+                    "SuperPodID": 0,
+                    "ServerIndex": 42,
+                }
+            )
+        }
+        monitor._handle_configmap_change("MODIFIED", cm, cm.metadata.name)
+    assert monitor.configmap_change_handler.call_count == 1 + int(changed)
+    if changed:
+        delivered = monitor.configmap_change_handler.call_args.args[0]
+        assert {fault.npu_name for fault in delivered} == set(after)
+
+
+@pytest.mark.parametrize("field,value", [("origin_fault_level", "SeparateNPU"), ("fault_category", "software")])
+def test_fault_policy_change_is_delivered_even_with_same_code_and_level(field, value):
+    """Original severity and category affect normalization even when code/device stay fixed."""
+    monitor = create_test_monitor()
+    fault = FaultInfo(npu_name="npu-0", fault_code=0x80E01801, origin_fault_level="RestartBusiness")
+    monitor.last_fault_infos = [fault]
+    changed = fault.model_copy(update={field: value})
+    assert monitor._has_fault_info_changed([changed])

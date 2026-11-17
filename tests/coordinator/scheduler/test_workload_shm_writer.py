@@ -28,6 +28,7 @@ from motor.coordinator.scheduler.runtime.workload_shm.writer import (
     _lowest_free_slot,
 )
 from motor.coordinator.scheduler.runtime.workload_shm.layout import (
+    FLAG_BLOCKED,
     ROLE_PREFILL,
     ROLE_DECODE,
     ROLE_HYBRID,
@@ -39,6 +40,57 @@ from motor.coordinator.scheduler.runtime.workload_shm.native import (
     load_native_library,
 )
 from motor.coordinator.scheduler.runtime.workload_shm.reader import WorkloadSharedMemoryReader
+
+
+@pytest.mark.asyncio
+async def test_retry_pause_and_circuit_breaker_are_independent_allocation_gates():
+    """Exercise the Python writer contract without compiling any Rust component."""
+    im = InstanceManager(CoordinatorConfig())
+    instance = _make_real_instance(1, 10, 0.0)
+    await im.refresh_instances(EventType.ADD, [instance])
+    native = MagicMock()
+    native.name = "retry-contract"
+    entries = []
+
+    def snapshot(values, **kwargs):
+        entries[:] = values
+
+    def load(slot):
+        iid, eid, _, gen, flags, _ = entries[slot]
+        return {"instance_id": iid, "endpoint_id": eid, "generation": gen, "flags": flags}
+
+    def set_blocked(iid, blocked):
+        for slot, entry in enumerate(entries):
+            if entry[0] == iid:
+                fields = list(entry)
+                fields[4] = fields[4] | FLAG_BLOCKED if blocked else fields[4] & ~FLAG_BLOCKED
+                entries[slot] = tuple(fields)
+        return len(entries)
+
+    native.write_snapshot_v4.side_effect = snapshot
+    native.read_header.side_effect = lambda: {"entry_count": len(entries)}
+    native.load_entry.side_effect = load
+    native.set_blocked.side_effect = set_blocked
+    writer = WorkloadSharedMemoryOwner(im, max_entries=8, native=native)
+    writer.write_snapshot()
+    generation = entries[0][3]
+    instance.recovery_paused = True
+    writer.write_snapshot()
+    assert entries[0][4] & FLAG_BLOCKED
+    writer.set_blocked(1, False)  # CB recovery must not open retry's gate.
+    assert entries[0][4] & FLAG_BLOCKED
+    writer.set_blocked(1, True)
+    instance.recovery_paused = False
+    writer.write_snapshot()  # Retry completion must not open CB's gate.
+    assert entries[0][4] & FLAG_BLOCKED
+    writer.set_blocked(1, False)
+    assert not entries[0][4] & FLAG_BLOCKED
+    instance.recovery_paused = True
+    writer.write_snapshot()
+    instance.recovery_paused = False
+    writer.write_snapshot()
+    assert not entries[0][4] & FLAG_BLOCKED
+    assert entries[0][3] == generation  # Same slot/ABA generation throughout retry.
 
 
 # ---------------------------------------------------------------------------

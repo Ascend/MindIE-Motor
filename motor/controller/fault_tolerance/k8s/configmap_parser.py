@@ -19,6 +19,7 @@ from motor.controller.fault_tolerance.fault_types import (
     OriginFaultLevel,
     map_fault_level,
     map_fault_type,
+    parse_fault_code,
 )
 
 logger = get_logger(__name__)
@@ -66,10 +67,9 @@ def _parse_device_fault_code(fault_code_str: str) -> int:
     # Handle comma-separated fault codes — take the first valid one
     codes = [c.strip() for c in fault_code_str.split(",") if c.strip()]
     for code in codes:
-        try:
-            return int(code, 16)
-        except ValueError:
-            continue
+        parsed = parse_fault_code(code)
+        if parsed is not None:
+            return parsed
 
     return 0x1001  # Default device fault code
 
@@ -126,25 +126,45 @@ def _create_device_fault_info(fault_type_str: str, npu_name: str, fault_level_st
     )
 
 
-def _process_single_device_fault(fault_device: dict) -> FaultInfo | None:
-    """Process a single device fault entry, returns FaultInfo object or None if failed"""
+def _process_single_device_fault(fault_device: dict) -> list[FaultInfo]:
+    """保留同一卡的逐码证据，供快恢原因分类和清码检查使用。
+
+    旧逻辑仅取首个有效码：例如普通告警排在 1801 前，会隐藏 HBM UCE；
+    直接复用整卡等级又可能把低等级码提升为隔离故障。优先使用逐码等级，
+    缺失时兼容回退到整卡等级；同一卡内重复的数值码只保留一份。
+    这里不判断主故障与连带故障，也不逐码启动恢复：下游按实例统一规划。
+    快恢规划中 HBM UCE 优先于 token 重推；伴随的 L1/L2 码不会触发严重硬件故障拦截。
+    因此需保留每个码自己的级别，不能把整卡级别传播给所有伴随码。
+    """
     try:
         fault_type_str = fault_device.get("fault_type", "")
         npu_name = fault_device.get("npu_name", "")
-        fault_level_str = fault_device.get("fault_level", "")
-        fault_code_str = fault_device.get("fault_code", "")
-
-        # Convert fault code from hex string to int
-        fault_code = _parse_device_fault_code(fault_code_str)
-        # Create fault info object
-        fault_info = _create_device_fault_info(fault_type_str, npu_name, fault_level_str, fault_code)
-        logger.debug("Added fault device: %s, level: %s, code: 0x%x", npu_name, fault_info.fault_level, fault_code)
-
-        return fault_info
-
+        card_level = fault_device.get("fault_level", "")
+        raw_codes = fault_device.get("fault_code", "")
+        codes = []
+        if isinstance(raw_codes, str):
+            codes = [parse_fault_code(code) for code in raw_codes.split(",")]
+        codes = list(dict.fromkeys(code for code in codes if code is not None)) or [0x1001]
+        raw_details = fault_device.get("fault_time_and_level_map", {})
+        details = (
+            {
+                parse_fault_code(code): detail
+                for code, detail in raw_details.items()
+                if isinstance(detail, dict) and parse_fault_code(code) is not None
+            }
+            if isinstance(raw_details, dict)
+            else {}
+        )
+        faults = []
+        for code in codes:
+            level = details.get(code, {}).get("fault_level")
+            if not isinstance(level, str) or not level.strip():
+                level = card_level
+            faults.append(_create_device_fault_info(fault_type_str, npu_name, level, code))
+        return faults
     except Exception as e:
         logger.error("Error processing fault device %s: %s", fault_device, e)
-        return None
+        return []
 
 
 def _normalize_device_list_value(value: Any) -> list:
@@ -210,9 +230,7 @@ def process_device_info(device_info_json: str) -> list[FaultInfo]:
         if fault_devices:
             logger.debug("Found %s detailed fault devices", len(fault_devices))
             for fault_device in fault_devices:
-                fault_info = _process_single_device_fault(fault_device)
-                if fault_info:
-                    device_fault_infos.append(fault_info)
+                device_fault_infos.extend(_process_single_device_fault(fault_device))
 
         # Also process network-unhealthy devices (same serialization variants)
         network_unhealthy = _resolve_device_list_key(
@@ -221,9 +239,7 @@ def process_device_info(device_info_json: str) -> list[FaultInfo]:
         if network_unhealthy:
             logger.debug("Found %s network-unhealthy devices", len(network_unhealthy))
             for fault_device in network_unhealthy:
-                fault_info = _process_single_device_fault(fault_device)
-                if fault_info:
-                    device_fault_infos.append(fault_info)
+                device_fault_infos.extend(_process_single_device_fault(fault_device))
 
         logger.debug("Processed %d device fault infos", len(device_fault_infos))
 

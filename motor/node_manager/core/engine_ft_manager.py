@@ -93,6 +93,7 @@ class EngineFtManager:
         # Per-endpoint poll state, kept across thread restarts so a restarted
         # loop does not re-report statuses that were already delivered.
         self._known_statuses: dict[int, tuple[Any, ...]] = {}
+        self._recovery_deadlines: dict[int, float] = {}
         self._consecutive_failures: dict[int, int] = {}
         # Monotonic time of the first "currently scaling" 503 in the current
         # streak; cleared by any successful poll.
@@ -104,6 +105,11 @@ class EngineFtManager:
         self._instance_id: int | None = None
         self._guard_callback = guard_callback
         self._finalize_callback = finalize_callback
+
+    def is_fast_recovery_guard_active(self) -> bool:
+        """Keep health-probe failures from aborting an accepted software recovery."""
+        now = time.monotonic()
+        return any(deadline > now for deadline in list(self._recovery_deadlines.values()))
 
     @staticmethod
     def _compute_enabled(config: NodeManagerConfig) -> bool:
@@ -354,6 +360,7 @@ class EngineFtManager:
         """
         self._pause_event.clear()
         self._known_statuses.clear()
+        self._recovery_deadlines.clear()
         self._consecutive_failures.clear()
         self._scaling_since.clear()
         self._rejected_statuses.clear()
@@ -481,6 +488,7 @@ class EngineFtManager:
 
         status_signature = self._status_signature(engine)
         if status == ENGINE_STATUS_HEALTHY:
+            self._recovery_deadlines.pop(ep_id, None)
             self._known_statuses[ep_id] = status_signature
             self._rejected_statuses.pop(ep_id, None)
             return
@@ -521,6 +529,11 @@ class EngineFtManager:
         }
         # Only mark as reported after successful delivery to Controller
         if self._send_fault_to_controller(fault_data):
+            if status == ENGINE_STATUS_UNHEALTHY:
+                with self._config_lock:
+                    budget = self._config.fault_tolerance_config.fast_recovery_budget_sec
+                if budget > 0:
+                    self._recovery_deadlines.setdefault(ep_id, time.monotonic() + budget)
             self._known_statuses[ep_id] = status_signature
             self._rejected_statuses.pop(ep_id, None)
         else:

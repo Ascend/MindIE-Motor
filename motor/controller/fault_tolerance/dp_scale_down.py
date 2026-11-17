@@ -49,7 +49,7 @@ class GateSnapshot:
 
 @dataclass(frozen=True)
 class ScaleDownContext:
-    """Immutable rank candidates and fallback provenance for one scale-down attempt."""
+    """Shared recovery evidence for fast recovery/scale-down and the scale-down execution context."""
 
     pending_removed_ranks: tuple[int, ...] = ()
     source: str = "software"
@@ -67,6 +67,8 @@ class ScaleDownContext:
     already_removed_fault_keys: tuple[str, ...] = ()
     engine_recovery_eligible: bool = True
     hardware_mapping_complete: bool = True
+    hardware_fault_codes: tuple[int, ...] = ()
+    recovery_hardware_severe: bool = False
 
 
 class FaultNormalizer:
@@ -167,6 +169,7 @@ class FtRuntime:
     gate: GateSnapshot = field(default_factory=GateSnapshot)
     engine_statuses: dict[int, dict[str, Any]] = field(default_factory=dict)
     serving_published: bool = True
+    preserve_recovery_streams: bool = False
     reconfiguration_dispatched: bool = False
     last_error: str | None = None
     # Elastic-EP DP master elected at scale-down. Scale-up/joiners reuse it
@@ -248,6 +251,14 @@ class FtRuntimeStore:
         with self._lock:
             runtime = self._instances.get(instance_id)
             return copy.deepcopy(runtime.to_dict()) if runtime is not None else None
+
+    def is_reconfiguration_dispatched(self, instance_id: int) -> bool:
+        """Whether this old instance has already been handed off for replacement."""
+        with self._lock:
+            runtime = self._instances.get(instance_id)
+            return bool(
+                runtime is not None and runtime.phase == FtPhase.RECONFIGURING and runtime.reconfiguration_dispatched
+            )
 
     def list(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -416,6 +427,7 @@ class FtRuntimeStore:
             runtime.phase = FtPhase.SCALED_DOWN_RUNNING if runtime.dead_committed else FtPhase.NORMAL
             runtime.pending_removed_ranks = []
             runtime.engine_statuses = {}
+            runtime.preserve_recovery_streams = False
             runtime.serving_published = False
             runtime.last_error = None
             return copy.deepcopy(runtime)
