@@ -69,24 +69,28 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
     <td class="gap" width="24" style="border:none;padding:0;background:transparent"><img alt="" src="./docs/zh/imgs/gap.png" width="24" height="1"></td>
     <td valign="top">
       <table>
-        <tr><th style="font-size:18px" align="center" colspan="4">🤖 常用模型</th></tr>
+         <tr><th style="font-size:18px" align="center" colspan="5">🤖 常用模型</th></tr>
         <tr>
           <th align="left">模型</th>
           <th align="center">Atlas 800I A2</th>
           <th align="center">Atlas 800I A3 超节点</th>
           <th align="center">Atlas 950系列服务器</th>
+          <th align="center">适配状态</th>
         </tr>
-        <tr><td>DeepSeek-V4.1-Flash</td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4.1_flash/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4.1_flash/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4.1_flash/A5">A5</a></td></tr>
-        <tr><td>GLM-5.3-Flash</td><td align="center"><a href="./model_configs/vllm/models/glm_5.3_flash/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5.3_flash/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5.3_flash/A5">A5</a></td></tr>
-        <tr><td>GLM-5.2</td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
-        <tr><td>GLM-5.3</td><td align="center"><a href="./model_configs/vllm/models/glm_5.3/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5.3/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5.3/A5">A5</a></td></tr>
-        <tr><td>DeepSeek-V4-Flash</td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_flash/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_flash/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_flash/A5">A5</a></td></tr>
-        <tr><td>GLM-5.1</td><td align="center"><a href="./model_configs/vllm/models/glm_5.1/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5.1/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5.1/A5">A5</a></td></tr>
-        <tr><td>DeepSeek-V3.1</td><td align="center"><a href="./model_configs/vllm/models/deepseek_v3.1/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v3.1/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v3.1/A5">A5</a></td></tr>
-        <tr><td>DeepSeek-V4-Pro</td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_pro/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_pro/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_pro/A5">A5</a></td></tr>
-        <tr><td>GLM-5</td><td align="center"><a href="./model_configs/vllm/models/glm_5/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5/A5">A5</a></td></tr>
-        <tr><td>Qwen3-235B</td><td align="center"><a href="./model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td></tr>
-        <tr><td>Qwen3.8-Flash-Next</td><td align="center"><a href="./model_configs/vllm/models/qwen3.8_flash_next/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/qwen3.8_flash_next/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/qwen3.8_flash_next/A5">A5</a></td></tr>
+        <tr><td>DeepSeek-V4.1-Flash</td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4.1_flash/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4.1_flash/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4.1_flash/A5">A5</a></td><td align="center">已完成</td></tr>
+        <tr><td>DeepSeek-V4-Pro</td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_pro/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_pro/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_pro/A5">A5</a></td><td align="center">已完成</td></tr>
+        <tr><td>DeepSeek-V4-Flash</td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_flash/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_flash/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v4_flash/A5">A5</a></td><td align="center">已完成</td></tr>
+        <tr><td>DeepSeek-V3.1</td><td align="center"><a href="./model_configs/vllm/models/deepseek_v3.1/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v3.1/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/deepseek_v3.1/A5">A5</a></td><td align="center">已完成</td></tr>
+        <tr><td>GLM-5.3-Flash</td><td align="center"><a href="./model_configs/vllm/models/glm_5.3_flash/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5.3_flash/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5.3_flash/A5">A5</a></td><td align="center">已完成</td></tr>
+        <tr><td>GLM-5.3</td><td align="center"><a href="./model_configs/vllm/models/glm_5.3/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5.3/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5.3/A5">A5</a></td><td align="center">已完成</td></tr>
+        <tr><td>GLM-5.2</td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td><td align="center">待适配</td></tr>
+        <tr><td>GLM-5.1</td><td align="center"><a href="./model_configs/vllm/models/glm_5.1/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5.1/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5.1/A5">A5</a></td><td align="center">已完成</td></tr>
+        <tr><td>GLM-5</td><td align="center"><a href="./model_configs/vllm/models/glm_5/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/glm_5/A5">A5</a></td><td align="center">已完成</td></tr>
+        <tr><td>Kimi K3.1 PRO</td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td><td align="center">待适配（预计12月份）</td></tr>
+        <tr><td>MiniMax-M3.1-Flash</td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td><td align="center">待适配（预计11/21）</td></tr>
+        <tr><td>Qwen3.8-Flash-Next</td><td align="center"><a href="./model_configs/vllm/models/qwen3.8_flash_next/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/qwen3.8_flash_next/A3">A3</a></td><td align="center"><a href="./model_configs/vllm/models/qwen3.8_flash_next/A5">A5</a></td><td align="center">已完成</td></tr>
+       <tr><td>Qwen3-235B</td><td align="center"><a href="./model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td><td align="center">已完成</td></tr>
+        <tr><td colspan="5">适配状态以本表中的 MindIE Motor 配置链接为准。</td></tr>
       </table>
     </td>
   </tr>

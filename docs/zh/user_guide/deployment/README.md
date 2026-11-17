@@ -81,25 +81,109 @@
 
    1. MindIE Motor已在下表中提供了常用模型的配置示例(deepseek_v4.1_flash、glm 5.2、glm 5.3等)，**用户修改少量配置后可直接使用**。
 
-      <table>
-        <tr><th style="font-size:18px" align="center" colspan="4">常用模型</th></tr>
-        <tr>
-          <th align="left">模型</th>
-          <th align="center">Atlas 800I A2</th>
-          <th align="center">Atlas 800I A3 超节点</th>
-          <th align="center">Atlas 950系列服务器</th>
-        </tr>
-        <tr><td>DeepSeek-V4.1-Flash </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
-        <tr><td>GLM-5.3-Flash </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
-        <tr><td>GLM-5.2 </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
-        <tr><td>GLM-5.3 </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
-        <tr><td>DeepSeek-V4-Flash </td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_flash/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_flash/A3">A3</a></td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_flash/A5">A5</a></td></tr>
-        <tr><td>GLM-5.1 </td><td align="center"><a href="../../../../model_configs/vllm/models/glm_5.1/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/glm_5.1/A3">A3</a></td><td align="center"><a href="../../../../model_configs/vllm/models/glm_5.1/A5">A5</a></td></tr>
-        <tr><td>DeepSeek-V3.1</td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v3.1/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v3.1/A3">A3</a></td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v3.1/A5">A5</a></td></tr>
-        <tr><td>DeepSeek-V4-Pro</td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_pro/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_pro/A3">A3</a></td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_pro/A5">A5</a></td></tr>
-        <tr><td>GLM-5</td><td align="center"><a href="../../../../model_configs/vllm/models/glm_5/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/glm_5/A3">A3</a></td><td align="center"><a href="../../../../model_configs/vllm/models/glm_5/A5">A5</a></td></tr>
-        <tr><td>Qwen3-235B</td><td align="center"><a href="../../../../model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td></tr>
-      </table>
+### 常用模型
+
+<table>
+  <tr><th style="font-size:18px" align="center" colspan="5">常用模型</th></tr>
+  <tr>
+    <th align="left">模型</th>
+    <th align="center">Atlas 800I A2</th>
+    <th align="center">Atlas 800I A3 超节点</th>
+    <th align="center">Atlas 950系列服务器</th>
+    <th align="center">适配状态</th>
+  </tr>
+  <tr>
+    <td>DeepSeek-V4.1-Flash</td>
+    <td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/deepseek_v4.1_flash/A2">A2</a></td>
+    <td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/deepseek_v4.1_flash/A3">A3</a></td>
+    <td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/deepseek_v4.1_flash/A5">A5</a></td>
+    <td align="center">已完成</td>
+  </tr>
+  <tr>
+    <td>DeepSeek-V4-Pro</td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_pro/A2">A2</a></td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_pro/A3">A3</a></td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_pro/A5">A5</a></td>
+    <td align="center">已完成</td>
+  </tr>
+  <tr>
+    <td>DeepSeek-V4-Flash</td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_flash/A2">A2</a></td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_flash/A3">A3</a></td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_flash/A5">A5</a></td>
+    <td align="center">已完成</td>
+  </tr>
+  <tr>
+    <td>DeepSeek-V3.1</td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v3.1/A2">A2</a></td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v3.1/A3">A3</a></td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v3.1/A5">A5</a></td>
+    <td align="center">已完成</td>
+  </tr>
+  <tr>
+    <td>GLM-5.3-Flash</td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/glm_5.3_flash/A2">A2</a></td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/glm_5.3_flash/A3">A3</a></td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/glm_5.3_flash/A5">A5</a></td>
+    <td align="center">已完成</td>
+  </tr>
+  <tr>
+    <td>GLM-5.3</td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/glm_5.3/A2">A2</a></td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/glm_5.3/A3">A3</a></td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/glm_5.3/A5">A5</a></td>
+    <td align="center">已完成</td>
+  </tr>
+  <tr>
+    <td>GLM-5.2</td>
+    <td align="center">A2</td>
+    <td align="center">A3</td>
+    <td align="center">A5</td>
+    <td align="center">待适配</td>
+  </tr>
+  <tr>
+    <td>GLM-5.1</td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/glm_5.1/A2">A2</a></td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/glm_5.1/A3">A3</a></td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/glm_5.1/A5">A5</a></td>
+    <td align="center">已完成</td>
+  </tr>
+  <tr>
+    <td>GLM-5</td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/glm_5/A2">A2</a></td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/glm_5/A3">A3</a></td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/glm_5/A5">A5</a></td>
+    <td align="center">已完成</td>
+  </tr>
+  <tr>
+    <td>Kimi K3.1 PRO</td>
+    <td align="center">A2</td>
+    <td align="center">A3</td>
+    <td align="center">A5</td>
+    <td align="center">待适配（预计12月份）</td>
+  </tr>
+  <tr>
+    <td>MiniMax-M3.1-Flash</td>
+    <td align="center">A2</td>
+    <td align="center">A3</td>
+    <td align="center">A5</td>
+    <td align="center">待适配（预计11/21）</td>
+  </tr>
+  <tr>
+    <td>Qwen3.8-Flash-Next</td>
+    <td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen3.8_flash_next/A2">A2</a></td>
+    <td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen3.8_flash_next/A3">A3</a></td>
+    <td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen3.8_flash_next/A5">A5</a></td>
+    <td align="center">已完成</td>
+  </tr>
+  <tr>
+    <td>Qwen3-235B</td>
+    <td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen_235b/A2">A2</a></td>
+    <td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen_235b/A3">A3</a></td>
+    <td align="center">—</td>
+    <td align="center">已完成</td>
+  </tr>
+</table>
 
       对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
@@ -242,7 +326,7 @@
           <th align="center">Atlas 800I A3 超节点</th>
           <th align="center">Atlas 950系列服务器</th>
         </tr>
-        <tr><td>DeepSeek-V4.1-Flash </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
+        <tr><td>DeepSeek-V4.1-Flash </td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/deepseek_v4.1_flash/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/deepseek_v4.1_flash/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/deepseek_v4.1_flash/A5">A5</a></td></tr>
         <tr><td>GLM-5.3-Flash </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
         <tr><td>GLM-5.2 </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
         <tr><td>GLM-5.3 </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
@@ -251,7 +335,8 @@
         <tr><td>DeepSeek-V3.1</td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v3.1/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v3.1/A3">A3</a></td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v3.1/A5">A5</a></td></tr>
         <tr><td>DeepSeek-V4-Pro</td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_pro/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_pro/A3">A3</a></td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_pro/A5">A5</a></td></tr>
         <tr><td>GLM-5</td><td align="center"><a href="../../../../model_configs/vllm/models/glm_5/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/glm_5/A3">A3</a></td><td align="center"><a href="../../../../model_configs/vllm/models/glm_5/A5">A5</a></td></tr>
-        <tr><td>Qwen3-235B</td><td align="center"><a href="../../../../model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td></tr>
+        <tr><td>Qwen3.8-Flash-Next</td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen3.8_flash_next/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen3.8_flash_next/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen3.8_flash_next/A5">A5</a></td></tr>
+        <tr><td>Qwen3-235B</td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td></tr>
       </table>
 
       对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
