@@ -263,6 +263,59 @@ def kv_store_enabled(user_config: dict) -> bool:
     return kv_connector == C.MULTI_CONNECTOR or (isinstance(kv_store_cfg, dict) and bool(kv_store_cfg))
 
 
+DEFAULT_KV_CONDUCTOR_PORT = 13333
+KV_CACHE_AFFINITY = "kv_cache_affinity"
+ROLE_KV_CONDUCTOR = "kv_conductor"
+DOCKER_KV_CONDUCTOR_NAME = "motor-kvc"
+
+
+def kv_conductor_http_port(user_config: dict) -> int:
+    kv_cfg = user_config.get(C.KV_CONDUCTOR_CONFIG)
+    if not isinstance(kv_cfg, dict):
+        return 0
+    port = kv_cfg.get(C.KV_CONDUCTOR_PORT, 0)
+    try:
+        return int(port)
+    except (TypeError, ValueError):
+        return 0
+
+
+def kv_conductor_enabled(user_config: dict) -> bool:
+    return kv_conductor_http_port(user_config) != 0
+
+
+def kv_affinity_scheduler_enabled(user_config: dict) -> bool:
+    sched = (user_config.get(C.MOTOR_COORDINATOR_CONFIG) or {}).get("scheduler_config") or {}
+    if not isinstance(sched, dict):
+        return False
+    values = (sched.get("prefill_scheduler_type"), sched.get("scheduler_type"))
+    return any(str(value).strip() == KV_CACHE_AFFINITY for value in values if value not in (None, ""))
+
+
+def validate_docker_kv_conductor(user_config: dict) -> None:
+    """Fail closed when Docker KV affinity is requested without a conductor."""
+    enabled = kv_conductor_enabled(user_config)
+    affinity = kv_affinity_scheduler_enabled(user_config)
+    deploy_mode = (user_config.get(C.MOTOR_DEPLOY_CONFIG) or {}).get(C.DEPLOY_MODE_CONFIG_KEY, "")
+    if (enabled or affinity) and deploy_mode == C.DEPLOY_MODE_SINGLE_CONTAINER:
+        raise ValueError(
+            "Docker KV affinity requires multi-container PD/hybrid (a motor-kvc container). "
+            f"{C.DEPLOY_MODE_SINGLE_CONTAINER} is not supported."
+        )
+    if affinity and not enabled:
+        raise ValueError(
+            "prefill_scheduler_type is kv_cache_affinity but kv_conductor_config.http_server_port "
+            "is missing. Docker-only KV affinity needs a kv_conductor container; "
+            "set http_server_port (for example 13333)."
+        )
+    if enabled and not affinity:
+        logger.warning(
+            "kv_conductor_config.http_server_port is set but prefill_scheduler_type is not "
+            "kv_cache_affinity. Conductor will start; Coordinator will not use KV affinity "
+            "until the scheduler type is set."
+        )
+
+
 def normalize_kv_cache_store_config(user_config):
     kv_config = user_config.get(C.KV_CACHE_STORE_CONFIG)
     if not isinstance(kv_config, dict):
@@ -352,6 +405,8 @@ class DockerDeployParams:
     kv_store_enabled: bool
     kv_store_env: dict = field(default_factory=dict)
     dshm_size: str | None = None
+    kv_conductor_enabled: bool = False
+    kv_conductor_port: int = DEFAULT_KV_CONDUCTOR_PORT
 
 
 def _known_hardware_types() -> list[str]:
@@ -568,6 +623,8 @@ def derive_params(user_config: dict) -> DockerDeployParams:
     deploy_mode = deploy_config.get(C.DEPLOY_MODE_CONFIG_KEY, "")
     kv_store_enabled, kv_store_env = _derive_kv_store_env(user_config)
     dshm_size = _derive_dshm_size(deploy_config)
+    conductor_enabled = kv_conductor_enabled(user_config)
+    conductor_port = kv_conductor_http_port(user_config) or DEFAULT_KV_CONDUCTOR_PORT
 
     return DockerDeployParams(
         image=image,
@@ -583,6 +640,8 @@ def derive_params(user_config: dict) -> DockerDeployParams:
         kv_store_enabled=kv_store_enabled,
         kv_store_env=kv_store_env,
         dshm_size=dshm_size,
+        kv_conductor_enabled=conductor_enabled,
+        kv_conductor_port=conductor_port,
     )
 
 
@@ -618,13 +677,14 @@ DOCKER_MULTI_ROLES = (
     "decode",
     "union",
     "kv_store",
+    ROLE_KV_CONDUCTOR,
     "render",
 )
 ENGINE_ROLES = ("prefill", "decode", "union")
 CONTROL_ROLES = ("coordinator", "controller", "coordinator_controller")
 ROLE_COORDINATOR_CONTROLLER = "coordinator_controller"
 ROLE_RENDER = "render"
-_SINGLETON_ROLES = ("kv_store", ROLE_RENDER)
+_SINGLETON_ROLES = ("kv_store", ROLE_KV_CONDUCTOR, ROLE_RENDER)
 _ENGINE_SECTION = {
     "prefill": C.MOTOR_ENGINE_PREFILL_CONFIG,
     "decode": C.MOTOR_ENGINE_DECODE_CONFIG,
@@ -687,7 +747,7 @@ def _compose_role_from_tokens(tokens: list[str]) -> str:
         if singleton in others and (control or len(others) > 1):
             raise ValueError(f"{singleton} cannot be combined with other --role values.")
     if len(others) > 1:
-        raise ValueError("Use one of prefill, decode, union, or kv_store per container.")
+        raise ValueError("Use one of prefill, decode, union, kv_store, or kv_conductor per container.")
     control_role = None
     if len(control) == 2:
         control_role = ROLE_COORDINATOR_CONTROLLER
@@ -716,6 +776,21 @@ def normalize_docker_role(role: str | None) -> str | None:
     return _compose_role_from_tokens([token for token in compact.split(",") if token])
 
 
+def role_needs_docker_kv_conductor(role: str | None) -> bool:
+    """True when this Docker role co-locates Coordinator (owns motor-kvc)."""
+    if not role:
+        return False
+    try:
+        normalized = normalize_docker_role(role)
+    except ValueError:
+        return False
+    return control_role_of(normalized) in ("coordinator", ROLE_COORDINATOR_CONTROLLER)
+
+
+def docker_kv_conductor_container_name() -> str:
+    return DOCKER_KV_CONDUCTOR_NAME
+
+
 @dataclass
 class DockerRuntimeIdentity:
     role: str
@@ -726,6 +801,7 @@ class DockerRuntimeIdentity:
     kv_store_ip: str
     host_network: bool
     attach_npu: bool
+    kv_conductor_ip: str = ""
     nic_name: str = ""
 
 
@@ -818,6 +894,8 @@ def resolve_runtime_identity(
     kv_store_ip: str | None,
     kv_store_enabled: bool,
     nic_name: str | None = None,
+    kv_conductor_ip: str | None = None,
+    kv_conductor_enabled: bool = False,
 ) -> DockerRuntimeIdentity | None:
     if role is not None:
         role = normalize_docker_role(role)
@@ -843,6 +921,7 @@ def resolve_runtime_identity(
             ("--coordinator-ip", coordinator_ip),
             ("--controller-ip", controller_ip),
             ("--kv-store-ip", kv_store_ip),
+            ("--kv-conductor-ip", kv_conductor_ip),
         ]
         unexpected = [flag for flag, value in extra if value]
         if unexpected:
@@ -855,6 +934,7 @@ def resolve_runtime_identity(
     resolved_coord = (coordinator_ip or "").strip()
     resolved_ctrl = (controller_ip or "").strip()
     resolved_kvs = (kv_store_ip or "").strip()
+    resolved_kvc = (kv_conductor_ip or "").strip()
     control, engine = split_docker_role(role)
     has_engine = engine in ENGINE_ROLES
 
@@ -885,6 +965,16 @@ def resolve_runtime_identity(
     elif resolved_kvs:
         raise ValueError("--kv-store-ip was set but KV Cache Store is disabled in user_config.")
 
+    if kv_conductor_enabled:
+        if engine == ROLE_KV_CONDUCTOR or control in ("coordinator", ROLE_COORDINATOR_CONTROLLER):
+            resolved_kvc = resolved_kvc or resolved_pod_ip
+        else:
+            resolved_kvc = resolved_kvc or resolved_coord
+            if not resolved_kvc:
+                raise ValueError("--kv-conductor-ip is required when it cannot be inferred from --coordinator-ip.")
+    elif resolved_kvc:
+        raise ValueError("--kv-conductor-ip was set but kv_conductor_config.http_server_port is missing.")
+
     return DockerRuntimeIdentity(
         role=role,
         job_name=resolved_job,
@@ -894,6 +984,7 @@ def resolve_runtime_identity(
         kv_store_ip=resolved_kvs,
         host_network=True,
         attach_npu=has_engine,
+        kv_conductor_ip=resolved_kvc,
         nic_name=resolved_nic,
     )
 
@@ -1444,6 +1535,10 @@ def render_start_motor_sh(
     kv_env = dict(params.kv_store_env)
     if identity is not None and params.kv_store_enabled:
         kv_env[C.ENV_KVS_MASTER_SERVICE] = identity.kv_store_ip
+    if identity is not None and params.kv_conductor_enabled:
+        kv_env[C.ENV_KV_CONDUCTOR_SERVICE] = identity.kv_conductor_ip
+        if identity.role == ROLE_KV_CONDUCTOR:
+            kv_env["KV_CONDUCTOR_PORT"] = str(params.kv_conductor_port)
     isolate = engine_role_of(role) is not None and bool((devices or "").strip())
     config_path = in_place_config_path(
         container_name,
@@ -1567,7 +1662,13 @@ def image_exists(image: str) -> bool:
 
 
 def container_exists(name: str) -> bool:
-    return _docker("inspect", name).returncode == 0
+    try:
+        return _docker("inspect", name).returncode == 0
+    except FileNotFoundError:
+        if not os.path.exists(DOCKER_SOCK):
+            return False
+        status, _body = _docker_http("GET", f"{_DOCKER_API}/containers/{quote(name)}/json")
+        return status == 200
 
 
 def remove_container(name: str) -> None:
@@ -1772,6 +1873,55 @@ class RenderLogFollow:
                 conn.close()
             except OSError:
                 pass
+
+
+def restart_docker_kv_conductor_sidecar() -> str:
+    """Restart motor-kvc with Coordinator --start."""
+    name = docker_kv_conductor_container_name()
+    if not _render_container_present(name):
+        raise ValueError(f"KV Conductor container '{name}' not found; create the management container first.")
+    _render_container_op(name, "restart")
+    logger.info("Restarted KV Conductor sidecar %s with Coordinator", name)
+    return name
+
+
+def stop_docker_kv_conductor_sidecar() -> None:
+    """Stop motor-kvc when Coordinator exits."""
+    name = docker_kv_conductor_container_name()
+    if not _render_container_present(name):
+        return
+    try:
+        _render_container_op(name, "stop")
+    except ValueError as exc:
+        logger.warning("Failed to stop KV Conductor sidecar %s: %s", name, exc)
+        return
+    logger.info("Stopped KV Conductor sidecar %s with Coordinator", name)
+
+
+def remove_docker_kv_conductor_sidecar() -> None:
+    """Remove motor-kvc when management-container create fails."""
+    name = docker_kv_conductor_container_name()
+    if not _render_container_present(name):
+        return
+    try:
+        if docker_available():
+            result = _docker("rm", "-f", name)
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "").strip()
+                raise ValueError(detail)
+        elif os.path.exists(DOCKER_SOCK):
+            status, body = _docker_http(
+                "DELETE",
+                f"{_DOCKER_API}/containers/{quote(name)}?force=true",
+            )
+            if status not in (204, 304, 404):
+                raise ValueError(f"HTTP {status} {body[:200]!r}")
+        else:
+            return
+    except ValueError as exc:
+        logger.warning("Failed to remove KV Conductor sidecar %s: %s", name, exc)
+        return
+    logger.info("Removed KV Conductor sidecar %s", name)
 
 
 def restart_docker_render_sidecar(main_container_name: str) -> str:

@@ -20,26 +20,19 @@ import os
 import shlex
 import sys
 
+from lib.docker_utils import (
+    DOCKER_KV_CONDUCTOR_NAME,
+    kv_conductor_enabled,
+    kv_store_enabled,
+    validate_docker_kv_conductor,
+)
+
 INSTANCE_NUM_MAX = 16
 DEPLOY_MODE_SINGLE_CONTAINER = "single_container"
 
 
 class ConfigError(ValueError):
     """user_config.json 缺少生成命令所需的字段，或字段不合法。"""
-
-
-def kv_store_enabled(user_config: dict) -> bool:
-    """与 docker_deploy 相同：MultiConnector，或写了非空的 kv_cache_store_config。"""
-    engine = user_config.get("motor_engine_prefill_config") or user_config.get("motor_engine_union_config") or {}
-    engine_config = engine.get("engine_config") if isinstance(engine, dict) else None
-    if not isinstance(engine_config, dict):
-        engine_config = {}
-    kv_transfer = engine_config.get("kv_transfer_config")
-    if not isinstance(kv_transfer, dict):
-        kv_transfer = {}
-    kv_connector = kv_transfer.get("kv_connector", "")
-    kv_store_cfg = user_config.get("kv_cache_store_config")
-    return kv_connector == "MultiConnector" or (isinstance(kv_store_cfg, dict) and bool(kv_store_cfg))
 
 
 def _positive_int(deploy: dict, key: str) -> int:
@@ -85,6 +78,21 @@ def _shell_command(deployer_py: str, config_dir: str, argv: list[str]) -> str:
 _HOST_IP = '"<本机IP>"'
 _NIC = '"<本机网卡>"'
 _SERVER1_IP = '"<服务器1 IP>"'
+_MANAGEMENT_NAME = "motor-ctrl"
+
+
+def _management_title(*, render_enabled: bool, kv_conductor: bool, in_container: bool = False) -> str:
+    extra: list[str] = []
+    if render_enabled:
+        from lib.generator.render import docker_render_container_name
+
+        extra.append(f"Render容器【{docker_render_container_name(_MANAGEMENT_NAME)}】")
+    if kv_conductor:
+        extra.append(f"KV Conductor容器【{DOCKER_KV_CONDUCTOR_NAME}】")
+    if not extra or in_container:
+        return "管理面"
+    launched = " ".join([f"管理面容器【{_MANAGEMENT_NAME}】", *extra])
+    return f"管理面（以下命令会同时拉起 {launched}）"
 
 
 def _format(
@@ -163,7 +171,13 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
     if isinstance(encode_num, int) and not isinstance(encode_num, bool) and encode_num > 0:
         raise ConfigError("当前脚本不生成 encode 实例的 Docker 命令")
 
+    try:
+        validate_docker_kv_conductor(user_config)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+
     kv_enabled = kv_store_enabled(user_config)
+    kv_conductor = kv_conductor_enabled(user_config)
     if deploy.get("deploy_mode") == DEPLOY_MODE_SINGLE_CONTAINER:
         argv = ["--start"] if in_container else []
         argv.extend(["--container-name", "motor-single", "--pod-ip", _HOST_IP, "--nic-name", _NIC])
@@ -178,7 +192,7 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
     if not hybrid and not separation:
         raise ConfigError("motor_deploy_config 缺少 p_instances_num/d_instances_num 或 hybrid_instances_num")
 
-    shared = [_management_entry(in_container, kv_enabled)]
+    shared = [_management_entry(user_config, in_container, kv_enabled, kv_conductor)]
     if kv_enabled:
         shared.append(_kv_store_entry(in_container))
     if hybrid:
@@ -213,12 +227,16 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
     return _format(servers, deployer_py, config_dir, shared)
 
 
-def _management_entry(in_container: bool, kv_enabled: bool) -> tuple[str, list[str]]:
+def _management_entry(
+    user_config: dict, in_container: bool, kv_enabled: bool, kv_conductor: bool
+) -> tuple[str, list[str]]:
+    from lib.generator.render import is_render_enabled
+
     argv = ["--start"] if in_container else []
     argv.extend(
         [
             "--container-name",
-            "motor-ctrl",
+            _MANAGEMENT_NAME,
             "--role",
             "coordinator,controller",
             "--pod-ip",
@@ -229,7 +247,12 @@ def _management_entry(in_container: bool, kv_enabled: bool) -> tuple[str, list[s
     )
     if kv_enabled:
         argv.extend(["--kv-store-ip", _HOST_IP])
-    return "管理面", argv
+    title = _management_title(
+        render_enabled=is_render_enabled(user_config),
+        kv_conductor=kv_conductor,
+        in_container=in_container,
+    )
+    return title, argv
 
 
 def _kv_store_entry(in_container: bool) -> tuple[str, list[str]]:

@@ -25,6 +25,8 @@ if sys.platform == "win32":
 
     tty = types.ModuleType("tty")
     tty.setraw = lambda _fd: None
+    tty.tcgetattr = lambda _fd: []
+    tty.tcsetattr = lambda _fd, _when, _attrs: None
     sys.modules["tty"] = tty
 
 DEPLOYER_ROOT = Path(__file__).resolve().parents[3] / "examples" / "deployer"

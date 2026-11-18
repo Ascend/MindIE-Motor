@@ -52,12 +52,14 @@ def _examples_root(deployer_dir: str) -> str:
 def _in_place_workspace_slot(role: str | None, job_name: str | None) -> str:
     if not role:
         return "single"
-    if D.engine_role_of(role) or role in ("kv_store", D.ROLE_RENDER):
+    if D.engine_role_of(role) or role in ("kv_store", D.ROLE_KV_CONDUCTOR, D.ROLE_RENDER):
         named = (job_name or "").strip()
         if named:
             return named
         if role == "kv_store":
             return "kvs"
+        if role == D.ROLE_KV_CONDUCTOR:
+            return "kvc"
         if role == D.ROLE_RENDER:
             return "render"
         return D.engine_role_of(role)
@@ -114,6 +116,7 @@ def _validate_topology(user_config: dict) -> bool:
     try:
         validate_instance_nums(user_config)
         validate_pod_layouts(user_config)
+        D.validate_docker_kv_conductor(user_config)
     except (KeyError, ValueError) as exc:
         logger.error("%s", exc)
         return False
@@ -159,6 +162,8 @@ def _ports_to_check(
             ports.extend(_controller_ports(user_config))
         if D.engine_role_of(identity.role):
             ports.extend(D.collect_engine_listen_ports(user_config, identity.role))
+        if identity.role == D.ROLE_KV_CONDUCTOR:
+            ports.append(("kv-conductor", params.kv_conductor_port))
     seen: set[int] = set()
     unique = []
     for label, port in ports:
@@ -279,6 +284,8 @@ def _prepare_and_render(args, deployer_dir: str):
             kv_store_ip=args.kv_store_ip,
             kv_store_enabled=params.kv_store_enabled,
             nic_name=getattr(args, "nic_name", None),
+            kv_conductor_ip=getattr(args, "kv_conductor_ip", None),
+            kv_conductor_enabled=params.kv_conductor_enabled,
         )
     except ValueError as exc:
         logger.error("%s", exc)
@@ -406,20 +413,27 @@ def _new_render_log_path(workspace: str) -> str | None:
 def _docker_render_stop_hook(args) -> Callable[[], None] | None:
     from lib.generator.render import is_render_enabled, role_needs_docker_render
 
-    if not role_needs_docker_render(getattr(args, "role", None)):
-        return None
+    role = getattr(args, "role", None)
     user_config_path, _env_config_path = resolve_config_paths(
         args.config_dir, args.user_config_path, args.env_config_path
     )
-    if not is_render_enabled(read_json(user_config_path)):
+    user_config = read_json(user_config_path)
+    stop_render = role_needs_docker_render(role) and is_render_enabled(user_config)
+    stop_kvc = D.role_needs_docker_kv_conductor(role) and D.kv_conductor_enabled(user_config)
+    if not stop_render and not stop_kvc:
         return None
     main_name = _container_name_from_args_or_env(args)
-    if not main_name:
+    if stop_render and not main_name:
         logger.warning("Render lifecycle skipped: --container-name / NAME is empty")
+        stop_render = False
+    if not stop_render and not stop_kvc:
         return None
 
     def stop() -> None:
-        D.stop_docker_render_sidecar(main_name)
+        if stop_kvc:
+            D.stop_docker_kv_conductor_sidecar()
+        if stop_render:
+            D.stop_docker_render_sidecar(main_name)
 
     return stop
 
@@ -446,6 +460,145 @@ def _restart_docker_render_with_coordinator(args) -> tuple[int, str | None, str 
         logger.error("%s", exc)
         return 1, None, None
     return 0, since, render_name
+
+
+def _kv_conductor_sidecar_args(args):
+    sidecar = copy.copy(args)
+    sidecar.role = D.ROLE_KV_CONDUCTOR
+    sidecar.container_name = D.docker_kv_conductor_container_name()
+    sidecar.job_name = None
+    sidecar.devices = None
+    sidecar.start = True
+    sidecar.coordinator_ip = getattr(args, "coordinator_ip", None) or getattr(args, "pod_ip", None)
+    sidecar.controller_ip = getattr(args, "controller_ip", None) or getattr(args, "pod_ip", None)
+    sidecar.kv_conductor_ip = None
+    return sidecar
+
+
+def _build_kv_conductor_run_argv(args, deployer_dir: str) -> list[str]:
+    env = resolve_enter_env(_kv_conductor_sidecar_args(args), deployer_dir)
+    image = env["IMAGE"]
+    examples = env["EXAMPLES"]
+    weight = (env.get("WEIGHT") or "").strip()
+    extra = extra_create_bind_paths(_kv_conductor_sidecar_args(args), examples)
+    inner = build_in_place_inner_command(_kv_conductor_sidecar_args(args), deployer_dir)
+    argv = [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        env["NAME"],
+        "-u",
+        "root",
+        "--net=host",
+        "-e",
+        f"NAME={env['NAME']}",
+    ]
+    if weight:
+        argv.extend(["-e", f"WEIGHT={weight}"])
+    for spec in (
+        "/root/ascend/log:/root/ascend/log",
+        "/root/.cache:/root/.cache",
+        "/var/coredump:/var/coredump",
+        "/data:/data",
+        f"{examples}:{examples}",
+    ):
+        argv.extend(["-v", spec])
+    if weight:
+        argv.extend(["-v", f"{weight}:{weight}:ro"])
+    for path in extra:
+        argv.extend(["-v", f"{path}:{path}"])
+    argv.extend([image, "bash", "-c", inner])
+    return argv
+
+
+def _ensure_kv_conductor_sidecar_on_host(args, deployer_dir: str) -> tuple[int, str | None]:
+    role = getattr(args, "role", None)
+    if not D.role_needs_docker_kv_conductor(role):
+        return 0, None
+    try:
+        user_config_path, _env_config_path = resolve_config_paths(
+            args.config_dir, args.user_config_path, args.env_config_path
+        )
+        user_config = read_json(user_config_path)
+    except (KeyError, TypeError, ValueError) as exc:
+        logger.error("%s", exc)
+        return 1, None
+    if not D.kv_conductor_enabled(user_config):
+        return 0, None
+    name = D.docker_kv_conductor_container_name()
+    if D.container_exists(name):
+        logger.info("KV Conductor container %s already exists; leaving it as-is.", name)
+        return 0, name
+    if not D.docker_available():
+        logger.error("docker is not available; cannot create KV Conductor sidecar %s", name)
+        return 1, None
+    try:
+        D.require_pod_ip_and_nic(getattr(args, "pod_ip", None), getattr(args, "nic_name", None))
+        argv = _build_kv_conductor_run_argv(args, deployer_dir)
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return 1, None
+    logger.info("Creating KV Conductor sidecar %s", name)
+    result = D._docker(*argv[1:])
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        logger.error("Failed to create KV Conductor container '%s': %s", name, detail)
+        return 1, None
+    logger.info("KV Conductor sidecar ready as %s (host network; co-located with Coordinator).", name)
+    return 0, name
+
+
+def _restart_docker_kv_conductor_with_coordinator(args, deployer_dir: str) -> int:
+    if not D.role_needs_docker_kv_conductor(getattr(args, "role", None)):
+        return 0
+    user_config_path, _env_config_path = resolve_config_paths(
+        args.config_dir, args.user_config_path, args.env_config_path
+    )
+    if not D.kv_conductor_enabled(read_json(user_config_path)):
+        return 0
+    name = D.docker_kv_conductor_container_name()
+    if D.container_exists(name):
+        try:
+            D.restart_docker_kv_conductor_sidecar()
+        except ValueError as exc:
+            logger.error("%s", exc)
+            return 1
+        return 0
+    create_rc, created = _ensure_kv_conductor_sidecar_on_host(args, deployer_dir)
+    if create_rc != 0 or not created:
+        logger.error("KV Conductor container '%s' not found; create the management container first.", name)
+        return 1
+    return 0
+
+
+def _kv_conductor_log_line(args, deployer_dir: str) -> str | None:
+    if not D.role_needs_docker_kv_conductor(getattr(args, "role", None)):
+        return None
+    user_config_path, _env_config_path = resolve_config_paths(
+        args.config_dir, args.user_config_path, args.env_config_path
+    )
+    if not D.kv_conductor_enabled(read_json(user_config_path)):
+        return None
+    workspace = default_in_place_workspace(
+        deployer_dir,
+        D.ROLE_KV_CONDUCTOR,
+        None,
+        D.docker_kv_conductor_container_name(),
+    )
+    log_dir = os.path.join(workspace, "log")
+    latest = None
+    if os.path.isdir(log_dir):
+        candidates = [
+            os.path.join(log_dir, name)
+            for name in os.listdir(log_dir)
+            if name.startswith("docker-kv_conductor-") and name.endswith(".log")
+        ]
+        if candidates:
+            latest = max(candidates, key=os.path.getmtime)
+    if latest:
+        return f"KV Conductor 日志：{latest}"
+    return f"KV Conductor 日志：docker logs {D.docker_kv_conductor_container_name()}"
 
 
 def _open_render_log_follow(workspace: str, render_name: str, since: str) -> D.RenderLogFollow | None:
@@ -512,6 +665,8 @@ def run(args, deployer_dir: str) -> int:
         return 1
     params, workspace, identity = _prepare_and_render(args, deployer_dir)
     _print_in_place_banner(workspace, identity, params)
+    if _restart_docker_kv_conductor_with_coordinator(args, deployer_dir) != 0:
+        return 1
     restart_rc, since, render_name = _restart_docker_render_with_coordinator(args)
     if restart_rc != 0:
         return 1
@@ -524,7 +679,13 @@ def run(args, deployer_dir: str) -> int:
         if follow is not None:
             follow.stop()
 
-    extra_lines = [f"Render 日志：{follow.log_path}"] if follow is not None else None
+    extra_lines: list[str] = []
+    if follow is not None:
+        extra_lines.append(f"Render 日志：{follow.log_path}")
+    kvc_line = _kv_conductor_log_line(args, deployer_dir)
+    if kvc_line:
+        extra_lines.append(kvc_line)
+        print(kvc_line, flush=True)
     only_devices = (
         D.isolate_start_devices(
             identity.role if identity else None,
@@ -703,6 +864,9 @@ def enter_docker_run_template(role: str | None, hardware_type: str | None = None
     if engine == "kv_store":
         D.npu_docker_card_count(hardware_type)
         return C.ENTER_DOCKER_RUN_KVS
+    if engine == D.ROLE_KV_CONDUCTOR:
+        D.npu_docker_card_count(hardware_type)
+        return C.ENTER_DOCKER_RUN_CTRL
     if engine == D.ROLE_RENDER:
         D.npu_docker_card_count(hardware_type)
         return C.ENTER_DOCKER_RUN_CTRL
@@ -807,7 +971,9 @@ def extra_create_bind_paths(args, examples_dir: str) -> list[str]:
         value = (getattr(args, attr, None) or "").strip()
         if value:
             paths.append(os.path.dirname(os.path.abspath(value)))
-    if role_needs_docker_render(getattr(args, "role", None)):
+    if role_needs_docker_render(getattr(args, "role", None)) or D.role_needs_docker_kv_conductor(
+        getattr(args, "role", None)
+    ):
         paths.append(D.DOCKER_SOCK)
     extra: list[str] = []
     seen: set[str] = set()
@@ -864,6 +1030,7 @@ def build_in_place_inner_command(args, deployer_dir: str) -> str:
         ("--coordinator-ip", "coordinator_ip"),
         ("--controller-ip", "controller_ip"),
         ("--kv-store-ip", "kv_store_ip"),
+        ("--kv-conductor-ip", "kv_conductor_ip"),
     ):
         value = getattr(args, attr, None)
         if value:
@@ -891,16 +1058,19 @@ def attach_one_click_command(template: str, inner: str) -> str:
     return body[: -len(_IMAGE_BASH)] + f'"$IMAGE" bash -c {shlex.quote(script)}\n'
 
 
-def attach_render_create_rollback(command: str, main_name: str, render_name: str) -> str:
-    """Remove Render if ``docker run`` fails before the main container exists."""
+def attach_render_create_rollback(command: str, main_name: str, *sidecar_names: str) -> str:
+    """Remove sidecars if ``docker run`` fails before the main container exists."""
+    names = [name for name in sidecar_names if name]
+    if not names:
+        return command
     main_q = shlex.quote(main_name)
-    render_q = shlex.quote(render_name)
+    rms = "\n".join(f"    docker rm -f {shlex.quote(name)} >/dev/null 2>&1 || true" for name in names)
     return (
         f"{command.rstrip()}\n"
         "docker_run_status=$?\n"
         'if [ "$docker_run_status" -ne 0 ]; then\n'
         f"  if ! docker inspect {main_q} >/dev/null 2>&1; then\n"
-        f"    docker rm -f {render_q} >/dev/null 2>&1 || true\n"
+        f"{rms}\n"
         "  fi\n"
         '  exit "$docker_run_status"\n'
         "fi\n"
@@ -925,6 +1095,8 @@ def _validate_one_click_identity(args, deployer_dir: str, *, check_ports: bool =
         kv_store_ip=args.kv_store_ip,
         kv_store_enabled=params.kv_store_enabled,
         nic_name=getattr(args, "nic_name", None),
+        kv_conductor_ip=getattr(args, "kv_conductor_ip", None),
+        kv_conductor_enabled=params.kv_conductor_enabled,
     )
     engine_ports = D.engine_port_overrides_from_args(args)
     D.validate_engine_port_overrides(identity, engine_ports)
@@ -986,19 +1158,27 @@ def _occupied_host_containers(args, main_name: str) -> list[str]:
         sibling = docker_render_container_name(main_name)
         if sibling == main_name:
             sibling = None
+    kvc_name = (
+        D.docker_kv_conductor_container_name() if args is not None and D.role_needs_docker_kv_conductor(role) else None
+    )
     main_exists = D.container_exists(main_name)
     sibling_exists = sibling is not None and D.container_exists(sibling)
-    if not main_exists and not sibling_exists:
+    kvc_exists = kvc_name is not None and D.container_exists(kvc_name)
+    if not main_exists and not sibling_exists and not kvc_exists:
         return []
 
     owned = [main_name]
-    if sibling is not None:
+    user_config = None
+    if sibling is not None or kvc_name is not None:
         user_config = _user_config_for_host_create(args)
+    if sibling is not None:
         if is_render_enabled(user_config):
             image, _use_cpu = resolve_render_image(user_config)
             if not D.image_exists(image):
                 raise ValueError(f"Render image not found locally: {image} (docker image inspect failed).")
             owned.append(sibling)
+    if kvc_name is not None and D.kv_conductor_enabled(user_config):
+        owned.append(kvc_name)
     return [name for name in owned if D.container_exists(name)]
 
 
@@ -1171,20 +1351,28 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
         except (KeyError, TypeError, ValueError) as exc:
             logger.error("%s", exc)
             return 1
+    kvc_rc, kvc_name = _ensure_kv_conductor_sidecar_on_host(args, deployer_dir)
+    if kvc_rc != 0:
+        return 1
     render_rc, render_name = _ensure_render_sidecar_on_host(args, deployer_dir, env["NAME"])
     if render_rc != 0:
+        if kvc_name:
+            D.remove_docker_kv_conductor_sidecar()
         return 1
-    if render_name:
-        command = attach_render_create_rollback(command, env["NAME"], render_name)
+    command = attach_render_create_rollback(command, env["NAME"], kvc_name, render_name)
     print(command, end="", flush=True)
     merged = os.environ.copy()
     merged.update(env)
     try:
         os.execvpe("/bin/bash", ["bash", "-c", command], merged)
     except OSError:
+        if kvc_name:
+            D.remove_docker_kv_conductor_sidecar()
         if render_name:
             D.remove_docker_render_sidecar(env["NAME"])
         return 1
+    if kvc_name:
+        D.remove_docker_kv_conductor_sidecar()
     if render_name:
         D.remove_docker_render_sidecar(env["NAME"])
     return 1
@@ -1215,8 +1403,8 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Container name. Required when creating a container. "
         "If this name already exists, a terminal asks before deleting it. "
-        "A management or single-container deploy with Render enabled also offers to delete "
-        "<name>-vllm-render. Non-interactive runs abort and do not replace an existing container.",
+        "A management deploy with Render or KV affinity also offers to delete "
+        "<name>-vllm-render and motor-kvc. Non-interactive runs abort and do not replace an existing container.",
     )
     parser.add_argument(
         "--role",
@@ -1243,7 +1431,7 @@ def parse_arguments() -> argparse.Namespace:
         "--coordinator-ip",
         type=str,
         default=None,
-        help="Coordinator IPv4. User-supplied. Required for prefill/decode/union/kv_store "
+        help="Coordinator IPv4. User-supplied. Required for prefill/decode/union/kv_store/kv_conductor "
         "and for --role controller. --role coordinator / coordinator_controller default "
         "to this container's --pod-ip.",
     )
@@ -1251,7 +1439,7 @@ def parse_arguments() -> argparse.Namespace:
         "--controller-ip",
         type=str,
         default=None,
-        help="Controller IPv4. User-supplied. Required for prefill/decode/union/kv_store "
+        help="Controller IPv4. User-supplied. Required for prefill/decode/union/kv_store/kv_conductor "
         "and for --role coordinator. --role controller / coordinator_controller default "
         "to this container's --pod-ip.",
     )
@@ -1278,7 +1466,7 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Print docker_deploy.py commands from user_config.json and exit. "
         "Does not create a container or start Motor. "
-        "One inference container is one server. Management and kv_store share an inference server. "
+        "One inference container is one server. Management, kv_store and kv_conductor share an inference server. "
         "Pass --start to print in-container commands instead of host one-click commands.",
     )
     parser.add_argument(
@@ -1297,11 +1485,13 @@ def parse_arguments() -> argparse.Namespace:
         "Uses the docker run template in this file "
         "(image/weight from user_config.json). "
         "Pass --config_dir and --container-name. "
-        "Does not require --pod-ip or --nic-name. "
+        "Does not require --pod-ip or --nic-name unless KV affinity is enabled "
+        "(management --create then starts motor-kvc and needs --pod-ip / --nic-name). "
         "Dedicated management --create must pass --role coordinator,controller "
         "(or coordinator / controller) and uses ENTER_DOCKER_RUN_CTRL "
         "with no /dev/davinci* nodes. --role kv_store uses ENTER_DOCKER_RUN_KVS "
-        "(no NPU devices; binds driver, /driver, /var/log). Otherwise uses "
+        "(no NPU devices; binds driver, /driver, /var/log). "
+        "--role kv_conductor uses ENTER_DOCKER_RUN_CTRL (no NPU devices). Otherwise uses "
         "ENTER_DOCKER_RUN_A2 (davinci0-7), ENTER_DOCKER_RUN_A3 (davinci0-15), "
         "ENTER_DOCKER_RUN_A5 (davinci0-7 plus A5 UB paths), or ENTER_DOCKER_RUN_A5_POD16 (davinci0-15) from hardware_type "
         "(every card in that template, or only --devices if passed). "
@@ -1318,7 +1508,7 @@ def parse_arguments() -> argparse.Namespace:
         help="Host NPU ids, e.g. '0' or '0,1'. Engine/single create keeps only those "
         "--device /dev/davinciN lines already in the A2/A5 or A3 template and sets "
         "-e ASCEND_VISIBLE_DEVICES; omit to attach every card in that template. "
-        "Ignored for dedicated control-plane and kv_store create. "
+        "Ignored for dedicated control-plane, kv_store and kv_conductor create. "
         "On --start with --role prefill/decode/union, limits this process to those "
         "cards, exports MOTOR_START_DEVICES for NodeManager and this parent "
         "(so a second --start / Ctrl+C only reaps this instance), and writes "
@@ -1346,6 +1536,14 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="KV Cache Store host IP. Required when KV is enabled except --role kv_store "
         "(defaults to --pod-ip). Error if KV is disabled.",
+    )
+    parser.add_argument(
+        "--kv-conductor-ip",
+        type=str,
+        default=None,
+        help="KV Conductor host IP. Optional: management defaults to --pod-ip, "
+        "other roles default to --coordinator-ip because conductor is co-located with Coordinator. "
+        "Error if conductor is disabled.",
     )
     parser.add_argument(
         "--node-manager-port",

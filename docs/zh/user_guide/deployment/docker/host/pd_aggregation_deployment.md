@@ -2,6 +2,8 @@
 
 本文档指导用户基于Docker组件部署PD混部服务。用户在**宿主机执行一条指令创建容器并部署服务**，但容器的生命周期需要用户手动管理。
 
+---
+
 ## 准备镜像
 
 通过以下方式获取镜像：
@@ -19,6 +21,8 @@
    ```bash
    docker load -i xxxx.tar
    ```
+
+---
 
 ## 准备服务启动脚本
 
@@ -70,6 +74,8 @@
 
    将整个/home/examples目录，**拷贝至所有服务器的相同路径**下。
 
+---
+
 ## 启动服务
 
 1. 获取服务启动命令。
@@ -114,6 +120,8 @@
    ...
    ```
 
+    如果在user_config.json配置文件中开启了render和KV 亲和性调度功能，启动管理面容器时，会自动创建render和kv conductor两个辅助容器，确保业务功能正常。
+
 2. 执行服务启动命令。
 
    请参照以下规则**修改上述启动指令**，**在不同服务器的宿主机执行服务启动命令**。
@@ -126,6 +134,8 @@
    | --kv-store-ip | 服务器 1 的 IP。开启池化时 kv_store 也部署在服务器 1，与管理面同机。 |
 
    【可选】如果需要**一台服务器部署多个推理容器**，请参考[同一服务器部署多个推理容器](#同一服务器部署多个推理容器)部署服务。
+
+---
 
 ## 推理验证
 
@@ -158,25 +168,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 运行日志：examples/motor_workspace/motor-u0/u0/log/docker-union-u0-<时间戳>.log
 ```
 
-## 启用Render特性（可选）
-
-在 `/home/examples/config/user_config.json` 中增加以下配置：
-
-```json
-{
-  ...
-  "motor_coordinator_config": {
-    "render_config": {
-      "enable": true
-    }
-  },
-  ...
-}
-```
-
-按[启动服务](#启动服务)部署管理面服务时，会额外创建一个名为 `<container-name>-vllm-render` 的容器，并在其中启动 vLLM Render。当管理面服务被终止时，render服务会被自动终止；当管理面服务被重启时，render服务会被自动重启。Render退出后，管理面服务继续运行。
-
-若 `<container-name>` 或 `<container-name>-vllm-render` 已经存在，终端部署会询问是否删除后继续。这一步在端口检查之前，上次容器没清掉时，它占用的端口会随容器一起释放，不再被当成端口冲突。回答 `y` 会同时删除管理面容器和 Render 容器，再重新创建。回答 `N`，或在非交互环境执行，则中止且不覆盖。
+---
 
 ## 调优指导
 
