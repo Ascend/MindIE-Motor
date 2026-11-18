@@ -92,233 +92,48 @@ Coordinator实例的默认端口为31015，如现场部署了两套PD实例，�
 
 ## 将coordinator/controller/推理Pod部署在固定的服务器
 
-默认情况下，Coordinator、Controller和推理Pod将在k8s集群中的服务器之间随机分配，如果希望这些Pod部署在固定服务器，可参考以下操作。
+默认情况下，Coordinator、Controller 和推理 Pod 会在 K8s 集群的服务器之间随机调度。如需将各 Pod 固定到指定服务器，直接在 `user_config.json` 的 `motor_deploy_config` 中配置 `nodeSelector` 即可，无需修改部署 YAML。
 
-### PD分离场景
+| 字段 | 作用 |
+|------|------|
+| `coordinator_node_selector` | 固定 Coordinator Pod 所在节点 |
+| `controller_node_selector` | 固定 Controller Pod 所在节点 |
+| `prefill_node_selector` | 固定 Prefill 实例 Pod 所在节点 |
+| `decode_node_selector` | 固定 Decode 实例 Pod 所在节点 |
 
-  1. 在k8s的master节点，执行以下命令，为服务器中的各个服务器打标签。
+字段值为 JSON 对象，key 为节点标签名，value 为标签值，可填写节点上的任意标签，多个键值对需同时满足（AND 关系）。`kubernetes.io/hostname` 是 K8s 内置的节点名标签，可直接使用；使用自定义标签时，先执行 `kubectl label node <节点名> <key>=<value>` 为节点打标签。
 
-      ```bash
-      kubectl label node {node_name} key=value
-      ```
+以下示例将 P 实例部署在 `work-19`，将 D 实例、Controller 和 Coordinator 部署在 `work-11`（仅列出与本功能相关的字段，其余字段保持原配置不变）：
 
-      - `node_name`：填写服务器名称，可通过 kubectl get node命令查询。
-      - `key`：标签名，自定义填写。
-      - `value`：标签值，自定义填写。
+```json
+{
+  "motor_deploy_config": {
+    "prefill_node_selector": {
+      "kubernetes.io/hostname": "work-19"
+    },
+    "decode_node_selector": {
+      "kubernetes.io/hostname": "work-11"
+    },
+    "controller_node_selector": {
+      "kubernetes.io/hostname": "work-11"
+    },
+    "coordinator_node_selector": {
+      "kubernetes.io/hostname": "work-11"
+    }
+  }
+}
+```
 
-      例如：
+修改配置后重新部署并查看调度结果：
 
-      ```bash
-      # controller部署在node-33-137服务器上
-      kubectl label node node-33-137 mindie_controller=controller
-      # coordinator部署在node-33-138服务器上
-      kubectl label node node-33-138 mindie_coordinator=coordinator
-      # PD分离场景下，P实例部署在node-33-201服务器上
-      kubectl label node node-33-201 motor_role=prefill
-      # PD分离场景下，D实例部署在node-33-203服务器上
-      kubectl label node node-33-203 motor_role=decode
-      ```
+```bash
+cd examples/deployer
+python deploy.py --config_dir <配置目录>
+kubectl get pod -n <命名空间> -o wide
+```
 
-  2. 修改Controller实例的初始化文件。
-
-     执行`vim infer_service_template.yaml`命令，搜索`name: controller`，在如下所示的配置块中新增两个字段（`mindie_controller`和`controller`分别是第一步中创建的标签名和标签值）。
-
-      ```yaml
-      ...
-      - name: controller
-        replicas: 1
-        ...
-        spec:
-          replicas: 1
-          selector:
-            matchLabels:
-              app: mindie-motor-controller
-          template:
-            metadata:
-              labels:
-                app: mindie-motor-controller
-                deploy-name: mindie-motor-controller
-            spec:
-              nodeSelector:                    # 新增
-                mindie_controller: controller  # 新增
-              serviceAccountName: mindie-motor-controller
-              terminationGracePeriodSeconds: 0
-              securityContext:
-                fsGroup: 1001
-      ...
-      ```
-
-  3. 修改Coordinator实例的初始化文件。
-
-     执行`vim infer_service_template.yaml`命令，搜索`name: coordinator`，在如下所示的配置块中新增两个字段（`mindie_coordinator`和`coordinator`分别是第一步中创建的标签名和标签值）。
-
-      ```yaml
-      ...
-      - name: coordinator
-        replicas: 1
-        ...
-        spec:
-          replicas: 1
-          selector:
-            matchLabels:
-              app: mindie-motor-coordinator
-          template:
-            metadata:
-              labels:
-                app: mindie-motor-coordinator
-            spec:
-              nodeSelector:                      # 新增
-                mindie_coordinator: coordinator  # 新增
-              terminationGracePeriodSeconds: 0
-              automountServiceAccountToken: false
-              securityContext:
-                fsGroup: 1001
-      ...
-      ```
-
-  4. 修改推理Pod的初始化文件。
-
-     执行`vim infer_service_template.yaml`命令，分别搜索`name: prefill`和`name: decode`，在各自的`template.spec.nodeSelector`中追加角色标签（`motor_role`的值与第一步中创建的标签名和标签值保持一致）：
-
-      ```yaml
-      ...
-      - name: prefill
-        ...
-          template:
-            spec:
-              schedulerName: volcano
-              nodeSelector:
-                accelerator: huawei-Ascend910
-                accelerator-type: module-910b-8
-                motor_role: prefill          # 新增
-      ...
-      - name: decode
-        ...
-          template:
-            spec:
-              schedulerName: volcano
-              nodeSelector:
-                accelerator: huawei-Ascend910
-                accelerator-type: module-910b-8
-                motor_role: decode           # 新增
-      ...
-      ```
-
-  5. 修改完成后重新部署并验证调度结果。
-
-      ```bash
-      cd examples/deployer
-      python deploy.py --config_dir <配置目录>
-      kubectl get pod -n <命名空间> -o wide
-      ```
-
-      可以观察各pod将按照标签关系被调度至不同节点。
-
-  >[!NOTE] 说明
-  > 若`user_config.json`中配置了`"deploy_mode": "multi_deployment"`，打标签的方式与上文相同，但需修改的模板文件不同：
-  >
-  > - Controller：修改`controller_template.yaml`，在`template.spec`下新增`nodeSelector`。
-  > - Coordinator：修改`coordinator_template.yaml`，在`template.spec`下新增`nodeSelector`。
-  > - 推理Pod（PD分离）：修改`engine_template.yaml`，在`template.spec.nodeSelector`中追加`motor_role: prefill`或`motor_role: decode`。
-  >
-  > 示例命令如下
-  >
-  > ```bash
-  > cd examples/deployer/yaml_template/
-  > vim controller_template.yaml
-  > vim coordinator_template.yaml
-  > vim engine_template.yaml
-  > ```
-
-### PD混部场景
-
-  1. 在K8s的master节点，执行以下命令，为集群中的各个服务器打标签。
-
-      ```bash
-      kubectl label node {node_name} key=value
-      ```
-
-      - `node_name`：填写服务器名称，可通过 kubectl get node命令查询。
-      - `key`：标签名，自定义填写。
-      - `value`：标签值，自定义填写。
-
-      例如：
-
-      ```bash
-      # controller部署在node-33-137服务器上
-      kubectl label node node-33-137 mindie_controller=controller
-      # coordinator部署在node-33-138服务器上
-      kubectl label node node-33-138 mindie_coordinator=coordinator
-      # PD混部场景下，混部推理实例部署在node-33-201服务器上
-      kubectl label node node-33-201 motor_role=hybrid
-      ```
-
-  2. 修改Controller实例的初始化文件。
-
-     执行`vim controller_template.yaml`命令，搜索`name: mindie-motor-controller`，在如下所示的配置块中新增两个字段（`mindie_controller`和`controller`分别是第一步中创建的标签名和标签值）。
-
-      ```yaml
-      ...
-      template:
-        metadata:
-          labels:
-            app: mindie-motor-controller
-            deploy-name: mindie-motor-controller
-        spec:
-          nodeSelector:                    # 新增
-            mindie_controller: controller  # 新增
-          serviceAccountName: mindie-motor-controller
-          terminationGracePeriodSeconds: 0
-          securityContext:
-            fsGroup: 1001
-      ...
-      ```
-
-  3. 修改Coordinator实例的初始化文件。
-
-     执行`vim coordinator_template.yaml`命令，搜索`name: mindie-motor-coordinator`，在如下所示的配置块中新增两个字段（`mindie_coordinator`和`coordinator`分别是第一步中创建的标签名和标签值）。
-
-      ```yaml
-      ...
-      template:
-        metadata:
-          labels:
-            app: mindie-motor-coordinator
-        spec:
-          nodeSelector:                      # 新增
-            mindie_coordinator: coordinator  # 新增
-          terminationGracePeriodSeconds: 0
-          automountServiceAccountToken: false
-          securityContext:
-            fsGroup: 1001
-      ...
-      ```
-
-  4. 修改推理Pod的初始化文件。
-
-     执行`vim engine_template.yaml`命令，在`template.spec.nodeSelector`中追加角色标签（`motor_role`的值与第一步中创建的标签名和标签值保持一致）：
-
-      ```yaml
-      ...
-      template:
-        spec:
-          schedulerName: volcano
-          nodeSelector:
-            accelerator: huawei-Ascend910
-            accelerator-type: module-910b-8
-            motor_role: hybrid          # 新增
-      ...
-      ```
-
-  5. 修改完成后重新部署并验证调度结果。
-
-      ```bash
-      cd examples/deployer
-      python deploy.py --config_dir <配置目录>
-      kubectl get pod -n <命名空间> -o wide
-      ```
-
-      可以观察各pod将按照标签关系被调度至不同节点。
-
-  >[!NOTE] 说明
-  > PD混部场景默认通过`multi_deployment`方式部署（`user_config.json`中需包含`hybrid_instances_num`等混部字段），无需修改`infer_service_template.yaml`。
+>[!NOTE] 说明
+>
+> - 自定义 selector 会与 deployer 根据 `hardware_type` 生成的硬件标签（如 `accelerator`、`accelerator-type`）合并，同名 key 以 `user_config.json` 为准。
+> - 上述字段对 `infer_service_set` 和 `multi_deployment` 两种部署模式均生效；`single_container` 模式所有组件共用一个 Pod，不按组件生效。
+> - PD混部场景的 union 推理实例不支持 `prefill_node_selector` / `decode_node_selector`（Controller、Coordinator 的 selector 仍生效）；如需固定 union 实例节点，仍需在 `infer_service_template.yaml`（`infer_service_set`）或 `engine_template.yaml`（`multi_deployment`）的 union 角色 `spec.template.spec.nodeSelector` 中手工配置。
