@@ -1521,10 +1521,10 @@ class TestKvAffinityFallbackConsolidation(unittest.TestCase):
     """Consolidated kv_cache_affinity -> load_balance -> round_robin fallback chain (#5)."""
 
     _AFFINITY = (
-        "motor.coordinator.scheduler.runtime.scheduler_client."
+        "motor.coordinator.scheduler.runtime.builtin_endpoint_policy."
         "KvCacheAffinityPolicy.select_endpoint_candidates_from_list"
     )
-    _RR = "motor.coordinator.scheduler.runtime.scheduler_client.RoundRobinPolicy.select_instance_from_list"
+    _RR = "motor.coordinator.scheduler.runtime.builtin_endpoint_policy.RoundRobinPolicy.select_instance_from_list"
 
     @staticmethod
     def _make_client():
@@ -1586,9 +1586,8 @@ class TestKvAffinityFallbackConsolidation(unittest.TestCase):
         req.req_data = {"prompt": "x"}
         with (
             patch(self._AFFINITY, return_value=None),
-            patch.object(
-                client,
-                "_select_endpoint_candidates_by_load_balance",
+            patch(
+                "motor.coordinator.scheduler.runtime.builtin_endpoint_policy._LoadBalance._rank_candidates",
                 return_value=[(inst, ep, 1.0)],
             ) as lb,
         ):
@@ -1609,12 +1608,11 @@ class TestKvAffinityFallbackConsolidation(unittest.TestCase):
         req.req_data = {"prompt": "x"}
         with (
             patch(self._AFFINITY, return_value=[]),
-            patch.object(
-                client,
-                "_select_endpoint_candidates_by_load_balance",
+            patch(
+                "motor.coordinator.scheduler.runtime.builtin_endpoint_policy._LoadBalance._rank_candidates",
                 return_value=[(inst, ep, 1.0)],
             ) as lb,
-            patch("motor.coordinator.scheduler.runtime.scheduler_client.logger.warning") as warn,
+            patch("motor.coordinator.scheduler.runtime.builtin_endpoint_policy.logger.warning") as warn,
         ):
             cands, policy = client._select_endpoint_candidates_from_list_with_policy(
                 [Mock()], PDRole.ROLE_P, req, top_k=1
@@ -1667,9 +1665,8 @@ class TestKvAffinityFallbackConsolidation(unittest.TestCase):
         req.req_data = {}
         with (
             patch(self._AFFINITY) as affinity,
-            patch.object(
-                client,
-                "_select_endpoint_candidates_by_load_balance",
+            patch(
+                "motor.coordinator.scheduler.runtime.builtin_endpoint_policy._LoadBalance._rank_candidates",
                 return_value=[(inst, ep, 2.0)],
             ),
         ):
@@ -1690,7 +1687,10 @@ class TestKvAffinityFallbackConsolidation(unittest.TestCase):
         req.req_data = {"prompt": "x"}
         with (
             patch(self._AFFINITY, return_value=None),
-            patch.object(client, "_select_endpoint_candidates_by_load_balance", return_value=[]),
+            patch(
+                "motor.coordinator.scheduler.runtime.builtin_endpoint_policy._LoadBalance._rank_candidates",
+                return_value=[],
+            ),
             patch(self._RR, return_value=(inst, 1)),
             patch.object(client, "_select_endpoint_for_instance", return_value=(inst, ep)),
         ):

@@ -692,8 +692,7 @@ class TestKvUsageScoringPenalty(unittest.TestCase):
 class TestAuthoritativePathKvUsagePenalty(unittest.TestCase):
     """Test that the authoritative (CAS re-rank) path applies the same D-role KV penalty.
 
-    select_global_load_balance_candidate must mirror the fast path
-    (_select_endpoint_candidates_by_load_balance): when the context carries a
+    select_global_load_balance_candidate must mirror the built-in load balance plugin: when the context carries a
     kv_usage_provider, D-role scoring gains the KV usage penalty; without a provider
     plain load-balance scoring is preserved.
     """

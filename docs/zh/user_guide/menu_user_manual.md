@@ -30,6 +30,7 @@
     - [PD 分离](./features/inference_scheduling/pd_disaggregation.md)
     - [EPD 分离](./features/inference_scheduling/EPD_disaggregation.md)
     - [动态分桶调度](./features/inference_scheduling/dynamic_bucket.md)
+    - [自定义选点插件快速接入](./features/inference_scheduling/scheduler_policy_plugin.md)
     - [KV Cache 亲和性调度](./features/inference_scheduling/kvcache_affinity.md)
     - [Agent Hint 会话亲和与调度](./features/inference_scheduling/agent_hint.md)
     - [KV 池化能力部署](./features/inference_scheduling/kv_cache_store/README.md)

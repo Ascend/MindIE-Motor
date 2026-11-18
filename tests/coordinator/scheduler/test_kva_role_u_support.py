@@ -200,13 +200,12 @@ def test_kv_cache_affinity_uses_kva_for_role_u() -> None:
 
     with (
         patch(
-            "motor.coordinator.scheduler.runtime.scheduler_client."
+            "motor.coordinator.scheduler.runtime.builtin_endpoint_policy."
             "KvCacheAffinityPolicy.select_endpoint_candidates_from_list",
             return_value=ranked,
         ) as mock_kva,
-        patch.object(
-            client,
-            "_select_endpoint_candidates_by_load_balance",
+        patch(
+            "motor.coordinator.scheduler.runtime.builtin_endpoint_policy._LoadBalance._rank_candidates",
         ) as mock_load_balance,
     ):
         candidates, candidate_policy = client._select_endpoint_candidates_from_list_with_policy(
@@ -229,13 +228,12 @@ def test_kv_cache_affinity_falls_back_to_load_balance_for_role_u() -> None:
 
     with (
         patch(
-            "motor.coordinator.scheduler.runtime.scheduler_client."
+            "motor.coordinator.scheduler.runtime.builtin_endpoint_policy."
             "KvCacheAffinityPolicy.select_endpoint_candidates_from_list",
             return_value=[],
         ) as mock_kva,
-        patch.object(
-            client,
-            "_select_endpoint_candidates_by_load_balance",
+        patch(
+            "motor.coordinator.scheduler.runtime.builtin_endpoint_policy._LoadBalance._rank_candidates",
             return_value=lb_candidates,
         ) as mock_load_balance,
     ):
@@ -246,7 +244,7 @@ def test_kv_cache_affinity_falls_back_to_load_balance_for_role_u() -> None:
     assert candidates == lb_candidates
     assert candidate_policy == "load_balance"
     mock_kva.assert_called_once()
-    mock_load_balance.assert_called_once_with([instance], PDRole.ROLE_U, 1, req_id=req_info.req_id)
+    mock_load_balance.assert_called_once_with(client, [instance], PDRole.ROLE_U, 1, req_id=req_info.req_id)
 
 
 async def test_select_and_allocate_role_u_unified_forwards_top1() -> None:
@@ -310,12 +308,11 @@ def test_kv_cache_affinity_skips_kva_for_non_kva_roles() -> None:
 
     with (
         patch(
-            "motor.coordinator.scheduler.runtime.scheduler_client."
+            "motor.coordinator.scheduler.runtime.builtin_endpoint_policy."
             "KvCacheAffinityPolicy.select_endpoint_candidates_from_list"
         ) as mock_kva,
-        patch.object(
-            client,
-            "_select_endpoint_candidates_by_load_balance",
+        patch(
+            "motor.coordinator.scheduler.runtime.builtin_endpoint_policy._LoadBalance._rank_candidates",
             return_value=lb_candidates,
         ) as mock_load_balance,
     ):
@@ -326,4 +323,4 @@ def test_kv_cache_affinity_skips_kva_for_non_kva_roles() -> None:
     assert candidates == lb_candidates
     assert candidate_policy == "load_balance"
     mock_kva.assert_not_called()
-    mock_load_balance.assert_called_once_with([instance], PDRole.ROLE_D, 1, req_id=req_info.req_id)
+    mock_load_balance.assert_called_once_with(client, [instance], PDRole.ROLE_D, 1, req_id=req_info.req_id)

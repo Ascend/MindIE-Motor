@@ -538,7 +538,7 @@ class TestAsyncSchedulerClient:
 
         with (
             patch(
-                "motor.coordinator.scheduler.runtime.scheduler_client.get_request_token_length",
+                "motor.coordinator.scheduler.runtime.builtin_endpoint_policy.get_request_token_length",
                 return_value=None,
             ),
             caplog.at_level("WARNING"),
@@ -815,21 +815,22 @@ class TestAsyncSchedulerClient:
     # -- test_select_endpoint_candidates_by_load_balance --------------------
 
     def test_select_endpoint_candidates_by_load_balance(self):
-        """_select_endpoint_candidates_by_load_balance returns lowest-workload endpoint."""
+        """Load balance returns lowest-workload endpoint."""
         client = self.client
-        client._client_index = 0
-        client._client_count = 1
+        client._scheduler_type = "load_balance"
 
         ep1 = _make_endpoint(endpoint_id=1, active_tokens=10.0)
         ep2 = _make_endpoint(endpoint_id=2, active_tokens=5.0)
         inst1 = _make_instance(instance_id=1, role="prefill", endpoints={"pod1": {1: ep1}})
         inst2 = _make_instance(instance_id=2, role="prefill", endpoints={"pod2": {2: ep2}})
 
-        result = client._select_endpoint_candidates_by_load_balance(
+        result, policy = client._select_endpoint_candidates_from_list_with_policy(
             [inst1, inst2],
             PDRole.ROLE_P,
+            Mock(req_id="req-prefill"),
             top_k=1,
         )
+        assert policy == CANDIDATE_POLICY_LOAD_BALANCE
         assert len(result) == 1
         selected_instance, selected_endpoint, _score = result[0]
         assert selected_instance.id == 2
@@ -838,8 +839,7 @@ class TestAsyncSchedulerClient:
     def test_select_endpoint_candidates_by_load_balance_d_role_applies_kv_usage_penalty(self):
         """For ROLE_D, the KV usage penalty can outweigh a lower endpoint workload score."""
         client = self.client
-        client._client_index = 0
-        client._client_count = 1
+        client._scheduler_type = "load_balance"
 
         # inst1: lowest endpoint workload (5.0) but highest KV usage (0.95) plus heavy instance
         # pressure (gathered 20.0); inst2: higher endpoint workload (10.0), near-empty KV cache.
@@ -851,14 +851,16 @@ class TestAsyncSchedulerClient:
         inst1.gathered_workload.active_tokens = 20.0
 
         with patch(
-            "motor.coordinator.scheduler.runtime.scheduler_client.get_endpoint_kv_cache_usage",
+            "motor.coordinator.scheduler.runtime.builtin_endpoint_policy.get_endpoint_kv_cache_usage",
             side_effect=lambda instance, endpoint: {(1, 1): 0.95, (2, 2): 0.4}.get((instance.id, endpoint.id)),
         ):
-            result = client._select_endpoint_candidates_by_load_balance(
+            result, policy = client._select_endpoint_candidates_from_list_with_policy(
                 [inst1, inst2],
                 PDRole.ROLE_D,
+                Mock(req_id="req-decode"),
                 top_k=1,
             )
+        assert policy == CANDIDATE_POLICY_LOAD_BALANCE
         assert len(result) == 1
         selected_instance, selected_endpoint, _score = result[0]
         assert selected_instance.id == 2
@@ -867,8 +869,7 @@ class TestAsyncSchedulerClient:
     def test_select_endpoint_candidates_by_load_balance_logs_all_candidates(self, monkeypatch, caplog):
         """快路径 load_balance：开启开关后打印每个候选端点，并带上 req_id 关联。"""
         client = self.client
-        client._client_index = 0
-        client._client_count = 1
+        client._scheduler_type = "load_balance"
 
         ep1 = _make_endpoint(endpoint_id=1, active_tokens=10.0)
         ep2 = _make_endpoint(endpoint_id=2, active_tokens=5.0)
@@ -877,8 +878,8 @@ class TestAsyncSchedulerClient:
 
         monkeypatch.setenv("KV_AFFINITY_LOG_ALL_CANDIDATES", "1")
         with caplog.at_level("INFO", logger="motor.coordinator.scheduler.allocate_arbitration"):
-            client._select_endpoint_candidates_by_load_balance(
-                [inst1, inst2], PDRole.ROLE_P, top_k=1, req_id="req-fast"
+            client._select_endpoint_candidates_from_list_with_policy(
+                [inst1, inst2], PDRole.ROLE_P, Mock(req_id="req-fast"), top_k=1
             )
         messages = [rec.getMessage() for rec in caplog.records if "load_balance all_candidates" in rec.getMessage()]
         assert len(messages) == 2

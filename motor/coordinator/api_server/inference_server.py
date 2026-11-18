@@ -392,6 +392,13 @@ class InferenceServer(BaseCoordinatorServer):
         """Dedicated per-worker app for Decode layerwise callbacks. No API key / TLS."""
         app = FastAPI(title="Inference Worker Metaserver")
 
+        @app.get("/metrics")
+        async def policy_metrics():
+            from fastapi.responses import Response
+
+            client = self._get_scheduler_client()
+            return Response(client.policy_metrics_text() if client else "", media_type="text/plain; version=0.0.4")
+
         @app.post("/v1/metaserver")
         async def metaserver(request: Request):
             return await handle_metaserver_request(

@@ -39,6 +39,7 @@ nav:
               - PD 分离: user_guide/features/inference_scheduling/pd_disaggregation.md
               - EPD 分离: user_guide/features/inference_scheduling/EPD_disaggregation.md
               - 动态分桶调度: user_guide/features/inference_scheduling/dynamic_bucket.md
+              - 自定义选点插件快速接入: user_guide/features/inference_scheduling/scheduler_policy_plugin.md
               - KV Cache 亲和性调度: user_guide/features/inference_scheduling/kvcache_affinity.md
               - Agent Hint 会话亲和与调度: user_guide/features/inference_scheduling/agent_hint.md
               - KV 池化能力部署:
@@ -93,6 +94,7 @@ nav:
           - 主备倒换: design/fault_tolerance/standby.md
           - 精度检测: design/fault_tolerance/precision_detection.md
       - KV Conductor: design/kv_conductor.md
+      - 候选选点插件: design/scheduler_policy_plugin.md
       - Coordinator 调度热路径 Rust 重构: design/coordinator_scheduler_rust.md
       - 扩缩容: design/scaling.md
       - CRD 部署设计: design/crd_deployment.md

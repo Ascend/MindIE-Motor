@@ -399,9 +399,88 @@ class KvAffinityConfig:
 
 
 @dataclass
+class PolicyPluginConfig:
+    """External endpoint policy configuration shared by one configured role group."""
+
+    role: list[str] = field(default_factory=list)
+    name: str = ""
+    options: dict[str, Any] = field(default_factory=dict)
+    timeout_ms: int = 50
+    startup_timeout_ms: int = 5000
+    cooldown_seconds: float = 30.0
+
+    def validate(self) -> None:
+        """Reject malformed configuration without importing any plugin code."""
+        if not isinstance(self.name, str) or not self.name.strip() or len(self.name) > 128:
+            raise ValueError("policy_plugin.name must be a non-empty string of at most 128 characters")
+        if not isinstance(self.options, dict):
+            raise ValueError("policy_plugin.options must be a JSON object")
+        json.dumps(self.options, allow_nan=False)
+        if (
+            not isinstance(self.role, list)
+            or not self.role
+            or any(
+                not isinstance(role, str) or role not in ("prefill", "decode", "union", "encode") for role in self.role
+            )
+            or len(set(self.role)) != len(self.role)
+        ):
+            raise ValueError("policy_plugin.role must be a non-empty list of unique roles: prefill/decode/union/encode")
+        for key in ("timeout_ms", "startup_timeout_ms"):
+            value = getattr(self, key)
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 60000:
+                raise ValueError("policy_plugin.%s must be an integer in [1, 60000]" % key)
+        value = self.cooldown_seconds
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 1:
+            raise ValueError("policy_plugin.cooldown_seconds must be finite and >= 1")
+
+
+def normalize_policy_plugins(value: Any) -> list[PolicyPluginConfig]:
+    """Validate and normalize role-scoped plugin entries with indexed errors."""
+    if isinstance(value, dict):
+        if "roles" in value:
+            raise ValueError(
+                "scheduler_config.policy_plugin uses the old object/roles schema; use a list of items with role"
+            )
+        raise ValueError("scheduler_config.policy_plugin must be a list of role plugin objects")
+    if not isinstance(value, list):
+        raise ValueError("scheduler_config.policy_plugin must be a list")
+    allowed = {"role", "name", "options", "timeout_ms", "startup_timeout_ms", "cooldown_seconds"}
+    roles = set()
+    plugins = []
+    for index, item in enumerate(value):
+        path = "scheduler_config.policy_plugin[%d]" % index
+        if isinstance(item, PolicyPluginConfig):
+            plugin = item
+        elif isinstance(item, dict):
+            unknown = set(item) - allowed
+            if unknown:
+                raise ValueError("%s has unknown key(s): %s" % (path, ", ".join(sorted(unknown))))
+            for required in ("role", "name"):
+                if required not in item:
+                    raise ValueError("%s.%s is required" % (path, required))
+            try:
+                plugin = PolicyPluginConfig(**item)
+            except TypeError as exc:
+                raise ValueError("%s: %s" % (path, exc)) from exc
+        else:
+            raise ValueError("%s must be an object" % path)
+        try:
+            plugin.validate()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("%s: %s" % (path, exc)) from exc
+        overlap = roles.intersection(plugin.role)
+        if overlap:
+            raise ValueError("%s.role duplicates role(s): %s" % (path, ", ".join(sorted(overlap))))
+        roles.update(plugin.role)
+        plugins.append(plugin)
+    return plugins
+
+
+@dataclass
 class SchedulerConfig:
     prefill_scheduler_type: SchedulerType = field(default=SchedulerType.LOAD_BALANCE)
     decode_scheduler_type: SchedulerType = field(default=SchedulerType.LOAD_BALANCE)
+    policy_plugin: list[PolicyPluginConfig] = field(default_factory=list)
     enable_pd_separation_fallback_to_hybrid: bool = True
     # Weight of the instance average workload in endpoint-first load balancing.
     # 0 means pure global endpoint minimum; small values preserve instance pressure awareness.
@@ -437,6 +516,9 @@ class SchedulerConfig:
     kv_affinity: KvAffinityConfig = field(default_factory=KvAffinityConfig)
     # KV event registration config for kv-conductor.
     kv_conductor_config: KvConductorConfig = field(default_factory=KvConductorConfig)
+
+    def __post_init__(self) -> None:
+        self.policy_plugin = normalize_policy_plugins(self.policy_plugin)
 
     def type_for_role(self, role: object | None = None) -> SchedulerType:
         """Return the scheduling policy for a PD role.
@@ -1178,6 +1260,10 @@ class CoordinatorConfig:
         )
 
         allowed_scheduler_types = ", ".join(item.value for item in SchedulerType)
+        try:
+            self.scheduler_config.policy_plugin = normalize_policy_plugins(self.scheduler_config.policy_plugin)
+        except (TypeError, ValueError) as exc:
+            self._errors.append(str(exc))
         if not isinstance(self.scheduler_config.prefill_scheduler_type, SchedulerType):
             self._errors.append(f"prefill_scheduler_type must be one of: {allowed_scheduler_types}")
         if not isinstance(self.scheduler_config.decode_scheduler_type, SchedulerType):

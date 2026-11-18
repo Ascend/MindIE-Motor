@@ -73,6 +73,11 @@ class SchedulerConnectionManager:
             reconnect_interval=scheduler_config.reconnect_interval,
             prefill_scheduler_type=coordinator_config.scheduler_config.prefill_scheduler_type.value,
             decode_scheduler_type=coordinator_config.scheduler_config.decode_scheduler_type.value,
+            policy_plugin=(
+                coordinator_config.scheduler_config.policy_plugin
+                if coordinator_config.worker_index is not None
+                else None
+            ),
             client_index=client_index,
             client_count=client_count,
             endpoint_instance_score_weight=(coordinator_config.scheduler_config.endpoint_instance_score_weight),
