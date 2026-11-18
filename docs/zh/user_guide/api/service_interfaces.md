@@ -13,7 +13,7 @@
 请求类型：**POST**
 > URL：`http(s)://{IP}:{Port}/v1/chat/completions`
 
-IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)
+IP与端口请参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)。
 
 **请求参数**
 
@@ -21,7 +21,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 |---|---|---|
 | model | string | 必选；模型名称。 |
 | messages | array | 必选；对话消息列表。 |
-| stream | boolean | 可选；是否流式输出，默认为false。<ul><li>true：流式;</li><li>false：非流式。</li></ul> |
+| stream | boolean | 可选；是否流式输出，默认为false。<ul><li>true：流式；</li><li>false：非流式。</li></ul> |
 
 `messages`参数中的子参数解释如下：
 
@@ -34,9 +34,9 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 
 | 参数 | 类型 | 说明 |
 |---|---|---|
-| max_tokens | integer | 最大生成token数上限。 |
+| max_tokens | integer | 最大生成Token数上限。 |
 | temperature | number | 采样温度，温度越大输出结果越随机（常用 0~1），温度过大可能导致输出不稳定。 |
-| top_p | number | nucleus采样阈值（0~1），与`temperature` 参数同时使用时通常取其一。 |
+| top_p | number | nucleus采样阈值（0~1），与`temperature`参数同时使用时通常取其一。 |
 | presence_penalty | number | 话题惩罚项，鼓励引入新内容；取值区间依后端实现。 |
 | frequency_penalty | number | 频率惩罚项，降低重复内容；取值区间依后端实现。 |
 | stop | string/array | 停止词，匹配后提前结束生成。 |
@@ -81,7 +81,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 
 - 流式响应样例：
 
-  ```text
+  ```output
   data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1765856304,"model":"qwen3","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
 
   data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1765856304,"model":"qwen3","choices":[{"index":0,"delta":{"content":"Hey there! "},"finish_reason":null}]}
@@ -95,7 +95,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
   data: [DONE]
   ```
 
-- 非流式响应示例：
+- 非流式响应样例：
 
   ```json
   {
@@ -158,7 +158,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 请求类型：**POST**
 > URL：`http(s)://{IP}:{Port}/v1/responses`
 
-IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)
+IP与端口请参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)。
 
 **请求参数**
 
@@ -166,11 +166,11 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 |---|---|---|
 | model | string | 必选；模型名称。 |
 | input | string/array | 必选；文本或 Responses input-item 数组，数组项类型以部署的后端引擎为准。 |
-| stream | boolean | 可选；是否流式输出，默认为false。<ul><li>true：流式;</li><li>false：非流式。</li></ul> |
+| stream | boolean | 可选；是否流式输出，默认为false。<ul><li>true：流式；</li><li>false：非流式。</li></ul> |
 | instructions | string | 可选；模型需要遵循的系统指令。 |
 | max_output_tokens | integer | 可选；最多生成的输出 token 数。 |
 
-请求由 Coordinator 原样转发给原生支持 Responses API 的后端引擎。当前 Coordinator 额外支持从纯文本`input`、文本消息数组和`instructions`中提取调度信息，用于现有的 PD、负载及 KV 亲和性调度，不会把原始请求改写成 Chat Completions。非 message 类型的 input item 由后端引擎按其原生 Responses schema 校验。
+请求由 Coordinator 原样转发给原生支持 Responses API 的后端引擎。当前 Coordinator 额外支持从纯文本`input`、文本消息数组和`instructions`中提取调度信息，用于现有的 PD、负载均衡及 KV 亲和性调度，不会把原始请求改写成 Chat Completions。非 message 类型的 input item 由后端引擎按其原生 Responses schema 校验。
 
 > **响应格式说明**：Coordinator 作为透明代理，响应内容由后端推理引擎直接返回，不做二次包装。
 > 实际返回格式和可选字段取决于部署环境中的推理引擎版本；上线前必须确认该引擎原生提供`POST /v1/responses`。
@@ -207,7 +207,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 
 **响应样例**
 
-```JSON
+```json
 {
   "id": "resp_xxx",
   "object": "response",
@@ -258,7 +258,7 @@ OpenAI Completion 兼容接口，支持文本补全与结果采样。
 请求类型：**POST**
 > URL：`http(s)://{IP}:{Port}/v1/completions`
 
-IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)
+IP与端口请参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)。
 
 **请求参数**
 
@@ -266,7 +266,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 |---|---|---|
 | model | string | 必选；模型名称。 |
 | prompt | string/array | 必选；提示词。 |
-| stream | boolean | 可选；是否流式输出，默认为false。<ul><li>true：流式;</li><li>false：非流式。</li></ul> |
+| stream | boolean | 可选；是否流式输出，默认为false。<ul><li>true：流式；</li><li>false：非流式。</li></ul> |
 
 其余OpenAI兼容字段（如`max_tokens`、`temperature`等）将透传给后端推理引擎。常用字段说明同上，若后端不支持部分字段将被忽略或降级处理。
 
@@ -299,11 +299,11 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
     }'
   ```
 
-**响应示例**
+**响应样例**
 
 - 流式响应样例：
 
-  ```text
+  ```output
   data: {"id":"cmpl-xxx-0","object":"text_completion","created":1765856304,"model":"qwen3","choices":[{"index":0,"text":"Hey there! ","finish_reason":null}]}
 
   data: {"id":"cmpl-xxx-0","object":"text_completion","created":1765856304,"model":"qwen3","choices":[{"index":0,"text":"Lovely to hear from you—","finish_reason":null}]}
@@ -333,7 +333,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 
 - 流式响应参数说明：
 
-  流式响应为SSE事件流，每行以`data:` 开头，`data: [DONE]`表示结束。`data:`后的JSON结构如下：
+  流式响应为SSE事件流，每行以`data:`开头，`data: [DONE]`表示结束。`data:`后的JSON结构如下：
 
   | 参数名 | 类型 | 说明 |
   |---|---|---|
@@ -370,7 +370,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 请求类型：**POST**
 > URL：`http(s)://{IP}:{Port}/v1/messages`
 
-IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)
+IP与端口请参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)。
 
 **请求参数**
 
@@ -479,7 +479,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 
 - 流式响应样例（SSE 事件流）：
 
-  ```text
+  ```output
   event: message_start
   data: {"type":"message_start","message":{"id":"msg_xxx","type":"message","role":"assistant","content":[],"model":"qwen3-8b","usage":{"input_tokens":10}}}
 
@@ -542,7 +542,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 请求类型：**POST**
 > URL：`http(s)://{IP}:{Port}/v1/messages/count_tokens`
 
-IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)
+IP与端口请参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)。
 
 **请求参数**
 
@@ -598,7 +598,7 @@ curl -X POST "http://{IP}:{Port}/v1/messages/count_tokens" \
 请求类型：**GET**
 > URL：`http(s)://{IP}:{Port}/v1/models`
 
-IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)
+IP与端口请参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)。
 
 **请求参数**
 
@@ -610,7 +610,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 curl -X GET "http://{IP}:{Port}/v1/models"
 ```
 
-**响应示例**
+**响应样例**
 
 ```json
 {
@@ -638,7 +638,7 @@ curl -X GET "http://{IP}:{Port}/v1/models"
 |---|---|---|
 | object | string | 返回对象类型：`list`。 |
 | data | array | 模型列表。 |
-| data[].id | string | 模型名称 |
+| data[].id | string | 模型名称。 |
 | data[].object | string | 返回对象类型。 |
 | data[].owned_by | string | 模型归属。 |
 | data[].p_max_seqlen | integer | P实例最大序列长度。 |

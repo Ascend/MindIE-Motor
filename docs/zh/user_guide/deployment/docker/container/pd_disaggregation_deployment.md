@@ -22,7 +22,7 @@
 
 ## 准备服务启动脚本
 
-在**任意一台服务器**，执行以下操作
+在任意一台服务器上，执行以下操作：
 
 1. 获取启动脚本。
 
@@ -44,7 +44,7 @@
      MindIE Motor已在[常用模型配置连接](../../README.md#常用模型)中提供了常用模型的配置示例(deepseek_v4.1_flash、glm 5.2、glm 5.3等)，请选择与模型及硬件匹配的配置示例，修改少量配置后可直接使用。
       对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
-3. 保存配置文件
+3. 保存配置文件。
 
    进入examples目录下，将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下，再修改后保存：
 
@@ -139,13 +139,11 @@
    | motor-d0-0 | decode | d0 |
    | motor-d0-1 | decode | d0 |
 
----
-
 ## 开启KV池化（可选）
 
 不开启池化可跳过本节。
 
-开启后，P/D通过`MultiConnector`同时做Prefill→Decode直传和KV入池；还需要单独部署一个**kv_store**容器（请参考[5.（可选）部署KV Cache Store](#step002)），更多详细内容请参考[KV池化能力](../../../features/inference_scheduling/kv_cache_store/README.md)文档来修改user_config.json配置文件。
+开启后，P/D通过`MultiConnector`同时做Prefill→Decode直传和KV入池；还需要单独部署一个`kv_store`容器（请参考[5.（可选）部署KV Cache Store](#step002)），更多详细内容请参考[KV池化能力](../../../features/inference_scheduling/kv_cache_store/README.md)文档来修改user_config.json配置文件。
 
 ## 创建容器
 
@@ -153,9 +151,9 @@
 
 | 容器类型 | 参考模板 | 配置说明 |
 | --- | --- | --- |
-| 管理容器 | [ENTER_DOCKER_RUN_CTRL](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L611-L622) | 容器名`motor-ctrl`，创建在服务器 1。 |
-| P/D实例推理容器 | Atlas 800I A2：[ENTER_DOCKER_RUN_A2](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L448-L480)<br>Atlas 800I A3：[ENTER_DOCKER_RUN_A3](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L482-L522)<br>Ascend 950（8卡）：[ENTER_DOCKER_RUN_A5](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L524-L561)<br>Ascend 950（16卡）：[ENTER_DOCKER_RUN_A5_POD16](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L563-L609) | 1 个实例只占 1 个 容器时，容器名为`motor-p0`、`motor-d0`。1 个实例拆成多个容器时，容器名为`motor-p0-0`、`motor-p0-1`。每台服务器仅创建一个容器。 |
-| kv_store | [ENTER_DOCKER_RUN_KVS](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L624-L638) | 开启池化时创建，容器名`motor-kvs`，放在服务器 1。 |
+| 管理容器 | [ENTER_DOCKER_RUN_CTRL](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L611-L622) | 容器名`motor-ctrl`，创建在服务器1。 |
+| P/D实例推理容器 | Atlas 800I A2：[ENTER_DOCKER_RUN_A2](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L448-L480)<br>Atlas 800I A3：[ENTER_DOCKER_RUN_A3](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L482-L522)<br>Ascend 950（8卡）：[ENTER_DOCKER_RUN_A5](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L524-L561)<br>Ascend 950（16卡）：[ENTER_DOCKER_RUN_A5_POD16](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L563-L609) | 1个实例只占1个容器时，容器名为`motor-p0`、`motor-d0`。1个实例拆成多个容器时，容器名为`motor-p0-0`、`motor-p0-1`。每台服务器仅创建一个容器。 |
+| kv_store | [ENTER_DOCKER_RUN_KVS](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L624-L638) | 开启池化时创建，容器名`motor-kvs`，放在服务器1。 |
 
 创建时请满足以下条件：
 
@@ -237,7 +235,7 @@ docker exec -it <容器名> bash
 >- 同一容器部署多个推理实例时，每条`--start`使用不同的`--devices`和端口，请参考[同一容器部署多个推理实例](#同一容器部署多个推理实例)。
 >- 混部角色将`--role`改为`union`，`--instance-name`与容器数量规划一致（例如`u0`）。
 
-**表 5** 容器内部署命令参数解释
+**表 4** 容器内部署命令参数解释
 
 | 参数 | 说明 |
 | :--- | :--- |
@@ -246,8 +244,8 @@ docker exec -it <容器名> bash
 | --container-name | 容器名，可自定义，须与创建容器时的名称一致。 |
 | --role | 容器中运行服务的角色。<ul><li>管理服务：coordinator,controller；</li><li>推理服务：prefill或decode；</li><li>池化：kv_store。</li></ul> |
 | --instance-name | 推理实例名，如：p0、d0。<br>用于标识当前容器启动的服务归属于哪一个实例。同一实例的多个容器使用相同名称，详情请参考[容器数量规划](#容器数量规划)。 |
-| --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`src`字段后面是`--pod-ip`值。 |
-| --nic-name | 当前服务器对应`--pod-ip`的网卡名。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`dev`字段后面是`--nic-name`值。 |
+| --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get x.x.x.x`命令查看，`src`字段后面是`--pod-ip`值。 |
+| --nic-name | 当前服务器对应`--pod-ip`的网卡名。<br>可执行`ip -4 route get x.x.x.x`命令查看，`dev`字段后面是`--nic-name`值。 |
 | --coordinator-ip/--controller-ip | Coordinator/Controller所在服务器的IP。部署推理服务、kv_store时填写。分容器部署管理服务时，Controller填写`--coordinator-ip`，Coordinator填写`--controller-ip`。 |
 | --kv-store-ip | kv_store所在服务器的IP地址。开启池化后，部署管理面（coordinator/controller）和Prefill/Decode时必填。`--role kv_store`可省略，默认使用`--pod-ip`。 |
 
@@ -328,7 +326,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 下面以1个容器部署1个Prefill和1个Decode为例，容器挂载卡`0,1,2,3`。Prefill `p0`使用`0,1`，Decode `d0`使用`2,3`。
 
-1. 创建容器
+1. 创建容器。
 
    在宿主机执行一次。这个容器挂上两个实例要用的卡。管理面仍单独创建一个容器，按[容器内启动服务](#容器内启动服务)的回显执行。
 
@@ -340,15 +338,21 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
      --devices 0,1,2,3    # 这个容器挂载两个实例要用的卡
    ```
 
-2. 进入容器
+2. 进入容器。
 
    ```bash
    docker exec -it motor-pd bash
    ```
 
-3. 执行Prefill 启动命令
+3. 执行Prefill 启动命令。
 
-   额外添加以下五个参数。
+   额外添加以下五个参数：
+
+   - --devices：本实例使用的卡号，同一容器里的其他实例不能重叠。
+   - --node-manager-port：NodeManager端口，同一容器里错开，例如：4026、4226。
+   - --data-parallel-rpc-port：数据并行RPC端口。同一容器里错开，例如：9000、9200。
+   - --base-port：引擎端点起始端口，会再占用后续一段端口。同一容器里错开，例如：10000、12000。
+   - --kv-port：KV传输起始端口，会再占用后续一段端口。同一容器里错开，例如：21000、23000。
 
    ```bash
    python3 /home/examples/deployer/docker_deploy.py \
@@ -361,16 +365,22 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
      --nic-name "<本机网卡>" \
      --coordinator-ip "<服务器1 IP>" \
      --controller-ip "<服务器1 IP>" \
-     --devices 0,1  \                  # 本实例使用的卡号，2 张卡。同一容器里的其他实例不能重叠
-     --node-manager-port 4026  \       # NodeManager 端口。同一容器里错开，例如 4026、4226
-     --data-parallel-rpc-port 9000  \  # 数据并行 RPC 端口。同一容器里错开，例如 9000、9200
-     --base-port 10000  \              # 引擎端点起始端口，会再占用后续一段端口。同一容器里错开，例如 10000、12000
-     --kv-port 21000                   # KV 传输起始端口，会再占用后续一段端口。同一容器里错开，例如 21000、23000
+     --devices 0,1  \
+     --node-manager-port 4026  \
+     --data-parallel-rpc-port 9000  \
+     --base-port 10000  \
+     --kv-port 21000
    ```
 
-4. 执行Decode 启动命令
+4. 执行Decode 启动命令。
 
-   开一个新的窗口，进入容器后，执行以下命令，额外添加以下五个参数。
+   开一个新的窗口，进入容器后，执行以下命令，额外添加以下五个参数：
+
+   - --devices：本实例使用的卡号，同一容器里的其他实例不能重叠。
+   - --node-manager-port：NodeManager端口，同一容器里错开，例如：4026、4226。
+   - --data-parallel-rpc-port：数据并行RPC端口。同一容器里错开，例如：9000、9200。
+   - --base-port：引擎端点起始端口，会再占用后续一段端口。同一容器里错开，例如：10000、12000。
+   - --kv-port：KV传输起始端口，会再占用后续一段端口。同一容器里错开，例如：21000、23000。
 
    ```bash
    python3 /home/examples/deployer/docker_deploy.py \
@@ -383,9 +393,9 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
      --nic-name "<本机网卡>" \
      --coordinator-ip "<服务器1 IP>" \
      --controller-ip "<服务器1 IP>" \
-     --devices 2,3  \                  # 本实例使用的卡号，2 张卡。同一容器里的其他实例不能重叠
-     --node-manager-port 4226  \       # NodeManager 端口。同一容器里错开，例如 4026、4226
-     --data-parallel-rpc-port 9200  \  # 数据并行 RPC 端口。同一容器里错开，例如 9000、9200
-     --base-port 12000  \              # 引擎端点起始端口，会再占用后续一段端口。同一容器里错开，例如 10000、12000
-     --kv-port 23000                   # KV 传输起始端口，会再占用后续一段端口。同一容器里错开，例如 21000、23000
+     --devices 2,3  \
+     --node-manager-port 4226  \
+     --data-parallel-rpc-port 9200  \
+     --base-port 12000  \
+     --kv-port 23000
    ```

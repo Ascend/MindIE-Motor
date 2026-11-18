@@ -22,7 +22,7 @@
 
 ## 准备服务启动脚本
 
-在**任意一台服务器**，执行以下操作
+在任意一台服务器上，执行以下操作：
 
 1. 获取启动脚本。
 
@@ -56,7 +56,7 @@
    >[!NOTE] 说明
    >上述Motor配置仅给出一种可行的模型切分示例，**用户可根据实际情况调整模型划分策略**，关注以下表中参数即可，但必须满足以下公式的限制：
    >
-   > 1个混部实例占用的NPU卡数 = single_hybrid_instance_pod_num（占用几个pod，跨几机） × hybrid_pod_npu_num （每个pod占用的NPU数）= data_parallel_size × tensor_parallel_size
+   >1个混部实例占用的NPU卡数 = single_hybrid_instance_pod_num（占用几个pod，跨几机） × hybrid_pod_npu_num（每个Pod占用的NPU数）= data_parallel_size × tensor_parallel_size
 
    | 配置项 | 取值类型 | 取值范围 | 配置说明 |
    | --- | --- | --- | --- |
@@ -80,7 +80,7 @@
 | 混部 | Atlas 800I A2：[ENTER_DOCKER_RUN_A2](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L448-L480)<br>Atlas 800I A3：[ENTER_DOCKER_RUN_A3](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L482-L522)<br>Ascend 950（8卡）：[ENTER_DOCKER_RUN_A5](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L524-L561)<br>Ascend 950（16卡）：[ENTER_DOCKER_RUN_A5_POD16](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L563-L609) | 1个实例只占1个容器时，容器名为`motor-u0`、`motor-u1`。1个实例拆成多个容器时，容器名为`motor-u0-0`、`motor-u0-1`。每台服务器仅创建1个容器。 |
 | kv_store | [ENTER_DOCKER_RUN_KVS](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L624-L638) | 开启池化时创建，容器名`motor-kvs`，放在服务器1。 |
 
-创建容器时，必须把服务启动脚本文件夹挂载进容器（例如：`-v /home/examples:/home/examples`）,创建完成后进入容器：
+创建容器时，必须把服务启动脚本文件夹挂载进容器（例如：`-v /home/examples:/home/examples`），创建完成后进入容器：
 
 ```bash
 docker exec -it <容器名> bash
@@ -154,7 +154,7 @@ docker exec -it <容器名> bash
 
 ## 推理验证
 
-在**部署管理服务的服务器上**发送如下推理请求，即可进行推理验证：
+在部署管理面的服务器上发送如下推理请求，即可进行推理验证：
 
 ```bash
 curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/chat/completions \
@@ -225,9 +225,9 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 一个容器里可以执行多条`--start`，每条启动一个推理实例。每条命令使用不同的`--instance-name`和`--devices`，并错开端口。两条命令各开一个窗口。引擎角色的`--start --devices`会把同一串卡号写入本进程的`MOTOR_START_DEVICES`，下次`--start`和 Ctrl+C 只回收本实例；管理面或不带`--devices`的`--start`仍会回收该容器内全部 Motor/vLLM 进程。
 
-下面以 1 个容器部署 2 个混部实例为例，容器挂载卡`0,1,2,3`。混部 `u0`使用`0,1`，混部 `u1`使用`2,3`。
+下面以1个容器部署2个混部实例为例，容器挂载的卡为`0,1,2,3`。混部 `u0`使用`0,1`，混部 `u1`使用`2,3`。
 
-1. 创建容器
+1. 创建容器。
 
    在宿主机执行一次。这个容器挂上两个实例要用的卡。管理面仍单独创建一个容器，按[启动服务](#启动服务)的回显执行。
 
@@ -239,15 +239,21 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
      --devices 0,1,2,3    # 这个容器挂载两个实例要用的卡
    ```
 
-2. 进入容器
+2. 进入容器。
 
    ```bash
    docker exec -it motor-hybrid bash
    ```
 
-3. 执行混部 u0 启动命令
+3. 执行混部 u0 启动命令。
 
    额外添加以下五个参数。
+
+   - --devices：本实例使用的卡号，同一容器里的其他实例不能重叠。
+   - --node-manager-port：NodeManager端口，同一容器里错开，例如：4026、4226。
+   - --data-parallel-rpc-port：数据并行RPC端口。同一容器里错开，例如：9000、9200。
+   - --base-port：引擎端点起始端口，会再占用后续一段端口。同一容器里错开，例如：10000、12000。
+   - --kv-port：KV传输起始端口，会再占用后续一段端口。同一容器里错开，例如：21000、23000。
 
    ```bash
    python3 /home/examples/deployer/docker_deploy.py \
@@ -260,16 +266,22 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
      --nic-name "<本机网卡>" \
      --coordinator-ip "<服务器1 IP>" \
      --controller-ip "<服务器1 IP>" \
-     --devices 0,1  \                  # 本实例使用的卡号，2 张卡。同一容器里的其他实例不能重叠
-     --node-manager-port 4026  \       # NodeManager 端口。同一容器里错开，例如 4026、4226
-     --data-parallel-rpc-port 9000  \  # 数据并行 RPC 端口。同一容器里错开，例如 9000、9200
-     --base-port 10000  \              # 引擎端点起始端口，会再占用后续一段端口。同一容器里错开，例如 10000、12000
-     --kv-port 21000                   # KV 传输起始端口，会再占用后续一段端口。同一容器里错开，例如 21000、23000
+     --devices 0,1  \
+     --node-manager-port 4026  \
+     --data-parallel-rpc-port 9000  \
+     --base-port 10000  \
+     --kv-port 21000
    ```
 
-4. 执行混部 u1 启动命令
+4. 执行混部 u1 启动命令。
 
    开一个新的窗口，进入容器后，执行以下命令，额外添加以下五个参数。
+
+   - --devices：本实例使用的卡号，同一容器里的其他实例不能重叠。
+   - --node-manager-port：NodeManager端口，同一容器里错开，例如：4026、4226。
+   - --data-parallel-rpc-port：数据并行RPC端口。同一容器里错开，例如：9000、9200。
+   - --base-port：引擎端点起始端口，会再占用后续一段端口。同一容器里错开，例如：10000、12000。
+   - --kv-port：KV传输起始端口，会再占用后续一段端口。同一容器里错开，例如：21000、23000。
 
    ```bash
    python3 /home/examples/deployer/docker_deploy.py \
@@ -282,9 +294,9 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
      --nic-name "<本机网卡>" \
      --coordinator-ip "<服务器1 IP>" \
      --controller-ip "<服务器1 IP>" \
-     --devices 2,3  \                  # 本实例使用的卡号，2 张卡。同一容器里的其他实例不能重叠
-     --node-manager-port 4226  \       # NodeManager 端口。同一容器里错开，例如 4026、4226
-     --data-parallel-rpc-port 9200  \  # 数据并行 RPC 端口。同一容器里错开，例如 9000、9200
-     --base-port 12000  \              # 引擎端点起始端口，会再占用后续一段端口。同一容器里错开，例如 10000、12000
-     --kv-port 23000                   # KV 传输起始端口，会再占用后续一段端口。同一容器里错开，例如 21000、23000
+     --devices 2,3  \
+     --node-manager-port 4226  \
+     --data-parallel-rpc-port 9200  \
+     --base-port 12000  \
+     --kv-port 23000
    ```

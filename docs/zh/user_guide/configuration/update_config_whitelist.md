@@ -10,7 +10,7 @@
 
     `logging_config.log_level`：Controller 日志等级，可选 `DEBUG`、`INFO`、`WARNING`、`ERROR` 等。
 
-    `observability_config.observability_enable`：是否打开对外查询接口，用来查当前推理实例的指标数据、告警信息等。
+    `observability_config.observability_enable`：是否开启对外查询接口，用来查当前推理实例的指标数据、告警信息等。
 
     `observability_config.metrics_ttl`：推理实例的指标数据多久刷新一次，单位为秒。
 
@@ -38,13 +38,13 @@
 
     `rate_limit_config.error_status_code`：触发限流时返回的 HTTP 状态码，通常为 4xx（如 429）。
 
-    `rate_limit_config.max_request_body_size`：请求体最大大小（MB），超过则直接拒绝并返回 413，不消耗限流令牌。`<= 0` 表示不限制，支持小数（如 `0.5` 表示 0.5MB，1MB = 1024\*1024 字节）。
+    `rate_limit_config.max_request_body_size`：请求体最大大小（MB），超过则直接拒绝并返回 413，不消耗限流令牌。`<= 0` 表示不限制，支持小数（如 `0.5` 表示 0.5MB，1MB = 1024\*1024 B）。
 
     注意：`rate_limit_config.provider`、`rate_limit_config.scope`、`rate_limit_config.olc_config_path` 仅在服务启动时读取。切换限流提供者（simple/olc）或修改 OLC 规则路径需要重启服务。`enable_rate_limit` 只有在启动时已经创建 simple 限流器之后，热更新才会改运行时开关；启动时未开启限流，热更新不能补装中间件。行为说明见 [服务限流](../features/fault_tolerance/rate_limiting.md)。
 
 - **motor_nodemanger_config**
 
-    `logging_config.log_level`：NodeManager 日志等级，可选 `DEBUG`、`INFO`、`WARNING`、`ERROR` 等
+    `logging_config.log_level`：NodeManager 日志等级，可选 `DEBUG`、`INFO`、`WARNING`、`ERROR` 等。
 
 其余配置参数暂不支持热更新，可参照[配置参数说明](./config_reference.md)了解Motor全量配置参数的含义和配置方法。
 

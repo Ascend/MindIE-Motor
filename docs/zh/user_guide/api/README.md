@@ -56,7 +56,7 @@ MindIE Motor提供下列管理接口：
 
 **管理接口IP**
 
-- 在Kubernetes集群内，管理接口IP，使用`Coordinator`服务的IP。
+- 在Kubernetes集群内，管理接口IP使用Coordinator服务的IP。
   - 取值来自于[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)配置文件中的`coordinator_api_host`配置项。
   - 当配置文件中无此配置项时，则使用`Coordinator`服务部署的环境变量`POD_IP`。
   - 当环境变量`POD_IP`也不存在或为空时，使用默认值`127.0.0.1`。
@@ -70,12 +70,12 @@ MindIE Motor提供下列管理接口：
 
 MindIE Motor 的监控指标由 Coordinator 统一汇聚、聚合，通过 Coordinator Observability 端口对外提供。指标接口是**获取指标的唯一推荐途径**：
 
-- [指标查询接口](./metrics_interfaces.md#接口格式)：`/metrics`，支持聚合视图（`full`/`instance`/`role`/`dp`/`node`）与返回格式（Prometheus / OpenTelemetry）
-- [实例查询接口](./management_interfaces.md#实例查询接口)：`/instances`，供 ras_monitor 或外部运维工具获取实例健康状态
+- [指标查询接口](./metrics_interfaces.md#接口格式)：`/metrics`，支持聚合视图（`full`/`instance`/`role`/`dp`/`node`）与返回格式（Prometheus / OpenTelemetry）。
+- [实例查询接口](./management_interfaces.md#实例查询接口)：`/instances`，供 ras_monitor 或外部运维工具获取实例健康状态。
 
 >[!NOTE] 说明
 >
-> - 指标由 Coordinator 按周期（默认 `3` 秒）从各 Engine 采集并语义化聚合，详情参见[指标接口](./metrics_interfaces.md)。
+> - 指标由 Coordinator 按周期（默认3秒）从各 Engine 采集并语义化聚合，详情参见[指标接口](./metrics_interfaces.md)。
 > - Controller 侧的 `/observability/metrics` 为已弃用的转发接口，**新接入请直接使用本端口**，详见[观测接口](#观测接口)。
 
 ### 指标接口的IP/端口与配置
@@ -83,7 +83,7 @@ MindIE Motor 的监控指标由 Coordinator 统一汇聚、聚合，通过 Coord
 **指标接口IP**
 
 - 使用Kubernetes部署时，指标接口IP使用主机IP或者域名。
-- 在Kubernetes集群内，指标接口IP，使用`Coordinator`服务的IP。
+- 在Kubernetes集群内，指标接口IP使用Coordinator服务的IP。
   - 取值来自于[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)配置文件中的`coordinator_api_host`配置项。
   - 当配置文件中无此配置项时，则使用`Coordinator`服务部署的环境变量`POD_IP`。
   - 当环境变量`POD_IP`也不存在或为空时，使用默认值`127.0.0.1`。
@@ -118,7 +118,7 @@ Controller 观测接口提供模型服务清单与告警等运维观测数据（
 **观测接口IP**
 
 - 使用Kubernetes部署时，观测接口IP使用主机IP或者域名。
-- 在Kubernetes集群内，观测接口IP，使用`Controller`服务的IP。
+- 在Kubernetes集群内，观测接口IP使用Controller服务的IP。
   - 取值来自于[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_controller_config)配置文件中的`controller_api_host`配置项。
   - 当配置文件中无此配置项时，则使用`Controller`服务部署的环境变量`POD_IP`。
   - 当环境变量`POD_IP`也不存在或为空时，使用默认值`127.0.0.1`。
@@ -133,8 +133,8 @@ Controller 观测接口提供模型服务清单与告警等运维观测数据（
 
 ## 安全、认证与限流
 
-- 安全协议：`infer_tls_config.enable_tls` / `mgmt_tls_config.enable_tls` 为 `true` 时，推理/管理接口端口使用 `https`
-- 管理面鉴权：`mgmt_api_key_config.enable_api_key=true` 时，实例查询、实例刷新和精度告警状态清理接口必须携带 `X-Motor-Management-Key`；探针接口免鉴权。密钥由 `api_key_file` 指定的文件提供
+- 安全协议：`infer_tls_config.enable_tls` / `mgmt_tls_config.enable_tls` 为 `true` 时，推理/管理接口端口使用 `https`。
+- 管理面认证：`mgmt_api_key_config.enable_api_key=true` 时，实例查询、实例刷新和精度告警状态清理接口必须携带 `X-Motor-Management-Key`；探针接口免鉴权。密钥由 `api_key_file` 指定的文件提供。
 - 请求头：
   - 必选：`Content-Type: application/json`
   - 可选：API Key

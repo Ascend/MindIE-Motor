@@ -14,10 +14,10 @@ Observability 查询接口使用独立端口：
 
 >[!NOTE] 说明
 >
-> - `{IP}`：Controller 服务部署机器的 IP 或域名。
-> - `{Port}`：配置项 `api_config.observability_api_port`。
-> - 主备模式下，仅主 Controller 对外提供 Observability 查询能力；备 Controller 收到查询请求时返回内部错误。
-> - 当 `observability_config.observability_enable=false` 时，查询类接口返回内部错误，错误信息为 `Observability is not enabled.`。
+>- `{IP}`：Controller 服务部署机器的 IP 或域名。
+>- `{Port}`：配置项 `api_config.observability_api_port`。
+>- 主备模式下，仅主 Controller 对外提供 Observability 查询能力；备 Controller 收到查询请求时返回内部错误。
+>- 当 `observability_config.observability_enable=false` 时，查询类接口返回内部错误，错误信息为 `Observability is not enabled.`。
 
 ## 模型服务清单查询接口
 
@@ -30,7 +30,7 @@ Observability 查询接口使用独立端口：
 请求类型：**GET**
 > URL：`http(s)://{IP}:{Port}/observability/inventory`
 
-IP与端口参见[观测接口的IP/端口与配置](./README.md#观测接口的ip端口与配置)
+IP与端口请参见[观测接口的IP/端口与配置](./README.md#观测接口的ip端口与配置)。
 
 **请求参数**
 
@@ -46,7 +46,7 @@ curl -X GET "http://{IP}:{Port}/observability/inventory"
 
 以下示例参考 `tests/controller/observability/inventory/test_inventory_collector.py` 中的正常用例：2 个 Prefill 实例、1 个 Decode 实例，模型名为 `qwen3-8B`，模型 ID 为 `model_123`。
 
-```JSON
+```json
 {
   "code": 200,
   "message": "Success",
@@ -199,7 +199,7 @@ curl -X GET "http://{IP}:{Port}/observability/inventory"
 | data.inventories.serverOfCoordinator | array | Coordinator 所在服务器信息，当前默认为空数组。 |
 | data.inventories.serverOfManagerMaster | array | Controller 主节点服务器信息，当前默认为空数组。 |
 | data.inventories.serverOfManagerSlave | array | Controller 备节点服务器信息，当前默认为空数组。 |
-| PInstanceList[].InstanceStatus / DInstanceList[].InstanceStatus | string | 实例状态：`running` 表示运行中，`init` 表示初始化中，`error` 表示异常。 |
+| data.inventories.PInstanceList[].InstanceStatus / data.inventories.DInstanceList[].InstanceStatus | string | 实例状态：`running` 表示运行中，`init` 表示初始化中，`error` 表示异常。 |
 | podAssociatedInfoList[].NPUID | string | NPU 设备 ID。 |
 | podAssociatedInfoList[].NPUIP | string | NPU 设备 IP。 |
 
@@ -230,7 +230,7 @@ curl -X GET "http://{IP}:{Port}/observability/inventory"
 请求类型：**GET**
 > URL：`http(s)://{IP}:{Port}/observability/alarms`
 
-IP与端口参见[观测接口的IP/端口与配置](./README.md#观测接口的ip端口与配置)
+IP与端口请参见[观测接口的IP/端口与配置](./README.md#观测接口的ip端口与配置)。
 
 **请求参数**
 
@@ -336,22 +336,22 @@ Controller / Coordinator
 
 **事件解释**
 
-Controller 主备模式发生主备切换，备 Controller 获取主角色并启动业务模块时，上报此事件。当前 `alarmName` 为 `Controller Master To Slave Alarm`，实际触发语义为备 Controller 升为主 Controller。
+Controller主备模式发生主备切换，备Controller获取主角色并启动业务模块时，上报此事件。当前`alarmName`为`Controller Master To Slave Alarm`，实际触发语义为备Controller升为主Controller。
 
 **事件属性**
 
 | 事件 ID | 事件级别 | 事件类型 |
 | --- | --- | --- |
-| `0xFC001000` | 警告 | 状态改变 |
+| 0xFC001000 | 警告 | 状态改变 |
 
 **事件参数**
 
 | 类别 | 参数名称 | 参数含义 |
 | --- | --- | --- |
-| 定位信息、MOI、附加信息 | `service name` | 组件名称 `Controller`。 |
-| 定位信息、MOI、附加信息 | `service ip` | Controller 所在 Pod 的 `POD_IP`。 |
-| 附加信息 | `pod id` | 环境变量 `SERVICE_ID`，未配置时为 `Unknown`。 |
-| 原因 | `reasonId=1` | 原主 Controller 因故障不可用。 |
+| 定位信息、MOI、附加信息 | service name | 组件名称 `Controller`。 |
+| 定位信息、MOI、附加信息 | service ip | Controller 所在 Pod 的 `POD_IP`。 |
+| 附加信息 | pod id | 环境变量 `SERVICE_ID`，未配置时为 `Unknown`。 |
+| 原因 | reasonId=1 | 原主 Controller 因故障不可用。 |
 
 **对系统的影响**
 
@@ -381,14 +381,14 @@ Controller 主备模式发生主备切换，备 Controller 获取主角色并启
 
 | 告警 ID | 告警级别 | 告警类型 |
 | --- | --- | --- |
-| `0xFC001001` | 重要 | 状态改变 |
+| 0xFC001001 | 重要 | 状态改变 |
 
 **告警参数**
 
 | 类别 | 参数名称 | 参数含义 |
 | --- | --- | --- |
-| 原因 | `reasonId=0` | 当前数据模型默认值。 |
-| 原因 | `probableCause` | 预留原因为硬件或软件故障导致实例数量减少。 |
+| 原因 | reasonId=0 | 当前数据模型默认值。 |
+| 原因 | probableCause | 预留原因为硬件或软件故障导致实例数量减少。 |
 | 定位信息、MOI、附加信息 | - | 当前数据模型未填充场景参数，由后续实际记录产生方提供。 |
 
 **对系统的影响**
@@ -421,19 +421,19 @@ Endpoint 心跳超时或状态异常时还可能伴随 `0xFC001003` 事件。
 
 | 告警 ID | 告警级别 | 告警类型 |
 | --- | --- | --- |
-| `0xFC001002` | 紧急 | 状态改变 |
+| 0xFC001002 | 紧急 | 状态改变 |
 
 **告警参数**
 
 | 类别 | 参数名称 | 参数含义 |
 | --- | --- | --- |
-| 定位信息、MOI、附加信息 | `servicename` | 组件名称 `controller`。 |
-| 定位信息、MOI、附加信息 | `inst_type` | 当前固定输出 `p_inst_type or d_inst_type`。 |
-| 定位信息、MOI、附加信息 | `inst_id` | 异常实例的 `job_name`。 |
-| 定位信息、MOI、附加信息 | `service ip` | Controller 所在 Pod 的 `POD_IP`。 |
-| 附加信息 | `pod id` | 环境变量 `SERVICE_ID`。 |
-| 响应字段 | `instanceId` | 异常实例的 `job_name`。 |
-| 原因 | `reasonId=1` | 硬件或软件故障导致模型实例异常。 |
+| 定位信息、MOI、附加信息 | service name | 组件名称 `controller`。 |
+| 定位信息、MOI、附加信息 | inst_type | 当前固定输出 `p_inst_type or d_inst_type`。 |
+| 定位信息、MOI、附加信息 | inst_id | 异常实例的 `job_name`。 |
+| 定位信息、MOI、附加信息 | service ip | Controller 所在 Pod 的 `POD_IP`。 |
+| 附加信息 | pod id | 环境变量 `SERVICE_ID`。 |
+| 响应字段 | instanceId | 异常实例的 `job_name`。 |
+| 原因 | reasonId=1 | 硬件或软件故障导致模型实例异常。 |
 
 **对系统的影响**
 
@@ -465,18 +465,18 @@ Controller 检测到实例 Endpoint 心跳超时或 Endpoint 状态异常时，�
 
 | 事件 ID | 事件级别 | 事件类型 |
 | --- | --- | --- |
-| `0xFC001003` | 重要 | 状态改变 |
+| 0xFC001003 | 重要 | 状态改变 |
 
 **事件参数**
 
 | 类别 | 参数名称 | 参数含义 |
 | --- | --- | --- |
-| 定位信息、MOI、附加信息 | `service name` | 组件名称 `Controller`。 |
-| 定位信息、MOI、附加信息 | `endpoint ip` | 异常 Endpoint 的 IP 地址。 |
-| 定位信息、MOI、附加信息 | `endpoint ids` | 同一 IP 下检测到异常的 Endpoint ID 列表。 |
-| 附加信息 | `pod id` | 环境变量 `SERVICE_ID`。 |
-| 原因 | `reasonId=1` | Endpoint 心跳超时。 |
-| 原因 | `reasonId=2` | Endpoint 状态异常。 |
+| 定位信息、MOI、附加信息 | service name | 组件名称 `Controller`。 |
+| 定位信息、MOI、附加信息 | endpoint ip | 异常 Endpoint 的 IP 地址。 |
+| 定位信息、MOI、附加信息 | endpoint ids | 同一 IP 下检测到异常的 Endpoint ID 列表。 |
+| 附加信息 | `pod id | 环境变量 `SERVICE_ID`。 |
+| 原因 | reasonId=1 | Endpoint 心跳超时。 |
+| 原因 | reasonId=2 | Endpoint 状态异常。 |
 
 **对系统的影响**
 
@@ -511,17 +511,17 @@ Controller 检测到实例 Endpoint 心跳超时或 Endpoint 状态异常时，�
 
 | 告警 ID | 告警级别 | 告警类型 |
 | --- | --- | --- |
-| `0xFC001004` | 紧急 | 业务质量告警 |
+| 0xFC001004 | 紧急 | 业务质量告警 |
 
 **告警参数**
 
 | 类别 | 参数名称 | 参数含义 |
 | --- | --- | --- |
-| 定位信息、MOI、附加信息 | `service name` | 组件名称 `Coordinator`。 |
-| 定位信息、MOI、附加信息 | `service ip` | Coordinator 所在 Pod 的 `POD_IP`。 |
-| 附加信息 | `pod id` | 环境变量 `SERVICE_ID`。 |
-| 原因 | `reasonId=1` | 没有可用的 Prefill 实例或 Decode 实例。 |
-| 原因 | `reasonId=2` | Coordinator 自身状态异常，当前主流程未使用。 |
+| 定位信息、MOI、附加信息 | service name | 组件名称 `Coordinator`。 |
+| 定位信息、MOI、附加信息 | service ip | Coordinator 所在 Pod 的 `POD_IP`。 |
+| 附加信息 | pod id | 环境变量 `SERVICE_ID`。 |
+| 原因 | reasonId=1 | 没有可用的 Prefill 实例或 Decode 实例。 |
+| 原因 | reasonId=2 | Coordinator 自身状态异常，当前主流程未使用。 |
 
 **对系统的影响**
 
@@ -555,17 +555,17 @@ Prefill 和 Decode 两类角色均重新具备可用实例时自动生成 `categ
 
 | 事件 ID | 事件级别 | 事件类型 |
 | --- | --- | --- |
-| `0xFC001005` | 重要 | 状态改变 |
+| 0xFC001005 | 重要 | 状态改变 |
 
 **事件参数**
 
 | 类别 | 参数名称 | 参数含义 |
 | --- | --- | --- |
-| 定位信息、MOI | `service name` | 组件名称 `Coordinator`。 |
-| 定位信息、MOI | `service ip` | Coordinator 所在 Pod 的 `POD_IP`。 |
+| 定位信息、MOI | service name` | 组件名称 `Coordinator`。 |
+| 定位信息、MOI | service ip` | Coordinator 所在 Pod 的 `POD_IP`。 |
 | 附加信息 | 当前请求数、`max_requests` 和阈值 | 标识本次记录为达到 85% 的拥塞状态或低于 75% 的恢复状态。 |
-| 附加信息 | `pod id` | 环境变量 `SERVICE_ID`。 |
-| 原因 | `reasonId=1` | Coordinator 正在处理的请求发生拥塞。 |
+| 附加信息 | pod id | 环境变量 `SERVICE_ID`。 |
+| 原因 | reasonId=1 | Coordinator 正在处理的请求发生拥塞。 |
 
 **对系统的影响**
 
@@ -595,20 +595,20 @@ Prefill 和 Decode 两类角色均重新具备可用实例时自动生成 `categ
 
 | 告警 ID | 告警级别 | 告警类型 |
 | --- | --- | --- |
-| `0xFC001006` | 紧急 | 状态改变 |
+| 0xFC001006 | 紧急 | 状态改变 |
 
 **告警参数**
 
 | 类别 | 参数名称 | 参数含义 |
 | --- | --- | --- |
-| 定位信息、MOI、附加信息 | `service name` | 组件名称 `Controller`。 |
-| 定位信息、MOI、附加信息 | `service ip` | Controller 所在 Pod 的 `POD_IP`。 |
-| 定位信息、MOI、附加信息 | `cluster ip` | 环境变量 `MINDX_SERVER_IP`；未配置时不输出。 |
-| 附加信息 | `pod id` | 环境变量 `SERVICE_ID`。 |
-| 原因 | `reasonId=1` | 集群服务注册失败。 |
-| 原因 | `reasonId=2` | RankTable 订阅失败。 |
-| 原因 | `reasonId=3` | 故障消息订阅失败。 |
-| 原因 | `reasonId=4` | 连接中断。 |
+| 定位信息、MOI、附加信息 | service name | 组件名称 `Controller`。 |
+| 定位信息、MOI、附加信息 | service ip | Controller 所在 Pod 的 `POD_IP`。 |
+| 定位信息、MOI、附加信息 | cluster ip | 环境变量 `MINDX_SERVER_IP`；未配置时不输出。 |
+| 附加信息 | pod id | 环境变量 `SERVICE_ID`。 |
+| 原因 | reasonId=1 | 集群服务注册失败。 |
+| 原因 | reasonId=2 | RankTable 订阅失败。 |
+| 原因 | reasonId=3 | 故障消息订阅失败。 |
+| 原因 | reasonId=4 | 连接中断。 |
 
 **对系统的影响**
 
@@ -640,18 +640,18 @@ ScaleP2D 故障恢复策略成功恢复 Decode 实例后，Controller 上报此�
 
 | 事件 ID | 事件级别 | 事件类型 |
 | --- | --- | --- |
-| `0xFC001007` | 警告 | 状态改变 |
+|`0xFC001007 | 警告 | 状态改变 |
 
 **事件参数**
 
 | 类别 | 参数名称 | 参数含义 |
 | --- | --- | --- |
-| 定位信息、MOI、附加信息 | `service name` | 组件名称 `Controller`。 |
-| 定位信息、MOI、附加信息 | `d instance id` | 已恢复的 Decode 实例 ID。 |
-| 定位信息、MOI、附加信息 | `d instance job name` | 已恢复的 Decode 实例 Job 名称。 |
-| 定位信息、MOI、附加信息 | `killed p instance ids` | 恢复过程中终止的 Prefill 实例 ID 列表。 |
-| 响应字段 | `instanceId` | 已恢复的 Decode 实例 ID。 |
-| 原因 | `reasonId=1` | Decode 实例已由 ScaleP2D 策略恢复。 |
+| 定位信息、MOI、附加信息 | service name | 组件名称 `Controller`。 |
+| 定位信息、MOI、附加信息 | d instance id | 已恢复的 Decode 实例 ID。 |
+| 定位信息、MOI、附加信息 | d instance job name | 已恢复的 Decode 实例 Job 名称。 |
+| 定位信息、MOI、附加信息 | killed p instance ids | 恢复过程中终止的 Prefill 实例 ID 列表。 |
+| 响应字段 | instanceId | 已恢复的 Decode 实例 ID。 |
+| 原因 | reasonId=1 | Decode 实例已由 ScaleP2D 策略恢复。 |
 
 **对系统的影响**
 
@@ -675,22 +675,22 @@ Decode 实例发生可由 ScaleP2D 策略处理的故障，Controller 通过调�
 
 **事件解释**
 
-Coordinator 主备模式发生主备切换，备 Coordinator 获取主角色并启动 Inference 进程时，上报此事件。当前 `alarmName` 为 `Coordinator Master To Slave Alarm`，实际触发语义为备 Coordinator 升为主 Coordinator。
+Coordinator主备模式发生主备切换，备Coordinator获取主角色并启动推理进程时，上报此事件。当前`alarmName`为`Coordinator Master To Slave Alarm`，实际触发语义为备Coordinator升为主Coordinator。
 
 **事件属性**
 
 | 事件 ID | 事件级别 | 事件类型 |
 | --- | --- | --- |
-| `0xFC001008` | 警告 | 状态改变 |
+| 0xFC001008 | 警告 | 状态改变 |
 
 **事件参数**
 
 | 类别 | 参数名称 | 参数含义 |
 | --- | --- | --- |
-| 定位信息、MOI、附加信息 | `service name` | 组件名称 `Coordinator`。 |
-| 定位信息、MOI、附加信息 | `service ip` | Coordinator 所在 Pod 的 `POD_IP`。 |
-| 附加信息 | `pod id` | 环境变量 `SERVICE_ID`。 |
-| 原因 | `reasonId=1` | 原主 Coordinator 因故障不可用。 |
+| 定位信息、MOI、附加信息 | service name | 组件名称 `Coordinator`。 |
+| 定位信息、MOI、附加信息 | service ip | Coordinator 所在 Pod 的 `POD_IP`。 |
+| 附加信息 | pod id | 环境变量 `SERVICE_ID`。 |
+| 原因 | reasonId=1 | 原主 Coordinator 因故障不可用。 |
 
 **对系统的影响**
 
@@ -721,24 +721,24 @@ Coordinator 主备模式发生主备切换，备 Coordinator 获取主角色并�
 
 | 告警 ID | 告警级别 | 告警类型 |
 | --- | --- | --- |
-| `0xFC001009` | 重要 | 处理错误 |
+| 0xFC001009 | 重要 | 处理错误 |
 
 **告警参数**
 
 | 类别 | 参数名称 | 参数含义 |
 | --- | --- | --- |
-| 定位信息 | `service name` | 组件名称 `Coordinator`。 |
-| 定位信息 | `service ip` | Coordinator 所在 Pod 的 `POD_IP`。 |
-| MOI | `pId` | Prefill 实例 ID；PD 混合部署时不包含该参数。 |
-| MOI | `instanceId` | Decode 实例 ID。告警与清除记录必须使用完全相同的 MOI。 |
-| 附加信息 | `precision_issue_count` | 触发告警时累计的连续精度异常次数。 |
-| 附加信息 | `probe_failure_count` | 固定问答拨测失败次数。 |
-| 附加信息 | `p_instance_id` | Prefill 实例 ID；无 Prefill 实例时为 `None`。 |
-| 附加信息 | `d_instance_id` | Decode 实例 ID。 |
-| 附加信息 | `pod id` | 依次取非空的 `SERVICE_ID`、`sys_id` 或模型 ID。 |
-| 响应字段 | `instanceId` | Decode 实例 ID。 |
-| 响应字段 | `pInstanceId` | Prefill 实例 ID；无 Prefill 实例时为空字符串。 |
-| 原因 | `reasonId=0` | 当前实现保留 `Record` 的默认值。 |
+| 定位信息 | service name | 组件名称 `Coordinator`。 |
+| 定位信息 | service ip | Coordinator 所在 Pod 的 `POD_IP`。 |
+| MOI | pId | Prefill 实例 ID；PD 混合部署时不包含该参数。 |
+| MOI | instanceId | Decode 实例 ID。告警与清除记录必须使用完全相同的 MOI。 |
+| 附加信息 | precision_issue_count | 触发告警时累计的连续精度异常次数。 |
+| 附加信息 | probe_failure_count | 固定问答拨测失败次数。 |
+| 附加信息 | p_instance_id | Prefill 实例 ID；无 Prefill 实例时为 `None`。 |
+| 附加信息 | d_instance_id | Decode 实例 ID。 |
+| 附加信息 | pod id | 依次取非空的 `SERVICE_ID`、`sys_id` 或模型 ID。 |
+| 响应字段 | instanceId | Decode 实例 ID。 |
+| 响应字段 | pInstanceId | Prefill 实例 ID；无 Prefill 实例时为空字符串。 |
+| 原因 | reasonId=0 | 当前实现保留 `Record` 的默认值。 |
 
 **对系统的影响**
 
@@ -759,7 +759,7 @@ Coordinator 主备模式发生主备切换，备 Coordinator 获取主角色并�
 
 清除记录必须复用原告警的 MOI。自动恢复、CCAE 精度控制以及连续正常检测三种清除路径详见[精度检测故障恢复特性](../../design/fault_tolerance/precision_detection.md#告警清除)。
 
-如需将上述记录上报到 CCAE，可部署 CCAE Reporter。Reporter 的配置、启动方式和北向接口关系参见下文“对接 CCAE 前端平台”。
+如需将上述记录上报到 CCAE，可部署 CCAE Reporter。Reporter 的配置、启动方式和北向接口关系请参见下文“对接 CCAE 前端平台”。
 
 ## 对接 CCAE 前端平台
 
@@ -799,21 +799,21 @@ CCAE（Cluster Computing Autonomous Engine）是集群自智引擎系统。Motor
 
 | 参数 | 说明 |
 | --- | --- |
-| `motor_controller_config.observability_config.observability_enable` | 开启 Controller Observability 查询接口，CCAE Reporter 依赖该接口获取清单和告警；指标由 Reporter 直接从 Coordinator 的 `/metrics` 获取。 |
-| `motor_controller_config.api_config.observability_api_port` | Controller Observability 查询接口端口，默认 `1027`。JSON 省略时 Reporter 回落该默认值。 |
-| `motor_controller_config.api_config.controller_api_port` | Controller 管理/probe 端口，默认 `1026`。JSON 省略时 Reporter 回落该默认值。 |
-| `motor_coordinator_config.api_config.coordinator_obs_port` | Coordinator `/metrics` 端口，默认 `1027`。JSON 省略时 Reporter 回落该默认值。 |
-| `motor_deploy_config.tls_config.north_tls_config` | Reporter 访问 CCAE 北向接口和 Kafka 时使用的 TLS 配置。 |
-| `north_config.name` | 北向 Reporter 名称，配置为 `ccae_reporter`。 |
-| `north_config.ip` | CCAE 平台 IP。 |
-| `north_config.port` | CCAE 平台北向 HTTP 端口。 |
+| motor_controller_config.observability_config.observability_enable | 开启 Controller Observability 查询接口，CCAE Reporter 依赖该接口获取清单和告警；指标由 Reporter 直接从 Coordinator 的 `/metrics` 获取。 |
+| motor_controller_config.api_config.observability_api_port | Controller Observability 查询接口端口，默认 `1027`。JSON 省略时 Reporter 回退到该默认值。 |
+| motor_controller_config.api_config.controller_api_port | Controller 管理/probe 端口，默认 `1026`。JSON 省略时 Reporter 回退到该默认值。 |
+| motor_coordinator_config.api_config.coordinator_obs_port | Coordinator `/metrics` 端口，默认 `1027`。JSON 省略时 Reporter 回退到该默认值。 |
+| motor_deploy_config.tls_config.north_tls_config | Reporter 访问 CCAE 北向接口和 Kafka 时使用的 TLS 配置。 |
+| north_config.name | 北向 Reporter 名称，配置为 `ccae_reporter`。 |
+| north_config.ip | CCAE 平台 IP。 |
+| north_config.port | CCAE 平台北向 HTTP 端口。 |
 
 Reporter 进程还读取下列环境变量（可写入 `env.json` 的 `motor_controller_env` / `motor_coordinator_env`，或直接 export）：
 
 | 环境变量 | 说明 |
 | --- | --- |
-| `CCAE_REPORTER_LOG_LEVEL` | Reporter 自身日志级别。可选 `DEBUG` / `INFO` / `WARN` / `ERROR` / `CRITICAL` / `NULL`（关闭文件日志）。未设置或为空时为 `INFO`。非法非空值会输出 warning 并回退到 `INFO`。`WARNING` 视为 `WARN`。 |
-| `MOTOR_LOG_PATH` | Reporter 自身日志目录与采集根目录。未设置时默认 `/root/ascend/log`。标准部署脚本会从 `MOTOR_LOG_ROOT_PATH` 推导并注入该变量。 |
+| CCAE_REPORTER_LOG_LEVEL | Reporter 自身日志级别。可选 `DEBUG` / `INFO` / `WARN` / `ERROR` / `CRITICAL` / `NULL`（关闭文件日志）。未设置或为空时为 `INFO`。非法非空值会输出 warning 并回退到 `INFO`。`WARNING` 视为 `WARN`。 |
+| MOTOR_LOG_PATH | Reporter 自身日志目录与采集根目录。未设置时默认 `/root/ascend/log`。标准部署脚本会从 `MOTOR_LOG_ROOT_PATH` 推导并注入该变量。 |
 
 修改配置后，可在 `examples/deployer` 目录更新配置：
 
@@ -840,19 +840,19 @@ python3 -m ccae_reporter.run Controller &
 python3 -m ccae_reporter.run Coordinator &
 ```
 
-其中 Controller 侧 Reporter 会采集并上报告警、实例清单、metrics 和日志；Coordinator 侧 Reporter 仅上报心跳和日志，不上报告警与实例清单。
+其中Controller侧Reporter会采集并上报告警、实例清单、指标和日志；Coordinator侧Reporter仅上报心跳和日志，不上报告警与实例清单。
 
 Reporter 的主要交互流程如下：
 
 | 数据类型 | Reporter 访问 Motor 的接口 | Reporter 上报 CCAE 的接口 |
 | --- | --- | --- |
-| 心跳 | `/readiness` | `/rest/ccaeommgmt/v1/managers/mindie/register` |
-| 告警 | `/observability/alarms?source_id={NORTH_PLATFORM}` | `/rest/ccaeommgmt/v1/managers/mindie/events` |
-| 实例清单 | `/observability/inventory` | `/rest/ccaeommgmt/v1/managers/mindie/inventory` |
-| 指标 | Coordinator `/metrics`（参见[指标接口（GET /metrics）](./metrics_interfaces.md#接口格式)） | 随实例清单以 Base64 编码写入 `metrics.metric` 字段 |
-| 精度控制 | `/controller/check_instance`、`/controller/terminate_instance` | `/rest/ccaeommgmt/v1/managers/mindie/precisioncontrol` |
+| 心跳 | /readiness | /rest/ccaeommgmt/v1/managers/mindie/register |
+| 告警 | /observability/alarms?source_id={NORTH_PLATFORM} | /rest/ccaeommgmt/v1/managers/mindie/events |
+| 实例清单 | /observability/inventory | /rest/ccaeommgmt/v1/managers/mindie/inventory |
+| 指标 | Coordinator `/metrics`（请参见[指标接口（GET /metrics）](./metrics_interfaces.md#接口格式)） | 随实例清单以 Base64 编码写入 `metrics.metric` 字段 |
+| 精度控制 | /controller/check_instance、/controller/terminate_instance | /rest/ccaeommgmt/v1/managers/mindie/precisioncontrol |
 | 日志 | 本地日志采集（见下文） | CCAE 返回的 Kafka topic |
 
 日志采集只监控 Controller / Coordinator 日志，文件名需匹配 `*-controller-*.log` / `*-coordinator-*.log`。默认开启 `logging_config.log_collector_enabled` 时，Motor 落盘为 `{HOSTNAME}.log`（例如 `<prefix>-controller-<replica>-<hash>.log`），Reporter 会采集这类文件。关闭 collector 后的 `{HOSTNAME}_{pid}.log` 不再匹配，不会上报。
 
-Controller 侧 CCAE Reporter 处理 precision control 时复用 `/controller/terminate_instance`。请求体除必填 `instance_id`、`reason` 外，可携带 `p_instance_id` 和 `precision_alarm_clear=true`：`instance_id` 对应告警中的 D 实例，`p_instance_id` 对应告警中的 P 实例；Controller 在终止 P/D 实例组后附加清除该实例组的精度告警。`precision_alarm_clear` 为可选字段，普通实例终止请求无需携带。
+Controller 侧 CCAE Reporter 处理精度控制时复用 `/controller/terminate_instance`。请求体除必填 `instance_id`、`reason` 外，可携带 `p_instance_id` 和 `precision_alarm_clear=true`：`instance_id` 对应告警中的 D 实例，`p_instance_id` 对应告警中的 P 实例；Controller 在终止 P/D 实例组后附加清除该实例组的精度告警。`precision_alarm_clear` 为可选字段，普通实例终止请求无需携带。

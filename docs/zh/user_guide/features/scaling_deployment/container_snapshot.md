@@ -140,7 +140,7 @@
 
 #### 场景二：其他部署模式
 
-其他部署模式不会通过 `deploy.py` 自动生成部署 YAML 模板，也不会由该脚本执行 checkpoint、restore 或管理快照文件。部署平台需集成以下流程；部署平台未提供自动管理能力时，由用户自行完成，以下基于使用GRUS工具演示。
+其他部署模式不会通过 `deploy.py` 自动生成部署 YAML 模板，也不会由该脚本执行 checkpoint、restore 或管理快照文件。部署平台需集成以下流程；部署平台未提供自动管理能力时，由用户自行完成，以下以使用 GRUS 工具为例进行演示。
 
 1. 创建快照元数据文件，并将其挂载到实例容器内。该文件必须是合法的 JSON 对象，初始内容可以为空。
 
@@ -248,13 +248,13 @@
 
 在配置的 `host_snapshot_image_path` 下，进入以当前服务 namespace 命名的目录，检查每个实例的子目录中是否生成 `snapshot_status.json` 文件。目录结构如下：
 
-```text
+```output
 <host_snapshot_image_path>/<namespace>/<instance-name>/snapshot_status.json
 ```
 
 例如，`host_snapshot_image_path` 配置为 `/path/to/host-snapshot`、namespace 为 `mindie-motor`、实例名称为 `vllm-0-decode` 时，对应文件为：
 
-```text
+```output
 /path/to/host-snapshot/mindie-motor/vllm-0-decode/snapshot_status.json
 ```
 
@@ -266,7 +266,7 @@
 
 1. 检查日志中是否包含以下内容：
 
-   ```text
+   ```output
    [snapshot] Node manager is restored from host side snapshot, registering...
    ```
 

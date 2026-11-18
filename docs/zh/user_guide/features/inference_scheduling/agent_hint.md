@@ -43,13 +43,13 @@ flowchart LR
 
 | 字段 | 说明 |
 | --- | --- |
-| `session.session_id` | 会话标识（稳定），用于亲和与父会话传播。 |
-| `session.parent_session_id` | 父会话标识，子 agent 复用父会话实例。 |
-| `session.epoch` | 上下文版本（重写/压缩时递增），变更使旧 pin 失效。 |
-| `priority.level` / `priority.reason` | 软优先级等级与原因，进入 `prio=` / `reason=` 审计日志。 |
-| `strict_priority.level` | 硬优先级；仅在 `X-Strict-Priority-Token` 校验通过后生效。 |
-| `cache_control.ttl_s` | 显式保留声明（秒，钳制 [60, 3600]），进入亲和生命周期。 |
-| `agent_status.state` | 会话状态：`running`/`tool`/`pause`/`suspend`/`finalize`。 |
+| session.session_id | 会话标识（稳定），用于亲和与父会话传播。 |
+| session.parent_session_id | 父会话标识，子 agent 复用父会话实例。 |
+| session.epoch | 上下文版本（重写/压缩时递增），变更使旧 pin 失效。 |
+| priority.level / priority.reason | 软优先级等级与原因，进入 `prio=` / `reason=` 审计日志。 |
+| strict_priority.level | 硬优先级；仅在 `X-Strict-Priority-Token` 校验通过后生效。 |
+| cache_control.ttl_s | 显式保留声明（秒，钳制 [60, 3600]），进入亲和生命周期。 |
+| agent_status.state | 会话状态：`running`/`tool`/`pause`/`suspend`/`finalize`。 |
 
 ### 核心功能
 
@@ -99,7 +99,8 @@ Motor 侧只提供消费端能力：解析 `X-Agent-Hint` 请求头、接收 `/a
 | Pi | <https://github.com/Eric1481/pi-agenthint> | `pi install npm:pi-agenthint`；需 Node.js ≥ 22.19、Pi 1.1.0 |
 | Dify | <https://github.com/tree-zby/agent-hints> | Dify 平台的 OpenAI 兼容模型 provider 插件 |
 
-> 同一 harness 不要同时启用多个 agent-hint 生产者：它们会争用同一个 `X-Agent-Hint` 头，个别插件（如 Pi）与内置实现共存时会拒绝覆盖。以上为社区/harness 侧插件，非 Ascend 官方组件。
+>[!NOTE] 说明
+>同一 harness 不要同时启用多个 agent-hint 生产者：它们会争用同一个 `X-Agent-Hint` 头，个别插件（如 Pi）与内置实现共存时会拒绝覆盖。以上为社区/harness 侧插件，非 Ascend 官方组件。
 
 ### 使用场景
 
@@ -169,7 +170,7 @@ Motor 侧只提供消费端能力：解析 `X-Agent-Hint` 请求头、接收 `/a
 
 3. 开启优先级准入（软优先级）。
 
-   「软优先级」指客户端通过 `X-Agent-Hint` 的 `priority.level` 声明的提示性优先级（无需鉴权），用于穿透限流预留额度、豁免调度软负载门槛。
+   “软优先级”指客户端通过 `X-Agent-Hint` 的 `priority.level` 声明的提示性优先级（无需认证），用于穿透限流预留额度、豁免调度软负载门槛。
 
    在 `user_config.json` 的 `motor_coordinator_config` 中配置限流预留与调度软负载门槛：
 
@@ -192,15 +193,15 @@ Motor 侧只提供消费端能力：解析 `X-Agent-Hint` 请求头、接收 `/a
 
    | 配置项 | 类型 | 默认值 | 说明 |
    | --- | --- | --- | --- |
-   | `rate_limit_config.priority_reserve_ratio` | float | `0.0` | 预留比例，取值 [0, 0.9]，`0` 关闭；普通请求消费下限为预留额度，`priority >= priority_admission_level` 的请求可穿透。 |
-   | `scheduler_config.priority_load_threshold` | int | `0` | 端点负载评分门槛，`0` 关闭；普通请求过滤“评分 ≥ 门槛”的实例，过滤后为空则回退原列表（不会因此拒绝请求）。 |
-   | `scheduler_config.priority_admission_level` | int | `3` | 高优先级分界，限流与调度共用的唯一配置源。 |
+   | rate_limit_config.priority_reserve_ratio | float | 0.0 | 预留比例，取值范围：[0, 0.9]，取值为0时表示关闭；普通请求消费下限为预留额度，priority >= priority_admission_level的请求可穿透。 |
+   | scheduler_config.priority_load_threshold | int | 0 | 端点负载评分门槛，取值为0时表示关闭；普通请求过滤“评分 ≥ 门槛”的实例，过滤后为空则回退原列表（不会因此拒绝请求）。 |
+   | scheduler_config.priority_admission_level | int | 3 | 高优先级分界，限流与调度共用的唯一配置源。 |
 
    客户端通过 `X-Agent-Hint` 的 `priority.level` 声明等级。`priority_reserve_ratio` 支持热更新（`max_requests`/`window_size`/`priority_reserve_ratio` 均可运行时重载）。
 
 4. 开启 strict_priority 信任门（硬优先级）。
 
-   「硬优先级」指受信任的 `strict_priority`：请求需携带与 `strict_priority_config.tokens` 匹配的 `X-Strict-Priority-Token`，校验通过后全局旁路限流并完全豁免软负载门槛。
+   “硬优先级”指受信任的 `strict_priority`：请求需携带与 `strict_priority_config.tokens` 匹配的 `X-Strict-Priority-Token`，校验通过后全局旁路限流并完全豁免软负载门槛。
 
    配置信任门如下：
 
@@ -267,7 +268,7 @@ Motor 侧只提供消费端能力：解析 `X-Agent-Hint` 请求头、接收 `/a
    | `MOTOR_CACHE_CONTROL_LIFECYCLE` | 声明生命周期总开关。 | 关 |
    | `MOTOR_CACHE_CONTROL_MAX` | 声明表容量。 | 65536 |
    | `MOTOR_CACHE_CONTROL_TTL_MAX_S` | TTL 上限钳制（秒）。 | 3600 |
-   | `MOTOR_CACHE_CONTROL_SWEEP_INTERVAL_S` | keeper 周期（秒，下限 1s）。 | 5 |
+   | `MOTOR_CACHE_CONTROL_SWEEP_INTERVAL_S` | keeper 周期（秒，下限为1秒）。 | 5 |
 
    仅当客户端**显式**携带 `cache_control.ttl_s`（或 legacy `ttl`）时声明才入账；声明到期释放 pin，未到期由 keeper 触碰保活。
 
@@ -365,18 +366,19 @@ Motor 侧只提供消费端能力：解析 `X-Agent-Hint` 请求头、接收 `/a
 
 | 场景 | 关键参数 | 建议取值 | 说明 |
 | --- | --- | --- | --- |
-| 多轮会话复用优先 | `MOTOR_SESSION_AFFINITY` + `MOTOR_SESSION_AFFINITY_SHARED` | 均开启 | 共享表保证多 worker/重启后粘性，否则单 worker 内才能命中。 |
-| 并发新会话多、避免落点倾斜 | `MOTOR_SESSION_AFFINITY_PLACEMENT` | `balanced` | 按钉扎会话数 + 在途负载摊匀；已在用 `policy` 时切换后观察 `aff=fresh` 分布。 |
-| 过载保护关键链路 | `priority_reserve_ratio` + `priority_admission_level` | 预留 0.1–0.3 | 预留越大，普通请求可用额度越小，需结合总容量评估。 |
-| 调度侧避让过载实例 | `priority_load_threshold` | 结合实例容量设置（如 8192） | 过小会频繁过滤导致回落原列表，过大则门槛失效。 |
-| 长会话缓存保活 | `cache_control.ttl_s` + `MOTOR_CACHE_CONTROL_SWEEP_INTERVAL_S` | TTL 按会话活跃间隔，sweep 5s | TTL 越大 pin 保留越久，占用亲和表容量。 |
-| 会话密集、状态记录多 | `agent_status_config.max_sessions` + `session_ttl_s` | 按会话并发量与时长设置 | 有界 LRU，超限淘汰最旧记录。 |
+| 多轮会话复用优先 | MOTOR_SESSION_AFFINITY + MOTOR_SESSION_AFFINITY_SHARED | 均开启 | 共享表保证多 worker/重启后粘性，否则单 worker 内才能命中。 |
+| 并发新会话多、避免落点倾斜 | MOTOR_SESSION_AFFINITY_PLACEMENT | balanced | 按钉扎会话数 + 在途负载摊匀；已在用 `policy` 时切换后观察 `aff=fresh` 分布。 |
+| 过载保护关键链路 | priority_reserve_ratio + priority_admission_level | 预留 0.1–0.3 | 预留越大，普通请求可用额度越小，需结合总容量评估。 |
+| 调度侧避让过载实例 | priority_load_threshold | 结合实例容量设置（如 8192） | 过小会频繁过滤导致回落原列表，过大则门槛失效。 |
+| 长会话缓存保活 | cache_control.ttl_s + MOTOR_CACHE_CONTROL_SWEEP_INTERVAL_S | TTL 按会话活跃间隔，sweep 5s | TTL 越大 pin 保留越久，占用亲和表容量。 |
+| 会话密集、状态记录多 | agent_status_config.max_sessions + session_ttl_s | 按会话并发量与时长设置 | 有界 LRU，超限淘汰最旧记录。 |
 
-> 以上取值基于通用经验，实际最优值取决于模型、实例规模与流量特征，建议在预生产环境压测后确定。
+>[!NOTE] 说明
+>以上取值基于通用经验，实际最优值取决于模型、实例规模与流量特征，建议在预生产环境压测后确定。
 
 ## 常见问题
 
-### 请求未携带 `X-Agent-Hint`（日志 `aff=none`、无优先级）
+### 请求未携带 X-Agent-Hint（日志 aff=none、无优先级）
 
 **问题描述**
 
@@ -392,7 +394,7 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 2. 确认插件仅对主线模型请求注入 `X-Agent-Hint`（辅助调用如上下文压缩、标题生成不注入属正常）。
 3. 查看/抓包确认请求头携带 `X-Agent-Hint`；若同时启用了多个生产者，关闭多余插件避免争用同一请求头。
 
-### 开启后亲和完全没有生效（日志无 `aff=` 变化）
+### 开启后亲和完全没有生效（日志无 aff= 变化）
 
 **问题描述**
 
@@ -423,7 +425,7 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 1. 设置 `MOTOR_SESSION_AFFINITY_SHARED=1` 并重启 Coordinator。
 2. 确认容器内 `/dev/shm` 可写；若日志出现 `shared session affinity table unavailable ... falling back to in-process table`，检查 `/dev/shm` 挂载与权限。
 
-### `MOTOR_SESSION_AFFINITY_SHARED=1` 启动后回退进程内表
+### MOTOR_SESSION_AFFINITY_SHARED=1启动后回退进程内表
 
 **问题描述**
 
@@ -438,7 +440,7 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 1. 检查 `/dev/shm` 是否可写：`ls -ld /dev/shm`。
 2. `session affinity shm reset` 为布局升级/残留清理的正常告警，新表会重建；若反复出现需排查多实例是否共用同一 `MOTOR_SESSION_AFFINITY_SHM_KEY`。
 
-### 配置了 `priority_reserve_ratio` 但高优先级请求仍被 429
+### 配置了priority_reserve_ratio，但高优先级请求仍被429
 
 **问题描述**
 
@@ -470,7 +472,7 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 2. 确认请求头 `X-Strict-Priority-Token` 与配置完全一致（大小写、空白）。
 3. 热更新轮转 token 后旧 token 立即失效，需同步更新客户端。
 
-### `/agent-status` 返回 404 或 400
+### /agent-status 返回 404 或 400
 
 **问题描述**
 
@@ -486,7 +488,7 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 2. 请求体需为合法 JSON 对象，且同时包含 `session.session_id` 与 `agent_status`。
 3. 字段级畸形（如非法 `state`）会返回 HTTP 200 + `applied=false` + WARN，属预期行为，不会失败。
 
-### 升级后旧客户端的 `cache_control.type=pin` 静默失效
+### 升级后旧客户端的 cache_control.type=pin 静默失效
 
 **问题描述**
 
@@ -508,7 +510,7 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 2. 将客户端 `cache_control.type` 改为 `ephemeral`；如需更长保留，显式携带 `ttl_s`（[60, 3600]）。
 3. 若配置中残留 `kvc_lifecycle_config.pin_ttl_s`，会被忽略并打印 `deprecated and ignored` 告警，可一并清理。
 
-### `cache_control` 声明没有保活 / 提前释放
+### cache_control声明没有保活/提前释放
 
 **问题描述**
 

@@ -1,9 +1,9 @@
 # 基于Docker的单容器服务部署
 
-本文档指导用户基于Docker在单机上完成推理服务的部署，1台服务器、1个容器内完成整个PD分离的部署，适用于小模型（权重小于100GB）场景，该部署方式不依赖K8s。大模型或多机部署可参见[宿主机部署：PD 分离](host/pd_disaggregation_deployment.md)。KV池化需要单独的kv_store容器，请使用宿主机部署并参考[开启KV池化（可选）](./host/pd_disaggregation_deployment.md#开启kv池化可选)。
+本文档指导用户基于Docker在单机上完成推理服务的部署，在1台服务器、1个容器内完成整个PD分离的部署，适用于小模型（权重小于100GB）场景，该部署方式不依赖K8s。大模型或多机部署可参见[基于Docker的多容器PD分离服务部署](host/pd_disaggregation_deployment.md)。KV池化需要单独的kv_store容器，请使用宿主机部署并参考[开启KV池化（可选）](./host/pd_disaggregation_deployment.md#开启kv池化可选)。
 
 >[!NOTE] 说明
-> 单容器部署中，Prefill与Decode在同1个容器、同1台机器上，不支持 Ascend 950PR 与 950DT 混合组网。混合组网请使用[宿主机部署：PD 分离](./host/pd_disaggregation_deployment.md#启动服务)，Prefill 命令放到 950PR 上，Decode 命令放到 950DT 上。
+>单容器部署中，Prefill与Decode在同1个容器、同1台机器上，不支持 Ascend 950PR 与 950DT 混合组网。混合组网请使用[宿主机部署：PD 分离](./host/pd_disaggregation_deployment.md#启动服务)，Prefill 命令放到 950PR 上，Decode 命令放到 950DT 上。
 
 ## 部署流程示意图
 
@@ -13,7 +13,7 @@
 
 - 部署前需要准备部署脚本和配置文件；
 - 执行“容器创建命令”，系统会自动创建容器并进入容器内部；
-- 系统在容器内自动执行部署服务，随后等待服务部署完毕；
+- 系统在容器内自动执行部署脚本，随后等待服务部署完毕；
 - 若用户通过Ctrl+C终止服务，不会退出容器，而是回到可重新部署的状态。
 
 **重复部署**：
@@ -30,7 +30,7 @@
   进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框输入`motor`，单击“mindie-motor”卡片，在“镜像下载”页签根据设备型号下载对应的MindIE Motor镜像。
 - 方式二：在已有镜像中安装MindIE Motor
 
-  基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于vllm-ascend/sglang镜像安装MindIE Motor](../../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor) 额外安装MindIE Motor。
+  基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于vllm-ascend/sglang镜像安装MindIE Motor](../../maintenance/build_motor_image_from_vllm_ascend.md#自行制作mindie-motor镜像) 额外安装MindIE Motor。
 
 获取镜像后，请使用以下命令将镜像加载至服务器：
 
@@ -46,14 +46,14 @@
 
 ## 准备服务部署脚本
 
-获取服务部署脚本`examples` 目录：
+获取服务部署脚本`examples`目录：
 
 - 方式一：下载官方完整的MindIE Motor镜像
 
      镜像内路径为`/tmp/motor/examples`，可执行以下命令获取：
 
      ```bash
-     # 自定义一个存镜像名或镜像ID的变量IMAGE
+     # 自定义一个存放镜像名或镜像ID的变量IMAGE
      IMAGE="<镜像名或镜像ID>"
      # 创建一个未启动的临时容器，并记录容器ID
      cid=$(docker create "$IMAGE")
@@ -77,7 +77,7 @@
 
 2. 配置端口与部署模式。
 
-   单容器里管理面和推理进程共用host网络，需要改部署模式并错开端口，否则会冲突，参数详细说明请参考[user_config.json配置文件全量参数说明](../../configuration/config_reference.md)：
+   单容器里管理面和推理进程共用host网络，需要改部署模式并错开端口，否则会冲突。参数详细说明请参考[user_config.json配置文件全量参数说明](../../configuration/config_reference.md)：
 
    ```json
    {
@@ -112,15 +112,15 @@
 
 3. 同步部署脚本配置。
 
-    将准备好的配置文件（user_config.json、env.json）存放部署脚本的model_configs/vllm目录下。
+    将准备好的配置文件（user_config.json、env.json）存放至部署脚本的model_configs/vllm目录下。
 
 ## 启用Render特性（可选）
 
 修改以下配置可以开启Render特性。特性开启后，部署单容器服务时，`docker_deploy.py`会在宿主机额外创建名为`{NAME}-vllm-render`的新容器`{NAME}`（即`--container-name`），并在其中运行vLLM Render服务。当用户终止服务时，请注意回收该容器。Render创建失败则不再创建主容器；主容器创建失败会删掉本次启动的Render。
 
-容器内`--start`会 `docker restart` Render兄弟容器；Coordinator退出时`docker stop` Render。Render退出后Coordinator继续运行。为此会把宿主机`/var/run/docker.sock`挂进单容器；已创建的旧容器需重建后才具备该挂载。
+容器内`--start`会`docker restart` Render兄弟容器；Coordinator退出时`docker stop` Render。Render退出后Coordinator继续运行。为此会把宿主机`/var/run/docker.sock`挂进单容器；已创建的旧容器需重建后才具备该挂载。
 
-在user_config.json开启Render特性，示例如下：
+在user_config.json中开启Render特性，示例如下：
 
 ```json
 {
@@ -140,7 +140,7 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_
 
 ## 启动服务
 
-在部署服务器`examples/deployer`目录下执行以下命令启动服务：
+在部署服务器的`examples/deployer`目录下执行以下命令启动服务：
 
 ```bash
 python3 docker_deploy.py --config_dir ../../model_configs/vllm \
@@ -177,7 +177,7 @@ curl -X POST http://127.0.0.1:1025/v1/chat/completions \
 
 若返回以下内容，则表示服务尚未就绪，可稍后重试。
 
-```text
+```output
 {"detail":"Service is not available"}
 ```
 
@@ -185,10 +185,10 @@ curl -X POST http://127.0.0.1:1025/v1/chat/completions \
 
 在终端执行**Ctrl+C**可终止服务，但不会退出容器。服务终止后会出现如下提示，便于用户重新部署。
 
-```text
+```output
 容器内服务已终止，可执行以下命令重新部署服务。
 python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --start --container-name motor-single --pod-ip <本机 IP地址> --nic-name <本机主网卡名称>
-运行日志：examples/motor_workspace/motor-single/single/log/docker-single-<时间戳>.log
+运行日志:examples/motor_workspace/motor-single/single/log/docker-single-<时间戳>.log
 ```
 
 用户可直接复制上述指令重新部署服务。

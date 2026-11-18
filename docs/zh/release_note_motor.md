@@ -3,7 +3,7 @@
 
 ## 产品版本信息
 
-**表 1**  产品版本信息
+**表 1** 产品版本信息
 
 | 项目 | 内容 |
 | ---- | ---- |
@@ -14,7 +14,7 @@
 
 ## 相关产品版本配套说明
 
-**表 2**  版本配套表
+**表 2** 版本配套表
 
 | 产品名称 | 版本 |
 | --- | --- |
@@ -31,7 +31,7 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
 > [!NOTE] 说明
 > 下方表格中的“/”表示不配套，“Y”表示可配套。
 
-**表 3**  MindIE Motor与MindCluster版本兼容
+**表 3** MindIE Motor与MindCluster版本兼容
 
 <table style="table-layout: fixed; width: 750px">
   <colgroup>
@@ -74,7 +74,7 @@ MindIE Motor与各组件需要配套使用，请勿跨版本混用各组件。
 
 </table>
 
-**表 4**  MindIE Motor与vLLM Ascend版本兼容
+**表 4** MindIE Motor与vLLM Ascend版本兼容
 
 <table style="table-layout: fixed; width: 750px">
   <colgroup>

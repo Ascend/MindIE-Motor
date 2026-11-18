@@ -4,18 +4,18 @@
 **MindIE Motor**是面向大语言模型（LLM）分布式推理，如**PD分离推理**（Prefill与Decode阶段分离）的请求调度框架。它通过开放、可扩展的推理服务化平台架构，对接[vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)和[SGLang](https://github.com/sgl-project/sglang)原生运行时，旨在满足大语言模型的高性能推理需求。
 
 >[!NOTE] 说明
->MindIE Motor 的软件定位与基本功能保持不变，对接vLLM-Ascend与SGLang原生引擎。
+>MindIE Motor 的软件定位与基本功能保持不变，对接vLLM-Ascend与SGLang原生推理引擎。
 
 ## 核心能力
 
 MindIE Motor主要提供以下两个方面的能力：
 
 - **PD分离的请求调度**：主要将外部的客户请求分发到负载最低的Prefill/Decode实例上，起到**负载均衡**的作用。
-- **RAS（Reliability, Availability and Serviceability）**：增强 PD 分离服务的**可靠性、可用性和可服务性**。
+- **RAS（Reliability，Availability and Serviceability）**：增强 PD 分离服务的**可靠性、可用性和可服务性**。
 
 ## 系统架构
 
-MindIE Motor与周边组件交互架构图，展示Coordinator、Controller、Deployer、NodeManager四大模块的协作调用关系及对外推理引擎接口。
+MindIE Motor与周边组件交互架构如图1所示，展示Coordinator、Controller、Deployer、NodeManager四大模块的协作调用关系及对外推理引擎接口。
 
 **图1 MindIE Motor 架构图**
 
@@ -29,10 +29,10 @@ MindIE Motor核心组件定义如下：
 
 作为用户推理请求的**统一入口**，负责接收高并发请求，执行请求调度、管理与转发，是整个集群的数据流枢纽。
 
-- **Endpoint**：对外提供 RESTful 接口，包括业务面接口 OpenAI 接口; 管理面接口：健康探针、Metrics等。
+- **Endpoint**：对外提供RESTful接口，包括业务面接口OpenAI接口；管理面接口：健康探针、Metrics等。
 - **Router**：提供请求路由转发能力。
 - **Scheduler**：负载均衡调度器。
-- **RequestManager**：请求管理器，请求全局信息统计与管理。
+- **RequestManager**：请求管理器，负责请求全局信息的统计与管理。
 - **InstanceManager**：同步实例的健康状态，辅助负载均衡调度，隔离故障实例。
 
 ### Controller
@@ -50,7 +50,7 @@ MindIE Motor核心组件定义如下：
 
 - **Deploy**：一键启动服务、停止脚本工具。
 - **Probe**：[健康探针](https://kubernetes.io/zh-cn/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/)配置脚本。
-- **LogCollector**：k8s日志收集脚本。
+- **LogCollector**：Kubernetes日志收集脚本。
 - **BootHelper**：容器启动脚本，自动配置环境变量。
 
 ### NodeManager

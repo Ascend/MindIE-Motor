@@ -1,21 +1,20 @@
 # 管理接口
 
-本文档介绍Coordinator的管理接口，涵盖管理面API Key鉴权、启动/存活/就绪探针、健康状态查询、实例查询与刷新、精度告警状态清理及根路径服务信息等接口的请求格式与响应示例，适用于需要对Coordinator进行运维或对接管理面接口的用户。
+本文档介绍Coordinator的管理接口，涵盖管理面API Key认证、启动/存活/就绪探针、健康状态查询、实例查询与刷新、精度告警状态清理及根路径服务信息等接口的请求格式与响应示例，适用于需要对Coordinator进行运维或对接管理面接口的用户。
 
 >[!NOTE] 说明
 >
-> Kubernetes 部署应通过 ClusterIP、NetworkPolicy 等限制管理端口的访问范围。裸机独立部署如需对外监听，建议同时启用管理面 API Key 和 `mgmt_tls_config`；API Key 负责身份校验，TLS 负责防窃听。
+> Kubernetes部署应通过ClusterIP、NetworkPolicy等限制管理端口的访问范围。裸机独立部署如需对外监听，建议同时启用管理面API Key和mgmt_tls_config；API Key负责身份校验，TLS负责防窃听。
 
-## 管理面 API Key 鉴权
+## 管理面API Key认证
 
-配置 `mgmt_api_key_config.enable_api_key=true` 后，下列特权接口必须携带请求头
-`X-Motor-Management-Key: <key>`：
+配置`mgmt_api_key_config.enable_api_key=true`后，下列特权接口必须携带请求头`X-Motor-Management-Key: <key>`：
 
 - `GET /instances`
 - `POST /instances/refresh`
 - `POST /precision/alarm_cleared`
 
-`/startup`、`/liveness`、`/readiness` 和根路径保持免鉴权，Kubernetes 探针无需改动。缺少请求头返回 `401`，密钥错误返回 `403`。密钥从 `mgmt_api_key_config.api_key_file` 指定的单行文件读取，不应直接写入 JSON 配置。API Key 本身不加密传输，跨主机访问应同时开启管理面 TLS。
+`/startup`、`/liveness`、`/readiness`和根路径保持免认证，Kubernetes探针无需改动。缺少请求头返回`401`，密钥错误返回`403`。密钥从`mgmt_api_key_config.api_key_file`指定的单行文件读取，不应直接写入JSON配置。API Key本身不加密传输，跨主机访问应同时开启管理面TLS。
 
 ## 启动探针接口
 
@@ -28,7 +27,7 @@
 请求类型：**GET**
 > URL：`http(s)://{IP}:{Port}/startup`
 
-IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)
+IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)。
 
 **请求参数**
 无
@@ -41,7 +40,7 @@ curl -X GET "http://{IP}:{Port}/startup"
 
 **响应示例**
 
-```JSON
+```json
 { "status": "ok", "message": "Coordinator is starting up" }
 ```
 
@@ -56,7 +55,7 @@ curl -X GET "http://{IP}:{Port}/startup"
 请求类型：**GET**
 > URL：`http(s)://{IP}:{Port}/liveness`
 
-IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)
+IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)。
 
 **请求参数**
 无
@@ -69,7 +68,7 @@ curl -X GET "http://{IP}:{Port}/liveness"
 
 **响应示例**
 
-```JSON
+```json
 { "status": "ok", "message": "Coordinator is alive" }
 ```
 
@@ -84,7 +83,7 @@ curl -X GET "http://{IP}:{Port}/liveness"
 请求类型：**GET**
 > URL：`http(s)://{IP}:{Port}/readiness`
 
-IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)
+IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)。
 
 **请求参数**
 无
@@ -115,7 +114,7 @@ curl -X GET "http://{IP}:{Port}/readiness"
 请求类型：**GET**
 > URL：`http(s)://{IP}:{Port}/health`
 
-IP与端口参见[指标接口的IP/端口与配置](./README.md#指标接口的ip端口与配置)
+IP与端口参见[指标接口的IP/端口与配置](./README.md#指标接口的ip端口与配置)。
 
 **请求参数**
 
@@ -141,19 +140,14 @@ curl -X GET "http://{IP}:{Port}/health"
 **接口功能**
 
 查询 Coordinator 当前登记的实例（含 available / unavailable / paused）。
-`status` 来自 Controller（或独立注册）推送，熔断不会改写它；`pool` 是 Coordinator 内部池；
-`circuit_breaker` 是熔断状态机快照；`healthy` 仅当 `pool=available` 且 `status=active` 且熔断
-`closed` 时为 `true`。
+`status` 来自 Controller（或独立注册）推送，熔断不会改写它；`pool` 是 Coordinator 内部池；`circuit_breaker` 是熔断状态机快照；`healthy` 仅当 `pool=available` 且 `status=active` 且熔断`closed` 时为 `true`。
 
 **接口格式**
 
 请求类型：**GET**
 > URL：`http(s)://{IP}:{Port}/instances`
 
-实例查询对外服务位于 Coordinator Observability 端口：容器内或裸机默认使用
-`coordinator_obs_port`（`1027`）；Kubernetes 集群外使用
-`mindie-motor-coordinator-obs` Service 的 NodePort（默认 `31017`）。原管理端口
-`coordinator_api_mgmt_port`（默认 `1026`）继续保留该接口，仅用于集群内兼容调用。
+实例查询对外服务位于 Coordinator Observability 端口：容器内或裸机默认使用`coordinator_obs_port`（`1027`）；Kubernetes 集群外使用`mindie-motor-coordinator-obs` Service 的 NodePort（默认 `31017`）。原管理接口端口`coordinator_api_mgmt_port`（默认 `1026`）继续保留该接口，仅用于集群内兼容调用。
 
 **请求参数**
 无
@@ -165,8 +159,7 @@ curl -X GET "http://{服务器IP}:31017/instances" \
   -H "X-Motor-Management-Key: <key>"
 ```
 
-裸机或端口直通部署可使用 `http(s)://{服务器IP}:1027/instances`。未启用
-`mgmt_api_key_config` 时无需携带上述请求头。
+裸机或端口直通部署可使用 `http(s)://{服务器IP}:1027/instances`。未启用`mgmt_api_key_config` 时无需携带上述请求头。
 
 独立部署也可用：
 
@@ -176,7 +169,7 @@ python3 -m motor.coordinator.register list
 
 **响应示例**
 
-```JSON
+```json
 {
   "count": 2,
   "instances": [
@@ -234,22 +227,23 @@ python3 -m motor.coordinator.register list
 
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
-| `count` | int | 当前登记的实例数量。 |
-| `instances` | array | 实例摘要列表，按 `role`、`id` 排序。 |
-| `instances[].id` | int | 实例 ID。独立部署注册时由 `role` + 排序后的完整 endpoint 组派生。 |
-| `instances[].role` | string | 实例角色：`prefill` / `decode` / `union`。 |
-| `instances[].job_name` | string | 实例作业名。 |
-| `instances[].model_name` | string | 模型名。 |
-| `instances[].status` | string | Controller 推送的实例状态，如 `active` / `inactive` / `paused`。熔断不会改写它。 |
-| `instances[].pool` | string | Coordinator 内部池：`available` / `unavailable` / `paused`；查不到归属时为 `unknown`。 |
-| `instances[].healthy` | bool | 仅当 `pool=available` 且 `status=active` 且熔断 `closed` 时为 `true`。 |
-| `instances[].circuit_breaker` | object | 熔断状态机快照。 |
-| `instances[].circuit_breaker.state` | string | `closed`（未熔断）/ `open`（已熔断）。 |
-| `instances[].circuit_breaker.trip_count` | int | 累计 trip 次数。 |
-| `instances[].circuit_breaker.failure_count` | int | 当前连续失败次数。 |
-| `instances[].circuit_breaker.current_timeout` | float | 当前熔断超时秒数。 |
-| `instances[].endpoints` | array | 该实例下的业务 endpoint。 |
-| `instances[].endpoints[].business_port` | string | 引擎 HTTP 端口。 |
+| count | int | 当前登记的实例数量。 |
+| instances | array | 实例摘要列表，按 `role`、`id` 排序。 |
+| instances[].id | int | 实例 ID。独立部署注册时由 `role` + 排序后的完整 endpoint 组派生。 |
+| instances[].role | string | 实例角色：`prefill` / `decode` / `union`。 |
+| instances[].job_name | string | 实例作业名。 |
+| instances[].model_name | string | 模型名。 |
+| instances[].status | string | Controller 推送的实例状态，如 `active` / `inactive` / `paused`。熔断不会改写它。 |
+| instances[].pool | string | Coordinator 内部池：`available` / `unavailable` / `paused`；查不到归属时为 `unknown`。 |
+| instances[].healthy | bool | 仅当 `pool=available` 且 `status=active` 且熔断 `closed` 时为 `true`。 |
+| instances[].circuit_breaker | object | 熔断状态机快照。 |
+| instances[].circuit_breaker.state | string | `closed`（未熔断）/ `open`（已熔断）。 |
+| instances[].circuit_breaker.trip_count | int | 累计 trip 次数。 |
+| instances[].circuit_breaker.failure_count | int | 当前连续失败次数。 |
+| instances[].circuit_breaker.current_timeout | float | 当前熔断超时秒数。 |
+| instances[].endpoints | array | 该实例下的业务 endpoint。 |
+| instances[].endpoints[].ip | string | 引擎主机 IP。 |
+| instances[].endpoints[].business_port | string | 引擎 HTTP 端口。 |
 
 ## 实例刷新接口
 
@@ -262,7 +256,7 @@ python3 -m motor.coordinator.register list
 请求类型：**POST**
 > URL：`http(s)://{IP}:{Port}/instances/refresh`
 
-IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)
+IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)。
 
 请求头：
 
@@ -352,18 +346,18 @@ Coordinator 独立部署复用同一 URL，支持 `event=set/add/del` 的精简�
 
 | 参数名 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `event` | string | 是 | `set` 全量替换、`add` 加入纳管、`del` 踢出纳管。 |
-| `model_name` | string | 否（多模型时必填） | 单模型时可省略，Coordinator 从第一个可达引擎 `/v1/models` 自动发现；引擎返回多个模型时必须显式指定。若 Coordinator 配置了 `motor_coordinator_config.aigw.id`，须与其一致（忽略大小写）。 |
-| `dispatch_capabilities` | string | 否 | 仅允许 `prefill_handoff_decode`（默认，handoff）与 `concurrent_engine_sync`（trigger/sync）。`decode_colocation` 等其余值会被拒绝。 |
-| `engine_type` | string | 否 | 默认 `vllm`；当前独立精简协议仅支持 `vllm`。 |
-| `instances` | array | 是 | 待全量或增量处理的实例。 |
-| `instances[].id` | integer | 是 | 全局唯一实例 ID，必须大于 0。 |
-| `instances[].role` | string | 是 | 仅支持 `prefill` 或 `decode`。 |
-| `instances[].endpoints` | array | 是 | 至少一个业务 Endpoint。 |
-| `endpoints[].id` | integer | 是 | 实例内 DP 序号，整数 ≥ 0；同一实例内不可重复。 |
-| `endpoints[].address` | string | 是 | 引擎 `host:port`；IPv6 使用 `[addr]:port`。 |
+| event | string | 是 | `set` 全量替换、`add` 加入纳管、`del` 踢出纳管。 |
+| model_name | string | 否（多模型时必填） | 单模型时可省略，Coordinator 从第一个可达引擎 `/v1/models` 自动发现；引擎返回多个模型时必须显式指定。若 Coordinator 配置了 `motor_coordinator_config.aigw.id`，须与其一致（忽略大小写）。 |
+| dispatch_capabilities | string | 否 | 仅允许 `prefill_handoff_decode`（默认，handoff）与 `concurrent_engine_sync`（trigger/sync）。`decode_colocation` 等其余值会被拒绝。 |
+| engine_type | string | 否 | 默认 `vllm`；当前独立精简协议仅支持 `vllm`。 |
+| instances | array | 是 | 待全量或增量处理的实例。 |
+| instances[].id | integer | 是 | 全局唯一实例 ID，必须大于 0。 |
+| instances[].role | string | 是 | 仅支持 `prefill` 或 `decode`。 |
+| instances[].endpoints | array | 是 | 至少一个业务 Endpoint。 |
+| instances[].endpoints[].id | integer | 是 | 实例内 DP 序号，整数 ≥ 0；同一实例内不可重复。 |
+| instances[].endpoints[].address | string | 是 | 引擎 `host:port`；IPv6 使用 `[addr]:port`。 |
 
-```JSON
+```json
 {
   "event": "set",
   "model_name": "qwen3-8b",
@@ -393,27 +387,21 @@ Coordinator 独立部署复用同一 URL，支持 `event=set/add/del` 的精简�
 }
 ```
 
-Coordinator 会生成 `job_name`、`status` 和 `parallel_config` 等内部字段。省略
-`model_name` 时由引擎 `/v1/models` 自动发现；省略 `dispatch_capabilities` 与
-`engine_type` 时分别默认为 `prefill_handoff_decode` 与 `vllm`。`add/del` 只改变
-Coordinator 纳管状态，不管理 P/D 生命周期；重启后必须由 External Deployer
-重放完整 `set`。为避免同一实例 ID 误删已更新的实例，`del` 必须携带与注册时一致的
-`role` 和 Endpoint 物理身份（外部协议中为 `address`）；不一致时接口返回
-HTTP 409。
+Coordinator 会生成 `job_name`、`status` 和 `parallel_config` 等内部字段。省略`model_name` 时由引擎 `/v1/models` 自动发现；省略 `dispatch_capabilities` 与`engine_type` 时分别默认为 `prefill_handoff_decode` 与 `vllm`。`add/del` 只改变Coordinator 纳管状态，不管理 P/D 生命周期；重启后必须由 External Deploye重放完整 `set`。为避免同一实例 ID 误删已更新的实例，`del` 必须携带与注册时一致的
+`role` 和 Endpoint 物理身份（外部协议中为 `address`）；不一致时接口返回HTTP 409。
 
 ## 精度告警状态清理接口
 
 **接口功能**
 
-清理 Coordinator 调度器中指定 P/D 实例组的精度告警状态。该接口供 Controller/运维编排在
-精度告警已处理后调用，不负责终止实例。
+清理 Coordinator 调度器中指定 P/D 实例组的精度告警状态。该接口供 Controller/运维编排在精度告警已处理后调用，不负责终止实例。
 
 **接口格式**
 
 请求类型：**POST**
 > URL：`http(s)://{IP}:{Port}/precision/alarm_cleared`
 
-IP 与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)
+IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)。
 
 请求头：
 
@@ -424,8 +412,8 @@ IP 与端口参见[管理接口的IP/端口与配置](./README.md#管理接口�
 
 | 参数名 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `d_instance_id` | integer | 是 | Decode 实例 ID。 |
-| `p_instance_id` | integer | 否 | Prefill 实例 ID；不传表示仅按 Decode 实例清理。 |
+| d_instance_id | integer | 是 | Decode 实例 ID。 |
+| p_instance_id | integer | 否 | Prefill 实例 ID；不传表示仅按 Decode 实例清理。 |
 
 **使用样例**
 
@@ -458,7 +446,7 @@ curl -X POST "http://{IP}:{Port}/precision/alarm_cleared" \
 请求类型：**POST**
 > URL：`http(s)://{IP}:{Port}/controller/fault_tolerance/recover`
 
-IP 为 Controller 服务地址，端口为 [user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_controller_config) 中 `controller_api_port`，默认 `1026`。
+IP为 Controller 服务地址，端口为 [user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_controller_config) 中 `controller_api_port`，默认 `1026`。
 
 **请求参数**
 无
@@ -502,7 +490,7 @@ curl -X POST "http://{IP}:{Port}/controller/fault_tolerance/recover"
 请求类型：**GET**
 > URL：`http(s)://{IP}:{Port}/`
 
-IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)
+IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)。
 
 **请求参数**
 无
@@ -535,7 +523,7 @@ curl -X GET "http://{IP}:{Port}/"
 
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
-| `service` | string | 服务名称。 |
-| `version` | string | 服务版本号。 |
-| `description` | string | 服务描述。 |
-| `endpoints` | object | 接口索引信息，以 `HTTP方法 路径` 为键，说明为值。 |
+| service | string | 服务名称。 |
+| version | string | 服务版本号。 |
+| description | string | 服务描述。 |
+| endpoints | object | 接口索引信息，以 `HTTP方法 路径` 为键，说明为值。 |

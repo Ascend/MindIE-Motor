@@ -1,4 +1,4 @@
-# MindIE Motor 镜像使用
+# MindIE Motor镜像使用
 
 本文介绍 MindIE Motor 镜像的获取、制作、升级与卸载方法。可按下面的指引选择要看的章节：
 
@@ -14,7 +14,7 @@
 
 <a id="使用mindie-motor官方完整镜像"></a>
 
-## 使用 MindIE Motor 官方完整镜像
+## 使用MindIE Motor官方完整镜像
 
 官方已集成 MindIE Motor，直接下载使用，无需自行制作。
 
@@ -36,7 +36,7 @@
 
 <a id="自行制作mindie-motor镜像"></a>
 
-## 自行制作 MindIE Motor 镜像
+## 自行制作MindIE Motor镜像
 
 基于 vllm-ascend 或 sglang 基础镜像制作 MindIE Motor 镜像，提供两种制作方式：
 
@@ -44,7 +44,7 @@
 
 - 方式二：在**容器内手动安装**并通过 `docker commit` 保存，**按制作镜像的机器能否联网**，分为[有网环境（在线安装）](#有网环境)和[无网环境（离线安装）](#无网环境)两条路线。
 
-### 方式一：使用 Dockerfile 构建（推荐）
+### 方式一：使用Dockerfile构建（推荐）
 
 1. 确认 Dockerfile 分类。
 
@@ -381,13 +381,13 @@
 
 <a id="mindie-motor升级"></a>
 
-## MindIE Motor 升级
+## MindIE Motor升级
 
 请参考[方式二：在容器内手动安装](#方式二手动安装)小节的全部内容，重新安装 MindIE Motor。在获取基础镜像的步骤中，将希望升级的 MindIE Motor 镜像作为基础镜像使用，其余步骤保持不变。
 
 <a id="mindie-motor卸载"></a>
 
-## MindIE Motor 卸载
+## MindIE Motor卸载
 
 1. 基于希望卸载的 MindIE Motor 的镜像创建容器，并执行以下命令进入容器。
 
@@ -413,4 +413,3 @@
     ```bash
     docker commit <容器名称>  <新镜像名称>
     ```
-    

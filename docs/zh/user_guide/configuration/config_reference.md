@@ -36,7 +36,7 @@ motor_deploy_config字段为部署与资源相关配置，由deploy.py读取并�
 | d_pod_npu_num | int | 单个D实例Pod占用的NPU卡数，每个Pod最大为16卡。 |
 | image_name | string | 默认推理镜像（需包含MindIE Motor与vLLM等运行环境）。Controller / Coordinator / Prefill / Decode 未单独配置 `image_name` 时使用此值。 |
 | job_id | string | 部署任务名，同时作为K8s命名空间使用，例如"mindie-motor"。 |
-| hardware_type | string | 硬件类型：<ul><li>Atlas 800I A2推理服务器：`800I_A2`</li><li>Atlas 800I A3超节点服务器：`800I_A3`</li><li>Ascend 950PR&950DT系列产品：`Ascend950`</li></ul> Atlas 800I A2推理服务器/Atlas 800I A3超节点服务器 的 `nodeSelector` 含 `accelerator: huawei-Ascend910` 与 `accelerator-type`（Atlas 800I A2推理服务器、Atlas 800I A3超节点服务器 的 accelerator 相同，须用 accelerator-type 区分产品形态）；Ascend 950PR&950DT系列产品 为 `accelerator: huawei-npu`，不带 accelerator-type。<br>**主备/容错场景建议必填**：未配置时默认按未知硬件处理，linkdown（CardNetworkUnhealthy）故障会按 legacy 行为存储并可能压制 ENGINE_DEAD 故障、阻塞引擎重启；配置为非 Atlas 800I A2推理服务器（如 800I_A3）后，链路误报将作为噪声被忽略，不再影响容错决策。 |
+| hardware_type | string | 硬件类型：<ul><li>Atlas 800I A2推理服务器：`800I_A2`</li><li>Atlas 800I A3超节点服务器：`800I_A3`</li><li>Ascend 950PR&950DT系列产品：`Ascend950`</li></ul> Atlas 800I A2推理服务器/Atlas 800I A3超节点服务器的 `nodeSelector` 含 `accelerator: huawei-Ascend910` 与 `accelerator-type`（Atlas 800I A2推理服务器、Atlas 800I A3超节点服务器的 accelerator 相同，须用 accelerator-type 区分产品形态）；Ascend 950PR&950DT系列产品为 `accelerator: huawei-npu`，不带 accelerator-type。<br>**主备/容错场景建议必填**：未配置时默认按未知硬件处理，linkdown（CardNetworkUnhealthy）故障会按 legacy 行为存储并可能压制 ENGINE_DEAD 故障、阻塞引擎重启；配置为非 Atlas 800I A2推理服务器（如：800I_A3）后，链路误报将作为噪声被忽略，不再影响容错决策。 |
 | weight_mount_path | string | 宿主机上模型权重挂载路径，容器内 `model` 路径需与此挂载路径一致，例如 `"/mnt/weight/"`。使用标准 deployer 时，该路径会同时挂载到 P/D（或 Union）引擎和 Coordinator；开启 `context_budget_mode: "on"` 后，Coordinator 也必须能够读取 `engine_config.model` 中的 tokenizer 文件。该字段使用 `hostPath`，因此 Coordinator 可能调度到的节点均需存在该路径，或通过 `coordinator_node_selector` 限制其调度范围。 |
 | tls_config | object | 可选；TLS相关配置，包含mgmt_tls_config、infer_tls_config、etcd_tls_config、grpc_tls_config和observability_tls_config五类。 |
 
@@ -176,18 +176,18 @@ motor_controller_config字段配置样例如下所示：
 | 配置项 | 类型 | 说明 |
 |--------|------|------------------|
 | **logging_config字段** |-|-|
-| log_level | string | 日志级别，默认值：INFO。<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
+| log_level | object | 日志级别，默认值：INFO。<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
 | log_max_line_length | int | 单条日志最大长度，超过则截断。默认值：8192。 |
 | log_format | string | 日志格式模板，支持Python logging 占位符。默认值："(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s \[%(name)s][%(fileinfo)s:%(lineno)d] %(message)s"。 |
 | log_date_format | string | 日志日期格式，默认值："%m-%d %H:%M:%S"。 |
 | host_log_dir | string | 日志存储路径，默认值："/root/ascend/log"。|
 | log_rotation_size | int | 日志转储文件大小，默认值：20。|
 | log_rotation_count | int | 日志转储文件个数，默认值：10。|
-| log_compress |bool| 是否启动日志压缩，默认值：false。|
+| log_compress |bool| 是否启用日志压缩，默认值：false。|
 | log_compress_level |int| 日志压缩层级，默认值：6。|
 | log_max_total_size |int| 日志文件总大小，单位：MB，默认值：200。|
 | log_cleanup_interval |int| 日志清理间隔，单位：秒，默认值：1800。|
-| third_party_log_levels | string | 第三方日志级别，默认值：WARNING。<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
+| third_party_log_levels | object | 第三方日志级别，默认值：WARNING。<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
 | **api_config字段** |-|-|
 | controller_api_host | string | Controller API监听地址（IP 或主机名），默认值：127.0.0.1（或Env.pod_ip）。 |
 | controller_api_dns | string | Controller API域名，默认值："mindie-motor-controller-service.mindie-motor.svc.cluster.local"。|
@@ -207,8 +207,8 @@ motor_controller_config字段配置样例如下所示：
 |<a id="fault_tolerance_config"></a>**fault_tolerance_config字段**|-|-|
 | enable_fault_tolerance | bool | 是否启用 Motor Controller 故障自愈（高级 RAS），默认值：true。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul>该字段不等价于、也不会自动透传为 vLLM 开发分支的 `--enable-fault-tolerance`。 |
 | strategy_center_check_interval | int | 策略中心轮询间隔，单位：秒，默认值：10。 |
-| configmap_namespace |string|configmap命名空间，默认值："kube-system"。|
-| configmap_prefix |string|configmap前缀，默认值："mindx-dl-deviceinfo-"。|
+| configmap_namespace |string|ConfigMap命名空间，默认值："kube-system"。|
+| configmap_prefix |string|ConfigMap前缀，默认值："mindx-dl-deviceinfo-"。|
 | k8s_cert_path |string|安全证书路径，默认为空。|
 | enable_scale_p2d | bool | 是否启用ScaleP2D弹性扩缩容，默认值：true。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul> |
 | enable_fast_recovery | bool | 快恢总开关，默认 false；开启后还需 enable_fault_tolerance 与相应分支开关。关闭时直接走常规恢复路径。 |
@@ -245,7 +245,7 @@ motor_controller_config字段配置样例如下所示：
 | **port_allocator_config字段** |-|-|
 | enable |bool|是否使能端口自动分配，默认值：true。|
 | scan_range |int|端口扫描范围，默认值：100。|
-| probe_timeout_seconds |float|探测超时时间，默认值：0.5。|
+| probe_timeout_seconds |float|探测超时时间，单位：秒，默认值：0.5。|
 | remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 |**precision_auto_recovery_enabled**|bool|精度检测总开关。关闭时不进行额外采样注入与检测；不影响用户自己请求 logprobs。可选：`true` / `false`，默认值：`false`。|
@@ -512,7 +512,7 @@ motor_coordinator_config字段配置样例如下所示：
 | longest_edge | int | 图像最大像素数。**默认值：`0`（未配置）**，未配置时从权重目录读取（支持 `size.longest_edge` 与旧版 `max_pixels`），显式配置优先。Qwen3-VL 为 `16777216`。 |
 | shortest_edge | int | 图像最小像素数。**默认值：`0`（未配置）**，未配置时从权重目录读取（支持 `size.shortest_edge` 与旧版 `min_pixels`），显式配置优先。Qwen3-VL 为 `65536`。 |
 | temporal_patch_size | int | 时间维 patch 长度。**默认值：`0`（未配置）**，未配置时从权重目录读取，显式配置优先。与视频/图像处理器的 `temporal_patch_size` 一致（Qwen3-VL 为 `2`）。 |
-| log_level | string | 日志级别。默认值：INFO<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul> |
+| log_level | object | 日志级别。默认值：INFO<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul> |
 | log_max_line_length | int | 单行日志最大长度，超过则截断。默认值：8192。 |
 | log_format | string | 日志格式模板，支持 Python logging 占位符。默认值："(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s \[%(name)s][%(fileinfo)s:%(lineno)d] %(message)s"。 |
 | log_date_format | string | 日志日期格式。默认值："%m-%d %H:%M:%S"。 |
@@ -523,7 +523,7 @@ motor_coordinator_config字段配置样例如下所示：
 | log_compress_level |int|日志压缩层级，默认值：6。|
 | log_max_total_size |int|日志文件总大小，单位：MB，默认值：200。|
 | log_cleanup_interval |int|日志清理间隔，单位：秒，默认值：1800。|
-| third_party_log_levels |string|第三方日志级别，默认值：WARNING。<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
+| third_party_log_levels |object|第三方日志级别，默认值：WARNING。<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
 | **prometheus_metrics_config字段** |-|-|
 | reuse_time | int | 后台采集周期，单位为秒，默认值：3。 |
 | enable_kv_store_metrics |bool|是否拉取 KV 池化后端（MemCache / Mooncake）的 metrics。配置了 `kv_cache_store_config` 时自动启用，无需手动开启；该字段仅在需要显式覆盖自动行为时使用，默认值：false。|
@@ -590,14 +590,14 @@ motor_coordinator_config字段配置样例如下所示：
 | api_key_file | string | API Key 文件路径。开启鉴权时必填；文件必须仅含一行非空密钥。Controller 与 Coordinator 分开部署时需挂载内容相同的密钥文件。|
 | **rate_limit_config字段** |-|行为与示例见 [服务限流](../features/fault_tolerance/rate_limiting.md)。|
 | enable_rate_limit | bool | 是否开启请求限流。可选：`true` / `false`。默认值：`false` |
-| provider |string|限流提供者。simple使用内置令牌桶；OLC使用过载控制库（需额外安装及配置）。|
+| provider |string|限流提供者。simple使用内置令牌桶；OLC使用过载控制库（需额外安装及配置），默认值：`simple`。|
 | max_requests | int | 限流时间窗口内允许的最大请求数。默认值：`1000`。 |
 | window_size | int | 限流统计的时间窗口长度（秒）。默认值：`60`。 |
 | scope | string | 限流生效范围，如 `global`（全局）。默认值：`global`。 |
 | skip_paths | array | 不参与限流统计的路径列表（如 `/liveness`、`/readiness`、`/metrics`），可自定义。 |
 | error_message | string | 触发限流时返回给客户端的提示文案。默认值：`too many requests, please try again later`。 |
 | error_status_code | int | 触发限流时返回的 HTTP 状态码，通常为 4xx（如 429）。默认值：`429`。 |
-| max_request_body_size | float | 请求体最大大小（MB），超过则直接拒绝并返回 413，不消耗限流令牌。`= 0` 表示不限制。支持小数（如 `0.5` 表示 0.5MB，1MB = 1024\*1024 字节）。默认值：`0`（不限制）。 |
+| max_request_body_size | float | 请求体最大大小（MB），超过则直接拒绝并返回 413，不消耗限流令牌。`= 0` 表示不限制。支持小数（如 `0.5` 表示 0.5MB，1MB = 1024\*1024 B）。默认值：`0`（不限制）。 |
 | olc_config_path |string|OLC规则配置目录的绝对路径或相对于服务启动目录的相对路径。目录下需包含overload-config.properties和olc.json。|
 | **standby_config字段** |-|-|
 | enable_master_standby | bool | 是否开启 Coordinator 主备。可选：`true` / `false`。默认值：`false`。 |
@@ -612,7 +612,7 @@ motor_coordinator_config字段配置样例如下所示：
 | etcd_timeout | int | ETCD 操作超时时间（秒）。默认值：`5`。 |
 | etcd_lb_policy | string| ETCD负载均衡策略，默认值：round_robin。|
 | enable_etcd_persistence | bool | 是否启用 ETCD 持久化。可选：`true` / `false`。默认值：false。 |
-| **aigw_model字段** |-|该参数是AIGW模型元数据的集中配置，用于/v1/models等接口返回的模型信息。在user_config.json中对应motor_coordinator_config下的aigw对象；未使用时为null，其内部可配置项如下所示。启动时若存在完整 Prefill/Decode 配置，或 PD 混部的 `motor_engine_union_config`，会**仅填充未显式配置的字段**（P+D 优先于 union）；混部场景下缺失的 `p_max_seqlen` 与 `d_max_seqlen` 均取自 union 的 `max_model_len`。|
+| **aigw_model字段** |-|该参数是AIGW模型元数据的集中配置，用于/v1/models等接口返回的模型信息。在user_config.json中对应motor_coordinator_config下的aigw_model对象；未使用时为null，其内部可配置项如下所示。启动时若存在完整 Prefill/Decode 配置，或 PD 混部的 `motor_engine_union_config`，会**仅填充未显式配置的字段**（P+D 优先于 union）；混部场景下缺失的 `p_max_seqlen` 与 `d_max_seqlen` 均取自 union 的 `max_model_len`。|
 | id | string | 模型 ID，与 OpenAI 兼容接口中的模型名一致。未配置时从 Prefill（或混部 union）的 model_name 自动填充；已显式配置则保留。 |
 | object | string | 对象类型，固定为 `model`。未配置则自动填充。 |
 | owned_by | string | 模型归属标识，如 `motor`。未配置则自动填充。 |
@@ -654,12 +654,12 @@ motor_coordinator_config字段配置样例如下所示：
 | logprobs_count |int|采样时需要带回多少log_prob，默认值：1。取值如下：<ul><li>1：只能检测重复。</li><li>3：可以检测重复和乱码。</li><li>5：可以检测重复、乱码和生僻字。</li></ul>|
 | precision_check_enabled |bool|是否开启精度异常检测，默认值：false。|
 | precision_issue_threshold |int|连续多少次异常会被判定为精度异常并触发上报，默认值：10。|
-| probe_max_attempts |int|发现精度异常后会进行拨测的次数， 默认值：3。|
+| probe_max_attempts |int|发现精度异常后会进行拨测的次数，默认值：3。|
 | probe_timeout_seconds |float|拨测一次的超时时间设置，默认值：600.0。|
 | **port_allocator_config字段** |-|-|
 | enable |bool|是否使能端口自动分配，默认值：true。|
 | scan_range |int|端口扫描范围，默认值：100。|
-| probe_timeout_seconds |float|探测超时时间，默认值：0.5。|
+| probe_timeout_seconds |float|探测超时时间，单位：秒，默认值：0.5。|
 | remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 | **request_limit字段** |-|config_sample.json中未包含此字段，但PD部署时常用，合并到运行时配置后生效。|
@@ -791,7 +791,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 | vllm_startup_acceleration_config.enable_startup_plan |bool|是否启用 vLLM StartPlan，默认值：false。命中已有 StartPlan 时由 vLLM 跳过 memory profiling。|
 | vllm_startup_acceleration_config.enable_graph_reuse |bool|是否启用 vLLM-Ascend 后端完整图复用，默认值：false。|
 | vllm_startup_acceleration_config.cache_root |string|可选的 vLLM StartPlan 与编译缓存绝对路径。缺省时继承 `VLLM_CACHE_ROOT`，再缺省时使用 vLLM 默认目录；生产环境建议显式配置持久化路径。|
-| logging_config.log_level | string | 日志级别，默认值：INFO<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
+| logging_config.log_level | object | 日志级别，默认值：INFO<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
 | logging_config.log_max_line_length | int | 单条日志最大长度，超过则截断。默认值：8192。 |
 | logging_config.log_format | string | 日志格式模板，支持Python logging 占位符。默认值："(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s \[%(name)s][%(fileinfo)s:%(lineno)d] %(message)s"。 |
 | logging_config.log_date_format | string | 日志日期格式，默认值："%m-%d %H:%M:%S"。 |
@@ -803,10 +803,10 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 | logging_config.log_max_total_size |int|日志文件总大小，单位：MB，默认值：200。|
 | logging_config.log_cleanup_interval |int|日志清理间隔，单位：秒，默认值：1800。|
 | logging_config.log_collector_enabled |bool|是否使能Collector日志，默认值：true。|
-| logging_config.third_party_log_levels |string|第三方日志级别，默认值：WARNING。<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
+| logging_config.third_party_log_levels |object|第三方日志级别，默认值：WARNING。<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
 | port_allocator_config.enable |bool|是否使能端口自动分配，默认值：true。|
 | port_allocator_config.scan_range |int|端口扫描范围，默认值：100。|
-| port_allocator_config.probe_timeout_seconds |float|探测超时时间，默认值：0.5。|
+| port_allocator_config.probe_timeout_seconds |float|探测超时时间，单位：秒，默认值：0.5。|
 | port_allocator_config.remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | port_allocator_config.bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 | **kv_cache_store_config字段** |-|-|
@@ -820,7 +820,7 @@ DP 域缩容不在 P/D 配置中增加 Motor 特性开关。若希望某一侧�
 `engine_config` 中开启 vLLM 原生 FT，并配置 external-lb、MC2 Mask、EP/EPLB 等实际所需能力；
 Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两侧同时开启。P/D 顶层的
 `fault_tolerance_config.enable_fault_tolerance` 只是 NodeManager 引擎状态轮询开关，检测到
-`engine_config.enable_fault_tolerance=true` 时会自动开启，无需客户重复配置。
+`engine_config.enable_fault_tolerance=true` 时会自动开启，无需用户重复配置。
 
 ```json
 "motor_engine_prefill_config": {
@@ -839,7 +839,7 @@ Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两
     "kv_transfer_config": {
       "kv_connector": "MooncakeConnectorV1",
       "kv_buffer_device": "npu",
-      "kv_role": "kv_producer",
+      "kv_role": "kv_consumer",
       "kv_port": "30001",
       "engine_id": "0",
       "kv_connector_extra_config": {}
@@ -1020,7 +1020,7 @@ Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两
 | vllm_startup_acceleration_config.enable_startup_plan |bool|是否启用 vLLM StartPlan，默认值：false。命中已有 StartPlan 时由 vLLM 跳过 memory profiling。|
 | vllm_startup_acceleration_config.enable_graph_reuse |bool|是否启用 vLLM-Ascend 后端完整图复用，默认值：false。|
 | vllm_startup_acceleration_config.cache_root |string|可选的 vLLM StartPlan 与编译缓存绝对路径。缺省时继承 `VLLM_CACHE_ROOT`，再缺省时使用 vLLM 默认目录；生产环境建议显式配置持久化路径。|
-| logging_config.log_level | string | 日志级别，默认值：INFO<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
+| logging_config.log_level | object | 日志级别，默认值：INFO<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
 | logging_config.log_max_line_length | int | 单条日志最大长度，超过则截断。默认值：8192。 |
 | logging_config.log_format | string | 日志格式模板，支持Python logging 占位符。默认值："(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s \[%(name)s][%(fileinfo)s:%(lineno)d] %(message)s"。 |
 | logging_config.log_date_format | string | 日志日期格式，默认值："%m-%d %H:%M:%S"。 |
@@ -1032,10 +1032,10 @@ Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两
 | logging_config.log_max_total_size |int|日志文件总大小，单位：MB，默认值：200。|
 | logging_config.log_cleanup_interval |int|日志清理间隔，单位：秒，默认值：1800。|
 | logging_config.log_collector_enabled |bool|是否使能Collector日志，默认值：true。|
-| logging_config.third_party_log_levels |string|第三方日志级别，默认值：WARNING。<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
+| logging_config.third_party_log_levels |object|第三方日志级别，默认值：WARNING。<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
 | port_allocator_config.enable |bool|是否使能端口自动分配，默认值：true。|
 | port_allocator_config.scan_range |int|端口扫描范围，默认值：100。|
-| port_allocator_config.probe_timeout_seconds |float|探测超时时间，默认值：0.5。|
+| port_allocator_config.probe_timeout_seconds |float|探测超时时间，单位：秒，默认值：0.5。|
 | port_allocator_config.remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | port_allocator_config.bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 | **kv_cache_store_config字段** |-|-|
@@ -1071,7 +1071,7 @@ PD模式下P与D**各自独立配置**"health_check_config"，未配置时使用
 
 可选虚推（虚拟推理）健康探测配置，位于 `motor_engine_prefill_config` / `motor_engine_decode_config` 模块，默认关闭，机制说明见 [虚推健康探测](../features/fault_tolerance/sim_inference.md)。
 
-**表7** health_check_config字段参数说明
+**表6** health_check_config字段参数说明
 
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
@@ -1102,7 +1102,7 @@ PD混部场景下，union 原生引擎的环境变量配置在 `env.json` 的 `m
 }
 ```
 
-**表8** motor_engine_union_env字段参数说明
+**表7** motor_engine_union_env字段参数说明
 
 | 配置项 | 说明 |
 |--------|------|

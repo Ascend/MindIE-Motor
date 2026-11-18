@@ -25,8 +25,8 @@ flowchart LR
     S[(seed_content)] -.->|注入| CO
 ```
 
-1. **离线准备混淆权重**：使用 `ai-asset-obfuscate` 的 `ModelAssetObfuscation`，按模型类型与`token_white_list`、以指定 seed 生成混淆权重目录。权重中的词表（embedding / lm_head）与视觉 patch 顺序被置换，只有同 seed 可还原。
-2. **请求进入 Render sidecar**：Coordinator 把请求交给 vLLM Render sidecar 完成chat template、tokenizer 与多模态处理，得到 `prompt_token_ids`、`features.kwargs_data`（`pixel_values` / `image_grid_thw` 等）以及多模态占位信息。
+1. **离线准备混淆权重**：使用 `ai-asset-obfuscate` 的 `ModelAssetObfuscation`，按模型类型与`token_white_list`，以指定 seed 生成混淆权重目录。权重中的词表（embedding / lm_head）与视觉 patch 顺序被置换，只有同 seed 可还原。
+2. **请求进入 Render sidecar**：Coordinator 把请求交给 vLLM Render sidecar 完成 chat template、tokenizer 与多模态处理，得到 `prompt_token_ids`、`features.kwargs_data`（`pixel_values` / `image_grid_thw` 等）以及多模态占位信息。
 3. **Token 混淆（请求侧）**：`TokenObfuscationService.data_1d_obf` 把语义 token ID 映射为受保护词表 ID，写入 `engine_prompt_token_ids`；`token_white_list` 中的 token 不参与置换。送入引擎的是受保护 ID。
 4. **视觉张量混淆（请求侧，可选）**：`ImageObfuscationService` 对 `features.kwargs_data` 下每个模态的张量载荷调用 SDK 的 `image_render_obf` 做 patch 置换，并回写同一字段。图像插入位置由 Render 返回的占位信息承载，与 token ID 置换互不影响。
 5. **引擎推理**：引擎在受保护空间完成 prefill / decode。KV Conductor 的前缀索引使用同一批物理 token ID（`engine_token_ids`），因此缓存命中与引擎实际计算的内容一致。
@@ -37,7 +37,7 @@ flowchart LR
 | 功能 | 说明 |
 |------|------|
 | 双向 token 置换 | 请求侧 `data_1d_obf`、响应侧 `data_1d_deobf`，同一进程内一套 seed，客户端无感知。 |
-| 多模态张量混淆 | `image_config.enable` 后对 Render 返回的 `features.kwargs_data` 按模态做 patch 置换；Motor 不需要 msgpack 编解码与模型 flatten 顺序知识。 |
+| 多模态张量混淆 | `image_config.enable` 后对 Render 返回的 `features.kwargs_data` 按模态做 patch 置换；MindIE Motor 不需要 msgpack 编解码与模型 flatten 顺序知识。 |
 | 文本 / 视觉共用 seed | `image_config` 嵌套在 `token_obfuscation_config` 下，与 token 混淆共用同一个 `seed_content`，避免多 seed 管理。 |
 | fail closed | SDK 缺失、接口调用异常时直接拒绝请求（HTTP 503），不回退明文链路；置换结果与载荷格式由 SDK 负责，Coordinator 不解析也不校验其返回内容。 |
 | 与 KV 亲和性调度对齐 | 前缀哈希使用受保护（物理）token ID，混淆场景下仍可命中 KV Cache。 |
@@ -48,7 +48,7 @@ flowchart LR
 | 维度 | 约束内容 |
 |------|----------|
 | 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器等基于 vLLM Render 链路的机型理论上兼容，待验证。</li></ul> |
-| 部署场景 | 需要 **vLLM Render sidecar**（token-only 链路）与 PD 分离部署，且必须配置`render_config.enable=true` 。 |
+| 部署场景 | 需要 **vLLM Render sidecar**（token-only 链路）与 PD 分离部署，且必须配置`render_config.enable=true`。 |
 | 推理引擎 | 仅支持 **vLLM**（依赖其 Render token-only 接口）。 |
 | 特性互斥 | <ul><li>可与 KV Cache 亲和性调度、PD 分离、扩缩容、故障重调度等特性同时使用。</li><li>必须设置 `render_config.enable_token_only_decode=true`，流式与非流式请求统一使用 Token In、token-only Generate 和 Derender；流式要求 vLLM >= 0.27.0，性能及 reasoning/tool call 等高级场景需按具体版本验证。</li><li>**仅支持 `/v1/chat/completions` 与 `/v1/completions`**：Render 没有为其他 API 登记契约，任一混淆开关开启时 `/v1/responses`、`/v1/messages` 等路径直接返回 HTTP 501，不会退回本地 tokenizer，避免把明文 prompt 发给混淆权重引擎。</li><li>**不回退**：Render 不可用时不会退回 Coordinator 本地 tokenizer（否则明文 token 会进入引擎），请求直接失败（任一混淆开关开启即生效）。</li></ul> |
 | 软件依赖 | <ul><li>ai-asset-obfuscate：MindIE Motor 官方镜像已内置该依赖（见[环境准备](#环境准备)），其版本须与离线生成混淆权重的 SDK 版本一致。</li><li>混淆权重必须由**同一版本 SDK、同一 seed、同一 `token_white_list`/`vocab_size`**、以及同一视觉几何（`patch_size`/`merge_size`/`temporal_patch_size`/`longest_edge`/`shortest_edge`）生成，否则结果错乱。</li></ul> |
@@ -66,6 +66,7 @@ flowchart LR
 4. 已准备与待部署权重**同 seed** 的混淆权重目录。离线生成示例（在 CPU 环境即可执行）：
 
    ```python
+   # 离线生成数据混淆权重：输入模型路径、token 白名单与 seed_content，输出混淆权重目录，供线上 Coordinator 加载
    from ai_asset_obfuscate import ErrorCode, ModelAssetObfuscation, ModelType
 
    WHITE_LIST = [151643, 151644, 151645, 151646, 151647, 151648, 151649, 151650, 151651,
@@ -87,10 +88,8 @@ flowchart LR
    生成结果目录中会额外生成一个 `obf_config.json`，**其内容仅为混淆标记**（如 `{"flag": "OBF_DATA"}`），
    不包含 seed、白名单与视觉几何，因此上述参数不能从该文件读取（取值来源见[参数来源](#参数来源)）。
 
-   > [!NOTE] 说明
-   >
-   >- `ModelType`、`seed_type` / `obf_type` 的取值随模型和 SDK 版本而异，上例为 Qwen3-VL 验证通过的取值，
-   >- 其它模型请按 SDK 文档选择对应枚举；关键是**权重生成与线上 Coordinator 必须使用同一 `seed_content` 与白名单**。
+   >[!NOTE] 说明
+   >`ModelType`、`seed_type` / `obf_type` 的取值随模型和 SDK 版本而异，上例为 Qwen3-VL 验证通过的取值。其他模型请按 SDK 文档选择对应枚举；关键是**权重生成与线上 Coordinator 必须使用同一 `seed_content` 与白名单**。
 
 5. 后续操作均在 K8s 集群管理节点执行，且已 `source` 集群 kubeconfig。
 
@@ -103,10 +102,10 @@ flowchart LR
 
 | 参数 | 来源 | 说明 |
 |------|------|------|
-| `image_config` 的 `patch_size` / `temporal_patch_size` / `merge_size` / `longest_edge` / `shortest_edge` | `<模型目录>/preprocessor_config.json`（**未配置时自动读取**） | 对应字段 `patch_size` / `temporal_patch_size` / `merge_size` / `size.longest_edge` / `size.shortest_edge`（旧版处理器为 `max_pixels` / `min_pixels`）。**不同模型取值不同**：Qwen3-VL 为 16 / 2 / 2 / 16777216 / 65536，公开的 Qwen2-VL / Qwen2.5-VL 为 14 / 2 / 2 / 12845056 / 3136 |
-| `token_obfuscation_config.vocab_size` | `<模型目录>/config.json`（**未配置时自动读取**） | 多模态模型位于 `text_config.vocab_size`（纯文本模型为顶层 `vocab_size`），Qwen3-VL 为 151936 |
-| `token_obfuscation_config.token_white_list` | **离线权重混淆方提供** | 模型元数据中没有记录，无法从模型目录推导。其语义为「`data_1d_obf` 的固定点」：配置正确时满足 `data_1d_obf(id) == id` |
-| `token_obfuscation_config.seed_content` | 受控配置注入 | 与离线权重同一 seed，禁止入库与写入日志 |
+| image_config 的 patch_size / temporal_patch_size / merge_size / longest_edge / shortest_edge | <模型目录>/preprocessor_config.json（**未配置时自动读取**） | 对应字段 patch_size / temporal_patch_size / merge_size / size.longest_edge / size.shortest_edge（旧版处理器为 max_pixels / min_pixels）。**不同模型取值不同**：Qwen3-VL 为 16 / 2 / 2 / 16777216 / 65536，公开的 Qwen2-VL / Qwen2.5-VL 为 14 / 2 / 2 / 12845056 / 3136 |
+| token_obfuscation_config.vocab_size | <模型目录>/config.json（**未配置时自动读取**） | 多模态模型位于 text_config.vocab_size（纯文本模型为顶层 vocab_size），Qwen3-VL 为 151936 |
+| token_obfuscation_config.token_white_list | **离线权重混淆方提供** | 模型元数据中没有记录，无法从模型目录推导。其语义为「data_1d_obf 的固定点」：配置正确时满足 data_1d_obf(id) == id |
+| token_obfuscation_config.seed_content | 受控配置注入 | 与离线权重同一 seed，禁止入库与写入日志 |
 
 读取示例：
 
@@ -126,8 +125,7 @@ EOF
 > [!NOTE] 说明
 >
 > - `patch_size` 与 `temporal_patch_size` 共同决定 `pixel_values` 的展平维度
-> - `D = 3 × patch_size² × temporal_patch_size`（Qwen3-VL 为 1536）。与权重不一致时，
-> - SDK 只打 warning 并把载荷**原样返回**（请求静默未混淆），参见[问题七](#faq-geometry-mismatch)。
+> - `D = 3 × patch_size² × temporal_patch_size`（Qwen3-VL 为 1536），与权重不一致时，SDK 只打 warning 并把载荷**原样返回**（请求静默未混淆），参见[问题七](#faq-geometry-mismatch)。
 
 ### 使用场景
 
@@ -137,7 +135,7 @@ EOF
 
 ### 使用样例
 
-以下步骤以 Qwen3-VL-30B-A3B、4 卡（P 2 + D 2，TP=2）为例。
+以下步骤以 Qwen3-VL-30B-A3B、4 卡（P 2 + D 2，TP=2）为例：
 
 1. 进入部署目录。
 
@@ -180,19 +178,19 @@ EOF
 
    | 参数 | 说明 |
    |------|------|
-   | `render_config.enable` | 必须为 `true`；本特性的 token 与图像置换都发生在 Render 返回的载荷上 |
-   | `render_config.enable_token_only_decode` | 必须为 `true`；流式与非流式混淆请求都通过 token-only Generate 与 Derender 返回，关闭时配置校验失败 |
-   | `render_config.launch_args.renderer_num_workers` | Render 处理线程数，未配置时默认传 `4` |
-   | `render_config.timeout_ms` | Render 处理超时。多模态首图需要加载图像处理器，实测冷启动约 22 s，建议不小于 30000 |
-   | `token_obfuscation_config.enable` | 开启 token 置换；必须显式配置非空 `seed_content` |
-   | `token_obfuscation_config.model_path` | 可选，显式指定权重目录（用于读取 `vocab_size`）。留空时使用引擎配置里的 `engine_config.model`；多模型共存时必须显式指定 |
-   | `token_obfuscation_config.vocab_size` | 混淆词表大小。**可不配置**：未设置时从被服务权重目录的 `config.json` 自动读取（多模态取 `text_config.vocab_size`），显式配置优先。需与离线权重混淆参数一致（Qwen3-32B / Qwen3-VL 为 `151936`） |
-   | `token_obfuscation_config.token_white_list` | **无内置默认值，开启时必须显式配置**。不参与置换的 token ID（特殊 token 及部分常用 token），必须与离线权重混淆时使用的清单完全一致；Qwen3-32B / Qwen3-VL 验证权重使用下方 37 个 token。该参数**无法从模型目录推导**，只能由权重混淆方提供 |
-   | `token_obfuscation_config.seed_content` | 与离线权重同一 seed；可通过环境变量或受控配置注入，禁止入库 |
-   | `token_obfuscation_config.image_config.enable` | 开启图像张量置换；要求 `render_config.enable=true`，与 `token_obfuscation_config.enable` 相互独立 |
-   | `image_config.patch_size` / `merge_size` / `temporal_patch_size` | **可不配置**：未设置时从被服务权重目录的 `preprocessor_config.json` 自动读取，显式配置优先。必须与权重混淆及图像处理器一致（Qwen3-VL 为 16 / 2 / 2，Qwen2-VL 为 14 / 2 / 2） |
-   | `image_config.longest_edge` / `shortest_edge` | **可不配置**：同上，对应 `size.longest_edge` / `size.shortest_edge`（旧版处理器为 `max_pixels` / `min_pixels`）。Qwen3-VL 为 16777216 / 65536 |
-   | `image_config.model_path` | 可选，显式指定权重目录（用于读取几何）。留空时使用引擎配置里的 `engine_config.model`；多模型共存时必须显式指定 |
+   | render_config.enable | 必须为 `true`；本特性的 token 与图像置换都发生在 Render 返回的载荷上 |
+   | render_config.enable_token_only_decode | 必须为 `true`；流式与非流式混淆请求都通过 token-only Generate 与 Derender 返回，关闭时配置校验失败 |
+   | render_config.launch_args.renderer_num_workers | Render 处理线程数，未配置时默认传 `4` |
+   | render_config.timeout_ms | Render 处理超时。多模态首图需要加载图像处理器，实测冷启动约 22 s，建议不小于 30000 |
+   | token_obfuscation_config.enable | 开启 token 置换；必须显式配置非空 `seed_content` |
+   | token_obfuscation_config.model_path | 可选，显式指定权重目录（用于读取 `vocab_size`）。留空时使用引擎配置里的 `engine_config.model`；多模型共存时必须显式指定 |
+   | token_obfuscation_config.vocab_size | 混淆词表大小。**可不配置**：未设置时从被服务权重目录的 `config.json` 自动读取（多模态取 `text_config.vocab_size`），显式配置优先。需与离线权重混淆参数一致（Qwen3-32B / Qwen3-VL 为 `151936`） |
+   | token_obfuscation_config.token_white_list | **无内置默认值，开启时必须显式配置**。不参与置换的 token ID（特殊 token 及部分常用 token），必须与离线权重混淆时使用的清单完全一致；Qwen3-32B / Qwen3-VL 验证权重使用下方 37 个 token。该参数**无法从模型目录推导**，只能由权重混淆方提供 |
+   | token_obfuscation_config.seed_content | 与离线权重同一 seed；可通过环境变量或受控配置注入，禁止入库 |
+   | token_obfuscation_config.image_config.enable | 开启图像张量置换；要求 `render_config.enable=true`，与 `token_obfuscation_config.enable` 相互独立 |
+   | image_config.patch_size / merge_size / temporal_patch_size | **可不配置**：未设置时从被服务权重目录的 `preprocessor_config.json` 自动读取，显式配置优先。必须与权重混淆及图像处理器一致（Qwen3-VL 为 16 / 2 / 2，Qwen2-VL 为 14 / 2 / 2） |
+   | image_config.longest_edge / shortest_edge | **可不配置**：同上，对应 `size.longest_edge` / `size.shortest_edge`（旧版处理器为 `max_pixels` / `min_pixels`）。Qwen3-VL 为 16777216 / 65536 |
+   | image_config.model_path | 可选，显式指定权重目录（用于读取几何）。留空时使用引擎配置里的 `engine_config.model`；多模型共存时必须显式指定 |
 
    模型路径指向混淆权重目录（`motor_engine_prefill_config` / `motor_engine_decode_config`，混部场景为
    `motor_engine_union_config`）：
@@ -232,7 +230,7 @@ EOF
    kubectl logs -n <namespace> <coordinator-pod> -c mindie-motor-coordinator | grep "Vision data obfuscation"
    ```
 
-   ```text
+   ```output
    Vision data obfuscation is enabled for Render image items
    ```
 
@@ -267,7 +265,7 @@ EOF
 
    预期输出（图像请求 `obfuscated_images=1`，纯文本请求 `obfuscated_images=0`）：
 
-   ```text
+   ```output
    render tokenize success request_id=... prompt_length=85 latency_ms=26.10 tokenizer_source=render obfuscated_images=1
    render tokenize success request_id=... prompt_length=20 latency_ms=3.77 tokenizer_source=render obfuscated_images=0
    ```
@@ -288,7 +286,7 @@ EOF
 
 ## 常见问题
 
-### 请求返回 503，detail 为 `failed to obfuscate Render image items: AttributeError: ... has no attribute 'image_render_obf'`
+### 请求返回 503，detail 为 failed to obfuscate Render image items: AttributeError: ... has no attribute 'image_render_obf'
 
 **问题描述**
 
@@ -304,7 +302,7 @@ EOF
    须与离线生成混淆权重的 SDK 版本一致（与当前 MindIE Motor 镜像/`requirements.txt` 中 `ai-asset-obfuscate==26.0.22` 对齐）。
 2. 使用包含该版本 SDK 的 MindIE Motor 官方镜像重新部署或重启 Coordinator 容器。
 
-### 日志显示混淆已开启，但同一张图的答案一直不变（例如始终返回 `"gray"`）
+### 日志显示混淆已开启，但同一张图的答案一直不变（例如始终返回 "gray"）
 
 **问题描述**
 
@@ -321,7 +319,7 @@ EOF
 2. 换一张内容不同（hash 不同）的图片验证；
 3. 验证新链路时优先整体重建命名空间，确保引擎全新加载。
 
-### 请求返回 503 `ai-asset-obfuscate is unavailable` 或 `ai-asset-obfuscate vision API is unavailable: ObfException: Failed To Load Library.`
+### 请求返回 503 ai-asset-obfuscate is unavailable 或 ai-asset-obfuscate vision API is unavailable: ObfException: Failed To Load Library
 
 **问题描述**
 
@@ -348,7 +346,7 @@ Coordinator 启动成功或请求时才报 SDK 不可用/原生库加载失败�
 线上 `seed_content`、`token_white_list`、`vocab_size` 或 `image_config` 视觉几何与离线混淆权重不一致；
 或权重本身不是用同一 SDK 版本生成。其中：
 
-- **几何不一致** 是**静默失效**：SDK 只打 warning 并把载荷原样返回，即请求实际未做混淆（见[问题七](#faq-geometry-mismatch)）；
+- **几何不一致** 是**静默失效**：SDK 只打 warning 并把载荷原样返回，即请求实际未做混淆（见[日志出现 pixel_values D=... != expected ...，但请求成功](#faq-geometry-mismatch)）；
 - **白名单不一致**（漏配/多配）同样不报错：白名单内的 token 是置换固定点，漏掉一个就会把它错误地置换掉，造成 token 错位。
 
 **解决步骤**
@@ -389,7 +387,7 @@ Render 首次加载图像处理器（冷启动，实测约 22 s）与每请求�
 
 <a id="faq-geometry-mismatch"></a>
 
-### 日志出现 `pixel_values D=... != expected ...`，但请求成功
+### 日志出现 pixel_values D=... != expected ...，但请求成功
 
 **问题描述**
 

@@ -1,6 +1,6 @@
 # 基于Docker的多容器PD分离服务部署
 
-本文档指导用户基于docker组件部署PD分离服务。用户在**宿主机执行一条指令创建容器并部署服务**，但容器的生命周期需要用户手动管理。
+本文档指导用户基于Docker组件部署PD分离服务。用户在**宿主机执行一条指令创建容器并部署服务**，但容器的生命周期需要用户手动管理。
 
 ## 准备镜像
 
@@ -22,7 +22,7 @@
 
 ## 准备服务启动脚本
 
-在**任意一台服务器**，执行以下操作
+在任意一台服务器上，执行以下操作：
 
 1. 获取启动脚本。
 
@@ -47,9 +47,9 @@
         <tr><th style="font-size:18px" align="center" colspan="4">常用模型</th></tr>
         <tr>
           <th align="left">模型</th>
-          <th align="center">Atlas 800I A2</th>
-          <th align="center">Atlas 800I A3 超节点</th>
-          <th align="center">Atlas 950系列服务器</th>
+          <th align="center">Atlas 800I A2推理服务器</th>
+          <th align="center">Atlas 800I A3超节点服务器</th>
+          <th align="center">Ascend 950PR&DT系列产品</th>
         </tr>
         <tr><td>DeepSeek-V4.1-Flash </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
         <tr><td>GLM-5.3-Flash </td><td align="center">A2</td><td align="center">A3</td><td align="center">A5</td></tr>
@@ -65,7 +65,7 @@
 
       对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
-3. 保存配置文件
+3. 保存配置文件。
 
    进入examples目录，将所选模型目录下的 user_config.json、env.json 粘贴到./config目录，再修改后保存：
 
@@ -90,8 +90,8 @@
       | single_d_instance_pod_num | int | ≥1 | 1 个 D 实例拆成几个 Pod。 |
       | p_pod_npu_num | int | ≥1，单 Pod 最大 16 卡 | 每个 P Pod 使用的 NPU 卡数。 |
       | d_pod_npu_num | int | ≥1，单 Pod 最大 16 卡 | 每个 D Pod 使用的 NPU 卡数。 |
-      | data_parallel_size | int | ≥1 | 数据并行（DP）数 |
-      | tensor_parallel_size | int | ≥1 | 张量并行（TP）数 |
+      | data_parallel_size | int | ≥1 | 数据并行（DP）数。 |
+      | tensor_parallel_size | int | ≥1 | 张量并行（TP）数。 |
 
 4. <a id="step0003"></a>同步启动脚本配置。
 
@@ -99,7 +99,7 @@
 
 ## 启动服务
 
-1. 获取服务启动命令
+1. 获取服务启动命令。
 
     执行如下命令：
 
@@ -141,7 +141,7 @@
     ...
     ```
 
-2. 执行服务启动命令
+2. 执行服务启动命令。
 
     请参照以下规则**修改上述启动指令**，**在不同服务器的宿主机执行服务启动命令**。
 
@@ -153,8 +153,6 @@
     | --kv-store-ip | 服务器 1 的 IP。开启池化时 kv_store 也部署在服务器 1，与管理面同机。 |
 
     【可选】如果需要**一台服务器部署多个推理容器**，请参考[同一服务器部署多个推理容器](#同一服务器部署多个推理容器)部署服务。
-
----
 
 ## 开启KV池化（可选）
 
@@ -179,7 +177,7 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 
 若返回以下内容，表示服务尚未就绪，可稍后重试。
 
-```Output
+```output
 {"detail":"Service is not available"}
 ```
 
@@ -223,7 +221,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 记录[启动服务](#启动服务)里 `--show-commands` 的回显，按下面修改。下面以 1 台 8 卡服务器部署 2 个 Prefill、2 个 Decode 为例。每个实例 1 个容器、2 张卡，卡号依次为 `0,1`、`2,3`、`4,5`、`6,7`。
 
-1. 管理面启动命令
+1. 管理面启动命令。
 
     无需修改，按回显执行。
 
@@ -236,7 +234,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
       --nic-name "<本机网卡>"
     ```
 
-2. kv_store 启动命令
+2. kv_store启动命令。
 
     未开启池化时，回显没有这条命令。开启池化后无需修改，按回显执行。
 
@@ -251,9 +249,15 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
       --controller-ip "<本机IP>"
     ```
 
-3. Prefill 推理容器启动命令
+3. Prefill 推理容器启动命令。
 
-    额外添加以下五个参数。
+    额外添加以下五个参数：
+
+   - --devices：本容器使用的卡号，同一台服务器上不能重叠。
+   - --node-manager-port：NodeManager端口，同一台服务器上错开，例如：4026、4126。
+   - --data-parallel-rpc-port：数据并行RPC端口。同一台服务器上错开，例如：9000、9100。
+   - --base-port：引擎端点起始端口，会再占用后续一段端口。同一台服务器上错开，例如：10000、11000。
+   - --kv-port：KV传输起始端口，会再占用后续一段端口。同一台服务器上错开，例如：21000、22000。
 
     `motor-p0`：
 
@@ -267,11 +271,11 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
       --nic-name "<本机网卡>" \
       --coordinator-ip "<服务器1 IP>" \
       --controller-ip "<服务器1 IP>" \
-      --devices 0,1  \                  # 本容器使用的卡号，2 张卡。同一台服务器上不能重叠
-      --node-manager-port 4026  \       # NodeManager 端口。同一台服务器上错开，例如 4026、4126
-      --data-parallel-rpc-port 9000  \  # 数据并行 RPC 端口。同一台服务器上错开，例如 9000、9100
-      --base-port 10000  \              # 引擎端点起始端口，会再占用后续一段端口。同一台服务器上错开，例如 10000、11000
-      --kv-port 21000                   # KV 传输起始端口，会再占用后续一段端口。同一台服务器上错开，例如 21000、22000
+      --devices 0,1  \
+      --node-manager-port 4026  \
+      --data-parallel-rpc-port 9000  \
+      --base-port 10000  \
+      --kv-port 21000
     ```
 
     `motor-p1`：
@@ -286,16 +290,22 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
       --nic-name "<本机网卡>" \
       --coordinator-ip "<服务器1 IP>" \
       --controller-ip "<服务器1 IP>" \
-      --devices 2,3  \                  # 本容器使用的卡号，2 张卡。同一台服务器上不能重叠
-      --node-manager-port 4126  \       # NodeManager 端口。同一台服务器上错开，例如 4026、4126
-      --data-parallel-rpc-port 9100  \  # 数据并行 RPC 端口。同一台服务器上错开，例如 9000、9100
-      --base-port 11000  \              # 引擎端点起始端口，会再占用后续一段端口。同一台服务器上错开，例如 10000、11000
-      --kv-port 22000                   # KV 传输起始端口，会再占用后续一段端口。同一台服务器上错开，例如 21000、22000
+      --devices 2,3  \
+      --node-manager-port 4126  \
+      --data-parallel-rpc-port 9100  \
+      --base-port 11000  \
+      --kv-port 22000
     ```
 
-4. Decode 推理容器启动命令
+4. Decode推理容器启动命令。
 
-    额外添加以下五个参数。
+    额外添加以下五个参数：
+
+   - --devices：本容器使用的卡号，同一台服务器上不能重叠。
+   - --node-manager-port：NodeManager端口，同一台服务器上错开，例如：4226、4326。
+   - --data-parallel-rpc-port：数据并行RPC端口。同一台服务器上错开，例如：9200、9300。
+   - --base-port：引擎端点起始端口，会再占用后续一段端口。同一台服务器上错开，例如：12000、13000。
+   - --kv-port：KV传输起始端口，会再占用后续一段端口。同一台服务器上错开，例如：23000、24000。
 
     `motor-d0`：
 
@@ -309,11 +319,11 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
       --nic-name "<本机网卡>" \
       --coordinator-ip "<服务器1 IP>" \
       --controller-ip "<服务器1 IP>" \
-      --devices 4,5  \                  # 本容器使用的卡号，2 张卡。同一台服务器上不能重叠
-      --node-manager-port 4226  \       # NodeManager 端口。同一台服务器上错开，例如 4226、4326
-      --data-parallel-rpc-port 9200  \  # 数据并行 RPC 端口。同一台服务器上错开，例如 9200、9300
-      --base-port 12000  \              # 引擎端点起始端口，会再占用后续一段端口。同一台服务器上错开，例如 12000、13000
-      --kv-port 23000                   # KV 传输起始端口，会再占用后续一段端口。同一台服务器上错开，例如 23000、24000
+      --devices 4,5  \
+      --node-manager-port 4226  \
+      --data-parallel-rpc-port 9200  \
+      --base-port 12000  \
+      --kv-port 23000
     ```
 
     `motor-d1`：
@@ -328,9 +338,9 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
       --nic-name "<本机网卡>" \
       --coordinator-ip "<服务器1 IP>" \
       --controller-ip "<服务器1 IP>" \
-      --devices 6,7  \                  # 本容器使用的卡号，2 张卡。同一台服务器上不能重叠
-      --node-manager-port 4326  \       # NodeManager 端口。同一台服务器上错开，例如 4226、4326
-      --data-parallel-rpc-port 9300  \  # 数据并行 RPC 端口。同一台服务器上错开，例如 9200、9300
-      --base-port 13000  \              # 引擎端点起始端口，会再占用后续一段端口。同一台服务器上错开，例如 12000、13000
-      --kv-port 24000                   # KV 传输起始端口，会再占用后续一段端口。同一台服务器上错开，例如 23000、24000
+      --devices 6,7  \
+      --node-manager-port 4326  \
+      --data-parallel-rpc-port 9300  \
+      --base-port 13000  \
+      --kv-port 24000
     ```

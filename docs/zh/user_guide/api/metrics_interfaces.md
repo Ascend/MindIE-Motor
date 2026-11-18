@@ -4,18 +4,18 @@
 
 ## 接口概述
 
-MindIE Motor 的监控指标由 Coordinator 统一汇聚、聚合并提供，**唯一推荐获取途径是 Coordinator Observability 端口上的 `GET /metrics` 接口**。
+MindIE Motor的监控指标由Coordinator统一汇聚、聚合并提供，**唯一推荐获取途径是 Coordinator Observability 端口上的`GET /metrics`接口**。
 
 指标采集链路如下：
 
-1. Coordinator 的 `MetricsCollector` 后台线程按周期（`prometheus_metrics_config.reuse_time`，默认 `3` 秒）从每个 Engine 的 `/metrics` 接口拉取原始指标；
-2. 解析 Prometheus 文本，按指标语义（sum / max / mean / 直方图合并 / 直通）跨实例、跨端点聚合，并计算 Motor 自定义指标；
+1. Coordinator的`MetricsCollector`后台线程按周期（`prometheus_metrics_config.reuse_time`，默认为3秒）从每个Engine 的`/metrics`接口拉取原始指标；
+2. 解析Prometheus文本，按指标语义（sum / max / mean / 直方图合并 / 直通）跨实例、跨端点聚合，并计算Motor自定义指标；
 3. 聚合结果按采集版本缓存，通过本接口对外提供。
 
 >[!NOTE] 说明
 >
-> - Controller 侧的 `/observability/metrics` 是已弃用的转发代理（转发到 Coordinator `/metrics`），仅在兼容场景保留，**新接入请直接使用本接口**。
-> - 默认端口 `1027` 与 Controller 观测接口（`observability_api_port`，承载 `/observability/inventory` 等）的默认端口相同，但两者属于不同组件、不同服务，配置时不要混淆。
+> - Controller侧的`/observability/metrics`是已弃用的转发代理（转发到Coordinator `/metrics`），仅在兼容场景保留，**新接入请直接使用本接口**。
+> - 默认端口`1027`与Controller观测接口（`observability_api_port`，承载`/observability/inventory`等）的默认端口相同，但两者属于不同组件、不同服务，配置时不要混淆。
 
 ## 接口格式
 
@@ -25,28 +25,28 @@ MindIE Motor 的监控指标由 Coordinator 统一汇聚、聚合并提供，**�
 
 **IP**
 
-- 使用 Kubernetes 部署时，IP 使用主机 IP 或域名。
-- 在 Kubernetes 集群内，IP 使用 `Coordinator` 服务的 IP：
-  - 取值来自 [user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config) 配置文件的 `coordinator_api_host` 配置项；
-  - 未配置时使用环境变量 `POD_IP`；
-  - 环境变量不存在或为空时，使用默认值 `127.0.0.1`。
+- 使用Kubernetes部署时，IP使用主机IP或域名。
+- 在Kubernetes集群内，IP使用`Coordinator`服务的IP：
+  - 取值来自[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)配置文件的`coordinator_api_host`配置项；
+  - 未配置时使用环境变量`POD_IP`；
+  - 环境变量不存在或为空时，使用默认值`127.0.0.1`。
 
 **端口**
 
-- 使用 Kubernetes 部署时，端口使用 `yaml` 文件中 `mindie-motor-coordinator-obs` 元数据定义的 `nodePort`，默认 `31017`。
-- 在 Kubernetes 集群内，端口使用 `coordinator_obs_port` 配置项定义的端口，默认 `1027`。
+- 使用Kubernetes部署时，端口使用`yaml`文件中`mindie-motor-coordinator-obs`元数据定义的`nodePort`，默认值为31017。
+- 在Kubernetes集群内，端口使用`coordinator_obs_port`配置项定义的端口，默认值为1027。
 
 **协议**
 
-- 安全协议由 `mgmt_tls_config.enable_tls` 控制：为 `true` 时使用 `https`，否则使用 `http`。
+安全协议由`mgmt_tls_config.enable_tls`控制：为`true`时使用`https`，否则使用`http`。
 
 ## 请求参数
 
 | 参数名 | 类型 | 必选 | 默认值 | 说明 |
 |--------|------|------|--------|------|
-| `type` | string | 否 | `full` | 指标聚合视图，取值 `full` / `instance` / `role` / `dp` / `node`，详见[聚合视图](#聚合视图)。非法取值回退为 `full`。 |
-| `role` | string | 否 | 无 | 仅当 `type=role` 时生效，过滤指定角色：`prefill` 或 `decode`。不传时返回所有角色的聚合结果。 |
-| `format` | string | 否 | `prometheus` | 返回格式：`prometheus`（Prometheus 文本）或 `opentelemetry`（OpenTelemetry JSON）。非法取值返回 HTTP `400`。 |
+| type | string | 否 | full | 指标聚合视图，取值 `full` / `instance` / `role` / `dp` / `node`，详情请参见[聚合视图](#聚合视图)。非法取值回退为 `full`。 |
+| role | string | 否 | 无 | 仅当 `type=role` 时生效，过滤指定角色：`prefill` 或 `decode`。不传时返回所有角色的聚合结果。 |
+| format | string | 否 | prometheus | 返回格式：`prometheus`（Prometheus 文本）或 `opentelemetry`（OpenTelemetry JSON）。非法取值返回 HTTP `400`。 |
 
 **使用样例**
 
@@ -76,26 +76,26 @@ curl -X GET "http://{IP}:{Port}/metrics?format=opentelemetry"
 
 ## 聚合视图
 
-`type` 参数控制指标的聚合粒度，不同视图注入不同的维度标签：
+type参数控制指标的聚合粒度，不同视图注入不同的维度标签：
 
 | 取值 | 聚合粒度 | 注入标签 | 用途 |
 |------|----------|----------|------|
-| `full`（默认） | 全集群（SERVICE） | 无 | Prometheus 抓取，全局指标聚合为单一值 |
-| `instance` | 实例级（INSTANCE） | `instance_id`、`role` | 区分不同实例的数据，实例间对比/排障 |
-| `role` | 角色级（ROLE） | `role` | Prefill 与 Decode 角色对比 |
-| `dp` | 不聚合，按端点原始输出 | `dp_rank`、`role`、`instance_id`、`pod_ip` | 单端点级排障 |
-| `node` | 节点级（NODE） | `pod_ip`、`role` | 按物理节点监控 |
+| full | 全集群（SERVICE） | 无 | 默认值。Prometheus 抓取，全局指标聚合为单一值 |
+| instance | 实例级（INSTANCE） | instance_id、role | 区分不同实例的数据，实例间对比/排障 |
+| role | 角色级（ROLE） | role | Prefill 与 Decode 角色对比 |
+| dp | 不聚合，按端点原始输出 | dp_rank、role、instance_id、pod_ip | 单端点级排障 |
+| node | 节点级（NODE） | pod_ip、role | 按物理节点监控 |
 
 >[!NOTE] 说明
 >
 > - `full` 视图适合直接接入 Prometheus 抓取；`role` 视图不指定 `role` 参数时，各角色独立聚合后拼接为单一文本，同一指标名会出现多次（各自带 `role` 标签），属正常现象。
-> - 除 `dp` 视图外，其他视图都经过了语义化聚合（详见[数据加工说明](#数据加工说明)）。
+> - 除 `dp` 视图外，其他视图都经过了语义化聚合（详情请参见[数据加工说明](#数据加工说明)）。
 
-## 响应示例（`format=prometheus`，默认）
+## 响应示例（format=prometheus，默认）
 
 响应为 Prometheus 文本格式，`Content-Type: text/plain`。
 
-**响应示例（`type=full`）**
+**响应示例（type=full）**
 
 ```text
 # HELP vllm:num_requests_running Number of requests in model execution batches.
@@ -109,7 +109,7 @@ vllm:kv_cache_usage_perc{model_name="Qwen2.5-7B-Instruct"} 0.585
 motor:active_prefill_workers 2.0
 ```
 
-**响应示例（`type=instance`）**
+**响应示例（type=instance）**
 
 ```text
 # HELP vllm:num_requests_running Number of requests in model execution batches.
@@ -123,7 +123,7 @@ vllm:kv_cache_usage_perc{instance_id="0",role="prefill",model_name="Qwen2.5-7B-I
 vllm:kv_cache_usage_perc{instance_id="2",role="decode",model_name="Qwen2.5-7B-Instruct"} 0.72
 ```
 
-**响应示例（`type=role&role=prefill`）**
+**响应示例（type=role&role=prefill）**
 
 ```text
 # HELP vllm:num_requests_running Number of requests in model execution batches.
@@ -134,7 +134,7 @@ vllm:num_requests_running{role="prefill",model_name="Qwen2.5-7B-Instruct"} 20.0
 vllm:kv_cache_usage_perc{role="prefill",model_name="Qwen2.5-7B-Instruct"} 0.535
 ```
 
-**响应示例（`type=dp`）**
+**响应示例（type=dp）**
 
 ```text
 # HELP vllm:num_requests_running Number of requests in model execution batches.
@@ -143,7 +143,7 @@ vllm:num_requests_running{dp_rank="0",role="prefill",instance_id="0",pod_ip="192
 vllm:num_requests_running{dp_rank="1",role="prefill",instance_id="0",pod_ip="192.168.1.11",model_name="Qwen2.5-7B-Instruct"} 8.0
 ```
 
-**响应示例（`type=node`）**
+**响应示例（type=node）**
 
 ```text
 # HELP vllm:num_requests_running Number of requests in model execution batches.
@@ -151,11 +151,11 @@ vllm:num_requests_running{dp_rank="1",role="prefill",instance_id="0",pod_ip="192
 vllm:num_requests_running{pod_ip="192.168.1.10",role="prefill",model_name="Qwen2.5-7B-Instruct"} 4.0
 ```
 
-## 响应示例（`format=opentelemetry`）
+## 响应示例（format=opentelemetry）
 
 响应为 OpenTelemetry 兼容的 JSON 结构，`Content-Type: application/json`。所有视图均支持该格式，数据内容与 Prometheus 格式一致，仅做结构转换。
 
-```JSON
+```json
 {
   "resourceMetrics": [
     {
@@ -189,7 +189,7 @@ vllm:num_requests_running{pod_ip="192.168.1.10",role="prefill",model_name="Qwen2
 
 ## 返回指标说明
 
-接口返回 vLLM 引擎指标（`vllm:` 前缀）与 Motor 自定义指标（`motor:` 前缀）的汇聚结果，主要指标如下：
+接口返回 vLLM 引擎指标（vllm: 前缀）与 Motor 自定义指标（motor: 前缀）的汇聚结果，主要指标如下：
 
 ### SLA 与时延指标（直方图）
 
@@ -197,44 +197,44 @@ vllm:num_requests_running{pod_ip="192.168.1.10",role="prefill",model_name="Qwen2
 
 | 指标名 | 说明 | 分位数 |
 |--------|------|--------|
-| `vllm:time_to_first_token_seconds` | 首 token 时延（TTFT），仅统计 Decode 侧 | p50 / p95 / p99 |
-| `vllm:time_per_output_token_seconds` | 每输出 token 时延（TPOT），仅统计 Decode 侧 | p50 / p95 / p99 |
-| `vllm:e2e_request_latency_seconds` | 请求端到端时延，仅统计 Decode 侧 | p50 / p95 / p99 |
-| `vllm:request_queue_time_seconds` | 请求排队时延 | p50 / p95 / p99 |
-| `vllm:request_prefill_time_seconds` | 请求 Prefill 阶段耗时，仅统计 Prefill 侧 | p50 / p95 / p99 |
-| `vllm:request_decode_time_seconds` | 请求 Decode 阶段耗时 | 无 |
-| `vllm:request_params_n` | 请求参数数量 | 无 |
-| `vllm:request_params_max_tokens` | 请求最大 token 数 | 无 |
+| vllm:time_to_first_token_seconds | 首 token 时延（TTFT），仅统计 Decode 侧 | p50 / p95 / p99 |
+| vllm:time_per_output_token_seconds | 每输出 token 时延（TPOT），仅统计 Decode 侧 | p50 / p95 / p99 |
+| vllm:e2e_request_latency_seconds | 请求端到端时延，仅统计 Decode 侧 | p50 / p95 / p99 |
+| vllm:request_queue_time_seconds | 请求排队时延 | p50 / p95 / p99 |
+| vllm:request_prefill_time_seconds | 请求 Prefill 阶段耗时，仅统计 Prefill 侧 | p50 / p95 / p99 |
+| vllm:request_decode_time_seconds | 请求 Decode 阶段耗时 | 无 |
+| vllm:request_params_n | 请求参数数量 | 无 |
+| vllm:request_params_max_tokens | 请求最大 token 数 | 无 |
 
 ### 运行状态指标（Gauge）
 
 | 指标名 | 类型 | 聚合方式 | 说明 |
 |--------|------|----------|------|
-| `vllm:num_requests_running` | Gauge | 求和 | 当前运行中的请求数 |
-| `vllm:num_requests_waiting` | Gauge | 求和 | 当前排队等待的请求数 |
-| `vllm:num_requests_swapped` | Gauge | 求和 | 当前被换出的请求数 |
-| `vllm:num_requests_running_max` | Gauge | 取最大值 | 运行中请求数的热点（最大值）视图 |
-| `vllm:kv_cache_usage_perc` | Gauge | 取均值 | KV Cache 总使用率 |
-| `vllm:gpu_cache_usage_perc` | Gauge | 取均值 | GPU KV Cache 使用率 |
-| `vllm:cpu_cache_usage_perc` | Gauge | 取均值 | CPU KV Cache 使用率 |
-| `vllm:kv_cache_usage_perc_max` | Gauge | 取最大值 | KV Cache 使用率的热点（最大值）视图 |
+| vllm:num_requests_running | Gauge | 求和 | 当前运行中的请求数 |
+| vllm:num_requests_waiting | Gauge | 求和 | 当前排队等待的请求数 |
+| vllm:num_requests_swapped | Gauge | 求和 | 当前被换出的请求数 |
+| vllm:num_requests_running_max | Gauge | 取最大值 | 运行中请求数的热点（最大值）视图 |
+| vllm:kv_cache_usage_perc | Gauge | 取均值 | KV Cache 总使用率 |
+| vllm:gpu_cache_usage_perc | Gauge | 取均值 | GPU KV Cache 使用率 |
+| vllm:cpu_cache_usage_perc | Gauge | 取均值 | CPU KV Cache 使用率 |
+| vllm:kv_cache_usage_perc_max | Gauge | 取最大值 | KV Cache 使用率的热点（最大值）视图 |
 
 ### 计数指标（Counter）
 
->[!IMPORTANT]说明
+>[!NOTE] 说明
 >以下 Counter 均为 Engine 进程启动以来的**累计值**。跨 Engine、跨实例求和没有直接含义，计算速率时请在 Prometheus 侧使用 `rate()` / `irate()` 函数，不要对原始值做减法或求平均。
 
 | 指标名 | 聚合方式 | 说明 |
 |--------|----------|------|
-| `vllm:prompt_tokens_total` | 求和 | 累计处理的 Prompt token 数 |
-| `vllm:generation_tokens_total` | 求和 | 累计生成的 Output token 数 |
-| `vllm:new_tokens_total` | 求和 | 累计生成的新 token 数 |
-| `vllm:request_success_total` | 求和 | 累计成功处理的请求数 |
-| `vllm:num_preemptions_total` | 求和 | 累计抢占次数 |
-| `vllm:prefix_cache_hits_total` | 求和 | Prefix Cache 命中次数（派生命中率分子） |
-| `vllm:prefix_cache_queries_total` | 求和 | Prefix Cache 查询次数（派生命中率分母） |
-| `vllm:gpu_prefix_cache_hits_total` | 求和 | GPU Prefix Cache 命中次数 |
-| `vllm:gpu_prefix_cache_queries_total` | 求和 | GPU Prefix Cache 查询次数 |
+| vllm:prompt_tokens_total | 求和 | 累计处理的 Prompt token 数 |
+| vllm:generation_tokens_total | 求和 | 累计生成的 Output token 数 |
+| vllm:new_tokens_total | 求和 | 累计生成的新 token 数 |
+| vllm:request_success_total | 求和 | 累计成功处理的请求数 |
+| vllm:num_preemptions_total | 求和 | 累计抢占次数 |
+| vllm:prefix_cache_hits_total | 求和 | Prefix Cache 命中次数（派生命中率分子） |
+| vllm:prefix_cache_queries_total | 求和 | Prefix Cache 查询次数（派生命中率分母） |
+| vllm:gpu_prefix_cache_hits_total | 求和 | GPU Prefix Cache 命中次数 |
+| vllm:gpu_prefix_cache_queries_total | 求和 | GPU Prefix Cache 查询次数 |
 
 ### 派生指标
 
@@ -242,31 +242,26 @@ vllm:num_requests_running{pod_ip="192.168.1.10",role="prefill",model_name="Qwen2
 
 | 指标名 | 说明 |
 |--------|------|
-| `vllm:prefix_cache_hit_rate` | Prefix Cache 命中率，由 `vllm:prefix_cache_hits_total / vllm:prefix_cache_queries_total` 计算，取值限制在 `[0, 1]` |
-| `motor:prompt_tokens_per_second` | Prompt token 吞吐，由 `vllm:prompt_tokens_total` 计数器增量计算 |
-| `motor:generation_tokens_per_second` | Output token 吞吐，由 `vllm:generation_tokens_total` 计数器增量计算 |
-| `motor:active_prefill_workers` | 当前活跃 Prefill 实例数 |
-| `motor:active_decode_workers` | 当前活跃 Decode 实例数 |
-| `motor:inactive_prefill_workers` | 当前非活跃 Prefill 实例数（配置数 − 可用数） |
-| `motor:inactive_decode_workers` | 当前非活跃 Decode 实例数（配置数 − 可用数） |
-| `motor:request_rate` | 入口请求速率（requests/s），由 `vllm:request_success_total` 计数器增量计算 |
-| `motor:prefill_utilization` | Prefill 需求/供给利用率（>1 表示供给不足），详见[容量规划指标](#容量规划指标) |
-| `motor:decode_utilization` | Decode 需求/供给利用率（>1 表示供给不足），详见[容量规划指标](#容量规划指标) |
-| `motor:prefill_replicas_required` | 容量规划推导的所需 Prefill 实例数，详见[容量规划指标](#容量规划指标) |
-| `motor:decode_replicas_required` | 容量规划推导的所需 Decode 实例数（吞吐与 KV 双约束），详见[容量规划指标](#容量规划指标) |
-| `motor:pd_ratio_current` | 当前 PD 配比：`active Prefill 实例数 / max(active Decode 实例数, 1)` |
-| `motor:pd_ratio_suggested` | 建议 PD 配比（仅为建议信号，Motor 不执行任何调整），详见[容量规划指标](#容量规划指标) |
+| vllm:prefix_cache_hit_rate | Prefix Cache 命中率，由 vllm:prefix_cache_hits_total / vllm:prefix_cache_queries_total 计算，取值范围为：[0, 1] |
+| motor:prompt_tokens_per_second | Prompt token 吞吐，由 vllm:prompt_tokens_total 计数器增量计算 |
+| motor:generation_tokens_per_second | Output token 吞吐，由 vllm:generation_tokens_total 计数器增量计算 |
+| motor:active_prefill_workers | 当前活跃 Prefill 实例数 |
+| motor:active_decode_workers | 当前活跃 Decode 实例数 |
+| motor:inactive_prefill_workers | 当前非活跃 Prefill 实例数（配置数 − 可用数） |
+| motor:inactive_decode_workers | 当前非活跃 Decode 实例数（配置数 − 可用数） |
+| motor:request_rate | 入口请求速率（requests/s），由 vllm:request_success_total 计数器增量计算 |
+| motor:prefill_utilization | Prefill 需求/供给利用率（>1 表示供给不足），详情请参见[容量规划指标](#容量规划指标) |
+| motor:decode_utilization | Decode 需求/供给利用率（>1 表示供给不足），详情请参见[容量规划指标](#容量规划指标) |
+| motor:prefill_replicas_required | 容量规划推导的所需 Prefill 实例数，详情请参见[容量规划指标](#容量规划指标) |
+| motor:decode_replicas_required | 容量规划推导的所需 Decode 实例数（吞吐与 KV 双约束），详情请参见[容量规划指标](#容量规划指标) |
+| motor:pd_ratio_current` | 当前 PD 配比：active Prefill 实例数 / max(active Decode 实例数, 1) |
+| motor:pd_ratio_suggested` | 建议 PD 配比（仅为建议信号，Motor 不执行任何调整），详情请参见[容量规划指标](#容量规划指标) |
 
 ### 容量规划指标
 
-以下指标面向 HPA 自动扩缩容与 PD 配比管理场景，均为 service/role 级派生 Gauge，
-由 Coordinator 内置的容量规划器按采集周期刷新。
+以下指标面向 HPA 自动扩缩容与 PD 配比管理场景，均为 service/role 级派生 Gauge，由 Coordinator 内置的容量规划器按采集周期刷新。
 
-**理论依据**：Prefill 阶段为算力受限，单实例在充分负载下的输入 token 处理速率近似
-恒定 `C_p`；Decode 阶段为显存带宽受限，单实例持续生成吞吐近似 `C_d`，KV cache
-容量 `K`（块数 × block_size）是第二约束。排队论表明供给/需求 ≥ `1/ρ` 时等待有界
-（ρ 为目标利用率），Little's law 给出 KV 驻留 token 需求
-`D_kv = λ·W_kv·(L̄_in+L̄_out)`。
+**理论依据**：Prefill 阶段为算力受限，单实例在充分负载下的输入 token 处理速率近似恒定 `C_p`；Decode 阶段为显存带宽受限，单实例持续生成吞吐近似 `C_d`，KV Cache容量 `K`（块数 × block_size）是第二约束。排队论表明供给/需求 ≥ `1/ρ` 时等待有界（ρ 为目标利用率），Little's law 给出 KV 驻留 token 需求`D_kv = λ·W_kv·(L̄_in+L̄_out)`。
 
 **计算口径**（每采集周期，counter delta + EMA 平滑）：
 
@@ -297,19 +292,19 @@ vllm:num_requests_running{pod_ip="192.168.1.10",role="prefill",model_name="Qwen2
 
 | 指标名 | 语义 | 公式 |
 |--------|------|------|
-| `motor:prefill_utilization` | Prefill 需求/供给利用率 | `λ·L̄_in/(N_p·C_p)` |
-| `motor:decode_utilization` | Decode 需求/供给利用率 | `λ·L̄_out/(N_d·C_d)` |
-| `motor:prefill_replicas_required` | 所需 Prefill 实例数 | `⌈λ·L̄_in/(C_p·ρ)⌉` |
-| `motor:decode_replicas_required` | Decode 所需实例数 | `max(N_d_tp, N_d_kv)` |
-| `motor:prefill_capacity_tps` | 单实例 Prefill 容量估计（诊断） | `C_p` |
-| `motor:decode_capacity_tps` | 单实例 Decode 容量估计（诊断） | `C_d` |
-| `motor:prefill_demand_tps` | Prefill 需求速率 tokens/s（诊断） | `λ·L̄_in` |
-| `motor:decode_demand_tps` | Decode 需求速率 tokens/s（诊断） | `λ·L̄_out` |
-| `motor:kv_demand_tokens` | KV 驻留 token 需求（诊断） | `λ·W_kv·(L̄_in+L̄_out)` |
-| `motor:capacity_calibrated` | 容量估计是否已标定（0/1，label `role`） | 先验 >0 或已有有效观测 |
-| `motor:pd_ratio_current` | 当前 PD 配比 | `N_p_active/max(N_d_active, 1)` |
-| `motor:pd_ratio_suggested` | 建议 PD 配比（建议信号） | `N_p/N_d`，EMA + 裁剪；未标定/无需求时回退现状比 |
-| `motor:request_rate` | 入口请求速率 requests/s | `Δrequest_success/Δt` |
+| motor:prefill_utilization | Prefill 需求/供给利用率 | λ·L̄_in/(N_p·C_p) |
+| motor:decode_utilization | Decode 需求/供给利用率 | λ·L̄_out/(N_d·C_d) |
+| motor:prefill_replicas_required | 所需 Prefill 实例数 | ⌈λ·L̄_in/(C_p·ρ)⌉ |
+| motor:decode_replicas_required | Decode 所需实例数 | max(N_d_tp, N_d_kv) |
+| motor:prefill_capacity_tps | 单实例 Prefill 容量估计（诊断） | C_p |
+| motor:decode_capacity_tps | 单实例 Decode 容量估计（诊断） | C_d |
+| motor:prefill_demand_tps | Prefill 需求速率 tokens/s（诊断） | λ·L̄_in |
+| motor:decode_demand_tps | Decode 需求速率 tokens/s（诊断） | λ·L̄_out |
+| motor:kv_demand_tokens | KV 驻留 token 需求（诊断） | λ·W_kv·(L̄_in+L̄_out) |
+| motor:capacity_calibrated | 容量估计是否已标定（0/1，label `role`） | 先验 >0 或已有有效观测 |
+| motor:pd_ratio_current | 当前 PD 配比 | N_p_active/max(N_d_active, 1) |
+| motor:pd_ratio_suggested | 建议 PD 配比（建议信号） | N_p/N_d，EMA + 裁剪；未标定/无需求时回退现状比 |
+| motor:request_rate | 入口请求速率 requests/s | Δrequest_success/Δt |
 
 计算规则要点：
 
@@ -337,31 +332,31 @@ vllm:num_requests_running{pod_ip="192.168.1.10",role="prefill",model_name="Qwen2
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `target_utilization` | `0.8` | 目标单实例利用率 ρ，实例数推导与 HPA target 的语义基准 |
-| `kv_target_utilization` | `0.9` | KV 约束的目标利用率 ρ_kv |
-| `ema_alpha` | `0.85` | 需求速率、平均长度、W_kv 与 `C_p` 的 EMA 平滑系数；样本本身是 3s 窗口聚合均值，无需重平滑，3 个采集周期内收敛 |
-| `capacity_decay` | `0.005` | `C_d` 峰值每周期慢衰减系数 |
-| `capacity_window_cycles` | `200` | `C_d` 衰减下限的滑动窗口长度（周期数，默认 ≈10 分钟） |
-| `prefill_tps_capacity_prior` | `0`（无先验） | 单实例 Prefill 容量先验（tokens/s），`0` 表示无先验 |
-| `decode_tps_capacity_prior` | `0`（无先验） | 单实例 Decode 容量先验（tokens/s），`0` 表示无先验 |
-| `pd_ratio_smooth_alpha` | `0.3` | `motor:pd_ratio_suggested` 的 EMA 平滑系数，越小越平滑 |
-| `pd_ratio_min` | `0.05` | 建议配比裁剪下界 |
-| `pd_ratio_max` | `20.0` | 建议配比裁剪上界 |
+| target_utilization | 0.8 | 目标单实例利用率 ρ，实例数推导与 HPA target 的语义基准 |
+| kv_target_utilization | 0.9 | KV 约束的目标利用率 ρ_kv |
+| ema_alpha | 0.85 | 需求速率、平均长度、W_kv 与 `C_p` 的 EMA 平滑系数；样本本身是 3秒 窗口聚合均值，无需重平滑，3 个采集周期内收敛 |
+| capacity_decay | 0.005 | `C_d` 峰值每周期慢衰减系数 |
+| capacity_window_cycles | `200` | `C_d` 衰减下限的滑动窗口长度（周期数，默认 ≈10 分钟） |
+| prefill_tps_capacity_prior | `0`（无先验） | 单实例 Prefill 容量先验（tokens/s），`0` 表示无先验 |
+| decode_tps_capacity_prior | `0`（无先验） | 单实例 Decode 容量先验（tokens/s），`0` 表示无先验 |
+| pd_ratio_smooth_alpha | `0.3` | `motor:pd_ratio_suggested` 的 EMA 平滑系数，越小越平滑 |
+| pd_ratio_min | `0.05` | 建议配比裁剪下界 |
+| pd_ratio_max | `20.0` | 建议配比裁剪上界 |
 
 ### HPA 契约指标与无冒号别名
 
-K8s External Metrics 命名习惯不含 `:`，因此下列 HPA 契约指标在 `/metrics` 输出（`prometheus` 与 `opentelemetry` 两种格式）中会**同时**以原始名和无冒号别名（`:` 替换为 `_`）各暴露一条序列，两者取值一致，别名序列的 HELP 文本带“(HPA alias)”后缀。HPA / External Metrics Adaptor 推荐使用别名接入。
+Kubernetes External Metrics 命名习惯不含 `:`，因此下列 HPA 契约指标在 `/metrics` 输出（`prometheus` 与 `opentelemetry` 两种格式）中会**同时**以原始名和无冒号别名（`:` 替换为 `_`）各暴露一条序列，两者取值一致，别名序列的 HELP 文本带“(HPA alias)”后缀。HPA / External Metrics Adaptor 推荐使用别名接入。
 
 | 原始指标名 | HPA 别名 |
 |------------|----------|
-| `motor:prefill_utilization` | `motor_prefill_utilization` |
-| `motor:decode_utilization` | `motor_decode_utilization` |
-| `motor:prefill_replicas_required` | `motor_prefill_replicas_required` |
-| `motor:decode_replicas_required` | `motor_decode_replicas_required` |
-| `motor:request_rate` | `motor_request_rate` |
-| `motor:pd_ratio_current` | `motor_pd_ratio_current` |
-| `motor:pd_ratio_suggested` | `motor_pd_ratio_suggested` |
-| `vllm:request_prefill_time_seconds`（含 `_mean` / `_p50` / `_p95` / `_p99` 派生分位数） | `vllm_request_prefill_time_seconds`（及对应后缀形式，如 `vllm_request_prefill_time_seconds_p95`） |
+| motor:prefill_utilization | motor_prefill_utilization |
+| motor:decode_utilization | motor_decode_utilization |
+| motor:prefill_replicas_required | motor_prefill_replicas_required |
+| motor:decode_replicas_required | motor_decode_replicas_required |
+| motor:request_rate | motor_request_rate |
+| motor:pd_ratio_current | motor_pd_ratio_current |
+| motor:pd_ratio_suggested | motor_pd_ratio_suggested |
+| vllm:request_prefill_time_seconds（含 `_mean / _p50 / _p95 / _p99` 派生分位数） | vllm_request_prefill_time_seconds（及对应后缀形式，如：vllm_request_prefill_time_seconds_p95） |
 
 >[!NOTE] 说明
 >
@@ -374,16 +369,16 @@ Engine 进程自身的指标，跨 Engine 求和：
 
 | 指标名 | 类型 |
 |--------|------|
-| `process_virtual_memory_bytes` | Gauge |
-| `process_resident_memory_bytes` | Gauge |
-| `process_open_fds` | Gauge |
-| `process_max_fds` | Gauge |
-| `process_cpu_seconds_total` | Counter |
-| `process_start_time_seconds` | Gauge |
-| `python_info` | Gauge |
-| `python_gc_objects_collected_total` | Counter |
-| `python_gc_objects_uncollectable_total` | Counter |
-| `python_gc_collections_total` | Counter |
+| process_virtual_memory_bytes | Gauge |
+| process_resident_memory_bytes | Gauge |
+| process_open_fds | Gauge |
+| process_max_fds | Gauge |
+| process_cpu_seconds_total | Counter |
+| process_start_time_seconds | Gauge |
+| python_info | Gauge |
+| python_gc_objects_collected_total | Counter |
+| python_gc_objects_uncollectable_total | Counter |
+| python_gc_collections_total | Counter |
 
 ### KV Store 指标（可选）
 
@@ -391,10 +386,10 @@ Engine 进程自身的指标，跨 Engine 求和：
 
 | 指标名 | 说明 |
 |--------|------|
-| `kv_store_size` | KV Store 容量，label `layer=cpu\|ssd\|all`、`stat=usage\|total` |
-| `kv_store_ratio` | KV Store 使用率（0~1），label `layer=cpu\|ssd\|all`、`stat=usage_rate` |
-| `kv_store_keys` | KV Store 存储的 key 数量 |
-| `kv_store_eviction` | KV Store 淘汰计数，label `stat=success\|attempts` |
+| kv_store_size | KV Store 容量，label `layer=cpu\|ssd\|all`、`stat=usage\|total` |
+| kv_store_ratio | KV Store 使用率（0~1），label `layer=cpu\|ssd\|all`、`stat=usage_rate` |
+| kv_store_keys | KV Store 存储的 key 数量 |
+| kv_store_eviction | KV Store 淘汰计数，label `stat=success\|attempts` |
 
 >[!NOTE] 说明
 >
@@ -442,8 +437,8 @@ scrape_configs:
 
 | 场景 | 结果 |
 |------|------|
-| `format` 参数取值非法 | HTTP `400`，响应体为错误详情 |
-| `type` 参数取值非法 | 回退为 `full` 视图，不报错 |
+| format 参数取值非法 | HTTP `400`，响应体为错误详情 |
+| type 参数取值非法 | 回退为 `full` 视图，不报错 |
 | 指标尚未采集到（服务刚启动） | 返回空文本，或仅包含值为 `0` 的指标族 |
 
 ## 已弃用接口
@@ -458,7 +453,7 @@ scrape_configs:
 请求类型：**GET**
 > URL：`http(s)://{IP}:{Port}/instance/metrics`
 
-IP与端口参见[指标接口的IP/端口与配置](./README.md#指标接口的ip端口与配置)
+IP与端口请参见[指标接口的IP/端口与配置](./README.md#指标接口的ip端口与配置)。
 
 **响应示例**
 

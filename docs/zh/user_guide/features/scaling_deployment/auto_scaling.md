@@ -83,7 +83,7 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
 
       链路：`Coordinator → External Metrics Adaptor → External Metrics API`
 
-      External Metrics Adaptor 周期性从 Coordinator 拉取 Prometheus 格式指标并注册为 External 指标。可使用 [mindcluster-deploy 提供的适配器示例](https://gitcode.com/Ascend/mindcluster-deploy/tree/master/infer-operator-metrics-adaptor) 直接部署，也可按需自行实现。
+      External Metrics Adaptor 周期性从 Coordinator 拉取 Prometheus 格式指标并注册为 External 指标。可使用 [External Metrics Adaptor](https://gitcode.com/Ascend/mindcluster-deploy/tree/master/infer-operator-metrics-adaptor) 直接部署，也可按需自行实现。
 
       配置要点：
 
@@ -308,7 +308,7 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
 
    以下为输出格式示例，资源名称和值以本集群实际结果为准：
 
-   ```text
+   ```output
    NAME                     REFERENCE                    TARGETS          MINPODS   MAXPODS   REPLICAS   AGE
    vllm-0-prefill-scaler    InstanceSet/vllm-0-prefill   116m/800m        1         4         1          34m
    vllm-0-decode-scaler     InstanceSet/vllm-0-decode    897m/800m        1         4         2          34m
@@ -372,7 +372,7 @@ MindIE Motor /metrics 端点提供了丰富的引擎级指标，下表列出推�
 
 > [!NOTE] 说明
 >
->- `motor:prompt_tokens_per_second` 和 `motor:generation_tokens_per_second` 是 MindIE Motor Coordinator 计算的服务级指标，基于 vLLM 原始 counter 计算 delta rate 得到，更准确反映实时吞吐。
+>- `motor:prompt_tokens_per_second` 和 `motor:generation_tokens_per_second` 是 MindIE Motor Coordinator 计算的服务级指标，基于 vLLM 原始 counter 计算 delta rate 得到，更准确地反映实时吞吐。
 >- Histogram 类型指标（如 `vllm:e2e_request_latency_seconds`）需要在指标接入组件侧计算分位数（p50/p95/p99）后作为独立指标暴露。
 >- 建议为 Prefill 和 Decode 分别配置不同的扩缩容指标，以匹配各自的计算特征（Prefill 为计算密集型，Decode 为访存密集型）。
 >- 表中指标需先确认在当前模型、`max_model_len` 和负载下确有区分度：请求无排队时 `vllm:num_requests_waiting` 会长期为 0，短序列下 `vllm:kv_cache_usage_perc` 也接近 0，这类指标无法驱动扩缩容，应改用[容量规划利用率](#容量规划利用率推荐)。
@@ -433,8 +433,8 @@ scalingPolicy:
 
 **原因分析**
 
-1. 部署模式为 `multi_deployment` 或 `single_container`，不支持 HPA 自动扩缩容。
-2. 仅修改本地模板，未执行[步骤 4](#step-4)生成与应用 YAML。
+1. 部署模式为 `multi_deployment` 或 `single_container`，不支持HPA。
+2. 仅修改本地模板，未执行[步骤 5](#step-4)生成与应用 YAML。
 3. Infer Operator 版本过低或未正确创建 `scalingPolicy`。
 4. 直接 `kubectl patch` HPA 后被 Operator 回滚。
 
@@ -504,7 +504,7 @@ HPA 的 TARGETS 列显示 `<unknown>`，或事件中出现 `FailedGetExternalMet
 
 **解决步骤**
 
-1. 维持足够长负载，确认实际指标越过目标；对照[步骤 2.3](#step-2-3)核对 External Metrics 取值。
+1. 维持足够长负载，确认实际指标越过目标；对照[步骤 3](#step-2-3)核对 External Metrics 取值。
 2. 查看 HPA TARGETS 与 REPLICAS 列，区分“未决策”与“已决策但 Pod Pending”。
 3. Pending 时检查 NPU 资源、节点选择和调度事件。
 
