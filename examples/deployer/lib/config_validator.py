@@ -38,11 +38,12 @@ PD_HYBRID_REQUIRED_DEPLOY_KEYS = {
 }
 
 
-reserved_labels: dict[str, bool] = {"app": True}  # True 表示禁止用户通过 additional_labels 覆盖该标签
-
-
 def validate_reserved_labels(user_config: dict) -> None:
-    """Reject user-defined labels that override deployer-managed labels."""
+    """Reject user-defined labels that override deployer-managed labels.
+
+    The ownership labels are reserved alongside ``app``: overriding them would break which
+    service a resource belongs to.
+    """
     if not isinstance(user_config, dict):
         return
 
@@ -53,7 +54,7 @@ def validate_reserved_labels(user_config: dict) -> None:
         additional_labels = component_config.get(C.ADDITIONAL_LABELS)
         if not isinstance(additional_labels, dict):
             continue
-        conflicting_labels = sorted(label for label in additional_labels if reserved_labels.get(label, False))
+        conflicting_labels = sorted(label for label in additional_labels if label in C.RESERVED_DEPLOYER_LABELS)
         if conflicting_labels:
             conflicts.append(f"{config_name}.{C.ADDITIONAL_LABELS}: {', '.join(conflicting_labels)}")
 

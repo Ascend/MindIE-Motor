@@ -415,26 +415,30 @@ def set_env_to_shell(user_config, env_config_path, deploy_mode):
 
 def get_deploy_paths():
     from lib.generator import k8s_utils  # pylint: disable=cyclic-import
+    from lib.service_identity import output_root  # pylint: disable=cyclic-import
 
+    # A named service writes below output_yamls/<namespace>/<service>, so that uninstall acts
+    # on one service's manifests only. Unnamed keeps the legacy root.
+    out_root = output_root()
     return {
         "controller_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'controller_template.yaml'),
-        "controller_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_controller.yaml'),
+        "controller_output_yaml": os.path.join(out_root, 'mindie_motor_controller.yaml'),
         "coordinator_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'coordinator_template.yaml'),
-        "coordinator_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_coordinator.yaml'),
+        "coordinator_output_yaml": os.path.join(out_root, 'mindie_motor_coordinator.yaml'),
         "engine_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'engine_template.yaml'),
-        "engine_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, k8s_utils.g_engine_base_name),
+        "engine_output_yaml": os.path.join(out_root, k8s_utils.g_engine_base_name),
         "kv_store_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'kv_cache_store_template.yaml'),
-        "kv_store_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_kv_store.yaml'),
+        "kv_store_output_yaml": os.path.join(out_root, 'mindie_motor_kv_store.yaml'),
         "kv_conductor_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'kv_conductor_template.yaml'),
-        "kv_conductor_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_kv_conductor.yaml'),
+        "kv_conductor_output_yaml": os.path.join(out_root, 'mindie_motor_kv_conductor.yaml'),
         "infer_service_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'infer_service_template.yaml'),
-        "infer_service_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'infer_service.yaml'),
+        "infer_service_output_yaml": os.path.join(out_root, 'infer_service.yaml'),
         "single_container_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'single_container_template.yaml'),
-        "single_container_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_single_container.yaml'),
+        "single_container_output_yaml": os.path.join(out_root, 'mindie_motor_single_container.yaml'),
         "mf_store_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'mf_store_template.yaml'),
-        "mf_store_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_mf_store.yaml'),
+        "mf_store_output_yaml": os.path.join(out_root, 'mindie_motor_mf_store.yaml'),
         "storage_pvc_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'storage_pvc_template.yaml'),
-        "storage_pvc_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_storage_pvc.yaml'),
+        "storage_pvc_output_yaml": os.path.join(out_root, 'mindie_motor_storage_pvc.yaml'),
     }
 
 

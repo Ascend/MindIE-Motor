@@ -286,12 +286,28 @@ class VLLMProgressMonitor:
 # ------------------------------------------------------------------
 
 
+def engine_pod_name_pattern(service: str = "") -> str:
+    """grep pattern for this deploy's Running engine pods.
+
+    ``infer_service_set`` prefixes the template root, so pods are
+    ``service2-vllm-0-prefill-0-0``. Restricting the match to that prefix also
+    ignores a sibling service already running in the same namespace. Other
+    deploy modes still use the ``vllm-`` root.
+    """
+    if service:
+        return f"^{service}-"
+    return "vllm-"
+
+
 def shell_get_pod(name_space: str):
-    """Get list of Running vLLM engine pods in *name_space*.
+    """Get list of Running engine pods in *name_space*.
 
     Returns:
         List of pod names, or ``None`` on error.
     """
+    from lib.service_identity import service_name  # pylint: disable=import-outside-toplevel
+
+    name_pattern = engine_pod_name_pattern(service_name())
     try:
         with (
             subprocess.Popen(
@@ -305,7 +321,7 @@ def shell_get_pod(name_space: str):
                 stdout=subprocess.PIPE,
             ) as awk_cmd,
             subprocess.Popen(
-                [CMD_GREP, 'vllm-'],
+                [CMD_GREP, name_pattern],
                 stdin=awk_cmd.stdout,
                 stdout=subprocess.PIPE,
             ) as grep_cmd,

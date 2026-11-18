@@ -38,6 +38,8 @@ _REFRESH_TIMEOUT = 3  # per-request TCP timeout (seconds)
 _REFRESH_HOST_OVERRIDE: str | None = None
 _COORDINATOR_POD_LABEL = "app=mindie-motor-coordinator"
 _COORDINATOR_POD_PREFIX = "mindie-motor-coordinator"
+# Label distinguishing one Motor service from another inside a shared namespace.
+_MOTOR_SERVICE_LABEL = "motor.mindie.io/service"
 _POD_IP_CACHE_TTL_SEC = 5.0
 _POD_IP_CACHE_LOCK = threading.Lock()
 _POD_IP_CACHE_AT = 0.0
@@ -117,9 +119,18 @@ def _list_coordinator_pod_ips() -> list[str]:
         return []
     try:
         k8s = _k8s_client()
-        ips = k8s.list_pod_ips(namespace, label_selector=_COORDINATOR_POD_LABEL)
-        if not ips:
-            ips = k8s.list_pod_ips(namespace, name_prefix=_COORDINATOR_POD_PREFIX)
+        # The deployer injects a service-scoped selector so that a sibling Motor service in
+        # the same namespace is never a candidate target.
+        label = os.getenv("COORDINATOR_POD_LABEL", "").strip() or _COORDINATOR_POD_LABEL
+        ips = k8s.list_pod_ips(namespace, label_selector=label)
+        if not ips and label == _COORDINATOR_POD_LABEL:
+            # Name-prefix is a fallback, not an ownership test ("a" also matches "ab"), so
+            # restrict it to pods outside the named-service label space.
+            ips = k8s.list_pod_ips(
+                namespace,
+                label_selector=f"!{_MOTOR_SERVICE_LABEL}",
+                name_prefix=_COORDINATOR_POD_PREFIX,
+            )
     except Exception as e:
         logger.warning("Failed to list Coordinator pod IPs: %s", e)
         return []

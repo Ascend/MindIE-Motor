@@ -10,7 +10,7 @@
 
 import pytest
 
-from lib.tui.step import PROGRESS_TOTAL, parse_log_line
+from lib.tui.step import PROGRESS_TOTAL, engine_pod_name_pattern, parse_log_line
 
 
 @pytest.mark.parametrize("previous_status", ["INITIAL", "WAIT2START"])
@@ -19,3 +19,9 @@ def test_normal_endpoint_transition_completes_startup_progress(previous_status: 
     line = f"Native engine rank 0, status change from EndpointStatus.{previous_status} to EndpointStatus.NORMAL"
 
     assert parse_log_line(line) == PROGRESS_TOTAL
+
+
+def test_engine_pod_pattern_follows_assigned_service() -> None:
+    """A named service is selected by its service prefix; other modes keep vllm-."""
+    assert engine_pod_name_pattern("service2") == "^service2-"
+    assert engine_pod_name_pattern("") == "vllm-"

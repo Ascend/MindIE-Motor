@@ -161,6 +161,21 @@ ENABLE_MASTER_STANDBY = "enable_master_standby"
 INSTANCE_NUM_ZERO = 0
 INSTANCE_NUM_MAX = 16
 MOTOR_CONFIG_CONFIGMAP_NAME = "motor-config"
+# Assigned identity of one Motor service inside its namespace: service1, service2, ...
+# The deployer chooses the next number. There is no user_config field for it.
+# Ownership labels. "app" keeps meaning the component role; these express which service owns
+# the object, because a name prefix alone cannot prove ownership ("a" also matches "ab").
+LABEL_MOTOR_SERVICE = "motor.mindie.io/service"
+LABEL_MOTOR_NAMESPACE = "motor.mindie.io/namespace"
+LABEL_DEPLOY_NAME = "deploy-name"
+RESERVED_DEPLOYER_LABELS = frozenset({APP, LABEL_MOTOR_SERVICE, LABEL_MOTOR_NAMESPACE})
+# The longest derived name is the CRD-expanded Service "{svc}-{set}-{index}-{role}", which
+# must stay inside the 63-char DNS-1123 label limit. Final names are checked explicitly too.
+SERVICE_NAME_MAX_LEN = 16
+DNS_LABEL_MAX_LEN = 63
+# Default Kubernetes service-node-port-range.
+NODEPORT_RANGE_MIN = 30000
+NODEPORT_RANGE_MAX = 32767
 ENGINE_TYPE_VLLM = "vllm"
 ENGINE_TYPE_MINDIE_LLM = "mindie-llm"
 ENGINE_TYPE_MINDIE_SERVER = "mindie-server"
@@ -258,6 +273,8 @@ ENV_CONTROLLER_SERVICE = "CONTROLLER_SERVICE"
 ENV_COORDINATOR_SERVICE = "COORDINATOR_SERVICE"
 ENV_COORDINATOR_INFER_SERVICE = "COORDINATOR_INFER_SERVICE"
 ENV_COORDINATOR_OBS_SERVICE = "COORDINATOR_OBS_SERVICE"
+# Label selector Controller uses to find Coordinator pods, scoped to one service.
+ENV_COORDINATOR_POD_LABEL = "COORDINATOR_POD_LABEL"
 ENV_KVS_MASTER_SERVICE = "KVS_MASTER_SERVICE"
 ENV_KV_STORE_EXTERNAL = "KV_STORE_EXTERNAL"
 ENV_KV_CONDUCTOR_SERVICE = "KV_CONDUCTOR_SERVICE"

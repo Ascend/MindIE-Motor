@@ -35,9 +35,11 @@ from lib.generator.k8s_utils import (
     set_coordinator_obs_service,
     set_kv_conductor_service,
     set_rbac_namespace,
+    set_workload_service_accounts,
     extract_rbac_resources,
     apply_sp_block_annotation,
 )
+from lib.service_identity import apply_to_infer_service, coordinator_app_label, infer_set_name
 from lib.generator.engine import (
     build_engine_env_items,
     set_container_npu,
@@ -144,7 +146,14 @@ def _configure_controller_role(infer_doc, user_config):
             container_port = _service_container_port(service)
             if is_observability_service_name(name) or container_port == 1027:
                 apply_controller_observability_node_port(service, deploy_config)
-    _configure_control_role(infer_doc, user_config, C.CONTROLLER, C.MOTOR_CONTROLLER_CONFIG)
+    container = _configure_control_role(infer_doc, user_config, C.CONTROLLER, C.MOTOR_CONTROLLER_CONFIG)
+    if container is not None:
+        # Pin Coordinator discovery to this service: a sibling service's Coordinator in the
+        # same namespace must never be a candidate target.
+        set_container_env(
+            container,
+            [{C.NAME: C.ENV_COORDINATOR_POD_LABEL, C.VALUE: f"{C.APP}={coordinator_app_label()}"}],
+        )
 
 
 def _configure_coordinator_role(infer_doc, user_config):
@@ -493,8 +502,12 @@ def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
         all_docs = [all_docs]
     namespace = deploy_config[C.CONFIG_JOB_ID]
     infer_doc = _find_infer_service_set_doc(all_docs)
+    # Must run before the roles are configured: the InferServiceSet name is what the CRD
+    # derives every pod and Service name from, so renaming it here makes them all follow.
+    apply_to_infer_service(infer_doc)
     infer_name = infer_doc.get(C.METADATA, {}).get(C.NAME, "mindie-server")
-    set_rbac_namespace(extract_rbac_resources(all_docs), namespace)
+    accounts = set_rbac_namespace(extract_rbac_resources(all_docs), namespace)
+    set_workload_service_accounts(infer_doc, accounts)
     infer_doc[C.METADATA][C.NAMESPACE] = namespace
     _set_scaling_policy_scope(infer_doc, namespace)
     # Must call before engine config so g_mmc_local_service_mode is set
@@ -532,7 +545,9 @@ def init_infer_service_domain_name(infer_service_template_yaml, deploy_config, u
     if not isinstance(all_docs, list):
         all_docs = [all_docs]
     infer_doc = _find_infer_service_set_doc(all_docs)
-    infer_name = infer_doc.get(C.METADATA, {}).get(C.NAME, "mindie-server")
+    # Reads the template, not the generated yaml, so apply the same rename that
+    # generate_yaml_infer_service_set does to the set name.
+    infer_name = infer_set_name(infer_doc.get(C.METADATA, {}).get(C.NAME, "mindie-server"))
     namespace = deploy_config[C.CONFIG_JOB_ID]
 
     def _build_fqdn(service, role_name_val):

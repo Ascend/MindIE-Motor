@@ -37,6 +37,7 @@ import re
 import lib.constant as C
 from lib.utils import load_yaml, write_yaml, logger
 from lib.generator import k8s_utils
+from lib.service_identity import qualify, stamp_ownership
 
 
 def _entry_type(entry):
@@ -48,8 +49,11 @@ def _entry_volume_name(index):
     always index-derived, so names are deterministic across deploys and can never collide.
     Entries with ``claim_name`` mount that existing claim instead; only their volume name
     comes from here.
+
+    A service identity is appended because the PVC this names is namespace-scoped and
+    service-dedicated; the claim reference is derived from the same value.
     """
-    return f"{C.DEFAULT_STORAGE_NAME}-{index}"
+    return qualify(f"{C.DEFAULT_STORAGE_NAME}-{index}")
 
 
 def _entry_mount_path(entry, index):
@@ -288,7 +292,9 @@ def build_storage_pvc_docs(input_yaml, user_config, entries=None):
             continue
         pvc = copy.deepcopy(template)
         pvc[C.METADATA][C.NAMESPACE] = namespace
+        # The name already carries the identity; add the ownership labels only.
         pvc[C.METADATA][C.NAME] = _entry_volume_name(index)
+        stamp_ownership(pvc[C.METADATA])
         spec = pvc[C.SPEC]
         spec[C.STORAGE_CLASS_NAME] = entry[C.STORAGE_CLASS]
         spec[C.ACCESS_MODES] = [entry.get(C.STORAGE_ACCESS_MODE, C.DEFAULT_STORAGE_ACCESS_MODE)]

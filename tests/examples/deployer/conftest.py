@@ -33,6 +33,7 @@ DEPLOYER_ROOT = Path(__file__).resolve().parents[3] / "examples" / "deployer"
 sys.path.insert(0, str(DEPLOYER_ROOT))
 
 import lib.constant as C  # noqa: E402
+import lib.service_identity as service_identity  # noqa: E402
 from lib.generator import k8s_utils  # noqa: E402
 
 
@@ -53,3 +54,14 @@ def mock_accelerator_type_from_cluster(request, monkeypatch):
     )
     yield
     k8s_utils._g_accelerator_type_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def isolate_service_identity(monkeypatch):
+    """serviceN is chosen by listing the namespace. These tests have no kubectl."""
+    service_identity.g_service_name = ""
+    service_identity.g_service_namespace = ""
+    monkeypatch.setattr(service_identity, "_kubectl_text", lambda *_args, **_kwargs: "")
+    yield
+    service_identity.g_service_name = ""
+    service_identity.g_service_namespace = ""

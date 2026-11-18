@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import lib.constant as C
 from lib.generator import k8s_utils
+from lib.service_identity import infer_set_name
 from lib.utils import apply_node_selector_override, load_yaml, logger, write_yaml
 from lib.yuanrong_config import validate_yuanrong_config
 
@@ -55,7 +56,8 @@ def get_infer_service_kv_store_service_name(infer_service_template_yaml):
     if not services:
         raise ValueError(f"Missing services for role '{C.ROLE_KV_STORE}' in infer_service_template.yaml")
     service_name = services[0].get(C.NAME, "")
-    infer_name = infer_doc.get(C.METADATA, {}).get(C.NAME, "mindie-server")
+    # Reads the template, so apply the same InferServiceSet rename the generator does.
+    infer_name = infer_set_name(infer_doc.get(C.METADATA, {}).get(C.NAME, "mindie-server"))
     role_name_val = role.get(C.NAME, C.ROLE_KV_STORE)
     return f"{service_name}-{infer_name}-0-{role_name_val}"
 

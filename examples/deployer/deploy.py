@@ -19,6 +19,7 @@ import subprocess
 import sys
 
 import lib.constant as C
+from lib.service_identity import output_root, service_name, validate as validate_service_identity
 from lib.tui.step import start_monitor
 from lib.utils import logger, read_json, set_env_to_shell, get_deploy_paths
 from lib.update_config_whitelist import apply_whitelist_update
@@ -312,11 +313,79 @@ def resolve_deploy_mode_for_services(deploy_config):
     return get_deploy_mode_from_config(deploy_config)
 
 
+def _kubectl_output(*args):
+    from lib.generator.k8s_utils import run_cmd_get_output  # pylint: disable=import-outside-toplevel
+
+    return run_cmd_get_output(["kubectl", *args], timeout=30)
+
+
+def ensure_namespace(namespace):
+    """Create the job namespace when the cluster does not have it yet."""
+    try:
+        _kubectl_output("get", "namespace", namespace)
+    except RuntimeError:
+        logger.info("Namespace %s does not exist; creating it", namespace)
+        _kubectl_output("create", "namespace", namespace)
+
+
+def warn_existing_service(namespace):
+    """Tell the operator this namespace already holds a Motor service."""
+    try:
+        raw = _kubectl_output(
+            "get",
+            "pods",
+            "-n",
+            namespace,
+            "--no-headers",
+            "-o",
+            "custom-columns=NAME:.metadata.name,SVC:.metadata.labels.motor\\.mindie\\.io/service",
+        )
+    except RuntimeError as exc:
+        logger.warning("Skip same-namespace check, cannot list pods in %s: %s", namespace, exc)
+        return
+    rows = []
+    for line in raw.splitlines():
+        parts = line.split()
+        if not parts or parts[0] in ("", "<none>"):
+            continue
+        label = parts[1] if len(parts) > 1 else "<none>"
+        rows.append(f"{parts[0]} (service={label})")
+    if not rows:
+        return
+    shown = ", ".join(rows[:12])
+    more = f"，另有 {len(rows) - 12} 个" if len(rows) > 12 else ""
+    current = service_name()
+    if current:
+        logger.warning(
+            "namespace %s 里已经有 Motor Pod：%s%s。"
+            "这次再拉一套，标识是 %s。NodePort 不能和已有的那套相同，否则端口冲突。",
+            namespace,
+            shown,
+            more,
+            current,
+        )
+        return
+    logger.warning(
+        "namespace %s 里已经有 Motor Pod：%s%s。这次部署不会生成 service 前缀，同名资源会被覆盖。",
+        namespace,
+        shown,
+        more,
+    )
+
+
 def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collect=False):
     sync_decode_first_token_timeout_from_env(user_config, env_config_path)
     # Also validate here: TUI / programmatic callers bypass main()'s pre-flight checks.
     validate_kv_cache_store_config(user_config)
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
+    if not deploy_config.get(C.CONFIG_JOB_ID):
+        deploy_config[C.CONFIG_JOB_ID] = "mindie-motor"
+        logger.info("motor_deploy_config.job_id is empty; using mindie-motor")
+    validate_service_identity(user_config, resolve_deploy_mode_for_services(deploy_config))
+    if not dry_run:
+        namespace = deploy_config[C.CONFIG_JOB_ID]
+        ensure_namespace(namespace)
+        warn_existing_service(namespace)
     update_kv_store_enabled_flag(user_config)
     update_kv_conductor_enabled_flag(user_config)
     update_engine_type_flag(user_config)
@@ -588,7 +657,10 @@ def main():
         print(_DEPLOYMENT_PRECHECK_MESSAGE, file=sys.stderr)
         sys.exit(1)
 
-    os.makedirs(C.OUTPUT_ROOT_PATH, exist_ok=True)
+    # Records the active service identity, so it must run before anything derives a name
+    # or an output path from it.
+    validate_service_identity(user_config, reuse_existing=args.update_config or args.update_instance_num)
+    os.makedirs(output_root(), exist_ok=True)
     validate_reserved_labels(user_config)
     validate_kv_cache_store_config(user_config)
     validate_container_snapshot_config(user_config)

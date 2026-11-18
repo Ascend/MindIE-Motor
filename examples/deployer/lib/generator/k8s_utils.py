@@ -17,6 +17,7 @@ import subprocess
 
 import lib.constant as C
 from lib.prepare_utils import kubectl_from_file_args
+from lib.service_identity import configmap_name, output_root, retarget_service_accounts, scope_rbac
 from lib.utils import (
     get_coordinator_service_name,
     logger,
@@ -407,14 +408,14 @@ def get_accelerator_type_from_cluster(hardware_type):
 
 
 def get_baseline_config_from_configmap(job_id):
-    """Get current deployed user_config from cluster ConfigMap. Returns None if CM missing or no user_config."""
+    """Get current deployed user_config from this service's ConfigMap. None if absent."""
     try:
         out = run_cmd_get_output(
             [
                 "kubectl",
                 "get",
                 "configmap",
-                C.MOTOR_CONFIG_CONFIGMAP_NAME,
+                configmap_name(),
                 "-n",
                 job_id,
                 "-o",
@@ -462,22 +463,17 @@ def extract_rbac_resources(docs):
 
 
 def set_rbac_namespace(rbac_resources, namespace):
-    """Set namespace for RBAC resources"""
-    for rbac_resource in rbac_resources:
-        if rbac_resource.get(C.KIND) == C.SERVICE_ACCOUNT:
-            rbac_resource[C.METADATA][C.NAMESPACE] = namespace
-        elif rbac_resource.get(C.KIND) == "ClusterRole":
-            rbac_resource[C.METADATA][C.NAME] = f"{rbac_resource[C.METADATA][C.NAME]}-{namespace}"
-        elif rbac_resource.get(C.KIND) == C.CLUSTER_ROLE_BINDING:
-            rbac_resource[C.METADATA][C.NAME] = f"{rbac_resource[C.METADATA][C.NAME]}-{namespace}"
-            # Update roleRef to reference the namespace-scoped ClusterRole name
-            role_ref = rbac_resource.get("roleRef")
-            if role_ref:
-                role_ref[C.NAME] = f"{role_ref[C.NAME]}-{namespace}"
-            if C.SUBJECTS in rbac_resource:
-                for subject in rbac_resource[C.SUBJECTS]:
-                    if subject.get(C.KIND) == C.SERVICE_ACCOUNT:
-                        subject[C.NAMESPACE] = namespace
+    """Scope RBAC resources to the namespace, and to the service when one is named.
+
+    Returns the ServiceAccount rename map for set_workload_service_accounts; the map is
+    empty in the compatible mode.
+    """
+    return scope_rbac(rbac_resources, namespace)
+
+
+def set_workload_service_accounts(doc, accounts):
+    """Repoint serviceAccountName at the renamed, service-owned ServiceAccount."""
+    retarget_service_accounts(doc, accounts)
 
 
 def set_services_namespace(service_list, namespace):
@@ -542,8 +538,9 @@ def _user_config_path_for_configmap(user_config=None, effective_deploy_mode=None
     config_copy = json.loads(json.dumps(user_config))
     motor_deploy = config_copy.setdefault(C.MOTOR_DEPLOY_CONFIG, {})
     motor_deploy[C.DEPLOY_MODE_CONFIG_KEY] = effective_deploy_mode
-    os.makedirs(C.OUTPUT_ROOT_PATH, exist_ok=True)
-    effective_path = os.path.join(C.OUTPUT_ROOT_PATH, ".motor_config_user_config.json")
+    out_root = output_root()
+    os.makedirs(out_root, exist_ok=True)
+    effective_path = os.path.join(out_root, ".motor_config_user_config.json")
     with open(effective_path, "w", encoding="utf-8") as f:
         json.dump(config_copy, f, indent=2)
         f.write("\n")
@@ -551,11 +548,12 @@ def _user_config_path_for_configmap(user_config=None, effective_deploy_mode=None
 
 
 def create_motor_config_configmap(job_id, user_config=None, effective_deploy_mode=None):
-    """Create or update ConfigMap motor-config with all mounted files (scripts + user_config.json)."""
+    """Create or update this service's motor-config ConfigMap (scripts + user_config.json)."""
     config_path = _user_config_path_for_configmap(user_config, effective_deploy_mode)
-    os.makedirs(C.OUTPUT_ROOT_PATH, exist_ok=True)
-    coordinator_conflict = os.path.join(C.OUTPUT_ROOT_PATH, C.NODEPORT_CONFLICT_COORDINATOR_FILE)
-    controller_conflict = os.path.join(C.OUTPUT_ROOT_PATH, C.NODEPORT_CONFLICT_CONTROLLER_FILE)
+    out_root = output_root()
+    os.makedirs(out_root, exist_ok=True)
+    coordinator_conflict = os.path.join(out_root, C.NODEPORT_CONFLICT_COORDINATOR_FILE)
+    controller_conflict = os.path.join(out_root, C.NODEPORT_CONFLICT_CONTROLLER_FILE)
     for path in (coordinator_conflict, controller_conflict):
         if not os.path.exists(path):
             with open(path, "w", encoding="utf-8") as fh:
@@ -566,7 +564,7 @@ def create_motor_config_configmap(job_id, user_config=None, effective_deploy_mod
             "kubectl",
             "create",
             "configmap",
-            C.MOTOR_CONFIG_CONFIGMAP_NAME,
+            configmap_name(),
             *from_file_args,
             f"--from-file=user_config.json={config_path}",
             f"--from-file={C.NODEPORT_CONFLICT_COORDINATOR_FILE}={coordinator_conflict}",

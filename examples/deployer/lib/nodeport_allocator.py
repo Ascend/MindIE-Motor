@@ -424,9 +424,14 @@ def _log_conflict_guidance(item: PlannedNodePort, owner: ClusterNodePort) -> Non
 
 
 def _conflict_file_paths() -> tuple[str, str]:
-    os.makedirs(C.OUTPUT_ROOT_PATH, exist_ok=True)
-    coordinator_path = os.path.join(C.OUTPUT_ROOT_PATH, C.NODEPORT_CONFLICT_COORDINATOR_FILE)
-    controller_path = os.path.join(C.OUTPUT_ROOT_PATH, C.NODEPORT_CONFLICT_CONTROLLER_FILE)
+    # Must match where create_motor_config_configmap reads them from, which is the
+    # per-service output root once a service identity is set.
+    from lib.service_identity import output_root  # pylint: disable=import-outside-toplevel
+
+    out_root = output_root()
+    os.makedirs(out_root, exist_ok=True)
+    coordinator_path = os.path.join(out_root, C.NODEPORT_CONFLICT_COORDINATOR_FILE)
+    controller_path = os.path.join(out_root, C.NODEPORT_CONFLICT_CONTROLLER_FILE)
     return coordinator_path, controller_path
 
 

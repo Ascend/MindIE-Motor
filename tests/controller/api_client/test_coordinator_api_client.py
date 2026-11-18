@@ -105,6 +105,54 @@ def test_list_coordinator_pod_ips_skips_without_namespace() -> None:
         mock_k8s.assert_not_called()
 
 
+def test_list_coordinator_pod_ips_uses_injected_label_without_prefix_fallback() -> None:
+    cac._POD_IP_CACHE = ()
+    cac._POD_IP_CACHE_AT = 0.0
+    k8s = MagicMock()
+    k8s.list_pod_ips.return_value = ["10.0.0.8"]
+    env = {
+        "POD_NAMESPACE": "mindie",
+        "COORDINATOR_POD_LABEL": "app=mindie-motor-coordinator-aaa111",
+    }
+    with (
+        patch.dict(os.environ, env, clear=False),
+        patch.object(cac, "_k8s_client", return_value=k8s),
+    ):
+        assert cac._list_coordinator_pod_ips() == ["10.0.0.8"]
+    k8s.list_pod_ips.assert_called_once_with(
+        "mindie",
+        label_selector="app=mindie-motor-coordinator-aaa111",
+    )
+    cac._POD_IP_CACHE = ()
+    cac._POD_IP_CACHE_AT = 0.0
+
+
+def test_list_coordinator_pod_ips_prefix_fallback_excludes_named_services() -> None:
+    cac._POD_IP_CACHE = ()
+    cac._POD_IP_CACHE_AT = 0.0
+    k8s = MagicMock()
+    k8s.list_pod_ips.side_effect = [[], ["10.0.0.9"]]
+    env = {"POD_NAMESPACE": "mindie", "COORDINATOR_POD_LABEL": ""}
+    with (
+        patch.dict(os.environ, env, clear=False),
+        patch.object(cac, "_k8s_client", return_value=k8s),
+    ):
+        assert cac._list_coordinator_pod_ips() == ["10.0.0.9"]
+    assert k8s.list_pod_ips.call_args_list[0] == (
+        ("mindie",),
+        {"label_selector": "app=mindie-motor-coordinator"},
+    )
+    assert k8s.list_pod_ips.call_args_list[1] == (
+        ("mindie",),
+        {
+            "label_selector": "!motor.mindie.io/service",
+            "name_prefix": "mindie-motor-coordinator",
+        },
+    )
+    cac._POD_IP_CACHE = ()
+    cac._POD_IP_CACHE_AT = 0.0
+
+
 def test_send_instance_refresh_falls_back_to_service_dns() -> None:
     event_msg = MagicMock()
     event_msg.instances = []
