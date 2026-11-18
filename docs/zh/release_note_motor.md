@@ -22,7 +22,6 @@
 | MindCluster | 26.2.0 |
 | vLLM | v0.30.0 |
 | vLLM Ascend | releases/v0.30.0 |
-| Ascend HDK | 26.2.0 |
 
 ## 版本兼容性说明
 
