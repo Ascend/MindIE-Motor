@@ -248,7 +248,7 @@ motor_controller_config字段配置样例如下所示：
 | probe_timeout_seconds |float|探测超时时间，单位：秒，默认值：0.5。|
 | remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | bind_host |string|绑定主机地址，默认值：0.0.0.0。|
-|**precision_auto_recovery_enabled**|bool|精度检测总开关。关闭时不进行额外采样注入与检测；不影响用户自己请求 logprobs。可选：`true` / `false`，默认值：`false`。|
+|**precision_auto_recovery_enabled**|bool|收到精度异常告警 `0xFC001009` 后是否终止告警中的 Decode 实例。可选：`true` / `false`，默认值：`false`。关闭时只保留告警。|
 | **additional_annotations** | object | 可选；Controller工作负载及其Pod模板的自定义Annotations。 |
 | **additional_labels** | object | 可选；Controller工作负载及其Pod模板的自定义Labels。 |
 | image_name | string | 可选；Controller 容器镜像。不填则使用 `motor_deploy_config.image_name`。**仅 Kubernetes 部署生效**；Docker 部署不支持按组件指定镜像，统一使用 `motor_deploy_config.image_name`。 |
@@ -460,13 +460,8 @@ motor_coordinator_config字段配置样例如下所示：
     "local_parent_sampled": 1.0,
     "local_parent_not_sampled": 1.0
   },
-  "token_sampling_config": {
-    "interval_seconds": 30.0,
-    "logprobs_count": 1,
-    "precision_check_enabled": false,
-    "precision_issue_threshold": 10,
-    "probe_max_attempts": 3,
-    "probe_timeout_seconds": 600.0
+  "precision_detection_config": {
+    "precision_clear_threshold": 10
   },
   "port_allocator_config": {
     "enable": true,
@@ -649,13 +644,8 @@ motor_coordinator_config字段配置样例如下所示：
 | npu_endpoint |string|HBM 事件端口覆盖模式，默认空；格式 `tcp://*:<port>`，端口加 DP 秩。旧别名 `xpu_endpoint` 在本项为空时使用。|
 | cpu_endpoint / disk_endpoint |string|YuanRong 节点级 CPU/Disk 事件端口，默认空。按 `(IP, model_name)` 注册，使用基础端口，不加 DP 秩；建议显式配置，避免回退到 HBM 事件端口。|
 | re_register_interval_sec |int|周期检查缺失注册的间隔（秒），默认 `0`，小于等于 0 关闭。包含 P/U DP 和 YuanRong 节点池补注册；不等于全量缓存恢复。详见[注册与恢复说明](../../design/kv_conductor.md#registration-lifecycle)。|
-| **token_sampling_config字段** |-|-|
-| interval_seconds |float|同一 Decode 实例两次采样参数注入之间的最小间隔，默认值：30.0。|
-| logprobs_count |int|采样时需要带回多少log_prob，默认值：1。取值如下：<ul><li>1：只能检测重复。</li><li>3：可以检测重复和乱码。</li><li>5：可以检测重复、乱码和生僻字。</li></ul>|
-| precision_check_enabled |bool|是否开启精度异常检测，默认值：false。|
-| precision_issue_threshold |int|连续多少次异常会被判定为精度异常并触发上报，默认值：10。|
-| probe_max_attempts |int|发现精度异常后会进行拨测的次数，默认值：3。|
-| probe_timeout_seconds |float|拨测一次的超时时间设置，默认值：600.0。|
+| **precision_detection_config字段** |-|-|
+| precision_clear_threshold |int|活动精度告警下，Decode 各 endpoint 连续无新增达到该次数后上报清除。默认值：10。检测器开关在引擎 `additional_config.runtime_config.detector.<name>.enabled`，不在本配置中。|
 | **port_allocator_config字段** |-|-|
 | enable |bool|是否使能端口自动分配，默认值：true。|
 | scan_range |int|端口扫描范围，默认值：100。|

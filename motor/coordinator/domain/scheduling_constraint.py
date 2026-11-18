@@ -27,6 +27,7 @@ class SchedulingConstraint(BaseModel):
         default_factory=dict,
         description="PDRole.value -> instance id",
     )
+    pinned_endpoints: dict[str, int] = Field(default_factory=dict)
     reason: str = Field(default="internal", description="Audit tag, e.g. precision_probe")
 
     @classmethod
@@ -35,11 +36,17 @@ class SchedulingConstraint(BaseModel):
         *,
         p_instance_id: int | None,
         d_instance_id: int,
+        d_endpoint_id: int | None = None,
     ) -> SchedulingConstraint:
         pinned: dict[str, int] = {PDRole.ROLE_D.value: d_instance_id}
         if p_instance_id is not None:
             pinned[PDRole.ROLE_P.value] = p_instance_id
-        return cls(pinned_instances=pinned, reason="precision_probe")
+        endpoints = {PDRole.ROLE_D.value: d_endpoint_id} if d_endpoint_id is not None else {}
+        return cls(pinned_instances=pinned, pinned_endpoints=endpoints, reason="precision_probe")
+
+    def endpoint_for_role(self, role: PDRole) -> int | None:
+        key = role.value if hasattr(role, "value") else str(role)
+        return self.pinned_endpoints.get(key)
 
     def target_for_role(self, role: PDRole) -> int | None:
         key = role.value if hasattr(role, "value") else str(role)

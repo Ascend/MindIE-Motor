@@ -3801,3 +3801,32 @@ async def test_unified_pd_prepare_attempt_resource_rolls_back_when_bookkeeping_c
     scheduler.update_workload.assert_called_once()
     params = scheduler.update_workload.call_args.args[0]
     assert params.workload_change.active_tokens < 0
+
+
+@pytest.mark.asyncio
+async def test_runtime_guard_probe_does_not_retry_failed_decode_request(monkeypatch):
+    from motor.coordinator.fault_tolerance.probe.router_probe import InternalRouterProbe
+
+    config = _config()
+    config.exception_config.max_retry = 5
+    config.exception_config.transport_max_retry = 3
+    scheduler = _Scheduler()
+    manager = RequestManager(config)
+    prefill = _Client("prefill")
+    decode = _HTTPErrorClient("decode", 503, {"error": {"message": "unavailable"}})
+
+    @asynccontextmanager
+    async def client_for(_router, resource):
+        yield prefill if resource.instance.role == PDRole.ROLE_P else decode
+
+    monkeypatch.setattr(UnifiedPDRouter, "_client_for", client_for)
+    monkeypatch.setattr(
+        "motor.coordinator.router.dispatch.select_router_class", AsyncMock(return_value=UnifiedPDRouter)
+    )
+    probe = InternalRouterProbe(config, scheduler, manager)
+    outcome = await probe.run(
+        p_instance_id=None, d_instance_id=2, d_endpoint_id=2, model="m", max_attempts=1, timeout_seconds=1
+    )
+    assert outcome.failures == 1
+    assert len(decode.requests) == 1
+    assert config.exception_config.transport_retry_limit == 3

@@ -37,7 +37,7 @@ class ControllerApiClient:
 
     @classmethod
     def report_alarms(cls, params: dict) -> dict:
-        """POST alarm payload; return ``{ok, precision_alarm_cleared_by_auto_recovery}``."""
+        """POST alarm payload. ``ok`` is true when the call is skipped or the controller returns HTTP 200."""
         client_args = {}
         default_outcome = {
             "ok": False,

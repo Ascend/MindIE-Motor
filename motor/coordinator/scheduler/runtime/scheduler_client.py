@@ -1525,7 +1525,9 @@ class AsyncSchedulerClient:
         affinity_parent_session_id: str | None = None
         affinity_epoch: int | None = None
         affinity_outcome = "-"
-        target_endpoint_id: int | None = None
+        constraint = getattr(req_info, "scheduling_constraint", None)
+        strict_endpoint_id = constraint.endpoint_for_role(role) if constraint is not None else None
+        target_endpoint_id: int | None = strict_endpoint_id
         if self._session_affinity is not None:
             hint_info = getattr(req_info, "agent_hint_info", None)
             affinity_session_id = getattr(hint_info, "session_id", None)
@@ -1651,6 +1653,11 @@ class AsyncSchedulerClient:
                 if pinned_candidate is not None:
                     endpoint = pinned_candidate
                 else:
+                    if strict_endpoint_id is not None:
+                        logger.warning(
+                            "Required endpoint_id=%s unavailable on instance=%s", pinned_endpoint_id, instance.id
+                        )
+                        return None
                     logger.info(
                         "pinned endpoint_id=%s no longer available on instance=%s; re-picking by load",
                         pinned_endpoint_id,
@@ -1824,6 +1831,13 @@ class AsyncSchedulerClient:
                 return None
             out_instance, out_endpoint, selected_score = selected
             pair = (out_instance.id, out_endpoint.id)
+            if strict_endpoint_id is not None and pair != (target_instance_id, strict_endpoint_id):
+                logger.warning(
+                    "Required probe endpoint unavailable: instance=%s endpoint=%s",
+                    target_instance_id,
+                    strict_endpoint_id,
+                )
+                return None
             if pair in excluded:
                 use_authoritative = True
                 continue

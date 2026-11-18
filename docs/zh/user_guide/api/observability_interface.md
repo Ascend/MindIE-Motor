@@ -714,8 +714,8 @@ Coordinator主备模式发生主备切换，备Coordinator获取主角色并启�
 
 **告警解释**
 
-- **告警上报**：Coordinator 对 Decode 输出进行 token 级采样检测；同一实例组连续异常达到 `precision_issue_threshold` 后执行固定问答拨测，并上报精度异常告警。无论拨测成功或失败都会上报告警，拨测失败次数写入附加信息。
-- **告警恢复**：Controller 自动恢复成功、CCAE 精度控制成功终止实例组，或者同一实例组连续正常检测达到 `precision_clear_threshold` 时，生成清除记录。
+- **告警上报**：Coordinator 集成 Decode 侧 Runtime Guard 计数。计数增加后透传上报精度异常告警。附加信息包含本轮增量、拨测失败次数和 `abnormal_ports`。
+- **告警恢复**：Controller 自动恢复成功，或该 Decode 连续无新增达到 `precision_clear_threshold` 时，生成清除记录。
 
 **告警属性**
 
@@ -727,33 +727,33 @@ Coordinator主备模式发生主备切换，备Coordinator获取主角色并启�
 
 | 类别 | 参数名称 | 参数含义 |
 | --- | --- | --- |
-| 定位信息 | service name | 组件名称 `Coordinator`。 |
-| 定位信息 | service ip | Coordinator 所在 Pod 的 `POD_IP`。 |
-| MOI | pId | Prefill 实例 ID；PD 混合部署时不包含该参数。 |
-| MOI | instanceId | Decode 实例 ID。告警与清除记录必须使用完全相同的 MOI。 |
-| 附加信息 | precision_issue_count | 触发告警时累计的连续精度异常次数。 |
-| 附加信息 | probe_failure_count | 固定问答拨测失败次数。 |
-| 附加信息 | p_instance_id | Prefill 实例 ID；无 Prefill 实例时为 `None`。 |
-| 附加信息 | d_instance_id | Decode 实例 ID。 |
-| 附加信息 | pod id | 依次取非空的 `SERVICE_ID`、`sys_id` 或模型 ID。 |
-| 响应字段 | instanceId | Decode 实例 ID。 |
-| 响应字段 | pInstanceId | Prefill 实例 ID；无 Prefill 实例时为空字符串。 |
-| 原因 | reasonId=0 | 当前实现保留 `Record` 的默认值。 |
+| 定位信息 | `service name` | 组件名称 `Coordinator`。 |
+| 定位信息 | `service ip` | Coordinator 所在 Pod 的 `POD_IP`。 |
+| MOI | `instanceId` | Decode 实例 ID。告警与清除记录必须使用完全相同的 MOI。本告警不带 Prefill。 |
+| 附加信息 | `precision_issue_count` | 本轮 Runtime Guard 计数增量。 |
+| 附加信息 | `probe_failure_count` | 本轮拨测失败次数。 |
+| 附加信息 | `abnormal_ports` | 本轮出现新增的 Decode endpoint 业务端口。 |
+| 附加信息 | `p_instance_id` | 空。 |
+| 附加信息 | `d_instance_id` | Decode 实例 ID。 |
+| 附加信息 | `pod id` | 依次取非空的 `SERVICE_ID`、`sys_id` 或模型 ID。 |
+| 响应字段 | `instanceId` | Decode 实例 ID。 |
+| 响应字段 | `pInstanceId` | Prefill 实例 ID；无 Prefill 实例时为空字符串。 |
+| 原因 | `reasonId=0` | 当前实现保留 `Record` 的默认值。 |
 
 **对系统的影响**
 
-该记录的 `serviceAffectedType=1`。目标实例组可能持续产生重复、乱码、生僻字等输出质量异常；开启自动恢复后，Controller 会终止对应 Decode 实例及可选的 Prefill 实例。
+该记录的 `serviceAffectedType=1`。对应 Decode 的 Runtime Guard 计数出现新增。开启自动恢复后，Controller 终止该 Decode 实例。
 
 **可能原因**
 
-同一 Decode 或 PD 实例组连续产生 token 级输出质量异常，并达到配置的连续异常阈值。
+Decode endpoint 上的 Runtime Guard 计数相对上次已确认值增加。
 
 **处理步骤**
 
-1. 根据 `instanceId`、`pInstanceId` 和 MOI 定位异常实例组。
-2. 检查 `precision_issue_count`、`probe_failure_count` 以及 Coordinator 精度检测日志。
-3. 检查对应推理实例的模型、权重、量化配置和运行日志。
-4. 确认 Controller 自动恢复结果，或者通过 CCAE 精度控制执行恢复。
+1. 根据 `instanceId`、MOI 和 `abnormal_ports` 定位 Decode 实例与 endpoint。
+2. 检查 `precision_issue_count`、`probe_failure_count`。
+3. 检查该 Decode 引擎的 Runtime Guard 检测器配置和运行日志。
+4. 确认 Controller 自动恢复结果。
 
 **告警清除**
 

@@ -2,42 +2,31 @@
 
 ## 特性介绍
 
-精度检测特性用于发现Decode实例在推理过程中出现的token级输出质量异常，例如大段重复、乱码和生僻字异常。
+精度检测用于发现 Decode 推理过程中的运行时异常，并把结果上报为精度异常告警。检测由 vLLM-Ascend Runtime Guard 完成。Motor 不实现检测算法，也不修改用户请求。Coordinator 读取 Decode endpoint 的 `/metrics`，计数增加后透传上报 `Precision Anomaly Alarm`，告警 ID 为 `0xFC001009`。
+
+本特性没有单独的总开关。三种检测器默认都是关闭的，需要在 Decode 引擎配置里按名称打开。检测器全部关闭，或 `/metrics` 上没有对应计数时，Motor 不上报告警。
 
 ### 工作原理
 
-精度检测功能开启后，Coordinator 在选定 Decode 实例后抢占该实例的采样窗口，仅对抢占成功的请求注入 logprobs、top_logprobs 和 return_token_ids。响应完成后，采集的 token id 与 logprob 进入后台检测；检测结果按最终的 P/D 实例组累计。
+1. Decode 引擎按 `additional_config.runtime_config.detector.<name>` 运行已打开的检测器。命中后，引擎把对应 `incident_type` 的异常计数写入 `/metrics`。
+2. Coordinator 可观测进程按指标采集周期抓取 Decode endpoint。连续 10 次抓到可读文本后做一次窗口判定。计数相对上次已确认值增加，视为一次新增；第一次看到正数也算新增。
+3. 出现新增时，Coordinator 对该 Decode endpoint 做一次拨测，并把失败次数写入告警附加信息。拨测不决定是否上报。
+4. Coordinator 上报精度异常告警。告警归属该 Decode 实例，`p_instance_id` 为空。附加信息中的 `abnormal_ports` 是本轮出现新增的业务端口。`precision_issue_count` 是本轮计数增量。
+5. 该告警已活动时不重复上报。当前各 endpoint 连续无新增达到 `precision_clear_threshold` 后，上报清除。
+6. `precision_auto_recovery_enabled` 为 `true` 时，Controller 终止告警中的 Decode 实例。该开关默认 `false`，关闭时只保留告警。
 
-> [!WARNING] 性能影响
-> **重要：精度检测不是零开销功能。**每次有 Decode 请求成功抢占采样窗口时，该请求会额外携带 `logprobs`、`top_logprobs` 和 `return_token_ids`，因此会增加引擎计算、响应传输和后台检测资源消耗，造成较大的性能开销。开销仅作用于采样请求。后台检测不阻塞用户响应及 TPOT。
-
-当同一个实例组连续多次被检测为异常时，Coordinator会通过内部Router对目标实例组发起固定问答拨测。拨测完成后，Coordinator上报精度异常告警到Controller；如果Controller侧开启自动恢复，Controller会终止告警中的Decode实例，并在告警携带Prefill实例ID时同步终止Prefill实例。
-
-Coordinator的请求处理链路会发生以下变化：
-
-1. Router 选定 Decode 实例后，SampleController 通过 Scheduler ZMQ 按 Decode 实例原子抢占采样窗口。
-2. 仅抢占成功的请求注入 logprobs、top_logprobs 和 return_token_ids；同一 Decode 实例每 interval_seconds 最多注入一次。
-3. Router 从流式或非流式响应中缓存完整的 prompt_token_ids、output_token_ids、logprobs 和 topk_logprobs，并在返回用户前恢复其原始 logprobs 数量：用户未请求时删除，用户请求较少时裁剪，用户请求较多时不缩减。
-4. 用户响应结束后，完整样本进入受跟踪的后台任务；PrecisionReporter 和 MsprobeChecker 不阻塞用户响应及 TPOT。
-5. PrecisionReporter 通过 Scheduler 按 (p_instance_id, d_instance_id) 记录跨 Worker 的连续异常次数；Hybrid 使用 (None, union_id)。
-6. 连续异常达到 precision_issue_threshold 后，InternalRouterProbe 固定问答拨测目标实例组。
-7. PrecisionAlarm 构造精度异常告警并上报 Controller。
-8. Controller 根据 precision_auto_recovery_enabled 决定是否调用恢复服务终止实例；终止成功后 Controller 上报 CLEAR 并通知 Coordinator 清理 Scheduler 活动状态。
-9. 活动告警下，Coordinator 连续 precision_clear_threshold 次有效正常检测后，自动上报 CLEAR 清除告警（不依赖 auto-recovery，适用于关闭自动恢复或告警仍活动的场景）。
-10. 若部署 CCAE Reporter，Controller 侧 Reporter 会调用 Controller 既有接口 /controller/terminate_instance 终止 D 实例；请求体可携带 p_instance_id 和 precision_alarm_clear=true，由 Controller 在终止 P/D 实例组后附加清除精度告警，并继续向 CCAE 成功上报 controlStatus=Completed 共 10 次，之后才停止该 precision task 的上报。
+Prefill 可以带同一份检测器配置。本特性只消费 Decode 的计数。
 
 ### 约束与限制
 
-以下运行约束依据当前实现整理。硬件、引擎版本和特性组合的验证范围需在发布前由测试结果确认。
-
 | 约束维度 | 要求 |
 |----------|------|
-| 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li><li>Ascend950 PR&950 DT系列产品</li></ul> |
-| 部署场景 | <ul><li>仅**支持** PD分离、CDP/Hybrid 等经过 Coordinator Router 转发 Decode 请求的部署形态；</li><li>**不支持**未经过 Coordinator Router 的直连推理请求。</li></ul> |
-| 引擎 | 当前仅支持 vLLM 引擎。`user_config.json` 中 `motor_engine_*_config.engine_type` 须为 `vllm`；引擎须接受 `logprobs`、`top_logprobs`、`return_token_ids` 请求参数，并在响应中返回可对齐的 token id 与 logprob。 |
-| 特性互斥 | 用户主动请求 logprobs 时，采样仍会强制 return_tokens_as_token_ids=true，可能改变 token 的表示形式；需要依赖原始文本 token 的客户端须验证兼容性。 |
-| 软件依赖 | 运行环境须安装 msprobe，且 msprobe.response_anomaly.detector.ILLDetector 可导入。 |
-| 其他限制 | <ul><li>设置precision_check_enabled=true 后，仅抢占采样窗口成功的 Decode 请求会注入 logprobs；请求失败也会消耗本次窗口，不回退、不转让。</li><li>Scheduler 客户端不可用时，Coordinator 启动阶段会将 sampling_manager 置为 None，本轮进程不会启用完整采样链路。</li><li>检测异常时采用 fail-open：msprobe 执行失败、top-k 与 token 数量不对齐、Scheduler ZMQ 失败等场景不会中断用户请求，也不会误触发恢复。</li><li>精度拨测使用固定问题“相对论的发明人是谁”，响应中需包含“爱因斯坦”才认为单次拨测通过。</li><li>自动恢复只由 Controller 侧 precision_auto_recovery_enabled 控制，不依赖 observability 告警展示开关。</li><li>本版本仅保证用户请求的 logprobs 数量不被 Motor 的额外采样改变。采样请求仍会强制 return_tokens_as_token_ids=true，用户主动请求 logprobs 时，token 表示形式可能与未采样请求不同。</li><li>精度检测对象在进程启动时装配；修改嵌套的 precision_detection_config 后需要重启 Coordinator Worker 才能确保全部字段生效。</li></ul> |
+| 硬件 | <ul><li>Atlas 800I A2 推理服务器</li><li>Atlas 800I A3 超节点服务器</li><li>Ascend 950 PR 系列产品</li></ul> |
+| 部署场景 | 经过 Coordinator 管理的 Decode 实例。直连引擎不经过本特性。 |
+| 引擎 | vLLM，且已安装带 Runtime Guard 的 vLLM-Ascend。检测器配置写在 `motor_engine_decode_config.engine_config.additional_config`，修改后重启 Decode 生效。 |
+| 告警粒度 | Decode 实例。端口只写在附加信息里，用于定位 endpoint。 |
+| 恢复 | 自动恢复只终止告警中的 Decode 实例，不终止 Prefill，不缩单个 DP，也不走软件故障入口。 |
+| 其他限制 | <ul><li>抓取失败、文本无法解析、计数非法时，该次不计入 10 次窗口，已有基线保留。</li><li>整页没有 Runtime Guard 计数时，不能当作正常，基线会被清掉。</li><li>以前见过、本轮消失的 endpoint 会挡住清除。</li><li>修改检测器配置后需要重启对应 Decode。修改 `precision_clear_threshold` 或 `probe_timeout_seconds` 后需要重启 Coordinator。</li></ul> |
 
 ## 特性使用
 
@@ -45,247 +34,255 @@ Coordinator的请求处理链路会发生以下变化：
 
 | 维度 | 说明 |
 |------|------|
-| 部署形态 | PD 分离等经过 Coordinator Router 转发 Decode 请求的部署形态。 |
-| 检测对象 | Decode 输出 token 序列及对应 logprob。 |
-| 检测粒度 | PD 实例组；PD 分离使用 (p_instance_id, d_instance_id)，Hybrid 场景使用 (None, union_id) |
-| 异常类型 | logprobs_count=1 支持大段重复；大于等于3 额外支持乱码；大于等于5 额外支持生僻字。 |
-| 处置方式 | Coordinator 上报告警，Controller 可选自动终止 D/P 实例。 |
+| 部署形态 | PD 分离等由 Coordinator 抓取 Decode `/metrics` 的部署。 |
+| 检测对象 | Decode 引擎导出的 Runtime Guard 异常计数。 |
+| 检测粒度 | Decode 实例。同一实例上多个 endpoint 的新增会写进同一条告警的 `abnormal_ports`。 |
+| 异常类型 | `token_repeat`、`logits_finite`、`spec_acceptance`。只打开配置里 `enabled=true` 的检测器。 |
+| 处置方式 | Coordinator 上报告警。Controller 可选终止该 Decode 实例。 |
 
 ### 环境准备
 
-msprobe **不在 Motor 包的依赖清单中**（`requirements.txt` 未声明），因此是否需要单独安装取决于运行环境：
-
-<ul><li>**使用仓库提供的 Motor 镜像**（`docker/mindie-motor-vllm/` 下的 Dockerfile）：镜像已预装 msprobe 并锁定版本 `mindstudio-probe==26.1.0.post1`，无需另行安装。</li><li>**仅在自有环境中安装 Motor 包（wheel）**：该环境需要自行安装配套 msprobe，版本应与发布所用镜像保持一致。</li></ul>
-
-在 Coordinator Worker 所在容器或 Python 环境中确认可导入：
-
-```bash
-python -c "from msprobe.response_anomaly.detector import ILLDetector; print('ILLDetector import OK')"
-```
-
-需自行安装时：
-
-```bash
-python -m pip install "mindstudio-probe==26.1.0.post1"
-```
-
-离线环境可改用已获取并核对版本的 wheel。详细安装步骤参见 [msProbe 安装指南](https://gitcode.com/Ascend/msprobe/blob/f5900e0670ab5406b75d79635dde062d80ad84f0/docs/zh/msprobe_install_guide.md)。
-
-安装后还需检查该版本随包提供的 `response_anomaly/configs/config.yaml`、`configs/mtype_config.json` 和 `token2category`，以及目标模型对应的映射。仅有 `import OK` 不能证明目标模型能够正常检测；应继续完成下文的真实请求验证。详细输入要求参见 [msProbe 推理异常检测说明](https://www.hiascend.com/document/detail/en/mindstudio/2610/TITools/msProbe/docs/en/user_guide/response_anomaly_instruct.md)。
+- 推理服务由 Motor 部署，Decode 使用 vLLM，镜像或环境中的 vLLM-Ascend 包含 Runtime Guard。
+- Coordinator 可观测进程已启动，并能够访问 Decode endpoint 的 `/metrics`。
+- 需要告警后自动终止实例时，Controller 可连通，并准备打开 `precision_auto_recovery_enabled`。
 
 ### 使用样例
 
-1. 确认推理引擎支持 `return_token_ids` 和 `logprobs` 返回字段。
+检测器写在 Decode 的引擎配置中，不写在 `precision_detection_config`。三种检测器互相独立，未写出的检测器保持关闭。修改后按现有方式重启 Decode。
 
-   向推理入口发送带采样参数的请求，检查响应是否包含 token id 与 logprob：
+```json
+{
+  "motor_engine_decode_config": {
+    "engine_config": {
+      "additional_config": {
+        "runtime_config": {
+          "detector": {
+            "token_repeat": { "enabled": true },
+            "logits_finite": { "enabled": false },
+            "spec_acceptance": { "enabled": false }
+          }
+        }
+      }
+    }
+  }
+}
+```
 
-   ```bash
-   curl -X POST "http://<服务IP>:<服务端口>/v1/chat/completions" \
-     -H "Content-Type: application/json" \
-     -d '{
-       "model": "<model-name>",
-       "messages": [{"role": "user", "content": "hello"}],
-       "max_tokens": 16,
-       "logprobs": true,
-       "return_token_ids": true
-     }'
-   ```
+只打开其中一种时，可以只写该检测器。其余字段省略时使用下表默认值。
 
-   响应 JSON 的 `choices[0].logprobs` 非空，且包含 token id 相关字段，即表示 vLLM 引擎能力满足要求。若字段缺失，须先升级或调整引擎配置。
+#### token_repeat
 
-2. 在 user_config.json 的 motor_coordinator_config 中增加 precision_detection_config，开启精度检测功能。
+看输出 token 是否在滑动窗口内反复出现。`incident_type` 为 `token_repeat`。
 
-   ```json
-   {
-     "motor_coordinator_config": {
-       "precision_detection_config": {
-         "precision_check_enabled": true,
-         "interval_seconds": 30.0,
-         "logprobs_count": 5,
-         "precision_issue_threshold": 10,
-         "precision_clear_threshold": 10,
-         "probe_max_attempts": 3,
-         "probe_timeout_seconds": 600.0
-       }
-     }
-   }
-   ```
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| enabled | bool | false | 是否打开该检测器。 |
+| window | int | 32 | 滑动窗口长度，最小 1。 |
+| repeat_sum_threshold | int | 64 | 窗口内重复分数之和超过该值记为一次越限，最小 0。 |
+| min_tokens | int | 32 | 至少累计这么多内容 token 后才允许告警。`0` 表示不设这段预热。 |
+| consecutive_hits | int | 1 | 需要连续多少次越限才上报，最小 1。 |
+| ignore_token_ids | int 数组 | `[]` | 这些 token id 不计入窗口。 |
 
-   以下字段均为选填；省略时使用默认值。启用检测时须显式设置 `precision_check_enabled=true`。计数参数按整数配置，时间参数支持正整数或正浮点数。
+#### logits_finite
 
-   | 配置项 | 类型 | 取值范围 | 必填 | 默认值 | 说明 |
-   |--------|------|----------|------|--------|------|
-   | precision_check_enabled | boolean | true / false | 否 | false | 精度检测总开关。关闭时不进行额外采样注入与检测；不影响用户自己请求 logprobs |
-   | interval_seconds | number | > 0 | 否 | 30.0 | 每个 Decode 实例允许一条请求注入采样参数的最小间隔，单位秒；共用 D 的不同 P/D 组共享窗口 |
-   | logprobs_count | integer | ≥ 1，且不超过引擎允许的 logprobs 上限 | 否 | 1 | 注入到 Decode 请求的 top-k 宽度；用户请求更宽时保留用户宽度 |
-   | precision_issue_threshold | integer | ≥ 1 | 否 | 10 | 同一实例组连续检测异常达到该次数后触发拨测与告警 |
-   | precision_clear_threshold | integer | ≥ 1 | 否 | 10 | 活动告警下连续有效正常样本达到该次数后上报清除告警 |
-   | probe_max_attempts | integer | ≥ 1 | 否 | 3 | 精度拨测的尝试次数 |
-   | probe_timeout_seconds | number | > 0 | 否 | 600.0 | 单次拨测超时时间，单位秒 |
+看采样前 logits 是否出现 NaN 或 Inf。`incident_type` 为 `logits_finite`。
 
-3. （可选）如需根据精度告警终止实例，则需要在 Controller 配置中开启 precision_auto_recovery_enabled配置。
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| enabled | bool | false | 是否打开该检测器。 |
+| item_sync | bool | false | `false`：异步读取有限性结果。`true`：在采样前同步读取，结果对上语法处理前的 logits，同步开销更大。 |
 
-   ```json
-   {
-     "motor_controller_config": {
-       "precision_auto_recovery_enabled": true
-     }
-   }
-   ```
+#### spec_acceptance
 
-   | 配置项 | 类型 | 取值范围 | 必填 | 默认值 | 说明 |
-   |--------|------|----------|------|--------|------|
-   | precision_auto_recovery_enabled | boolean | true / false | 否 | false | Controller 收到 `alarm_id=0xFC001009` 的精度告警后，是否自动终止告警中的 D/P 实例 |
+看投机解码的接受率和接受长度是否偏离配置区间。未开启投机解码时，打开该检测器也不会产生有效计数。`incident_type` 为 `spec_acceptance`。
 
-   >[!NOTE] 说明
-   >精度检测分为 Coordinator 侧检测开关和 Controller 侧自动恢复开关，两者相互独立；只开启 Coordinator 开关时会检测并上报告警；只有同时开启 Controller 自动恢复时，Controller 才会根据精度告警终止实例。
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| enabled | bool | false | 是否打开该检测器。 |
+| window | int | 10 | 滚动窗口长度，最小 1。 |
+| low_threshold | float | 0.3 | 接受率下限，取值 0 到 1。 |
+| len_low_threshold | float | 1.4 | 接受率处于低位时使用的长度比，最小 0。 |
+| high_threshold | float | 0.96 | 接受率上限，取值 0 到 1。 |
+| len_high_threshold | float | 2.8 | 接受率处于高位时使用的长度比，最小 0。 |
 
-4. 使用现有 deploy 脚本重新部署服务：
+三种检测器同时打开、并改掉默认阈值时，可以写成：
 
-   ```bash
-   cd examples/deployer
-   python deploy.py --config_dir ../../model_configs/vllm
-   ```
+```json
+{
+  "motor_engine_decode_config": {
+    "engine_config": {
+      "additional_config": {
+        "runtime_config": {
+          "detector": {
+            "token_repeat": {
+              "enabled": true,
+              "window": 32,
+              "repeat_sum_threshold": 64,
+              "min_tokens": 32,
+              "consecutive_hits": 1,
+              "ignore_token_ids": []
+            },
+            "logits_finite": {
+              "enabled": true,
+              "item_sync": false
+            },
+            "spec_acceptance": {
+              "enabled": true,
+              "window": 10,
+              "low_threshold": 0.3,
+              "len_low_threshold": 1.4,
+              "high_threshold": 0.96,
+              "len_high_threshold": 2.8
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
 
-   Coordinator 日志中出现 Precision check 关键字表示精度检测链路已启用。
+Coordinator 侧只保留清除和拨测超时。省略时分别使用 10 和 600 秒。`precision_check_enabled` 不控制本特性。
+
+```json
+{
+  "motor_coordinator_config": {
+    "precision_detection_config": {
+      "precision_clear_threshold": 10,
+      "probe_timeout_seconds": 600.0
+    }
+  }
+}
+```
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| precision_clear_threshold | int | 10 | 活动告警下，当前各 endpoint 连续无新增达到该次数后上报清除。 |
+| probe_timeout_seconds | float | 600.0 | 单次拨测超时，单位秒。拨测固定尝试 1 次。 |
+
+如需在告警后终止 Decode 实例，打开 Controller 的自动恢复。省略或为 `false` 时只上报告警。
+
+```json
+{
+  "motor_controller_config": {
+    "precision_auto_recovery_enabled": true
+  }
+}
+```
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| precision_auto_recovery_enabled | bool | false | 收到 `0xFC001009` 后是否终止告警中的 Decode 实例。 |
+
+>[!NOTE] 说明
+>检测器开关在引擎配置，告警清除在 Coordinator，自动终止在 Controller。三者独立。只打开检测器时，计数增加就会上报告警；只有再打开自动恢复，Controller 才会终止 Decode。
+
+### 查看告警
+
+告警名称为 `Precision Anomaly Alarm`。用 `instanceId` 定位 Decode 实例，用附加信息中的 `abnormal_ports` 定位 endpoint。
+
+清除记录使用与抬起相同的 MOI。MOI 形式为 `service name=Coordinator, service ip=<POD_IP>, instanceId=<Decode实例ID>`。
 
 ### 验证特性
 
-服务启动后，Coordinator 日志中出现以下关键字表示精度检测链路已启用：
+不需要查看 Decode 启动参数，也不需要直接访问 Decode 的 `/metrics`。确认配置已写入 `user_config.json` 并完成对应重启后，看 Coordinator 可观测进程的 INFO 日志和精度告警即可。
 
-```text
-Precision check (token sampling): interval=...
-entry_admission=scheduler_zmq streak=scheduler_zmq probe=internal_router
-```
+日志前缀是 `[PrecisionDetection]`。只看到 `schedule` 或 `ingest`，只说明 Coordinator 已在消费该 Decode 的抓取结果，不能说明检测器已打开。
 
-该日志为**单行**，此处按字段折行展示；`interval` 之后的 `logprobs_count`、`threshold`、`probe_attempts`、`probe_timeout` 字段已省略。
+| 日志 | 含义 |
+|------|------|
+| `[PrecisionDetection] schedule instance=%s endpoints=%d missing=%d` | 指标线程已把该 Decode 的本轮抓取交给检测。`missing` 大于 0 表示有 endpoint 没抓到文本。 |
+| `[PrecisionDetection] ingest instance=%s model=%s endpoints=%d missing=%d` | 检测处理已开始。 |
+| `[PrecisionDetection] collecting instance=%s endpoint=%s port=%s progress=%d/%d` | 可读抓取还没满 10 次，尚未做窗口判定。 |
+| `[PrecisionDetection] window instance=%s endpoint=%s port=%s no runtime guard series` | 文本可读，但没有检测器计数。配置里的检测器未打开，或引擎没有导出计数。 |
+| `[PrecisionDetection] window instance=%s endpoint=%s port=%s delta=%s samples=%s generation_reset=%s` | 本窗口已判定。`delta=0` 表示没有新增；`delta` 大于 0 表示有新增。`samples` 形如 `token_repeat=1`，用来区分是哪种检测器。 |
+| `[PrecisionDetection] raise reported instance=%s ok=%s auto_recovery_cleared=%s` | 告警已提交。`ok=True` 表示对端返回成功，或本次按配置跳过上报。 |
 
-启动日志仅表明链路已装配，不表示 msprobe 已成功执行检测。使用已部署的模型发送正常推理请求，等待完整响应结束，并检查 `MsprobeChecker: result`；若出现 `fail-open`、依赖缺失或映射错误，应先解决对应问题。
-
-`SampleController: claimed` 与 `PrecisionSample: submit` 只在 DEBUG 级别输出；`PrecisionSample: inject_logprobs` 在改变了客户端请求宽度时按 INFO 输出，宽度未变化时按 DEBUG 输出。需要看到完整注入记录时，在 `motor_coordinator_config.logging_config` 中把 `"log_level"` 设为 `"DEBUG"`；默认 INFO 下不能以 `claimed`、`submit` 缺失判定功能失败。
-
-| 日志关键词 | 含义 |
-|------------|------|
-| PrecisionSample: inject_logprobs | Router 已向 Decode 请求注入采样参数 |
-| SampleController: claimed (scheduler) | Scheduler 为该 Decode 实例放行了一条采样请求（DEBUG） |
-| PrecisionSample: submit | 样本已构造并提交后台检测（DEBUG） |
-| MsprobeChecker: result | msprobe 已返回检测结果 |
-| PrecisionReporter: threshold reached | 连续异常达到阈值，开始拨测与告警 |
-| PrecisionAlarm: reporting alarm_id=0xFC001009 | 精度告警已上报 Controller |
-| Precision recovery: terminating D instance_id= | Controller 已触发自动恢复，正在终止该 Decode 实例（终止 Prefill 时打印 terminating P instance_id=） |
+检测器已打开且本窗口没有新增时，应能看到 `delta=0` 的 `window` 日志。一直是 `no runtime guard series` 时，回到 `user_config.json` 检查对应检测器的 `enabled`，并确认 Decode 已用这份配置重启。
 
 ## 调优建议
 
-以下为首次启用时的配置起点，实际阈值应结合负载、模型和允许的检测开销调整；不是性能或检出率保证。
+检测阈值在引擎侧按检测器调整。Coordinator 不能通过 `precision_detection_config` 改变检测规则。
 
-| 关键参数 | 建议取值 | 说明 |
-|----------|----------|------|
-| logprobs_count | 仅检测重复从 1 开始；需乱码检测用 3；需生僻字检测用 5 | 检测能力还依赖引擎实际返回的 top-k 和模型映射；增大宽度会增加采样请求开销 |
-| interval_seconds | 先用默认 30.0 秒 | 按 D 实例控制入口采样频率；减小会增加开销，增大会延长发现异常的时间 |
-| precision_issue_threshold | 先用默认 10 | 调小会更快触发拨测，也更易受短时异常影响；按 P/D 组累计，不能将阈值乘采样间隔视为确定的发现时延 |
-| precision_clear_threshold | 先用默认 10 | 调小会更快清除告警；无效检测不算正常样本，不会推进清除计数 |
-| probe_timeout_seconds | 先用默认 600.0 秒，再依据模型响应时间评估 | 这是单次拨测超时，不是用户请求超时；避免低于模型正常生成所需时间 |
+| 关键参数 | 建议 | 说明 |
+|----------|------|------|
+| 打开哪些检测器 | 先只打开业务需要确认的一种 | 三种检测器都会进入同一个告警。同时打开时，告警附加信息不区分种类，看 Coordinator 的 `window` 日志里 `samples` 是哪种名字。 |
+| token_repeat | 先用默认窗口 32、阈值 64、`min_tokens` 32 | 调高 `repeat_sum_threshold` 或 `min_tokens` 会减少短输出上的命中；调低会更快计数。`ignore_token_ids` 只排除明确不参与判断的 token。 |
+| logits_finite | 先保持 `item_sync=false` | 需要结果对上语法处理前的 logits 时再改为 `true`。同步读取发生在采样前。 |
+| spec_acceptance | 只在已经开启投机解码时打开 | 接受率区间先用默认 0.3 到 0.96。未开投机解码时没有有效样本。 |
+| precision_clear_threshold | 先用默认 10 | 调小会更快清除活动告警。抓取失败或 endpoint 消失不会推进清除。 |
+| probe_timeout_seconds | 先用默认 600 秒 | 这是拨测超时，不是用户请求超时。低于模型正常生成时间时，拨测会计入失败，告警仍会上报。 |
+
+指标采集周期由 `prometheus_metrics_config.reuse_time` 决定，默认 3 秒。窗口固定为 10 次可读抓取，不在精度检测配置里。
 
 ## 常见问题
 
-### 启动后没有 Precision check 日志
+### 打开配置后一直没有精度告警
 
 **问题描述**
 
-服务启动后，Coordinator 日志中没有出现 Precision check 关键字。
+Decode 已写入检测器配置，业务请求正常，但没有 `0xFC001009`。
 
 **原因分析**
 
-`precision_check_enabled=false` 或配置未加载。
+`user_config.json` 里对应检测器仍是 `enabled=false`，或引擎没有导出检测计数。没有计数时 Motor 不上报告警。计数没有增加时也不会上报。
 
 **解决步骤**
 
-检查 motor_coordinator_config.precision_detection_config 配置是否正确加载。
+看 Coordinator 日志。出现 `no runtime guard series` 时，检查 `user_config.json` 里该检测器的 `enabled`，并确认 Decode 已用这份配置重启。出现 `window` 且 `delta=0` 时，链路已经打开，只是本窗口没有新增。
 
-### 日志提示 Precision check enabled but scheduler client unavailable
+### 日志一直停在 collecting
 
 **问题描述**
 
-Coordinator 日志中出现以下告警，表示已启用精度检测但 Scheduler 客户端尚未就绪，本轮进程不会启用采样链路：
-
-```text
-Precision check enabled but scheduler client unavailable; disabling precision sampling until scheduler connects
-```
+Coordinator 日志反复出现 `[PrecisionDetection] collecting`，没有 `window`。
 
 **原因分析**
 
-Worker 未连上 Mgmt 控制面 IPC。
+该 endpoint 的可读抓取还没满 10 次。抓取为空或文本无法解析的次数不计入进度。
 
 **解决步骤**
 
-检查 Mgmt 进程是否已 bind `scheduler_frontend` 以及 ZMQ 路径。
+看同一条日志的 `progress`。若同时有 `scrape empty`，或 `schedule`、`ingest` 里的 `missing` 大于 0，说明 Coordinator 没抓到该 endpoint 的指标文本，先恢复指标采集，不要去 Decode 上查启动参数。
 
-### 日志提示 sample incomplete
+### 告警已上报但实例没有终止
 
 **问题描述**
 
-Coordinator 日志中出现 sample incomplete 提示。
+已看到精度告警，Decode 实例仍在运行。
 
 **原因分析**
 
-引擎返回 `token_ids` 但未返回 `logprobs`。
+`precision_auto_recovery_enabled` 为 `false` 或未配置。关闭时 Controller 只保留告警。
 
 **解决步骤**
 
-检查引擎是否支持 `logprobs` 参数。
+在 Controller 配置中把它设为 `true` 并使配置生效。自动恢复只终止告警中的 Decode 实例。
 
-### 日志提示 MsprobeChecker: msprobe not installed
+### 自动恢复没有终止 Prefill
 
 **问题描述**
 
-Coordinator 日志中出现 MsprobeChecker: msprobe not installed 提示。
+开启自动恢复后，只看到 Decode 被终止。
 
 **原因分析**
 
-环境缺少 msprobe。
+本告警的 `p_instance_id` 为空。自动恢复按告警内容只终止 Decode。
 
 **解决步骤**
 
-按“环境准备”在 Coordinator Worker 实际使用的 Python 环境中安装配套 msprobe，并重新发送请求，确认出现 `MsprobeChecker: result`。mock checker 仅用于开发测试，不能作为生产检测能力的替代。
+这是当前行为。Prefill 不因这条精度告警被终止。
 
-### 一直检测不到生僻字
+### 投机解码检测没有计数
 
 **问题描述**
 
-开启精度检测后，始终无法检测到生僻字异常。
+`user_config.json` 里 `spec_acceptance.enabled` 已设为 `true`，Coordinator 的 `window` 日志里没有 `spec_acceptance` 计数增加。
 
 **原因分析**
 
-`logprobs_count` 取值小于 5 或 token2category 映射缺失。
+该检测器依赖投机解码产生的接受率样本。未开启投机解码时没有有效样本。日志是 `no runtime guard series` 时，则是检测器配置没有生效。
 
 **解决步骤**
 
-调大 `logprobs_count`，检查 msprobe 映射文件。
-
-### 告警已上报但未终止实例
-
-**问题描述**
-
-精度告警已上报 Controller，但未触发实例终止。
-
-**原因分析**
-
-Controller 未开启自动恢复。
-
-**解决步骤**
-
-检查 `precision_auto_recovery_enabled` 是否已开启。
-
-### 只终止 D 实例未终止 P 实例
-
-**问题描述**
-
-自动恢复时只终止了 Decode实例，未同步终止 Prefill 实例。
-
-**原因分析**
-
-告警中 `p_instance_id` 为空。
-
-**解决步骤**
-
-检查部署模式和实例组 key 是否能解析 P 实例。
+在 `user_config.json` 中确认 Decode 已开启投机解码，并已按该配置重启。未使用投机解码时不要打开此项。不要通过 Decode 启动参数核对。

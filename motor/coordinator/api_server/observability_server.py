@@ -32,7 +32,10 @@ from motor.common.utils.net import format_address
 from motor.config.coordinator import CoordinatorConfig, MGMT_API_KEY_HEADER
 from motor.coordinator.api_server.base_server import BaseCoordinatorServer
 from motor.coordinator.api_server.app_builder import AppBuilder
-from motor.coordinator.metrics.metrics_collector import MetricsCollector
+from motor.coordinator.metrics.metrics_collector import MetricsCollector, parse_metric_text
+from motor.coordinator.metrics.runtime_guard_pipeline import RuntimeGuardPipeline
+from motor.coordinator.domain.request_manager import RequestManager
+from motor.coordinator.fault_tolerance.probe.router_probe import InternalRouterProbe
 from motor.coordinator.domain.agent_hint import AgentStatusHint
 from motor.coordinator.scheduler.runtime.agent_hint_lifecycle import CentralAgentLifecycle
 from motor.coordinator.scheduler.runtime.agent_hint_metrics import (
@@ -92,6 +95,7 @@ class ObservabilityServer(BaseCoordinatorServer):
         # client subscribes to the scheduler's instance-change pub and keeps a live view.
         self._scheduler_connection = SchedulerConnectionManager.from_config(config)
         self._instance_provider = _SchedulerInstanceProvider(self._scheduler_connection)
+        self._runtime_guard_request_manager = RequestManager(config)
         status_cfg = config.agent_status_config
         self._central_lifecycle = (
             CentralAgentLifecycle(
@@ -116,6 +120,21 @@ class ObservabilityServer(BaseCoordinatorServer):
         try:
             MetricsCollector().set_event_loop(asyncio.get_running_loop())
             MetricsCollector().set_scheduler_provider(lambda: self._instance_provider)
+
+            def runtime_guard_probe():
+                scheduler = self._scheduler_connection.get_client()
+                if scheduler is None:
+                    return None
+                return InternalRouterProbe(self.coordinator_config, scheduler, self._runtime_guard_request_manager)
+
+            MetricsCollector().set_runtime_guard_pipeline(
+                RuntimeGuardPipeline(
+                    parser=parse_metric_text,
+                    scheduler_provider=self._scheduler_connection.get_client,
+                    probe_provider=runtime_guard_probe,
+                    config_provider=lambda: self.coordinator_config,
+                )
+            )
             # 复用 MetricsCollector 已抓取的指标：把 kv_cache_usage_perc 发布到共享内存，
             # 供 SchedulerServer/worker 读取，避免调度侧再单独查询引擎 /metrics。
             MetricsCollector().set_kv_usage_publisher(KvUsageShmPublisher(self._get_kv_usage_shm_name).publish)
@@ -294,7 +313,9 @@ class ObservabilityServer(BaseCoordinatorServer):
                         status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid JSON format: {str(e)}"
                     ) from e
                 if not isinstance(body, dict):
-                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request body must be a JSON object")
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST, detail="Request body must be a JSON object"
+                    )
                 session = body.get("session")
                 status_data = body.get("agent_status")
                 if not isinstance(session, dict) or not isinstance(status_data, dict):

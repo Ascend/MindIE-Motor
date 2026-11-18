@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+from copy import copy
 
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
@@ -59,6 +60,7 @@ class InternalRouterProbe(ChatProbe):
         model: str,
         max_attempts: int,
         timeout_seconds: float,
+        d_endpoint_id: int | None = None,
     ) -> ProbeOutcome:
         del timeout_seconds  # Router uses exception_config timeouts
 
@@ -87,7 +89,19 @@ class InternalRouterProbe(ChatProbe):
         constraint = SchedulingConstraint.for_precision_probe(
             p_instance_id=p_instance_id,
             d_instance_id=d_instance_id,
+            d_endpoint_id=d_endpoint_id,
         )
+
+        router_config = self._config
+        if d_endpoint_id is not None:
+            # Runtime Guard probes one specific endpoint once, including on
+            # transport errors. Do not alter the shared configuration.
+            router_config = copy(self._config)
+            router_config.exception_config = copy(self._config.exception_config)
+            router_config.exception_config.max_retry = 1
+            router_config.exception_config.transport_max_retry = 1
+            router_config.scheduler_config = copy(self._config.scheduler_config)
+            router_config.scheduler_config.enable_pd_separation_fallback_to_hybrid = False
 
         for attempt in range(max_attempts):
             req_id = await self._request_manager.generate_request_id()
@@ -102,7 +116,7 @@ class InternalRouterProbe(ChatProbe):
             )
             router = router_cls(
                 req_info,
-                self._config,
+                router_config,
                 scheduler=self._scheduler,
                 request_manager=self._request_manager,
                 sampling_manager=None,

@@ -44,7 +44,7 @@ PD 分离是 **2× ALLOCATE + 2× UPDATE**。瓶颈不在选点公式，而在�
 ### 1.3 目标
 
 - **数据面（每请求）**：Worker 本地打分后，对 SHM slot 做 CAS add/sub，**不再**走 `ALLOCATE_ONLY` / `UPDATE_WORKLOAD`
-- **控制面（低频）**：实例成员表、熔断、精度采样全局门闩、SHM 生命周期、ZMQ PUB —— 全部归 Mgmt
+- **控制面（低频）**：实例成员表、熔断、精度告警状态、SHM 生命周期、ZMQ PUB —— 全部归 Mgmt
 - **算法**：`LoadBalancePolicy` / `KvCacheAffinityPolicy` / `RoundRobinPolicy` 的公式与提交量保持不变；ALLOCATE 的 fast-path / 权威重排用「CAS-expected + 本地重选」语义等价还原
 - **工程**：Rust 以 **in-process `cdylib`** 插入，复用 kv-conductor 的 `build.sh` + `package_data` 打包带，**不**做成第二个独立 HTTP 进程
 - **性能**：去掉每请求 ALLOCATE ZMQ 后，规定场景下 Coordinator 调度 P99 至少减半（§13.2）
@@ -209,7 +209,7 @@ else:
 
 熔断（`CircuitBreakerManager`）：实例粒度；连续 3 次 failure → OPEN；`timeout = min(30 * 2^(trip_count-1), 300)` 秒；success 可提前关闭；到期对全部 endpoint `GET /health`；SET 清全部，DEL 清该实例。Worker 只有 PUB 镜像 `_cb_blocked_instances`；**最终闸门在 ALLOCATE**。
 
-精度：按 PD group 的 sample 间隔门闩、streak、action_token、alarm 全在 Scheduler 对象上。Worker 侧采集 / checker / 告警上报可本地；跨 Worker 一致必须单点。详见 [精度检测设计](fault_tolerance/precision_detection.md)。
+精度告警的活动状态、清除计数和 MOI 在 Scheduler 上，按 Decode 实例保存。计数来自 Runtime Guard，由可观测进程透传上报告警。详见 [精度检测设计](fault_tolerance/precision_detection.md)。
 
 ## 3. 目标架构（To-Be）
 
@@ -512,18 +512,15 @@ probe 仍是 Mgmt asyncio 里对每个 endpoint 业务端口 `GET /health`（2s/
 
 现网文档 [熔断设计](circuit_breaker_design.md) 中「熔断中枢 = SchedulerServer」在本重构落地后应改为 Mgmt；本文合入实现时同步改那一页。
 
-### 7.3 精度采样
+### 7.3 精度告警状态
 
-下列状态表从 `Scheduler` 类迁到 Mgmt 进程内同等对象（可仍叫 `Scheduler` facade，或新建 `PrecisionCoordinator`）：
+活动告警、清除计数和 MOI 仍放在 Mgmt 进程内的 Scheduler 状态中，按 Decode 实例区分。可观测进程消费 Runtime Guard 计数并上报，不在推理 Worker 上采样。
 
-- `_sample_exit_last_time`、`_sample_exit_locks`
 - `_precision_streak_counts` / `_precision_normal_streak_counts`
 - `_precision_*_probing` / `_precision_*_tokens`
 - `_precision_alarm_active` / `_precision_alarm_moi`
 
-RPC 仍为 `CONFIRM_SAMPLE` / `RECORD_PRECISION_RESULT` / `FINISH_PRECISION_ACTION` / `DISMISS_PRECISION_ALARM_STATE`。`POST /precision/alarm_cleared` 改为 Mgmt **本地**调用，不再转 Scheduler。
-
-Worker 的 `inject_logprobs`、Checker、Probe、Alarm **留在 Worker**。无单点会重复采样、重复告警。
+相关调用为 `RECORD_PRECISION_RESULT` / `FINISH_PRECISION_ACTION` / `DISMISS_PRECISION_ALARM_STATE`。`POST /precision/alarm_cleared` 由 Controller 通知 Coordinator 删除上述状态。
 
 ### 7.4 ROUTER 职责精简
 
@@ -1115,7 +1112,7 @@ P99(T_sched→P)_优化后  ≤  0.5 × P99(T_sched→P)_优化前
 | C4 | `/health` 全 200 才关闭；不在池则 drop recovery | probe 改挂 |
 | C5 | SET 清全部；DEL 清该实例 | 单测 |
 | C6 | 精度门闩在 Mgmt；`/precision/alarm_cleared` 本地处理 | streak / confirm 测试 |
-| C7 | inject logprobs / checker / alarm 仍在 Infer | 代码审查 |
+| C7 | Runtime Guard 计数消费与告警上报在可观测进程；活动状态在 Mgmt | 代码审查 |
 
 #### 证明 R4
 

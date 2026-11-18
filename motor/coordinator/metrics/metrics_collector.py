@@ -17,7 +17,7 @@ from collections.abc import Callable
 from typing import Any
 import requests
 
-from motor.common.resources.instance import Instance
+from motor.common.resources.instance import Instance, PDRole
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.common.utils.net import format_address
@@ -525,6 +525,7 @@ class MetricsCollector(ThreadSafeSingleton):
 
         self._aggregation_engine = SemanticAggregationEngine()
         self._motor_computer = MotorMetricComputer()
+        self._runtime_guard_pipeline = None
         self._kv_store_disabled_logged = False
         self._rl = RateLimitedLogger(logger)
 
@@ -534,6 +535,9 @@ class MetricsCollector(ThreadSafeSingleton):
     def set_event_loop(self, loop):
         """Set the event loop for async calls from the metrics thread (call from lifespan)."""
         self._loop = loop
+
+    def set_runtime_guard_pipeline(self, pipeline) -> None:
+        self._runtime_guard_pipeline = pipeline
 
     def set_scheduler_provider(self, get_scheduler: Callable[[], Any]) -> None:
         """Use same instance view as scheduling: get_scheduler().get_all_instances() (call from lifespan)."""
@@ -1362,17 +1366,46 @@ class MetricsCollector(ThreadSafeSingleton):
             }
         """
         collect = {"endpoints": {}}
+        any_failed = False
+        runtime_guard_scrapes = []
 
         for en_info in ins_info.get_all_endpoints():
             metrics_str = query_endpoint_metrics(en_info, self._infer_tls_config)
             if not metrics_str:
-                return {}
+                any_failed = True
+                runtime_guard_scrapes.append((en_info.id, en_info.business_port, None))
+                continue
+            runtime_guard_scrapes.append((en_info.id, en_info.business_port, metrics_str))
             collect["endpoints"][en_info.id] = {
                 "metrics_str": metrics_str,
                 "pod_ip": en_info.ip,
             }
 
+        if ins_info.role == PDRole.ROLE_D and self._runtime_guard_pipeline is not None and self._loop is not None:
+            logger.info(
+                "[PrecisionDetection] schedule instance=%s endpoints=%d missing=%d",
+                ins_info.id,
+                len(runtime_guard_scrapes),
+                sum(1 for _, _, text in runtime_guard_scrapes if text is None),
+            )
+            coroutine = self._runtime_guard_pipeline.ingest(ins_info.id, ins_info.model_name, runtime_guard_scrapes)
+            try:
+                future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+                future.add_done_callback(self._runtime_guard_done)
+            except Exception as exc:
+                coroutine.close()
+                logger.warning("[Metrics] unable to schedule runtime guard processing: %s", exc)
+
+        if any_failed:
+            return {}
         return collect
+
+    @staticmethod
+    def _runtime_guard_done(future) -> None:
+        try:
+            future.result()
+        except Exception as exc:
+            logger.warning("[Metrics] runtime guard processing failed: %s", exc)
 
     def _aggregate_metrics_all_instance(
         self,

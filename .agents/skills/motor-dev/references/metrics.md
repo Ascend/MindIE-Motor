@@ -166,6 +166,16 @@ The parser is manual (regex-based, not using the `prometheus_client` library) to
 - **Thread safety**: `MetricsCollector` uses `_lock` for write-side protection (collect + aggregate) and `_serialize_lock` for cache access.
 - **Port**: Observability is on `coordinator_obs_port` (default 1027), NOT the management port. Controller and ccae_reporter must connect to the obs port.
 
+## Runtime Guard anomaly alarms
+
+`RuntimeGuardMonitor` reads each endpoint scrape inside `MetricsCollector._fetch_endpoint_metrics` before instance aggregation. A failed endpoint still returns `{}` for that instance's published metrics, and the successful siblings are still evaluated.
+
+The exposed counter is `vllm_profiling_runtime_guard:anomaly:count_total` with label `incident_type`. State key is `(instance_id, endpoint_id, incident_type)`. The first sample only sets the baseline. A later increase is reported through `build_precision_issue_alarm` and `ControllerApiClient.report_alarms`, using alarm id `0xFC001009` and name `Precision Anomaly Alarm`. `precision_issue_count` is the confirmed delta. The baseline advances only when `report_alarms` returns `ok=true`. A decrease, or a changed `process_start_time_seconds`, rebuilds the baseline. A missing sample keeps the baseline until 300 seconds have passed.
+
+DP identity is the scraped endpoint. `Endpoint.id` is the engine DP rank. The metric's own `dp` label is not used.
+
+Detection itself is enabled by the engine launch config `additional_config.runtime_config.detector.<name>.enabled`. NodeManager already passes that object through as `--additional-config`.
+
 ## Reference
 
 - vLLM metrics design doc: `https://github.com/vllm-project/vllm/blob/main/docs/design/metrics.md`

@@ -24,6 +24,7 @@ from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import InstanceReadiness
 from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.domain.scheduling import UpdateWorkloadParams
+from motor.coordinator.domain.scheduling_constraint import SchedulingConstraint
 from motor.coordinator.domain.agent_hint import PriorityControl, PriorityHint
 from motor.coordinator.models.request import RequestInfo
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
@@ -1147,6 +1148,38 @@ class TestSelectAndAllocateCas:
         )
         assert client._dp_stats._window_sec == 12
         assert client._log_dp_stats is False
+
+    @pytest.mark.asyncio
+    async def test_strict_probe_endpoint_does_not_fall_back(self, native_lib):
+        del native_lib
+        im = InstanceManager(CoordinatorConfig())
+        instance = _make_cas_instance(1, 10)
+        instance.endpoints["pod-1"][11] = _make_endpoint(endpoint_id=11)
+        await im.refresh_instances(EventType.ADD, [instance])
+        client, writer = await _client_with_shm(im, _cas_shm_name("strict"))
+        client.get_available_instances = AsyncMock(return_value={1: instance})
+        try:
+            constraint = SchedulingConstraint(
+                pinned_instances={PDRole.ROLE_P.value: 1},
+                pinned_endpoints={PDRole.ROLE_P.value: 11},
+                reason="precision_probe",
+            )
+            req = RequestInfo(
+                req_id="strict",
+                req_data={},
+                req_len=4,
+                api="completions",
+                token_ids=[1],
+                scheduling_constraint=constraint,
+            )
+            result = await client.select_and_allocate(PDRole.ROLE_P, req, target_instance_id=1)
+            assert result is not None and result[1].id == 11
+            missing = constraint.model_copy(update={"pinned_endpoints": {PDRole.ROLE_P.value: 99}})
+            req.scheduling_constraint = missing
+            assert await client.select_and_allocate(PDRole.ROLE_P, req, target_instance_id=1) is None
+        finally:
+            client._workload_reader.detach()
+            writer.release()
 
     @pytest.mark.asyncio
     async def test_select_and_allocate_cas_commits_lowest_load(self, native_lib):

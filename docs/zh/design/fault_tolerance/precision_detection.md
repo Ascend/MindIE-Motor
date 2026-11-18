@@ -1,383 +1,47 @@
-# 精度检测故障恢复特性
+# 精度检测
 
 ## 概述
 
-精度检测故障恢复特性用于在 Coordinator 侧在线采集 Decode 输出 token 与 logprob，利用 msprobe 检测大段重复、乱码、生僻字等输出质量异常，并在连续异常达到阈值后通过固定问答拨测进行二次确认。确认后 Coordinator 上报 `alarm_id=0xFC001009` 的精度异常告警，Controller 可根据 `precision_auto_recovery_enabled` 自动终止异常实例组。
+Motor 集成 vLLM-Ascend Runtime Guard 的异常计数，并把 Decode 侧的新增结果透传为精度异常告警。检测器是否命中由引擎决定。Motor 读取 `/metrics` 上的计数，确认增加后上报 `alarm_id=0xFC001009`。
 
 | 项 | 说明 |
 |----|------|
 | 用户指南 | [精度检测功能](../../user_guide/features/maintenance_testing_security/precision_detection.md) |
-| Coordinator 数据采集 | `motor/coordinator/router/precision_sample/` |
-| Coordinator 检测编排 | `motor/coordinator/fault_tolerance/precision/` |
-| Coordinator 拨测告警 | `motor/coordinator/fault_tolerance/probe/`、`motor/coordinator/fault_tolerance/alarm/` |
-| 全局采样/连续异常状态 | Mgmt 进程内 `AsyncSchedulerServer`（[调度热路径 Rust 重构](../coordinator_scheduler_rust.md)；IPC 名仍为 `scheduler_*`） |
-| Controller 自动恢复 | `motor/controller/api_server/controller_api.py`、`motor/controller/core/recovery_service.py` |
+| 计数来源 | vLLM-Ascend Runtime Guard，`incident_type` 区分 `token_repeat`、`logits_finite`、`spec_acceptance` |
+| 消费与上报 | `motor/coordinator/metrics/runtime_guard_pipeline.py` |
+| 告警报文 | `motor/common/alarm/precision_issue_alarm.py` |
+| 活动状态 | Scheduler 上的精度告警状态，key 为 `(None, decode_instance_id)` |
+| 自动恢复 | `motor/controller/core/recovery_service.py` |
 
-## 架构总览
-
-精度检测链路跨 Coordinator Inference Worker、Coordinator Mgmt 控制面和 Controller。Worker 负责重逻辑，包括采集、检测、拨测和告警；Mgmt 内的 `AsyncSchedulerServer` 维护跨 Worker 一致的轻状态（`CONFIRM_SAMPLE` 等 ZMQ RPC）；Controller 负责收到告警后的实例终止。无独立 Scheduler 子进程。
+## 链路
 
 ```text
-Client
-  → Router(select D)
-  → SampleController/Scheduler(claim per-D sampling window)
-  → Router(inject logprobs when claimed)
-  → Decode Engine
-  → Router(cache full token/logprob, project client response)
-  → Client response completes
-  → SampleController(background PrecisionReporter check)
-  → PrecisionReporter(RECORD_PRECISION_RESULT)
-  → PrecisionAlarm(InternalRouterProbe + report_alarms)
-  → Controller(_maybe_precision_auto_recover)
-  → terminate_instance_for_recovery
+Decode 引擎 Runtime Guard
+  → endpoint /metrics 计数
+  → MetricsCollector 抓取
+  → RuntimeGuardPipeline 确认新增
+  → 上报 Precision Anomaly Alarm
+  → Controller 按 precision_auto_recovery_enabled 决定是否终止该 Decode
 ```
 
-### 模块结构
+可观测进程启动后即挂上这条处理。检测器默认关闭，没有计数就不会告警。本链路不修改用户请求，不调用软件故障入口，不做 DP 缩容。
 
-```text
-motor/coordinator/
-├── router/precision_sample/
-│   ├── request.py          # inject_logprobs
-│   ├── response.py         # update_logprob_cache / project_logprobs_for_client
-│   └── sample_builder.py   # build_decode_sample
-├── fault_tolerance/
-│   ├── precision/
-│   │   ├── sample_controller.py
-│   │   ├── reporter.py
-│   │   ├── checker.py
-│   │   └── streak_result.py
-│   ├── probe/
-│   │   ├── chat_probe.py
-│   │   └── router_probe.py
-│   └── alarm/
-│       ├── base.py
-│       └── precision_alarm.py
-└── scheduler/
-    ├── scheduler.py
-    └── runtime/
-        ├── scheduler_client.py
-        ├── scheduler_server.py
-        └── zmq_protocol.py
-```
+出现新增时，Coordinator 对该 Decode endpoint 做一次拨测，并把失败次数写入告警附加信息。拨测不决定是否上报。Prefill 由当次调度选择，不写入告警。
 
-| 层次 | 组件 | 职责 |
-|------|------|------|
-| 入口准入 | `SampleController` + Scheduler `CONFIRM_SAMPLE` | D 已选定后按 D 实例原子抢占窗口，每个窗口最多允许一条请求注入采样参数 |
-| 数据采集 | `inject_logprobs`、`update_logprob_cache`、`build_decode_sample` | 对获准的 Decode 请求注入采样参数，并从响应中缓存完整 token/logprob |
-| 客户端投影 | `project_logprobs_for_client` | 用户未请求则删除额外字段；用户请求时恢复其原始 top-k 数量 |
-| 后台检测 | `SampleController.enqueue_sample` | 响应完成后启动并跟踪检测任务，不在用户响应路径等待 msprobe/连续计数 |
-| 检测编排 | `PrecisionReporter` + `MsprobeChecker` | 执行 msprobe 检测，并记录跨 Worker 连续异常次数 |
-| 拨测告警 | `InternalRouterProbe` + `PrecisionAlarm` | pin 目标实例组进行固定问答拨测，构造并上报告警 |
-| 自动恢复 | Controller `_maybe_precision_auto_recover` | 根据精度告警终止 D 实例及可选 P 实例 |
+## 告警与清除
 
-## 代码设计
+告警归属 Decode 实例。`p_instance_id` 为空。附加信息在原有计数字段后包含 `abnormal_ports`。
 
-### 配置入口
+活动告警不重复抬起。当前各 endpoint 连续无新增达到 `precision_clear_threshold`（默认 10）后，用原 MOI 上报清除。已知 endpoint 从抓取名单消失时，不把该实例记为正常。
 
-Coordinator 侧配置类为 `PrecisionDetectionConfig`：
+`precision_auto_recovery_enabled` 默认关闭。打开后，Controller 终止告警中的 Decode 实例；终止成功则清除告警，并通知 Coordinator 删除活动状态。
 
-| 字段 | 默认值 | 说明 |
-|------|--------|------|
-| `precision_check_enabled` | `false` | 总开关，关闭时不修改 Decode 请求 |
-| `interval_seconds` | `30.0` | 同一 Decode 实例两次采样参数注入的最小间隔 |
-| `logprobs_count` | `1` | 注入 top-k 宽度；1 支持重复，>=3 支持乱码，>=5 支持生僻字 |
-| `precision_issue_threshold` | `10` | 连续异常触发拨测/告警的阈值 |
-| `precision_clear_threshold` | `10` | 活动告警下连续有效正常样本触发清除的阈值 |
-| `probe_max_attempts` | `3` | 拨测次数 |
-| `probe_timeout_seconds` | `600.0` | 单次拨测超时时间 |
+## 告警清除
 
-Controller 侧 `precision_auto_recovery_enabled` 独立控制自动终止实例。该开关默认关闭，只影响 Controller 收到精度告警后的动作，不影响 Coordinator 是否检测和上报告警。
+清除记录与抬起使用同一 MOI：`service name=Coordinator, service ip=<POD_IP>, instanceId=<Decode实例ID>`。
 
-### 启动装配
-
-`InferenceServer._lifespan()` 在 Coordinator 启动时完成装配：
-
-1. 建立 Scheduler 连接。
-2. 若 `precision_check_enabled=false`，设置 `app.state.sampling_manager=None`。
-3. 若开关开启但 Scheduler client 不可用，同样设置 `sampling_manager=None`，本进程 fail-open。
-4. 若 Scheduler client 可用，调用 `build_precision_reporter()` 装配 `MsprobeChecker`、`InternalRouterProbe`、`PrecisionAlarm` 和 `PrecisionReporter`，再构造 `SampleController`。
-
-### 采样与送检
-
-Router 公共基类提供三类方法：
-
-| 方法 | 说明 |
+| 路径 | 行为 |
 |------|------|
-| `_claim_precision_sample()` | D 已选定后按 D 实例申请窗口；成功后才修改 Decode 请求 |
-| `_collect_logprobs_from_stream_chunk()` | 流式 chunk 级缓存完整 token id、logprob，再将响应投影到客户端原始 logprobs 数量 |
-| `_collect_logprobs_from_nonstream_body()` | 非流式响应 body 级缓存 token id、logprob |
-| `_submit_token_sample()` | 构造 `DecodeSample` 并交给 `SampleController.enqueue_sample()` |
-
-不同路由策略负责提供实例组 key：
-
-| 路由策略 | 实例组 key |
-|----------|------------|
-| `unified_pd.py` | `(p_instance_id, d_instance_id)` |
-| `pd_hybrid.py` | `(None, union_id)` |
-
-### 检测与连续计数
-
-`PrecisionReporter.handle()` 在同一实例组的 per-key lock 内执行：
-
-1. 调用 `PrecisionChecker.check()`，当前生产装配为 `MsprobeChecker`。
-2. 通过 `AsyncSchedulerClient.record_precision_result()` 将 `has_issue` 上报 Scheduler。
-3. Scheduler 更新 `_precision_streak_counts`；若已经处于 `_precision_probing`，返回 `skip=true`。
-4. 连续异常达到 `precision_issue_threshold` 时，Scheduler 设置 probing 并生成 `action_token`。
-5. Worker 释放 lock 后通过 `asyncio.create_task()` 异步执行拨测与告警。
-
-### 拨测与告警
-
-`InternalRouterProbe` 通过完整 Router 管线发起固定问答请求：
-
-| 项 | 说明 |
-|----|------|
-| 请求 API | `v1/chat/completions` |
-| 问题 | `相对论的发明人是谁` |
-| 通过条件 | 响应文本包含 `爱因斯坦` |
-| 路由约束 | `SchedulingConstraint.for_precision_probe(p_instance_id, d_instance_id)` |
-| 采样防递归 | 构造 Router 时传入 `sampling_manager=None` |
-
-拨测结束后，`PrecisionAlarm` 调用 `build_precision_issue_alarm()` 构造告警，并通过 `ControllerApiClient.report_alarms()` 上报 Controller。无论拨测成功或失败，都会上报告警；拨测失败次数写入 `additional_information`。
-
-### Controller 自动恢复
-
-Controller 在 `_maybe_precision_auto_recover()` 中处理精度告警：
-
-1. 若 `record.alarm_id != 0xFC001009`，直接返回。
-2. 若 `precision_auto_recovery_enabled=false`，直接返回。
-3. 解析 `record.instance_id` 为 D 实例 ID，调用 `terminate_instance_for_recovery(d_id, "precision_alarm")`。
-4. 若 `record.p_instance_id` 非空，解析为 P 实例 ID 并调用同一恢复服务。
-5. 若全部目标实例终止成功，Controller 深拷贝原 Alarm 并调用 `clear()`，依次上报产生告警与清除告警；Coordinator 据此删除该 PD Group 的活动告警状态。
-
-`terminate_instance_for_recovery()` 先通过 `InstanceManager.separate_instance()` 将实例从调度池隔离，再遍历实例的 NodeManager 执行 `NodeManagerApiClient.stop()`。
-
-### 告警清除
-
-精度告警有三条清除路径。清除时生成 `category=CLEAR` 的 Record；开启 Controller Observability 后，清除记录写入其告警队列，并可由 CCAE Reporter 查询后上报 CCAE：
-
-| 路径 | 触发时机 | 说明 |
-|------|----------|------|
-| auto-recovery 清除 | Controller 终止原 P/D 全部成功 | 原实例已不存在，立即清除对应告警；新实例按新 PD Group 重新检测 |
-| CCAE 精度控制触发清除 | CCAE 下发 precision control 且 Controller 终止 P/D 全部成功 | 与 auto-recovery 共用 `complete_precision_pd_group_recovery`：生成精度告警清除记录并通知 Coordinator 删除 Scheduler 活动状态 |
-| 连续正常清除 | 未开启 auto-recovery，或告警仍活动 | 同一 PD Group 累计 `precision_clear_threshold` 次**有效正常**检测后，Coordinator 上报 CLEAR |
-
-清除告警必须与产生告警使用完全相同的 `moi`：
-
-| 场景 | `moi` 格式 |
-|------|------------|
-| 有 P 实例 | `service name=Coordinator, service ip=..., pId={p_id}, instanceId={d_id}` |
-| 无 P 实例 | `service name=Coordinator, service ip=..., instanceId={d_id}` |
-
-Scheduler 在产生告警成功后保存原始 `moi`；后续清除直接复用，禁止重新拼接。各 PD Group 的告警/正常计数彼此隔离。Controller 通知 Coordinator 删除 Scheduler 活动告警状态后，会在恢复结果中返回 `scheduler_state_cleared`；该字段用于反映状态清理是否成功，不改变实例终止成功的判定。
-
-### CCAE 北向 Completed 上报
-
-Controller 侧 CCAE Reporter（`examples/features/observability/ccae_reporter/reporters/ccae_reporter.py`）在收到 CCAE 下发的 `controlCode` 后，调用 Controller `POST /controller/terminate_instance`，请求体携带 `instance_id={d_id}`、`p_instance_id={p_id}` 和 `precision_alarm_clear=true`。Controller 在同一进程内完成 P/D 实例终止，并复用 `complete_precision_pd_group_recovery` 生成精度告警清除记录、通知 Coordinator 删除 Scheduler 活动状态；开启 Controller Observability 后，CCAE Reporter 从 `/observability/alarms` 查询该记录并上报 CCAE。随后 Reporter 将 precision task 状态置为 `Completed`，并在后续周期心跳中继续上报 `controlStatus=Completed`。
-
-| 规则 | 说明 |
-|------|------|
-| 上报窗口 | 从首次收到 `controlCode` 起算，最多持续上报 **10 分钟**（600 秒）；窗口内按周期继续上报 `controlStatus` |
-| 窗口到期 | 10 分钟内未进入终态或终态上报未结束时，删除 task 并恢复普通裸心跳（不再携带 `controlCode/controlStatus`） |
-| 同码抑制 | task 因窗口到期或终态成功上报 10 次而结束后，后续重复下发的**相同** `controlCode` 一律忽略，不再重启计时 |
-| 新码重启 | 收到**不同** `controlCode` 时解除抑制，重新创建 task 并从零开始 10 分钟计时 |
-| 成功上报计数 | 仅统计 HTTP POST 成功且 body 携带 `controlStatus=Completed` 或 `Failed` 的周期上报 |
-| 停止条件 | `Completed`/`Failed` 累计成功上报 10 次后删除 task；或距首次收到 `controlCode` 已满 10 分钟 |
-| 提前 ack | CCAE 返回 `controlStatusRespond=true` 不提前删除 task |
-| 失败重试 | HTTP 失败不计入次数，下一周期继续上报 |
-
-## 核心流程
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant R as Router
-    participant D as Decode Engine
-    participant SC as SampleController
-    participant S as Scheduler
-    participant PR as PrecisionReporter
-    participant M as MsprobeChecker
-    participant A as PrecisionAlarm
-    participant Ctrl as Controller
-
-    C->>R: chat/completions
-    R->>R: select Decode instance
-    R->>SC: claim_sample(d_instance_id, now)
-    SC->>S: CONFIRM_SAMPLE (compatibility wire value)
-    S-->>SC: claimed
-    alt claimed
-        R->>R: inject_logprobs(effective=max(client, Motor))
-        R->>D: Decode request
-        D-->>R: token_ids + full logprobs
-        R->>R: cache full sample, project client width
-        R-->>C: response / final stream chunk
-        R->>SC: enqueue_sample(DecodeSample)
-        SC-)PR: background handle(sample)
-        PR->>M: check()
-        M-->>PR: CheckResult
-        PR->>S: RECORD_PRECISION_RESULT
-        S-->>PR: PrecisionStreakResult
-        alt threshold_hit
-            PR->>A: create_task execute(ctx)
-            A->>R: InternalRouterProbe pinned request
-            A->>Ctrl: report_alarms(alarm_id=0xFC001009)
-            Ctrl->>Ctrl: _maybe_precision_auto_recover()
-            A->>S: FINISH_PRECISION_ACTION(action_token)
-        end
-    else not claimed
-        R->>D: unchanged Decode request
-        D-->>R: normal response
-        R-->>C: response
-    end
-```
-
-### Scheduler 状态
-
-| 字段 | key | 含义 |
-|------|-----|------|
-| `_sample_admission_last_time` | `d_instance_id` | 该 Decode 实例上次获准注入采样参数的时间戳 |
-| `_precision_streak_counts` | 同上 | 当前连续异常次数 |
-| `_precision_probing` | 同上 | 是否正在执行拨测/告警 |
-| `_precision_action_tokens` | 同上 | 本轮 action 的 UUID，用于 FINISH 校验 |
-
-入口准入使用 `(None, d_instance_id)` 对应的精度状态锁，检测结果与告警状态仍使用 `(p_instance_id, d_instance_id)`，保证“按 D 控制采样开销、按 PD 组归因告警”。获准请求即刻写入时间戳；后续请求失败也不归还窗口。
-
-## 类图
-
-```mermaid
-classDiagram
-    class SampleController {
-        +claim_sample(d_instance_id, now) bool
-        +enqueue_sample(sample) None
-        +shutdown() None
-    }
-    class DecodeSample {
-        +p_instance_id
-        +d_instance_id
-        +prompt_token_ids
-        +output_token_ids
-        +logprobs
-        +topk_logprobs
-        +req_id
-        +extra
-    }
-    class PrecisionReporter {
-        +handle(sample) None
-        -_record_streak(key, has_issue)
-        -_run_action(key, issue_count, extra, action_token)
-    }
-    class PrecisionChecker {
-        <<abstract>>
-        +check(...) CheckResult
-    }
-    class MsprobeChecker {
-        +check(...) CheckResult
-    }
-    class PrecisionAlarm {
-        +execute(ctx) None
-    }
-    class ChatProbe {
-        <<abstract>>
-        +run(...) ProbeOutcome
-    }
-    class InternalRouterProbe {
-        +run(...) ProbeOutcome
-    }
-    class Scheduler {
-        +claim_precision_sample(...) bool
-        +record_precision_result(...) dict
-        +finish_precision_action(...) bool
-    }
-
-    SampleController --> DecodeSample
-    SampleController --> PrecisionReporter
-    PrecisionReporter --> PrecisionChecker
-    PrecisionChecker <|-- MsprobeChecker
-    PrecisionReporter --> PrecisionAlarm
-    PrecisionAlarm --> ChatProbe
-    ChatProbe <|-- InternalRouterProbe
-    PrecisionReporter --> Scheduler
-    SampleController --> Scheduler
-```
-
-## 接口描述
-
-### Scheduler ZMQ
-
-| 请求 | data | 响应 | 说明 |
-|------|------|------|------|
-| `CONFIRM_SAMPLE` | `d_instance_id`, `now`, `interval_seconds`（`p_instance_id` 保留为空以兼容现有 wire schema） | `confirmed` | 跨 Worker、按 D 实例的入口采样准入 |
-| `RECORD_PRECISION_RESULT` | `p_instance_id`, `d_instance_id`, `has_issue`, `threshold` | `skip`, `threshold_hit`, `consecutive`, `action_token` | 全局连续计数和 probing 占位 |
-| `FINISH_PRECISION_ACTION` | `p_instance_id`, `d_instance_id`, `action_token` | `finished` | 校验 token 后清理 probing 与 streak，下一轮连续异常从 1 重新计数 |
-
-### `DecodeSample`
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `p_instance_id` | `int \| None` | Prefill 实例 ID；Hybrid 场景可为 `None` |
-| `d_instance_id` | `int` | Decode 或 Union 实例 ID |
-| `prompt_token_ids` | `list[int]` | prompt token id |
-| `output_token_ids` | `list[int]` | Decode 输出 token id |
-| `logprobs` | `list[float]` | 每个输出 token 的 top-1 logprob |
-| `topk_logprobs` | `list[dict[int, float]]` | 每个输出位置的 top-k token/logprob |
-| `req_id` | `str` | 请求 ID |
-| `extra` | `dict` | 当前使用 `model` 和 `d_infer_base_url` |
-
-### 精度告警 payload
-
-| 字段 | 值 | 说明 |
-|------|----|------|
-| `alarm_id` | `0xFC001009` | 精度异常告警 ID |
-| `alarm_name` | `Precision Anomaly Alarm` | 告警名称 |
-| `severity` | `MAJOR` | 告警级别 |
-| `event_type` | `PROCESSING_ERROR` | 事件类型 |
-| `instance_id` | D 实例 ID 字符串 | Controller 自动恢复的主对象 |
-| `p_instance_id` | P 实例 ID 字符串或空 | 非空时 Controller 同步终止 P |
-| `moi` | 见上文告警清除节 | 产生与清除必须逐字符一致，作为实例组告警关联键 |
-| `additional_information` | `precision_issue_count=..., probe_failure_count=..., p_instance_id=..., d_instance_id=...` | 检测与拨测统计 |
-
-## 可靠性与并发设计
-
-1. **Fail-open**：采样提交、msprobe 检测、Scheduler ZMQ 记录失败均不影响用户请求。
-2. **Scheduler 全局准入**：按 D 实例集中维护采样窗口，多个 Worker 并发请求只有一个能注入额外参数。
-3. **响应解耦**：msprobe、连续计数、拨测与告警从用户响应路径剥离；后台任务由 `SampleController` 跟踪，并在 Worker 关闭时取消、回收。
-4. **Scheduler 全局归因状态**：连续异常计数和 probing 状态仍按 PD Group 集中维护，避免多 Worker 重复触发拨测。
-5. **action_token 防误清理**：阈值触发时生成 UUID，FINISH 时必须匹配，防止旧 Worker 清掉新一轮状态。
-6. **msprobe 串行化**：`MsprobeChecker` 使用进程级 `threading.Lock` 包住 `ILLDetector.run()`，避免 msprobe 内部可变状态并发竞争。
-7. **拨测防递归**：`InternalRouterProbe` 构造 Router 时传入 `sampling_manager=None`，拨测请求不会再次进入采样链。
-8. **Controller 恢复隔离**：终止前先 `separate_instance()`，阻止后续新请求继续调度到异常实例。
-9. **告警 action 后状态提交**：raise action 成功后，若 auto-recovery 已清除则删除整组状态；否则进入 `alarm_active` 并保存 `moi`。clear action 成功后删除活动告警状态。无效检测（fail-open）不计入连续正常。
-10. **CLEAR 不触发 auto-recovery**：仅 `category=ALARM` 且 `cleared=NO` 的精度告警会触发实例终止。
-11. **CCAE Completed 生命周期**：实例终止成功后继续向 CCAE 成功上报 `Completed` 10 次；提前 ack 不停止，HTTP 失败不计数。
-
-## 限制与后续规划
-
-1. 只有获准采样的 Decode 请求才注入 logprobs；获准后请求失败仍消耗当前窗口。
-2. 生僻字检测依赖 msprobe 的 token2category 映射文件；新模型缺少映射时检测能力会降级。
-3. Mgmt 进程重启后采样窗口、连续异常计数和 probing 状态会清零。
-4. CCAE 北向精度控制的 `switchControl`、`immediateDelivery` 当前在 reporter 中保存状态，运行时动态开关仍需后续接入；`Completed` 状态需连续成功上报 10 次后才会停止。
-5. 本次只隔离 Motor 额外增加的 logprobs **数量**：内部先采集 `max(用户数量, Motor 配置)`，再按用户数量投影。`return_tokens_as_token_ids=true` 仍会在采样请求上强制设置，用户主动请求 logprobs 时的 token 表示兼容性留待后续决策。
-6. `SampleController` 与检测器按 Worker 生命周期构造，修改嵌套 `precision_detection_config` 后需重启 Worker 才能可靠生效。
-
-## 相关代码与测试
-
-| 路径 | 说明 |
-|------|------|
-| `motor/config/coordinator.py` | `PrecisionDetectionConfig` |
-| `motor/coordinator/api_server/inference_server.py` | Coordinator 启动装配 |
-| `motor/coordinator/router/precision_sample/` | 采样参数注入、响应采集、样本构造 |
-| `motor/coordinator/router/strategies/base.py` | Router 公共采集/提交逻辑 |
-| `motor/coordinator/router/strategies/unified_pd.py` | PD 分离实例组 key 与采样集成 |
-| `motor/coordinator/router/strategies/pd_hybrid.py` | Hybrid 实例组 key 与采样集成 |
-| `motor/coordinator/fault_tolerance/precision/` | 检测编排与 msprobe 适配 |
-| `motor/coordinator/fault_tolerance/probe/` | 固定问答拨测 |
-| `motor/coordinator/fault_tolerance/alarm/` | 精度告警上报 |
-| `motor/coordinator/scheduler/` | 跨 Worker 门控和连续计数 |
-| `motor/controller/api_server/controller_api.py` | 精度告警自动恢复入口 |
-| `motor/controller/core/recovery_service.py` | 实例终止恢复服务 |
-| `tests/coordinator/sampling/` | 采样、检测、告警链路单元测试 |
-| `tests/coordinator/scheduler/test_precision_streak_scheduler.py` | Scheduler 连续计数测试 |
-| `tests/examples/observability/test_ccae_precision_control.py` | CCAE Completed 上报生命周期测试 |
-
-```bash
-pytest tests/coordinator/sampling tests/coordinator/scheduler/test_precision_streak_scheduler.py tests/examples/observability/test_ccae_precision_control.py -v
-```
+| 连续无新增 | Coordinator 上报 CLEAR |
+| 自动恢复成功 | Controller 终止 Decode 后清除，并通知 Coordinator |
+| 外部精度恢复 | 复用 Controller 已有恢复接口；本告警的 Prefill 为空 |
