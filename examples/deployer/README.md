@@ -224,7 +224,7 @@ vLLM Render 通过 `user_config.json` 中的 `motor_coordinator_config.render_co
 
 Deployer 会将 Render Sidecar 添加到 Coordinator Pod，并从当前 vLLM Engine 配置读取模型信息。`image_name`指定独立 CPU 镜像；省略时复用服务镜像、只读挂载 Ascend 驱动库且不申请 NPU。
 `enable_token_only_decode`默认为 `false`，此时 Render 仍负责分词，流式与非流式 Decode 均使用原生 OpenAI 响应；设置为 `true` 后两者均改用 token-only decode + Derender，非流式要求 vLLM ≥ 0.24，流式要求 vLLM ≥ 0.27。
-`endpoint` 和 `timeout_ms`有默认值，无特殊需求无需配置。启用 `kv_cache_affinity` 调度时建议同时开启 Render，以复用同一份 prompt token ID。
+`endpoint` 和 `timeout_ms`有默认值，无特殊需求无需配置。未配置 `render_config.enable` 时，vLLM 部署若 Prefill 调度使用 `kv_cache_affinity`，Motor 默认启用 Render，以复用同一份 prompt token ID；显式配置 `enable` 后以该值为准，设为 `false` 可关闭 Render。
 
 vLLM Render 支持配置 `launch_args`，如启用多个 render worker thread 以及 Hermes Tool Call parser 时：
 
@@ -241,7 +241,7 @@ vLLM Render 支持配置 `launch_args`，如启用多个 render worker thread �
 }
 ```
 
-`renderer_num_workers` 未配置时，Deployer 默认传 `4`。使用 Tool Call 或 Reasoning 时，`tokenizer_mode`、`tool_call_parser`、`reasoning_parser`、`enable_auto_tool_choice` 等参数必须与推理引擎保持一致；非流式要求 vLLM ≥ 0.25，流式要求 vLLM ≥ 0.30，否则可能出现精度异常或响应字段解析错误。其他高阶参数及对应取值可参考 vLLM 官方社区，按需配置。
+`renderer_num_workers` 未配置时，Deployer 默认传 `4`。Deployer 会从 Engine 配置继承与 Render 兼容的参数：Tokenizer 和 Chat Template 等 Prompt 参数要求 P/D 一致，Tool Call 和 Reasoning 等响应解析参数跟随 Decode，`max_model_len` 跟随 Union/Prefill；`render_config.launch_args` 中的同名参数优先。Tool Call 或 Reasoning 非流式要求 vLLM ≥ 0.25，流式要求 vLLM ≥ 0.30，否则可能出现精度异常或响应字段解析错误。其他高阶参数及对应取值可参考 vLLM 官方社区，按需配置。
 
 其他说明：
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any
 
 import lib.constant as C
@@ -27,6 +28,22 @@ ASCEND_DRIVER_VOLUME_NAME = "ascend-driver-lib64"
 ASCEND_DRIVER_PATH = "/usr/local/Ascend/driver/lib64"
 LOCAL_RENDER_HOSTS = {"127.0.0.1", "localhost", "::1"}
 DEFAULT_RENDERER_NUM_WORKERS = 4
+SHARED_RENDER_ENGINE_ARGS = {
+    "chat_template",
+    "chat_template_content_format",
+    "default_chat_template_kwargs",
+    "tokenizer",
+    "tokenizer_mode",
+    "tokenizer_revision",
+    "trust_remote_code",
+}
+PREFILL_RENDER_ENGINE_ARGS = {"max_model_len"}
+DECODE_RENDER_ENGINE_ARGS = {
+    "enable_auto_tool_choice",
+    "reasoning_parser",
+    "tool_call_parser",
+}
+INHERITED_RENDER_ENGINE_ARGS = SHARED_RENDER_ENGINE_ARGS | PREFILL_RENDER_ENGINE_ARGS | DECODE_RENDER_ENGINE_ARGS
 MANAGED_RENDER_LAUNCH_ARGS = {
     "disable_access_log_for_endpoints",
     "host",
@@ -54,6 +71,18 @@ platforms.current_platform = CpuPlatform()
 """
 
 
+@dataclass(frozen=True)
+class RenderLaunchSpec:
+    """Fully resolved Render process configuration shared by every deployment path."""
+
+    image: str
+    use_cpu_image: bool
+    model: str
+    served_model_names: tuple[str, ...]
+    port: int
+    launch_args: dict[str, Any]
+
+
 def _normalize_served_model_names(value: Any) -> list[str]:
     if isinstance(value, str) and value:
         return [value]
@@ -78,22 +107,33 @@ def _resolve_model_config(engine_section: dict[str, Any], section_name: str) -> 
     return model, _normalize_served_model_names(served_model_name)
 
 
-def resolve_render_model(user_config: dict[str, Any]) -> tuple[str, list[str]]:
-    """Resolve and validate the model consumed by the Render sidecar."""
+def _resolve_render_engine_sections(user_config: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     if is_hybrid_deploy(deploy_config):
         section_name = C.MOTOR_ENGINE_UNION_CONFIG
-        section = user_config.get(section_name, {})
-        return _resolve_model_config(section, section_name)
+        return [(section_name, user_config.get(section_name, {}))]
 
-    prefill = user_config.get(C.MOTOR_ENGINE_PREFILL_CONFIG, {})
-    prefill_model = _resolve_model_config(prefill, C.MOTOR_ENGINE_PREFILL_CONFIG)
+    sections = [
+        (C.MOTOR_ENGINE_PREFILL_CONFIG, user_config.get(C.MOTOR_ENGINE_PREFILL_CONFIG, {})),
+    ]
     decode = user_config.get(C.MOTOR_ENGINE_DECODE_CONFIG)
     if decode is not None:
-        decode_model = _resolve_model_config(decode, C.MOTOR_ENGINE_DECODE_CONFIG)
-        if decode_model != prefill_model:
+        sections.append((C.MOTOR_ENGINE_DECODE_CONFIG, decode))
+    return sections
+
+
+def _resolve_render_model(engine_sections: list[tuple[str, dict[str, Any]]]) -> tuple[str, list[str]]:
+    first_section_name, first_section = engine_sections[0]
+    model = _resolve_model_config(first_section, first_section_name)
+    for section_name, section in engine_sections[1:]:
+        if _resolve_model_config(section, section_name) != model:
             raise ValueError("Prefill and decode model/served_model_name must match when Render is enabled")
-    return prefill_model
+    return model
+
+
+def resolve_render_model(user_config: dict[str, Any]) -> tuple[str, list[str]]:
+    """Resolve and validate the model consumed by the Render sidecar."""
+    return _resolve_render_model(_resolve_render_engine_sections(user_config))
 
 
 def _ensure_ascend_driver_mount(pod_spec: dict[str, Any], container: dict[str, Any]) -> None:
@@ -155,12 +195,77 @@ def _serialize_launch_args(launch_args: dict[str, Any]) -> list[str]:
     return args
 
 
-def _resolve_launch_args(render_config: dict[str, Any]) -> dict[str, Any]:
-    """Merge defaults with user launch_args (K8s + Docker share this)."""
+def _normalize_launch_arg_name(name: object, source: str) -> str:
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"{source} keys must be non-empty strings")
+    return name.strip().lstrip("-").replace("-", "_").lower()
+
+
+def _derive_render_launch_args(
+    engine_sections: list[tuple[str, dict[str, Any]]],
+    overridden_names: set[str],
+) -> dict[str, Any]:
+    derived: dict[str, Any] = {}
+    sources: dict[str, str] = {}
+    for section_index, (section_name, section) in enumerate(engine_sections):
+        engine_config = section.get(C.ENGINE_CONFIG, {})
+        if not isinstance(engine_config, dict):
+            raise ValueError(f"{section_name}.engine_config must be an object")
+        section_args: dict[str, Any] = {}
+        for raw_name, value in engine_config.items():
+            normalized_name = _normalize_launch_arg_name(raw_name, f"{section_name}.engine_config")
+            if normalized_name not in INHERITED_RENDER_ENGINE_ARGS:
+                continue
+            if normalized_name in PREFILL_RENDER_ENGINE_ARGS and section_index > 0:
+                continue
+            if (
+                normalized_name in DECODE_RENDER_ENGINE_ARGS
+                and len(engine_sections) > 1
+                and section_index < len(engine_sections) - 1
+            ):
+                continue
+            if normalized_name in section_args and section_args[normalized_name] != value:
+                raise ValueError(f"{section_name}.engine_config contains conflicting values for {normalized_name}")
+            section_args[normalized_name] = value
+
+        for name, value in section_args.items():
+            if name in derived and derived[name] != value and name not in overridden_names:
+                raise ValueError(f"Render launch argument {name} conflicts between {sources[name]} and {section_name}")
+            derived[name] = value
+            sources[name] = section_name
+    return derived
+
+
+def _normalize_user_launch_args(render_config: dict[str, Any]) -> dict[str, Any]:
     configured_launch_args = render_config.get("launch_args", {})
     if not isinstance(configured_launch_args, dict):
         raise ValueError("render_config.launch_args must be an object")
-    launch_args = {"renderer_num_workers": DEFAULT_RENDERER_NUM_WORKERS, **configured_launch_args}
+    normalized: dict[str, Any] = {}
+    for raw_name, value in configured_launch_args.items():
+        normalized_name = _normalize_launch_arg_name(raw_name, "render_config.launch_args")
+        if normalized_name in MANAGED_RENDER_LAUNCH_ARGS:
+            raise ValueError(f"render_config.launch_args.{raw_name} is managed by Motor")
+        if normalized_name in normalized:
+            raise ValueError(f"render_config.launch_args contains duplicate argument: {raw_name}")
+        normalized[normalized_name] = value
+    return normalized
+
+
+def _resolve_launch_args(
+    render_config: dict[str, Any],
+    engine_sections: list[tuple[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    """Merge Motor defaults, Engine compatibility args, then explicit Render overrides."""
+    user_launch_args = _normalize_user_launch_args(render_config)
+    launch_args = {
+        "renderer_num_workers": DEFAULT_RENDERER_NUM_WORKERS,
+        **_derive_render_launch_args(engine_sections, set(user_launch_args)),
+        **user_launch_args,
+    }
+    hf_overrides = launch_args.get("hf_overrides", {})
+    if isinstance(hf_overrides, dict):
+        # Render needs no quantized kernels, but ModelConfig validates quantization before Render clears it.
+        launch_args["hf_overrides"] = {"quantization_config": None, **hf_overrides}
     renderer_num_workers = launch_args.get("renderer_num_workers")
     if not isinstance(renderer_num_workers, int) or isinstance(renderer_num_workers, bool) or renderer_num_workers <= 0:
         raise ValueError("render_config.launch_args.renderer_num_workers must be a positive integer")
@@ -170,7 +275,7 @@ def _resolve_launch_args(render_config: dict[str, Any]) -> dict[str, Any]:
 def _build_render_command(
     use_cpu_image: bool,
     model: str,
-    served_model_names: list[str],
+    served_model_names: list[str] | tuple[str, ...],
     port: int,
     launch_args: dict[str, Any],
 ) -> tuple[list[str], list[str]]:
@@ -215,7 +320,7 @@ def _build_render_container(
     image: str,
     use_cpu_image: bool,
     model: str,
-    served_model_names: list[str],
+    served_model_names: list[str] | tuple[str, ...],
     port: int,
     launch_args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -282,9 +387,31 @@ def _render_config_section(user_config: dict[str, Any]) -> dict[str, Any]:
 
 
 def is_render_enabled(user_config: dict[str, Any]) -> bool:
-    """True when ``render_config.enable`` is set (same gate as upstream / Coordinator)."""
+    """Resolve Render intent, with an explicit switch overriding the KV-affinity default."""
     render_config = _render_config_section(user_config)
-    return bool(render_config.get("enable", False))
+    if "enable" in render_config:
+        return render_config.get("enable") is True
+
+    coordinator_config = user_config.get(C.MOTOR_COORDINATOR_CONFIG, {})
+    scheduler_config = coordinator_config.get("scheduler_config", {}) if isinstance(coordinator_config, dict) else {}
+    if not isinstance(scheduler_config, dict):
+        return False
+    prefill_scheduler_type = scheduler_config.get(
+        "prefill_scheduler_type",
+        scheduler_config.get("scheduler_type"),
+    )
+    if not isinstance(prefill_scheduler_type, str) or prefill_scheduler_type.lower() != "kv_cache_affinity":
+        return False
+    engine_sections = _resolve_render_engine_sections(user_config)
+    for section_name, section in engine_sections:
+        if (
+            section_name not in user_config
+            or not isinstance(section, dict)
+            or section.get(C.ENGINE_TYPE, C.ENGINE_TYPE_VLLM) != C.ENGINE_TYPE_VLLM
+        ):
+            logger.warning("Render auto-enable skipped: %s must describe a vllm engine", section_name)
+            return False
+    return True
 
 
 def _resolve_render_endpoint(render_config: dict[str, Any]) -> tuple[str, int]:
@@ -330,6 +457,27 @@ def resolve_render_image(user_config: dict[str, Any]) -> tuple[str, bool]:
     return image, use_cpu_image
 
 
+def resolve_render_launch_spec(user_config: dict[str, Any]) -> RenderLaunchSpec:
+    """Resolve the one Render launch contract consumed by K8s, Docker, and in-place execution."""
+    if not is_render_enabled(user_config):
+        raise ValueError("render_config.enable is false; cannot start Render")
+
+    render_config = _render_config_section(user_config)
+    _host, port = _resolve_render_endpoint(render_config)
+    engine_sections = _resolve_render_engine_sections(user_config)
+    model, served_model_names = _resolve_render_model(engine_sections)
+    image, use_cpu_image = resolve_render_image(user_config)
+    launch_args = _resolve_launch_args(render_config, engine_sections)
+    return RenderLaunchSpec(
+        image=image,
+        use_cpu_image=use_cpu_image,
+        model=model,
+        served_model_names=tuple(served_model_names),
+        port=port,
+        launch_args=launch_args,
+    )
+
+
 def render_runtime_env(use_cpu_image: bool) -> dict[str, str]:
     env = {
         "HF_HUB_OFFLINE": "1",
@@ -353,22 +501,29 @@ def render_runtime_env(use_cpu_image: bool) -> dict[str, str]:
 
 def build_render_exec_argv(user_config: dict[str, Any]) -> list[str]:
     """Argv to exec ``vllm launch render`` inside an existing container."""
-    if not is_render_enabled(user_config):
-        raise ValueError("render_config.enable is false; cannot start Render")
-    render_config = _render_config_section(user_config)
-    _host, port = _resolve_render_endpoint(render_config)
-    launch_args = _resolve_launch_args(render_config)
-    model, served_model_names = resolve_render_model(user_config)
-    _image, use_cpu_image = resolve_render_image(user_config)
-    command, args = _build_render_command(use_cpu_image, model, served_model_names, port, launch_args)
+    spec = resolve_render_launch_spec(user_config)
+    command, args = _build_render_command(
+        spec.use_cpu_image,
+        spec.model,
+        spec.served_model_names,
+        spec.port,
+        spec.launch_args,
+    )
     return [*command, *args]
 
 
 def exec_render_in_place(user_config: dict[str, Any]) -> None:
     """Replace this process with vLLM Render (Docker ``--start --role render``)."""
-    _image, use_cpu_image = resolve_render_image(user_config)
-    os.environ.update(render_runtime_env(use_cpu_image))
-    argv = build_render_exec_argv(user_config)
+    spec = resolve_render_launch_spec(user_config)
+    os.environ.update(render_runtime_env(spec.use_cpu_image))
+    command, args = _build_render_command(
+        spec.use_cpu_image,
+        spec.model,
+        spec.served_model_names,
+        spec.port,
+        spec.launch_args,
+    )
+    argv = [*command, *args]
     os.execvp(argv[0], argv)
 
 
@@ -382,12 +537,14 @@ def build_docker_render_run_argv(container_name: str, user_config: dict[str, Any
     if not is_render_enabled(user_config):
         return None
 
-    render_config = _render_config_section(user_config)
-    _host, port = _resolve_render_endpoint(render_config)
-    launch_args = _resolve_launch_args(render_config)
-    model, served_model_names = resolve_render_model(user_config)
-    image, use_cpu_image = resolve_render_image(user_config)
-    command, args = _build_render_command(use_cpu_image, model, served_model_names, port, launch_args)
+    spec = resolve_render_launch_spec(user_config)
+    command, args = _build_render_command(
+        spec.use_cpu_image,
+        spec.model,
+        spec.served_model_names,
+        spec.port,
+        spec.launch_args,
+    )
 
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     weight_mount_path = str(deploy_config.get(C.WEIGHT_MOUNT_PATH, C.DEFAULT_WEIGHT_MOUNT_PATH) or "").strip()
@@ -424,7 +581,7 @@ def build_docker_render_run_argv(container_name: str, user_config: dict[str, Any
     add_bind("/root/.cache:/root/.cache")
     if weight_mount_path:
         add_bind(f"{weight_mount_path}:{weight_mount_path}:ro")
-    if not use_cpu_image:
+    if not spec.use_cpu_image:
         argv.extend(
             [
                 "-e",
@@ -440,7 +597,7 @@ def build_docker_render_run_argv(container_name: str, user_config: dict[str, Any
             ]
         )
         add_bind(f"{ASCEND_DRIVER_PATH}:{ASCEND_DRIVER_PATH}:ro")
-    argv.append(image)
+    argv.append(spec.image)
     argv.extend(command)
     argv.extend(args)
     return argv
@@ -457,23 +614,18 @@ def configure_render_sidecar(pod_spec: dict[str, Any], user_config: dict[str, An
     if not is_render_enabled(user_config):
         return
 
-    render_config = _render_config_section(user_config)
-    _host, port = _resolve_render_endpoint(render_config)
-    image, use_cpu_image = resolve_render_image(user_config)
-    launch_args = _resolve_launch_args(render_config)
-
-    model, served_model_names = resolve_render_model(user_config)
+    spec = resolve_render_launch_spec(user_config)
     container = _build_render_container(
-        image,
-        use_cpu_image,
-        model,
-        served_model_names,
-        port,
-        launch_args,
+        spec.image,
+        spec.use_cpu_image,
+        spec.model,
+        spec.served_model_names,
+        spec.port,
+        spec.launch_args,
     )
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     weight_mount_path = deploy_config.get(C.WEIGHT_MOUNT_PATH, C.DEFAULT_WEIGHT_MOUNT_PATH)
     set_weight_mount(pod_spec, container, weight_mount_path)
-    if not use_cpu_image:
+    if not spec.use_cpu_image:
         _ensure_ascend_driver_mount(pod_spec, container)
     containers.append(container)

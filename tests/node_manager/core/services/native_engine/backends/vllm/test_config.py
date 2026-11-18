@@ -479,11 +479,22 @@ def test_scale_out_gate(role, render_enabled, supported, explicit, expected):
     assert ("--enable-scale-out" in cli_args) is expected
 
 
-def test_deploy_config_derives_render_enable_from_root(tmp_path):
+@pytest.mark.parametrize(
+    ("render_config", "scheduler_type", "expected"),
+    [
+        (None, "kv_cache_affinity", True),
+        (None, "KV_CACHE_AFFINITY", True),
+        ({"enable": False}, "kv_cache_affinity", False),
+    ],
+)
+def test_deploy_config_derives_render_enable_from_root(tmp_path, render_config, scheduler_type, expected):
     """NodeManager must derive Render intent from the shared root configuration."""
+    coordinator_config = {"scheduler_config": {"prefill_scheduler_type": scheduler_type}}
+    if render_config is not None:
+        coordinator_config["render_config"] = render_config
     user_config = {
         "motor_deploy_config": {},
-        "motor_coordinator_config": {"render_config": {"enable": True}},
+        "motor_coordinator_config": coordinator_config,
         "motor_engine_union_config": {
             "engine_type": "vllm",
             "engine_config": {"model": "/weights/model", "served_model_name": "model"},
@@ -492,7 +503,7 @@ def test_deploy_config_derives_render_enable_from_root(tmp_path):
     config_path = tmp_path / "user_config.json"
     config_path.write_text(json.dumps(user_config), encoding="utf-8")
 
-    assert DeployConfig.load(config_path, role="union").render_enabled is True
+    assert DeployConfig.load(config_path, role="union").render_enabled is expected
 
 
 @pytest.mark.parametrize("as_json", [False, True])

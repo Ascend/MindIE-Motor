@@ -8,6 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import json
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from lib.generator.render import (
     build_docker_render_run_argv,
     build_render_exec_argv,
     configure_render_sidecar,
+    is_render_enabled,
     render_runtime_env,
     role_needs_docker_render,
 )
@@ -101,6 +103,41 @@ def _render_arg(container, name):
     return container["args"][index + 1]
 
 
+@pytest.mark.parametrize(
+    ("render_config", "scheduler_config", "engines", "expected"),
+    [
+        (None, {"prefill_scheduler_type": "kv_cache_affinity"}, {"prefill": "vllm", "decode": "vllm"}, True),
+        ({"enable": False}, {"prefill_scheduler_type": "kv_cache_affinity"}, {"union": "vllm"}, False),
+        (None, {"prefill_scheduler_type": "load_balance"}, {"union": "vllm"}, False),
+        (None, {"scheduler_type": "KV_CACHE_AFFINITY"}, {"union": "vllm"}, True),
+        (None, {"prefill_scheduler_type": "Kv_Cache_Affinity"}, {"prefill": "vllm", "decode": "vllm"}, True),
+        (None, {"prefill_scheduler_type": "kv_cache_affinity"}, {"prefill": "sglang"}, False),
+        (None, {"prefill_scheduler_type": "kv_cache_affinity"}, {"union": "mindie-llm"}, False),
+        (None, {"prefill_scheduler_type": "kv_cache_affinity"}, {"union": "mindie-server"}, False),
+        (None, {"prefill_scheduler_type": "kv_cache_affinity"}, {"prefill": "vllm", "decode": "sglang"}, False),
+        (None, {"prefill_scheduler_type": "kv_cache_affinity"}, {}, False),
+        ({"enable": True}, {"prefill_scheduler_type": "load_balance"}, {"union": "vllm"}, True),
+    ],
+)
+def test_render_enable_defaults_to_prefill_kv_affinity(render_config, scheduler_config, engines, expected):
+    config = _user_config()
+    coordinator_config = {"scheduler_config": scheduler_config}
+    if render_config is not None:
+        coordinator_config[C.RENDER_CONFIG] = render_config
+    config[C.MOTOR_COORDINATOR_CONFIG] = coordinator_config
+    engine_config = config.pop(C.MOTOR_ENGINE_PREFILL_CONFIG)[C.ENGINE_CONFIG]
+    config.pop(C.MOTOR_ENGINE_DECODE_CONFIG)
+    if "union" in engines:
+        config[C.MOTOR_DEPLOY_CONFIG][C.HYBRID_INSTANCES_NUM] = 1
+    for role, engine in engines.items():
+        config[f"motor_engine_{role}_config"] = {C.ENGINE_TYPE: engine, C.ENGINE_CONFIG: dict(engine_config)}
+
+    assert is_render_enabled(config) is expected
+    pod_spec = _pod_spec()
+    configure_render_sidecar(pod_spec, config)
+    assert any(item.get(C.NAME) == RENDER_CONTAINER_NAME for item in pod_spec[C.CONTAINERS]) is expected
+
+
 def test_cpu_render_uses_dedicated_image_without_ascend_runtime():
     pod_spec = _pod_spec(stale_sidecar=True)
     configure_render_sidecar(pod_spec, _user_config())
@@ -109,6 +146,7 @@ def test_cpu_render_uses_dedicated_image_without_ascend_runtime():
     assert container[C.IMAGE] == "vllm-render-cpu:test"
     assert container[C.PORTS][0]["containerPort"] == 8110
     assert _render_arg(container, "--renderer-num-workers") == "4"
+    assert json.loads(_render_arg(container, "--hf-overrides")) == {"quantization_config": None}
     assert C.ASCEND_910_NPU_NUM not in container[C.RESOURCES][C.REQUESTS]
     assert container["command"] == ["vllm"]
     env = {item[C.NAME]: item[C.VALUE] for item in container[C.ENV]}
@@ -117,7 +155,16 @@ def test_cpu_render_uses_dedicated_image_without_ascend_runtime():
     assert ASCEND_DRIVER_VOLUME_NAME not in {item[C.NAME] for item in pod_spec[C.VOLUMES]}
 
 
-def test_render_launch_args_are_serialized():
+@pytest.mark.parametrize(
+    ("hf_overrides", "expected"),
+    [
+        ({"model_type": "custom"}, {"quantization_config": None, "model_type": "custom"}),
+        ({"quantization_config": {"quant_method": "fp8"}}, {"quantization_config": {"quant_method": "fp8"}}),
+        ('{"model_type":"custom"}', {"model_type": "custom"}),
+        (None, None),
+    ],
+)
+def test_render_launch_args_are_serialized(hf_overrides, expected):
     config = _user_config()
     config[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["launch_args"] = {
         "renderer_num_workers": 7,
@@ -127,6 +174,7 @@ def test_render_launch_args_are_serialized():
         "allowed_media_domains": ["images.example.com", "media.example.com"],
         "reasoning_parser": None,
         "unused_flag": False,
+        "hf_overrides": hf_overrides,
     }
     pod_spec = _pod_spec()
 
@@ -141,6 +189,83 @@ def test_render_launch_args_are_serialized():
     assert args[domains_index + 1 : domains_index + 3] == ["images.example.com", "media.example.com"]
     assert "--reasoning-parser" not in args
     assert "--unused-flag" not in args
+    if expected is None:
+        assert "--hf-overrides" not in args
+    else:
+        assert json.loads(_render_arg(_render_container(pod_spec), "--hf-overrides")) == expected
+    assert config[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["launch_args"]["hf_overrides"] == hf_overrides
+
+
+def test_render_inherits_engine_launch_args_with_user_overrides():
+    config = _user_config()
+    prefill = config[C.MOTOR_ENGINE_PREFILL_CONFIG][C.ENGINE_CONFIG]
+    decode = config[C.MOTOR_ENGINE_DECODE_CONFIG][C.ENGINE_CONFIG]
+    prefill.update(
+        {
+            "tokenizer-mode": "deepseek_v4",
+            "tool-call-parser": "engine-parser",
+            "enable-auto-tool-choice": True,
+            "trust-remote-code": True,
+            "tensor_parallel_size": 8,
+        }
+    )
+    decode.update(
+        {
+            "tokenizer_mode": "deepseek_v4",
+            "tool_call_parser": "engine-parser",
+            "enable_auto_tool_choice": True,
+            "trust_remote_code": True,
+            "max_model_len": 4096,
+        }
+    )
+    config[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["launch_args"] = {
+        "tool_call_parser": "user-parser",
+        "enable_auto_tool_choice": False,
+    }
+
+    pod_spec = _pod_spec()
+    configure_render_sidecar(pod_spec, config)
+
+    container = _render_container(pod_spec)
+    args = container["args"]
+    assert _render_arg(container, "--tokenizer-mode") == "deepseek_v4"
+    assert _render_arg(container, "--tool-call-parser") == "user-parser"
+    assert _render_arg(container, "--max-model-len") == "2048"
+    assert "--trust-remote-code" in args
+    assert "--enable-auto-tool-choice" not in args
+    assert "--tensor-parallel-size" not in args
+
+
+def test_render_follows_decode_frontend_args_and_rejects_prompt_conflict():
+    config = _user_config()
+    config[C.MOTOR_ENGINE_PREFILL_CONFIG][C.ENGINE_CONFIG]["reasoning-parser"] = "prefill-parser"
+    config[C.MOTOR_ENGINE_DECODE_CONFIG][C.ENGINE_CONFIG]["reasoning_parser"] = "decode-parser"
+    config[C.MOTOR_ENGINE_PREFILL_CONFIG][C.ENGINE_CONFIG]["tokenizer-mode"] = "prefill-mode"
+    config[C.MOTOR_ENGINE_DECODE_CONFIG][C.ENGINE_CONFIG]["tokenizer_mode"] = "decode-mode"
+
+    with pytest.raises(ValueError, match="tokenizer_mode conflicts"):
+        configure_render_sidecar(_pod_spec(), config)
+
+    config[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["launch_args"] = {"tokenizer_mode": "user-mode"}
+    pod_spec = _pod_spec()
+    configure_render_sidecar(pod_spec, config)
+    container = _render_container(pod_spec)
+    assert _render_arg(container, "--reasoning-parser") == "decode-parser"
+    assert _render_arg(container, "--tokenizer-mode") == "user-mode"
+
+
+def test_render_inherits_union_engine_launch_args():
+    config = _user_config()
+    config[C.MOTOR_DEPLOY_CONFIG][C.HYBRID_INSTANCES_NUM] = 1
+    union = config.pop(C.MOTOR_ENGINE_PREFILL_CONFIG)
+    config.pop(C.MOTOR_ENGINE_DECODE_CONFIG)
+    union[C.ENGINE_CONFIG]["reasoning-parser"] = "glm45"
+    config[C.MOTOR_ENGINE_UNION_CONFIG] = union
+
+    pod_spec = _pod_spec()
+    configure_render_sidecar(pod_spec, config)
+
+    assert _render_arg(_render_container(pod_spec), "--reasoning-parser") == "glm45"
 
 
 @pytest.mark.parametrize("num_workers", [0, True, "4"])
@@ -243,6 +368,7 @@ def test_ascend_render_inherits_service_image_and_mounts_driver_without_requesti
     assert "CpuPlatform" in container["args"][3]
     assert "vllm.triton_utils" in container["args"][3]
     assert container["args"][4:6] == ["launch", "render"]
+    assert json.loads(_render_arg(container, "--hf-overrides")) == {"quantization_config": None}
     env = {item[C.NAME]: item[C.VALUE] for item in container[C.ENV]}
     assert env["VLLM_MLA_DISABLE"] == "1"
     assert env["VLLM_PLUGINS"] == ""

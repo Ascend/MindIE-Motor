@@ -40,6 +40,7 @@ from motor.config.config_utils import (
     reload_dataclass_config_from_json,
     resolve_config_json_path,
     resolve_engine_model_paths,
+    resolve_render_enabled,
     save_instance_config_to_json,
 )
 from motor.config.etcd import EtcdConfig
@@ -1178,6 +1179,11 @@ class CoordinatorConfig:
                 if section_name in cfg:
                     update_config_from_dict(config_obj, cfg[section_name], special_handlers)
 
+            render_config_data = cfg.get("render_config")
+            render_enable_is_explicit = isinstance(render_config_data, dict) and "enable" in render_config_data
+            if not render_enable_is_explicit:
+                config.render_config.enable = resolve_render_enabled(user_config_data or cfg)
+
             if CONTEXT_BUDGET_MODE in cfg:
                 config.context_budget_mode = cfg[CONTEXT_BUDGET_MODE]
 
@@ -1321,6 +1327,8 @@ class CoordinatorConfig:
         self._validate_ip_or_hostname(self.render_config.endpoint.host, "render_config.endpoint.host")
         self._validate_port_range(self.render_config.endpoint.port, "render_config.endpoint.port")
         self._validate_positive_number(self.render_config.timeout_ms, "render_config.timeout_ms")
+        if not isinstance(self.render_config.enable, bool):
+            self._errors.append("render_config.enable must be a bool")
         if not isinstance(self.render_config.enable_token_only_decode, bool):
             self._errors.append("render_config.enable_token_only_decode must be a bool")
         if not isinstance(self.render_config.image_name, str):

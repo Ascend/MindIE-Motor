@@ -13,6 +13,8 @@ kv-conductor 维护缓存索引，Coordinator 使用索引结果估计剩余 pre
 亲和调度适用于 PD 分离的 Prefill（P）角色和 PD 混部的 Union（U）角色。
 通过 `prefill_scheduler_type` 为 P/U 开启 `kv_cache_affinity`；Decode（D）通过
 `decode_scheduler_type` 选择负载均衡或轮询。两个配置项默认均为 `load_balance`。
+未显式配置 `render_config.enable` 时，vLLM 部署开启 `kv_cache_affinity` 会同时默认启用 Render，
+以复用一致的 prompt token ID；如需关闭，可显式设置 `render_config.enable=false`。
 
 | 子策略 | 初次选点行为 |
 |--------|--------------|

@@ -27,6 +27,7 @@ logger = get_logger(__name__)
 MINDIE_MOTOR_CONFIG_FILENAME = "config_sample.json"
 MOTOR_DEPLOY_CONFIG = "motor_deploy_config"
 MOTOR_ENGINE_PREFILL_CONFIG = "motor_engine_prefill_config"
+MOTOR_ENGINE_DECODE_CONFIG = "motor_engine_decode_config"
 MOTOR_ENGINE_UNION_CONFIG = "motor_engine_union_config"
 DEFAULT_KV_CONDUCTOR_HTTP_PORT = 13333
 FAULT_TOLERANCE_CONFIG_KEY = "fault_tolerance_config"
@@ -300,11 +301,41 @@ def _is_context_budget_enabled(user_config_data: dict[str, Any]) -> bool:
 
 
 def _is_render_enabled(user_config_data: dict[str, Any]) -> bool:
+    return resolve_render_enabled(user_config_data)
+
+
+def resolve_render_enabled(user_config_data: dict[str, Any]) -> bool:
+    """Resolve Render intent, with an explicit switch overriding the KV-affinity default."""
     coordinator_config = user_config_data.get(ConfigKey.MOTOR_COORDINATOR.value)
     if not isinstance(coordinator_config, dict):
-        return False
+        coordinator_config = user_config_data
     render_config = coordinator_config.get(RENDER_CONFIG)
-    return isinstance(render_config, dict) and render_config.get(ENABLE) is True
+    if isinstance(render_config, dict) and ENABLE in render_config:
+        return render_config.get(ENABLE) is True
+
+    scheduler_config = coordinator_config.get("scheduler_config")
+    if not isinstance(scheduler_config, dict):
+        return False
+    prefill_scheduler_type = scheduler_config.get(
+        "prefill_scheduler_type",
+        scheduler_config.get("scheduler_type"),
+    )
+    if not isinstance(prefill_scheduler_type, str) or prefill_scheduler_type.lower() != "kv_cache_affinity":
+        return False
+
+    deploy_config = user_config_data.get(MOTOR_DEPLOY_CONFIG, {})
+    if HYBRID_INSTANCES_NUM in deploy_config or MOTOR_ENGINE_PREFILL_CONFIG not in user_config_data:
+        section_names = [MOTOR_ENGINE_UNION_CONFIG]
+    else:
+        section_names = [MOTOR_ENGINE_PREFILL_CONFIG]
+        if MOTOR_ENGINE_DECODE_CONFIG in user_config_data:
+            section_names.append(MOTOR_ENGINE_DECODE_CONFIG)
+    for section_name in section_names:
+        section = user_config_data.get(section_name)
+        if not isinstance(section, dict) or section.get(ENGINE_TYPE, "vllm") != "vllm":
+            logger.warning("Render auto-enable skipped: %s must describe a vllm engine", section_name)
+            return False
+    return True
 
 
 def _is_dynamic_bucket_enabled(user_config_data: dict[str, Any]) -> bool:

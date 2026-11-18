@@ -18,7 +18,11 @@ from typing import Any
 
 from motor.common.logger import get_logger
 from motor.common.resources.dispatch import DISPATCH_PROFILE_KEY
-from motor.config.config_utils import _update_native_engine_tls_config, fast_recovery_budget
+from motor.config.config_utils import (
+    _update_native_engine_tls_config,
+    fast_recovery_budget,
+    resolve_render_enabled,
+)
 from motor.config.resolver import ConfigResolver, normalize_keys
 from motor.config.tls_config import TLSConfig
 from motor.common import engine_constants as constants
@@ -34,8 +38,6 @@ MOTOR_ENGINE_ENCODE_CONFIG_KEY = "motor_engine_encode_config"
 MOTOR_ENGINE_PREFILL_CONFIG_KEY = "motor_engine_prefill_config"
 MOTOR_ENGINE_DECODE_CONFIG_KEY = "motor_engine_decode_config"
 MOTOR_ENGINE_UNION_CONFIG_KEY = "motor_engine_union_config"
-MOTOR_COORDINATOR_CONFIG_KEY = "motor_coordinator_config"
-RENDER_CONFIG_KEY = "render_config"
 ENCODE_PARALLEL_CONFIG_KEY = "encode_parallel_config"
 PREFILL_PARALLEL_CONFIG_KEY = "prefill_parallel_config"
 DECODE_PARALLEL_CONFIG_KEY = "decode_parallel_config"
@@ -209,9 +211,7 @@ class DeployConfig:
         """
         with open(file_path, "r", encoding="utf-8") as f:
             raw_data = json.load(f)
-        coordinator_config = raw_data.get(MOTOR_COORDINATOR_CONFIG_KEY, {}) if isinstance(raw_data, dict) else {}
-        render_config = coordinator_config.get(RENDER_CONFIG_KEY, {}) if isinstance(coordinator_config, dict) else {}
-        render_enabled = render_config.get("enable") is True if isinstance(render_config, dict) else False
+        render_enabled = resolve_render_enabled(raw_data) if isinstance(raw_data, dict) else False
         data = raw_data
         if isinstance(raw_data, dict) and (
             MOTOR_ENGINE_ENCODE_CONFIG_KEY in raw_data

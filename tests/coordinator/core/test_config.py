@@ -16,6 +16,7 @@ import time
 import pytest
 
 from motor.config.coordinator import CoordinatorConfig, SchedulerConfig, SchedulerType, _merge_kv_store_metrics_config
+from motor.config.config_utils import resolve_render_enabled
 
 
 def test_standalone_coordinator_config_needs_no_engine_or_controller_sections(tmp_path):
@@ -1561,6 +1562,43 @@ def test_render_config_reuses_engine_model_metadata_without_kv_events(_temp_json
     assert config.scheduler_config.kv_conductor_config.model_path == "/mnt/weight/qwen"
 
 
+@pytest.mark.parametrize(
+    ("render_config", "scheduler_config", "engines", "expected"),
+    [
+        (None, {"prefill_scheduler_type": "kv_cache_affinity"}, {"prefill": "vllm"}, True),
+        ({"enable": False}, {"prefill_scheduler_type": "kv_cache_affinity"}, {"union": "vllm"}, False),
+        (None, {"prefill_scheduler_type": "load_balance"}, {"union": "vllm"}, False),
+        (None, {"scheduler_type": "KV_CACHE_AFFINITY"}, {"union": "vllm"}, True),
+        (None, {"prefill_scheduler_type": "Kv_Cache_Affinity"}, {"prefill": "vllm", "decode": "vllm"}, True),
+        (None, {"prefill_scheduler_type": "kv_cache_affinity"}, {"prefill": "sglang"}, False),
+        (None, {"prefill_scheduler_type": "kv_cache_affinity"}, {"union": "mindie-llm"}, False),
+        (None, {"prefill_scheduler_type": "kv_cache_affinity"}, {"union": "mindie-server"}, False),
+        (None, {"prefill_scheduler_type": "kv_cache_affinity"}, {"prefill": "vllm", "decode": "sglang"}, False),
+        (None, {"prefill_scheduler_type": "kv_cache_affinity"}, {}, False),
+        ({"enable": True}, {"prefill_scheduler_type": "load_balance"}, {}, True),
+    ],
+)
+def test_render_enable_defaults_to_prefill_kv_affinity(
+    _temp_json_file,
+    render_config,
+    scheduler_config,
+    engines,
+    expected,
+):
+    coordinator_config = {"scheduler_config": scheduler_config}
+    if render_config is not None:
+        coordinator_config["render_config"] = render_config
+    user_config = {"motor_coordinator_config": coordinator_config}
+    user_config.update({f"motor_engine_{role}_config": {"engine_type": engine} for role, engine in engines.items()})
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.render_config.enable is expected
+    assert resolve_render_enabled(user_config) is expected
+
+
 def test_invalid_render_timeout_is_rejected():
     config = CoordinatorConfig()
     config.render_config.timeout_ms = 0
@@ -1569,11 +1607,18 @@ def test_invalid_render_timeout_is_rejected():
         config.validate_config()
 
 
-def test_invalid_render_token_only_decode_is_rejected():
+@pytest.mark.parametrize(
+    ("field_name", "error"),
+    [
+        ("enable", "render_config.enable must be a bool"),
+        ("enable_token_only_decode", "render_config.enable_token_only_decode must be a bool"),
+    ],
+)
+def test_invalid_render_boolean_is_rejected(field_name, error):
     config = CoordinatorConfig()
-    config.render_config.enable_token_only_decode = "true"
+    setattr(config.render_config, field_name, "true")
 
-    with pytest.raises(ValueError, match="render_config.enable_token_only_decode must be a bool"):
+    with pytest.raises(ValueError, match=error):
         config.validate_config()
 
 

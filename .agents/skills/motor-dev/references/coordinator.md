@@ -38,9 +38,16 @@ CoordinatorDaemon (parent process, async main loop)
 
 ### vLLM Render Tokenization
 
-With `render_config.enable=true`, each inference worker tries the local vLLM Render sidecar before routing and stores
-the normalized token IDs in `RequestInfo`. Render failures fall back to the local tokenizer; validation errors are
-returned directly, and Render health does not gate Coordinator startup.
+Each inference worker tries the local vLLM Render sidecar before routing and stores the normalized token IDs in
+`RequestInfo` when Render is enabled. An explicit `render_config.enable` value takes precedence; when it is omitted,
+Prefill `kv_cache_affinity` scheduling enables Render by default only for vLLM deployments.
+Render failures fall back to the local tokenizer;
+validation errors are returned directly, and Render health does not gate Coordinator startup.
+The deployer builds one shared Render launch specification for K8s, Docker, and in-place execution. It inherits only
+an allowlist of Engine arguments: prompt/tokenizer arguments must agree across P/D, response parsers follow Decode,
+and `max_model_len` follows Union/Prefill. Render defaults `hf_overrides.quantization_config` to null to avoid
+inference-only quantization validation; explicit dictionary fields override this default without losing other fields.
+Explicit `render_config.launch_args` are applied last.
 
 Normal text Chat/Completion requests use Render token ids for PD Prefill. With
 `render_config.enable_token_only_decode=false`, streaming and non-streaming requests both use native OpenAI Decode;

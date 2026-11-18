@@ -82,7 +82,7 @@ Mgmt → Obs → Inference 各 manager 的 `start()`，发起子进程启动。
 
 ### 路由前 Token 处理
 
-设置 `render_config.enable=true` 后，Coordinator 在路由前优先使用本 Pod 的 vLLM Render Sidecar 处理 Chat Completions 和 Completions，并将 token ID 复用于 context budget、KV Cache 亲和调度和 P/D 路由。启用 `kv_cache_affinity` 调度时建议同时开启 Render。仅启用 Render 和 context budget 时，本地 tokenizer 延迟到 Render fallback 时加载；若同时启用 KV 亲和、动态分桶或配置了 Conductor 服务，则仍在初始化阶段加载本地 tokenizer。Render 不可用或响应无效时自动回退，不影响 Coordinator 启动。
+Render 启用后，Coordinator 在路由前优先使用本 Pod 的 vLLM Render Sidecar 处理 Chat Completions 和 Completions，并将 token ID 复用于 context budget、KV Cache 亲和调度和 P/D 路由。用户显式配置 `render_config.enable` 时以该值为准；未配置时，vLLM 部署的 Prefill 使用 `kv_cache_affinity` 调度会默认启用 Render。仅启用 Render 和 context budget 时，本地 tokenizer 延迟到 Render fallback 时加载；若同时启用 KV 亲和、动态分桶或配置了 Conductor 服务，则仍在初始化阶段加载本地 tokenizer。Render 不可用或响应无效时自动回退，不影响 Coordinator 启动。
 
 普通文本请求在流式和非流式场景下均复用 Render token ID。`enable_token_only_decode=false` 时，
 Handoff 的 Prefill 使用 token-only 接口，Decode 使用 vLLM 原生 OpenAI 响应；
