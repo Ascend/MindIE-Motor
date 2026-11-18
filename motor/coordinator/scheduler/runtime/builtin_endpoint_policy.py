@@ -252,7 +252,7 @@ class _DynamicBucket(BuiltinEndpointPolicy):
     def rank(
         self, client: AsyncSchedulerClient, instances: list[Instance], role: PDRole, req_info: RequestInfo, top_k: int
     ) -> RankResult:
-        if role not in (PDRole.ROLE_E, PDRole.ROLE_P):
+        if role != PDRole.ROLE_E:
             req_length = get_request_token_length(req_info)
             eligible_instances = [instance for instance in instances if not client.is_instance_blocked(instance.id)]
             if req_length is not None:
@@ -304,6 +304,8 @@ class _DynamicBucket(BuiltinEndpointPolicy):
         ], False
 
     def calculate_demand(self, role: PDRole, req_info: RequestInfo) -> Workload:
+        if role == PDRole.ROLE_E:
+            return calculate_demand_workload(role, req_info)
         return make_dynamic_bucket_allocation_workload(req_info)
 
 

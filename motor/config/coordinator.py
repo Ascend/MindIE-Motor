@@ -536,8 +536,8 @@ class SchedulerConfig:
         return self.prefill_scheduler_type == SchedulerType.KV_CACHE_AFFINITY
 
     def uses_dynamic_bucket(self) -> bool:
-        """Dynamic bucket scheduling is supported only for decode."""
-        return self.decode_scheduler_type == SchedulerType.DYNAMIC_BUCKET
+        """Return whether either scheduling plane uses dynamic buckets."""
+        return SchedulerType.DYNAMIC_BUCKET in (self.prefill_scheduler_type, self.decode_scheduler_type)
 
     @property
     def scheduler_type(self) -> SchedulerType:
@@ -1268,11 +1268,6 @@ class CoordinatorConfig:
             self._errors.append(f"prefill_scheduler_type must be one of: {allowed_scheduler_types}")
         if not isinstance(self.scheduler_config.decode_scheduler_type, SchedulerType):
             self._errors.append(f"decode_scheduler_type must be one of: {allowed_scheduler_types}")
-        if self.scheduler_config.prefill_scheduler_type == SchedulerType.DYNAMIC_BUCKET:
-            self._errors.append(
-                "prefill_scheduler_type does not support dynamic_bucket; "
-                "configure dynamic_bucket only for decode_scheduler_type"
-            )
         self._validate_dynamic_bucket_config()
         if self.scheduler_config.decode_scheduler_type == SchedulerType.KV_CACHE_AFFINITY:
             logger.warning(

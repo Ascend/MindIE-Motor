@@ -2,9 +2,9 @@
 
 ## 特性介绍
 
-**动态分桶是面向Decode的调度策略，按请求真实输入token数和桶内负载动态选择短桶或长桶，以降低长短请求混合场景下的TPOT并提升输出吞吐。**
+**动态分桶按请求真实输入token数和桶内负载动态选择短桶或长桶，支持独立配置Prefill / Union与Decode调度策略。Decode场景可用于优化长短请求混合负载的TPOT与输出吞吐；Prefill / Union的性能收益需另行验证。**
 
-动态分桶调度（`dynamic_bucket`）将Decode endpoint稳定地划分为短序列桶和长序列桶，
+动态分桶调度（`dynamic_bucket`）将所选角色的endpoint稳定地划分为短序列桶和长序列桶，
 再综合请求输入token数与两个桶的实时负载选择目标桶，最后在桶内选择负载最低的endpoint。
 该策略适用于长短请求混合、不同序列长度对TPOT影响明显的场景（Attention耗时随序列长度线性增长），目标是在保留长短序列隔离收益的同时，
 允许负载差异较大时将请求动态迁移到另一个桶，避免固定分桶造成热点。
@@ -12,13 +12,13 @@
 
 该策略不依赖KV Conductor：
 
-- 仅Decode角色支持动态分桶选择，可以支持跨机Decode节点。
-- Prefill、Encode和Union角色由 `prefill_scheduler_type` 控制，不能配置 `dynamic_bucket`。
+- Prefill / Union通过 `prefill_scheduler_type=dynamic_bucket` 启用；Decode通过 `decode_scheduler_type=dynamic_bucket` 独立启用。
+- Encode沿用 `prefill_scheduler_type`，配置为 `dynamic_bucket` 时仍回退到 `load_balance`。
 - 请求无法计算有效 token 数时回退到 `load_balance`；负载均衡也无法选择时再回退到轮询。
 
 ### 工作原理
 
-一次Decode调度依次执行以下步骤：
+一次动态分桶调度依次执行以下步骤：
 
 1. 获取请求长度。优先复用请求上已有的token ID；否则使用模型 tokenizer 处理 `messages` 或
    `prompt`，并将结果缓存到请求中。
@@ -31,7 +31,21 @@
 
 成功分配后，请求输入token数作为本次请求的 `active_tokens` 增量；请求结束时释放实际提交的工作负载。
 `get_request_token_length` 优先复用已有 token ID，否则调用 tokenizer 获取 token 数，供选桶和记账使用。
-动态分桶按输入token数衡量Decode负载，与现有 `load_balance` 按请求体长度 `req_info.req_len` 记账的口径不同。
+动态分桶按输入token数衡量所选角色的负载，与现有 `load_balance` 按请求体长度 `req_info.req_len` 记账的口径不同。
+
+#### Prefill / Union 的配置与调用链
+
+`SchedulerConfig` 分别保存 Prefill / Union 与 Decode 的策略，`type_for_role` 为 Worker 解析当前角色。
+只要任一侧启用动态分桶，配置加载器便从引擎配置中补齐模型路径，`TokenizerManager` 在启动时加载 tokenizer；
+不要求启用 KV 事件或配置 KV Conductor 服务。
+
+请求处理顺序为：Router 创建 `RequestInfo` → `AsyncSchedulerClient` 过滤当前角色的可用实例 →
+`DynamicBucketPolicy` 按真实 token 数及负载选桶 → 共享内存 CAS 提交分配 → 请求结束释放负载。
+Prefill / Union 复用现有的分桶算法与 CAS 账本，不增加跨 Worker 的可变共享状态；两侧共用分桶参数，
+候选 endpoint 和负载按当前角色独立获取。Decode 的策略可保持 `load_balance` 或单独启用分桶。
+
+Encode 继续走负载均衡，并沿用现有多模态工作负载估算与记账。token 数不可用时记录告警并回退负载均衡，之后仍可回退轮询；
+实例过滤、熔断、同桶 CAS 冲突重选及结束释放继续遵循现有调度流程。默认配置不启用本特性。
 
 #### Endpoint 分桶规则
 
@@ -121,10 +135,10 @@ length_factor + load_factor <= 1 → 保持初选桶
 
 | 维度 | 约束说明 |
 |------|----------|
-| 部署场景 | 仅Decode角色支持动态分桶选择，可支持跨机Decode节点；Prefill、Encode、Union角色由 `prefill_scheduler_type` 控制，不能配置 `dynamic_bucket`。 |
+| 部署场景 | Prefill / Union与Decode可独立启用动态分桶，可支持跨机节点；Encode不使用分桶选择。 |
 | 特性互斥 | Decode通过 `decode_scheduler_type` 选择一种调度策略；Prefill可独立配置。动态分桶本身不依赖KV Conductor，其他策略的依赖按其配置要求启用。 |
-| 硬件 | 已验证环境为Atlas 800I A3超节点服务器；其他硬件环境的收益需结合目标业务压测确认。 |
-| 引擎 | 仅对Decode角色启用动态分桶；熔断、引擎类型和路由能力过滤发生在分桶之前。 |
+| 硬件 | 既有Decode验证环境为Atlas 800I A3超节点服务器；Prefill / Union及其他硬件环境的收益需结合目标业务压测确认。 |
+| 引擎 | 对Prefill / Union与Decode角色启用动态分桶；熔断、引擎类型和路由能力过滤发生在分桶之前。 |
 | 软件依赖 | Coordinator需能访问模型目录并加载与引擎一致的tokenizer，所有可能运行Coordinator的节点均需挂载该目录；无需启用kv-events-config或部署KV Conductor。 |
 | 方案约束 | 以请求真实输入token数选桶和记账；至少有两个可用endpoint时才能保证长短桶均非空，只有一个endpoint时全部归入短桶。具体收益需结合请求长度分布、并发度和分桶参数验证。 |
 | 其他限制 | <ul><li>无法复用有效token ID，且tokenizer未加载、模型目录不可访问或token化失败时，回退 `load_balance`。</li><li>目标桶无可用endpoint时，尝试另一个桶。</li><li>两个桶均无可用endpoint时，回退 `load_balance` 再轮询。</li><li>熔断、引擎类型和路由能力过滤发生在分桶之前。</li><li>endpoint数量变化后重新分桶。</li><li>当 `N >= 2` 时，短桶数量限制在 `[1, N - 1]`；仅有一个endpoint时，全部归入短桶。</li></ul> |
@@ -133,7 +147,7 @@ length_factor + load_factor <= 1 → 保持初选桶
 
 ### 使用样例
 
-1. 在 `user_config.json` 中，将 `motor_coordinator_config.scheduler_config.decode_scheduler_type` 设置为 `dynamic_bucket`，启用动态分桶调度，并配置以下分桶参数。
+1. 在 `user_config.json` 中，将 `motor_coordinator_config.scheduler_config.decode_scheduler_type` 设置为 `dynamic_bucket`，启用Decode动态分桶调度，并配置以下分桶参数。Prefill / Union场景改为设置同级的 `prefill_scheduler_type=dynamic_bucket`；两者可单独或同时启用，并共用同一组分桶参数。
 
    根据需要调整同级的 `dynamic_bucket_*` 参数；长度和负载参数可先使用默认值，桶数量按集群容量设置。
    将 `motor_engine_prefill_config.engine_config.model` 设置为实际模型目录，其余部署配置保持原有设置。
@@ -168,7 +182,8 @@ length_factor + load_factor <= 1 → 保持初选桶
 
     | 参数 | 类型 | 默认值 | 必填 | 取值范围 | 说明 |
     |------|------|--------|------|----------|------|
-    | decode_scheduler_type | string | `load_balance` | 否 | load_balance / round_robin / kv_cache_affinity / dynamic_bucket | 启用本特性时需显式设置为 `dynamic_bucket`。`prefill_scheduler_type` 不支持该取值；Decode配置为 `kv_cache_affinity` 时实际使用 `load_balance`。 |
+    | prefill_scheduler_type | string | `load_balance` | 否 | load_balance / round_robin / kv_cache_affinity / dynamic_bucket | 设置为 `dynamic_bucket` 时为Prefill / Union启用分桶，Encode回退为 `load_balance`。 |
+    | decode_scheduler_type | string | `load_balance` | 否 | load_balance / round_robin / kv_cache_affinity / dynamic_bucket | 启用本特性时需显式设置为 `dynamic_bucket`。仅启用Prefill / Union分桶时可保持本字段为 `load_balance`；Decode配置为 `kv_cache_affinity` 时实际使用 `load_balance`。 |
     | dynamic_bucket_short_median | int | `16384` | 否 | > 0 | 短桶特征长度（token），是短桶长度因子的 Sigmoid 中点。它不是运行时统计得到的中位数。 |
     | dynamic_bucket_long_median | int | `98304` | 否 | > dynamic_bucket_border | 长桶特征长度（token）。`long_median - border` 是长桶长度因子的归一化跨度。 |
     | dynamic_bucket_border | int | `32768` | 否 | > 0 且 < dynamic_bucket_long_median | 初始长短分类边界（token）。`L <= border` 初选短桶，否则初选长桶。 |

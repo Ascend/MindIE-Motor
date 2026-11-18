@@ -1674,6 +1674,41 @@ def test_from_json_loads_distinct_prefill_and_decode_scheduler_types(_temp_json_
     assert config.scheduler_config.uses_kv_cache_affinity() is True
 
 
+def test_from_json_loads_prefill_dynamic_bucket(_temp_json_file):
+    test_config = {
+        "scheduler_config": {
+            "prefill_scheduler_type": "dynamic_bucket",
+            "decode_scheduler_type": "round_robin",
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    assert config.scheduler_config.prefill_scheduler_type.value == "dynamic_bucket"
+    assert config.scheduler_config.decode_scheduler_type.value == "round_robin"
+    assert config.scheduler_config.type_for_role("prefill").value == "dynamic_bucket"
+    assert config.scheduler_config.uses_dynamic_bucket() is True
+
+
+def test_legacy_dynamic_bucket_derives_tokenizer_model_path(_temp_json_file):
+    user_config = {
+        "motor_coordinator_config": {"scheduler_config": {"scheduler_type": "dynamic_bucket"}},
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "engine_config": {"model": "/mnt/weight/qwen3_8B"},
+        },
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.scheduler_config.prefill_scheduler_type.value == "dynamic_bucket"
+    assert config.scheduler_config.decode_scheduler_type.value == "dynamic_bucket"
+    assert config.scheduler_config.kv_conductor_config.model_path == "/mnt/weight/qwen3_8B"
+
+
 def test_from_json_migrates_legacy_scheduler_type(_temp_json_file, caplog):
     test_config = {"scheduler_config": {"scheduler_type": "round_robin"}}
     with open(_temp_json_file, "w", encoding="utf-8") as f:

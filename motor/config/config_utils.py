@@ -314,7 +314,12 @@ def _is_dynamic_bucket_enabled(user_config_data: dict[str, Any]) -> bool:
     scheduler_config = coordinator_config.get("scheduler_config")
     if not isinstance(scheduler_config, dict):
         return False
-    return scheduler_config.get("decode_scheduler_type") == "dynamic_bucket"
+    # Omitted P/D fields later receive scheduler_type via setdefault.
+    legacy = scheduler_config.get("scheduler_type")
+    return any(
+        scheduler_config.get(key, legacy) == "dynamic_bucket"
+        for key in ("prefill_scheduler_type", "decode_scheduler_type")
+    )
 
 
 def _select_kv_event_engine_section(user_config_data: dict[str, Any]) -> dict[str, Any] | None:
