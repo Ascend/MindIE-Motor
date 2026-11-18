@@ -29,6 +29,7 @@ APPLIERS = [
     ("patch_apply_shuffle_safetensors.py", "shuffle safetensors (weight loading)"),
     ("patch_apply_ascend_multi_connector.py", "AscendMultiConnector KV event proxy"),
     ("patch_apply_agent_hint.py", "agent-hint KV lifecycle hints"),
+    ("patch_apply_rq_uniform_kv.py", "rq_uniform KV cache quant"),
 ]
 
 
