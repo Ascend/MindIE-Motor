@@ -82,19 +82,15 @@ pip install --no-deps --force-reinstall /path/to/motor-*.whl
 
 ## 三、拉起 Coordinator
 
+在已安装 Motor 的环境中执行。脚本后台拉起 Coordinator 后立即返回，不安装依赖，也不注册 P/D，也不等待 `/liveness`。起来之后自行执行 `curl http://127.0.0.1:1026/liveness` 确认。此时 `/readiness` 仍为 false 是正常的。
+
 ```bash
 source /opt/motor-coord/venv/bin/activate
-export MOTOR_LOG_PATH=/opt/motor-coord/logs
-mkdir -p "$MOTOR_LOG_PATH"
-python3 -m motor.coordinator.main
+./examples/deployer/coordinator-only.sh
+./examples/deployer/coordinator-only.sh --config /opt/motor-coord/coordinator.json
 ```
 
-```bash
-curl http://127.0.0.1:1026/liveness
-curl http://127.0.0.1:1026/readiness   # 此时 instance_count=0 属正常
-```
-
-若第二节编写了 `coordinator.json`，启动前 `export USER_CONFIG_PATH=...`。
+脚本用 `CoordinatorConfig.from_json` 读同一份配置，不再另加开关。`render_config.enabled` 或 `render_config.enable` 为布尔值 true 时拉起 Render。Render 或 kv-conductor 因配置错误以退出码 2 结束时，脚本不再重启，并以该退出码退出。`kv_conductor_config.http_server_port` 若是 `tcp://地址:端口`，只取其中的端口；值为 0 时不拉起 kv-conductor，脚本继续启动其余进程。开启 Render 时 `render_config.endpoint` 必须是对象，`endpoint.host` 为 `127.0.0.1`、`localhost` 或 `::1`，进程按该地址监听，`localhost` 视为 `127.0.0.1`。`endpoint.port` 缺省为 8100，显式给出的值必须是 1 到 65535 的整数。Ascend `set_env.sh` 执行失败时脚本继续启动。管理端口或 kv 端口为 null 时按未配置处理，不会写成字符串 `None`。`kv_conductor_config.conductor_service` 经配置重定向后非空，且去掉端口后缀后的地址是本机回环地址时拉起 kv-conductor；空字符串表示不启用。探测用的地址和端口就是进程实际绑定的地址和端口，不另读一份环境变量。脚本中途失败时，会停掉本次已经拉起的进程。日志默认在 `/tmp/motor-coord/`（目录权限 700），可用 `MOTOR_LOG_PATH` 改目录。`-h` 只打印帮助，不创建日志目录。
 
 ## 四、注册 P/D 实例
 
@@ -290,15 +286,13 @@ python3 -m motor.coordinator.register add \
 不传该参数时沿用全局 replay 基址加 rank。引擎侧须分别配置匹配的实际 events/replay 监听端口；
 该注册命令不会修改引擎监听配置。已有实例修改端口请使用默认 `set`，`add` 会拒绝同 ID 的端口变更。
 
+本机 kv-conductor 不必单独敲 `nohup`。`conductor_service` 写成 `127.0.0.1` 后，直接执行：
+
 ```bash
-source /opt/motor-coord/venv/bin/activate
-python3 -c "from motor.kv_conductor import get_binary_path; p=get_binary_path(); print(p); assert p and p.is_file()"
-export RUST_LOG=info,kv_conductor=debug
-export MOTOR_LOG_PATH=/opt/motor-coord/logs
-nohup python3 -m motor.kv_conductor --host 0.0.0.0 --port 13333 &
+./examples/deployer/coordinator-only.sh --config /opt/motor-coord/coordinator.json
 ```
 
-改 `conductor_service` 后重启 Coordinator。同一长前缀发两次请求，热请求日志 `matched` 应大于 0。
+脚本在进程仍运行时返回，不等待 `http://127.0.0.1:13333/health`。配置错误导致退出码 2 时，脚本报告该退出码并退出，不再重启。`conductor_service` 为空则不拉起。起来之后自行 curl 该地址的 `/health`，并 curl Coordinator 的 `/liveness`。同一长前缀发两次请求，热请求日志 `matched` 应大于 0。
 
 ## 附录 C：实例增删查
 
