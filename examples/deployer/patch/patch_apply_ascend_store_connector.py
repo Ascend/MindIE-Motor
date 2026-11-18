@@ -27,8 +27,9 @@ except ImportError:  # noqa: PERF203
 
 # AscendStoreConnector unique-union KV events: one version-agnostic patch
 # applies across supported vLLM bases (the aggregate() method is stable).
-# CPU event-grain hunks differ on v0.30.0 / v0.32.0, so those versions
-# select dedicated patches below (0.32.0 also patches metadata.py).
+# 0.30.0 is intentionally omitted: its AscendStore patches (from !1184) were
+# written against v0.30.0rc2 and fail on release images; skip entirely.
+# 0.32.0 selects dedicated patches below (also patches metadata.py).
 TARGET_VLLM_VERSIONS = (
     "0.20.2",
     "0.21.0",
@@ -38,7 +39,6 @@ TARGET_VLLM_VERSIONS = (
     "0.25.0",
     "0.25.1",
     "0.26.0",
-    "0.30.0",
     "0.32.0",
 )
 
@@ -79,7 +79,6 @@ PATCH_SPECS = [CONNECTOR_SPEC, CPU_EVENT_SPEC]
 # 0.32.0 lists metadata before kv_transfer because the latter imports
 # infer_cache_family_ratio from metadata.
 VERSION_PATCH_SPECS = {
-    "0.30.0": [CONNECTOR_SPEC, CPU_EVENT_SPEC_V030],
     "0.32.0": [METADATA_SPEC_V032, CONNECTOR_SPEC_V032, CPU_EVENT_SPEC_V032],
 }
 

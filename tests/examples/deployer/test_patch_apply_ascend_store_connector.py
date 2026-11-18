@@ -243,11 +243,10 @@ def test_old_cpu_patch_marker_is_not_accepted_as_fixed(tmp_path):
         assert not is_patched(str(target), CPU_EVENT_SPEC_V030[2])
 
 
-def test_v030_is_supported_and_selects_dedicated_cpu_patch():
-    assert "0.30.0" in TARGET_VLLM_VERSIONS
+def test_v030_is_skipped_entirely():
+    # AscendStore patches for 0.30.0 came from !1184 and are not applied.
+    assert "0.30.0" not in TARGET_VLLM_VERSIONS
     assert patch_specs_for_version("0.25.1+empty") == PATCH_SPECS
-    assert patch_specs_for_version("0.30.0+empty") == [PATCH_SPECS[0], CPU_EVENT_SPEC_V030]
-    assert patch_specs_for_version("0.30.0-rc1") == [PATCH_SPECS[0], CPU_EVENT_SPEC_V030]
 
 
 def test_v032_is_supported_and_selects_version_dir_patches():
