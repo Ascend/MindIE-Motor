@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch the pyMotor observability stack via Docker Compose.
+# Launch the Motor observability stack via Docker Compose.
 
 set -euo pipefail
 
@@ -255,7 +255,7 @@ fi
 cat <<EOF
 
 ================================================================
-pyMotor observability stack is up.
+Motor observability stack is up.
 
   Grafana       http://localhost:${GRAFANA_PORT}   (user: motor / pass: motor)
   Prometheus    http://localhost:${PROMETHEUS_PORT}

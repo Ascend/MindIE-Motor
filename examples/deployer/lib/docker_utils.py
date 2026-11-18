@@ -317,7 +317,7 @@ def gen_kv_store_env(kv_store_config):
     return items
 
 
-CONTAINER_CONFIG_PATH = "/usr/local/Ascend/pyMotor/conf"
+CONTAINER_CONFIG_PATH = "/usr/local/Ascend/Motor/conf"
 _CONFIG_DIR_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 _API_CONFIG = "api_config"

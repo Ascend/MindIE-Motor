@@ -9,7 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 """
-Auto-discover pyMotor observability endpoints and generate runtime configs.
+Auto-discover Motor observability endpoints and generate runtime configs.
 """
 
 from __future__ import annotations
@@ -922,10 +922,10 @@ def _build_summary(result: DiscoveryResult) -> str:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Discover pyMotor observability targets.")
+    parser = argparse.ArgumentParser(description="Discover Motor observability targets.")
     parser.add_argument("--namespace", help="Kubernetes namespace / job_id.")
     parser.add_argument("--node-ip", help="Node IP for NodePort access.")
-    parser.add_argument("--user-config", help="Path to pyMotor user_config.json.")
+    parser.add_argument("--user-config", help="Path to Motor user_config.json.")
     parser.add_argument("--obs-host", help="Observability host for OTLP endpoint generation.")
     parser.add_argument(
         "--runtime",

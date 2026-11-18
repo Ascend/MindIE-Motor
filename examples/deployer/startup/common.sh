@@ -66,7 +66,7 @@ apply_openssl_gen_cert() {
 
 setup_tls_certificates() {
     CA_PATH="${CA_PATH:-/mnt/cert_scripts/ca}"
-    BASE_CERT_PATH="${BASE_CERT_PATH:-/usr/local/Ascend/pyMotor/conf/security}"
+    BASE_CERT_PATH="${BASE_CERT_PATH:-/usr/local/Ascend/Motor/conf/security}"
     CERT_NAMES="${CERT_NAMES:-infer mgmt}"
     GEN_CERT_SCRIPT="${GEN_CERT_SCRIPT:-/mnt/cert_scripts/openssl_gen_cert.sh}"
 

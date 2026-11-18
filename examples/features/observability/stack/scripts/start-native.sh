@@ -343,7 +343,7 @@ start_component "grafana" \
 cat <<EOF
 
 ================================================================
-pyMotor observability stack is running in native mode.
+Motor observability stack is running in native mode.
 
   Grafana       http://localhost:${GRAFANA_PORT}   (user: ${GF_SECURITY_ADMIN_USER} / pass: ${GF_SECURITY_ADMIN_PASSWORD})
   Prometheus    http://localhost:${PROMETHEUS_PORT}

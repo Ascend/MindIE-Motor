@@ -181,6 +181,6 @@
     "backend": "memcache",
     "port": 50088,
     "local_service_mode": "standalone",
-    "local_config_path": "/usr/local/Ascend/pyMotor/conf/mmc-local-inprocess.conf"
+    "local_config_path": "/usr/local/Ascend/Motor/conf/mmc-local-inprocess.conf"
   }
 }

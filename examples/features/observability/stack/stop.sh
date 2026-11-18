@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop the pyMotor observability stack for both docker/native runtimes.
+# Stop the Motor observability stack for both docker/native runtimes.
 
 set -euo pipefail
 

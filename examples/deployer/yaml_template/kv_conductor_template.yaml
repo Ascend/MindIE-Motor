@@ -38,7 +38,7 @@ spec:
             - name: CONFIGMAP_PATH
               value: /mnt/configmap
             - name: CONFIG_PATH
-              value: /usr/local/Ascend/pyMotor/conf
+              value: /usr/local/Ascend/Motor/conf
             - name: ROLE
               value: kv_conductor
             - name: RUST_LOG

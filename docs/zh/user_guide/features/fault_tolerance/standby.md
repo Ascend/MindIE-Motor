@@ -660,7 +660,7 @@
               volumeMounts:
               ...
               - name: controller-ca
-                mountPath: /usr/local/Ascend/pyMotor/conf/security/etcd # 物理机/home/{用户名}/auto_gen_ms_cert目录在容器中的挂载路径
+                mountPath: /usr/local/Ascend/Motor/conf/security/etcd # 物理机/home/{用户名}/auto_gen_ms_cert目录在容器中的挂载路径
             volumes:
             ...
             - name: controller-ca
@@ -671,7 +671,7 @@
     ```
 
     >[!NOTE] 说明
-    >- 挂载点`/usr/local/Ascend/pyMotor/conf/security/etcd`是本文档约定的路径，代码中并无该默认值，必须与第2步`etcd_tls_config`中配置的证书路径保持一致。
+    >- 挂载点`/usr/local/Ascend/Motor/conf/security/etcd`是本文档约定的路径，代码中并无该默认值，必须与第2步`etcd_tls_config`中配置的证书路径保持一致。
     >- deploy完成后，可通过以下命令确认证书目录已挂载至生成的yaml中（infer_service_set 模式对应文件路径为：examples/deployer/output_yamls/infer_service.yaml；multi_deployment 模式对应文件路径为：examples/deployer/output_yamls/mindie_motor_controller.yaml，避免模板文件改错导致证书未挂载）
     >
     >   ```bash
@@ -690,9 +690,9 @@
         ...
         "etcd_tls_config": {
           "enable_tls": true,
-          "ca_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/ca.pem",
-          "cert_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/client.pem",
-          "key_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/client.key"
+          "ca_file": "/usr/local/Ascend/Motor/conf/security/etcd/ca.pem",
+          "cert_file": "/usr/local/Ascend/Motor/conf/security/etcd/client.pem",
+          "key_file": "/usr/local/Ascend/Motor/conf/security/etcd/client.key"
         },
         ...
       }
@@ -809,7 +809,7 @@
           - name: plog-path
             mountPath: /root/ascend/log
           - name: coordinator-ca
-            mountPath: /usr/local/Ascend/pyMotor/conf/security/etcd # 物理机/home/{用户名}/auto_gen_ms_cert目录在容器中的挂载路径
+            mountPath: /usr/local/Ascend/Motor/conf/security/etcd # 物理机/home/{用户名}/auto_gen_ms_cert目录在容器中的挂载路径
       volumes:
       - name: motor-config
         configMap:
@@ -834,7 +834,7 @@
     ```
 
     >[!NOTE] 说明
-    >- 挂载点`/usr/local/Ascend/pyMotor/conf/security/etcd`是本文档约定的路径，代码中并无该默认值，必须与第2步`etcd_tls_config`中配置的证书路径保持一致。
+    >- 挂载点`/usr/local/Ascend/Motor/conf/security/etcd`是本文档约定的路径，代码中并无该默认值，必须与第2步`etcd_tls_config`中配置的证书路径保持一致。
     >- deploy完成后，可通过以下命令确认证书目录已挂载至生成的yaml中（multi_deployment 模式对应文件路径为：examples/deployer/output_yamls/mindie_motor_coordinator.yaml；infer_service_set 模式对应文件路径为：examples/deployer/output_yamls/infer_service.yaml，避免模板文件改错导致证书未挂载）
     >
     >   ```bash
@@ -853,9 +853,9 @@
         ...
         "etcd_tls_config": {
           "enable_tls": true,
-          "ca_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/ca.pem",
-          "cert_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/client.pem",
-          "key_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/client.key"
+          "ca_file": "/usr/local/Ascend/Motor/conf/security/etcd/ca.pem",
+          "cert_file": "/usr/local/Ascend/Motor/conf/security/etcd/client.pem",
+          "key_file": "/usr/local/Ascend/Motor/conf/security/etcd/client.key"
         },
         ...
       }

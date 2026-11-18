@@ -61,7 +61,7 @@ def get_val_by_key_path(config, key_path):
 
 CONFIG_SEARCH_PATHS = [
     os.environ.get("CONFIGMAP_PATH", ""),  # /mnt/configmap
-    os.environ.get("CONFIG_PATH", ""),  # /usr/local/Ascend/pyMotor/conf
+    os.environ.get("CONFIG_PATH", ""),  # /usr/local/Ascend/Motor/conf
 ]
 
 

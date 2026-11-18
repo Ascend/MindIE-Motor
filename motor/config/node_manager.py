@@ -456,7 +456,7 @@ class KVCacheStoreConfig:
     # --- MemCache ---
     local_service_mode: str = ""
     # "standalone" / "inprocess" — the only user-facing config key for memcache.
-    local_config_path: str = "/usr/local/Ascend/pyMotor/conf/mmc-local-inprocess.conf"
+    local_config_path: str = "/usr/local/Ascend/Motor/conf/mmc-local-inprocess.conf"
 
     # --- Mooncake ---
     store_mode: str = ""

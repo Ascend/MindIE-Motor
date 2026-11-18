@@ -1,8 +1,8 @@
-# pyMotor Observability Stack
+# Motor Observability Stack
 # ----------------------------
 # A self-contained Docker Compose deployment that mirrors NVIDIA Dynamo's
 # local observability stack (Prometheus + Grafana + Tempo + Loki + OTel
-# Collector + Exporters) for pyMotor.
+# Collector + Exporters) for Motor.
 #
 # Profiles:
 #   - default(no profile flag) : core stack

@@ -1,4 +1,4 @@
-# Minimal Prometheus config for pyMotor real-data observability.
+# Minimal Prometheus config for Motor real-data observability.
 
 global:
   scrape_interval: 5s

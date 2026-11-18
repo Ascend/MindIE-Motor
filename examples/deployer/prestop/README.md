@@ -62,7 +62,7 @@ python3 $CONFIGMAP_PATH/prestop.py --max-wait 15 --poll-interval 3
 |------|------|
 | `POD_IP` | 本 Pod IP，用于访问 NodeManager |
 | `CONFIGMAP_PATH` | ConfigMap 挂载路径（如 `/mnt/configmap`） |
-| `CONFIG_PATH` | 运行时配置路径（如 `/usr/local/Ascend/pyMotor/conf`） |
+| `CONFIG_PATH` | 运行时配置路径（如 `/usr/local/Ascend/Motor/conf`） |
 
 NodeManager 端口从 `user_config.json` 读取，缺省为 **1026**。
 

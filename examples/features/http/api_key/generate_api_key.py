@@ -11,7 +11,7 @@
 """
 API Key generation utility.
 
-This script generates encrypted API Keys for configuring MindIE-pyMotor services.
+This script generates encrypted API Keys for configuring MindIE-Motor services.
 
 Usage:
     python examples/features/http/api_key/generate_api_key.py [--key <plain_api_key>] [--algorithm <name>] [--iterations <N>]
@@ -119,7 +119,7 @@ def main():
     supported_algorithms = get_supported_algorithms()
 
     parser = argparse.ArgumentParser(
-        description="Generate MindIE-pyMotor API Key",
+        description="Generate MindIE-Motor API Key",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -164,7 +164,7 @@ Examples:
     args = parser.parse_args()
 
     logging.info("=" * 60)
-    logging.info("MindIE-pyMotor API Key Generator")
+    logging.info("MindIE-Motor API Key Generator")
     logging.info("=" * 60)
     logging.info("")
 

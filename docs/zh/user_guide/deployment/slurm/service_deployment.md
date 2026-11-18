@@ -205,8 +205,8 @@ kv_store_backends.memcache.mmc-local-standalone.conf
 ConfigMap，并随作业脚本发送到计算节点。容器启动后会生成：
 
 ```text
-/usr/local/Ascend/pyMotor/conf/mmc-local-inprocess.conf
-/usr/local/Ascend/pyMotor/conf/mmc-local-standalone.conf
+/usr/local/Ascend/Motor/conf/mmc-local-inprocess.conf
+/usr/local/Ascend/Motor/conf/mmc-local-standalone.conf
 ```
 
 ## 查看和停止

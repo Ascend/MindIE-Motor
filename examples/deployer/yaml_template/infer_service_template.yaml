@@ -135,7 +135,7 @@ spec:
               - name: CONFIGMAP_PATH
                 value: /mnt/configmap
               - name: CONFIG_PATH
-                value: /usr/local/Ascend/pyMotor/conf
+                value: /usr/local/Ascend/Motor/conf
               - name: POD_NAMESPACE
                 valueFrom:
                   fieldRef:
@@ -268,7 +268,7 @@ spec:
               - name: CONFIGMAP_PATH
                 value: /mnt/configmap
               - name: CONFIG_PATH
-                value: /usr/local/Ascend/pyMotor/conf
+                value: /usr/local/Ascend/Motor/conf
               - name: POD_NAMESPACE
                 valueFrom:
                   fieldRef:
@@ -354,7 +354,7 @@ spec:
               - name: CONFIGMAP_PATH
                 value: /mnt/configmap
               - name: CONFIG_PATH
-                value: /usr/local/Ascend/pyMotor/conf
+                value: /usr/local/Ascend/Motor/conf
               lifecycle:
                 preStop:
                   exec:
@@ -511,7 +511,7 @@ spec:
               - name: CONFIGMAP_PATH
                 value: /mnt/configmap
               - name: CONFIG_PATH
-                value: /usr/local/Ascend/pyMotor/conf
+                value: /usr/local/Ascend/Motor/conf
               lifecycle:
                 preStop:
                   exec:
@@ -668,7 +668,7 @@ spec:
               - name: CONFIGMAP_PATH
                 value: /mnt/configmap
               - name: CONFIG_PATH
-                value: /usr/local/Ascend/pyMotor/conf
+                value: /usr/local/Ascend/Motor/conf
               lifecycle:
                 preStop:
                   exec:
@@ -825,7 +825,7 @@ spec:
               - name: CONFIGMAP_PATH
                 value: /mnt/configmap
               - name: CONFIG_PATH
-                value: /usr/local/Ascend/pyMotor/conf
+                value: /usr/local/Ascend/Motor/conf
               lifecycle:
                 preStop:
                   exec:
@@ -992,7 +992,7 @@ spec:
               - name: CONFIGMAP_PATH
                 value: /mnt/configmap
               - name: CONFIG_PATH
-                value: /usr/local/Ascend/pyMotor/conf
+                value: /usr/local/Ascend/Motor/conf
               - name: ROLE
                 value: kv_store
               command: ["/bin/bash", "-c", "source /mnt/configmap/boot.sh;"]
@@ -1107,7 +1107,7 @@ spec:
               - name: CONFIGMAP_PATH
                 value: /mnt/configmap
               - name: CONFIG_PATH
-                value: /usr/local/Ascend/pyMotor/conf
+                value: /usr/local/Ascend/Motor/conf
               - name: ROLE
                 value: kv_conductor
               command: ["/bin/bash", "-c", "source /mnt/configmap/boot.sh;"]

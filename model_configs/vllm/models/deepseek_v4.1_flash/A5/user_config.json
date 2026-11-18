@@ -17,7 +17,7 @@
   "kv_cache_store_config": {
     "backend": "memcache",
     "local_service_mode": "inprocess",
-    "local_config_path": "/usr/local/Ascend/pyMotor/conf/mmc-local-inprocess.conf"
+    "local_config_path": "/usr/local/Ascend/Motor/conf/mmc-local-inprocess.conf"
   },
   "motor_engine_prefill_config": {
     "engine_type": "vllm",

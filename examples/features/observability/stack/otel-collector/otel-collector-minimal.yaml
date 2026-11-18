@@ -1,5 +1,5 @@
 # OpenTelemetry Collector configuration for minimal mode.
-# Receives OTLP traces/logs from pyMotor and routes:
+# Receives OTLP traces/logs from Motor and routes:
 #   traces → Tempo
 #   logs   → Loki
 #

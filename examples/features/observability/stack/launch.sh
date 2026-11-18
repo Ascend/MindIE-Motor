@@ -24,7 +24,7 @@ Usage: ./launch.sh [options]
 Options:
   --namespace <namespace>     Kubernetes namespace / job_id
   --node-ip <node-ip>         Node IP used for NodePort access
-  --user-config <path>        pyMotor user_config.json path
+  --user-config <path>        Motor user_config.json path
   --minimal                   Start core stack with Loki (default)
   --full                      Add node-exporter/cAdvisor infra exporters
   --discover-only             Only run discovery, do not start stack

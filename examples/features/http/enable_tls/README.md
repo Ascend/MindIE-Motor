@@ -50,7 +50,7 @@
 
    **可选环境变量**（不配置则使用默认值）：
    - `CA_PATH`: CA证书所在路径（默认：`/mnt/cert_scripts/ca`）
-   - `BASE_CERT_PATH`: 证书保存的基础路径（默认：`/usr/local/Ascend/pyMotor/conf/security`）
+   - `BASE_CERT_PATH`: 证书保存的基础路径（默认：`/usr/local/Ascend/Motor/conf/security`）
    - `CERT_NAMES`: 需要生成的证书名称列表（默认：`infer mgmt`）
      - `etcd`和`grpc`证书为可选，仅在启用ETCD相关功能（持久化或主备）且对ETCD有安全性要求时才需要配置
    - `GEN_CERT_SCRIPT`: 证书生成脚本路径（默认：`/mnt/cert_scripts/openssl_gen_cert.sh`）
@@ -110,7 +110,7 @@ bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
 >
 >- 在`motor_common_env`中添加`"ENABLE_GEN_CERT": "true"`即可启用TLS证书自动生成。
 >- 当`ENABLE_GEN_CERT`设置为`true`时，`common.sh`会在服务启动时自动调用证书生成函数。
->- 证书会生成到`/usr/local/Ascend/pyMotor/conf/security/`目录下。
+>- 证书会生成到`/usr/local/Ascend/Motor/conf/security/`目录下。
 >- 生成的证书包括：infer、mgmt、etcd、grpc四种类型。
 
 **自定义证书路径配置（可选）**
@@ -124,7 +124,7 @@ bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
     ...,
     "ENABLE_GEN_CERT": "true",
     "CA_PATH": "/mnt/cert_scripts/ca",
-    "BASE_CERT_PATH": "/usr/local/Ascend/pyMotor/conf/security",
+    "BASE_CERT_PATH": "/usr/local/Ascend/Motor/conf/security",
     "CERT_NAMES": "infer mgmt",
     "GEN_CERT_SCRIPT": "/mnt/cert_scripts/openssl_gen_cert.sh"
   },
@@ -137,7 +137,7 @@ bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
 | 环境变量 | 说明 | 默认值 |
 |---------|------|--------|
 | `CA_PATH` | CA证书所在路径 | `/mnt/cert_scripts/ca` |
-| `BASE_CERT_PATH` | 证书保存的基础路径 | `/usr/local/Ascend/pyMotor/conf/security` |
+| `BASE_CERT_PATH` | 证书保存的基础路径 | `/usr/local/Ascend/Motor/conf/security` |
 | `CERT_NAMES` | 需要生成的证书名称列表，空格分隔 | `infer mgmt` |
 | `GEN_CERT_SCRIPT` | 证书生成脚本路径 | `/mnt/cert_scripts/openssl_gen_cert.sh` |
 
@@ -172,33 +172,33 @@ bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
     "tls_config": {
       "infer_tls_config": {
         "enable_tls": true,
-        "ca_file": "/usr/local/Ascend/pyMotor/conf/security/infer/ca.pem",
-        "cert_file": "/usr/local/Ascend/pyMotor/conf/security/infer/cert.pem",
-        "key_file": "/usr/local/Ascend/pyMotor/conf/security/infer/decrypt.cert.key.pem",
+        "ca_file": "/usr/local/Ascend/Motor/conf/security/infer/ca.pem",
+        "cert_file": "/usr/local/Ascend/Motor/conf/security/infer/cert.pem",
+        "key_file": "/usr/local/Ascend/Motor/conf/security/infer/decrypt.cert.key.pem",
         "passwd_file": "",
         "tls_crl": ""
       },
       "mgmt_tls_config": {
         "enable_tls": true,
-        "ca_file": "/usr/local/Ascend/pyMotor/conf/security/mgmt/ca.pem",
-        "cert_file": "/usr/local/Ascend/pyMotor/conf/security/mgmt/cert.pem",
-        "key_file": "/usr/local/Ascend/pyMotor/conf/security/mgmt/decrypt.cert.key.pem",
+        "ca_file": "/usr/local/Ascend/Motor/conf/security/mgmt/ca.pem",
+        "cert_file": "/usr/local/Ascend/Motor/conf/security/mgmt/cert.pem",
+        "key_file": "/usr/local/Ascend/Motor/conf/security/mgmt/decrypt.cert.key.pem",
         "passwd_file": "",
         "tls_crl": ""
       },
       "etcd_tls_config": {
         "enable_tls": false,
-        "ca_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/ca.pem",
-        "cert_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/cert.pem",
-        "key_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/decrypt.cert.key.pem",
+        "ca_file": "/usr/local/Ascend/Motor/conf/security/etcd/ca.pem",
+        "cert_file": "/usr/local/Ascend/Motor/conf/security/etcd/cert.pem",
+        "key_file": "/usr/local/Ascend/Motor/conf/security/etcd/decrypt.cert.key.pem",
         "passwd_file": "",
         "tls_crl": ""
       },
       "grpc_tls_config": {
         "enable_tls": false,
-        "ca_file": "/usr/local/Ascend/pyMotor/conf/security/grpc/ca.pem",
-        "cert_file": "/usr/local/Ascend/pyMotor/conf/security/grpc/cert.pem",
-        "key_file": "/usr/local/Ascend/pyMotor/conf/security/grpc/decrypt.cert.key.pem",
+        "ca_file": "/usr/local/Ascend/Motor/conf/security/grpc/ca.pem",
+        "cert_file": "/usr/local/Ascend/Motor/conf/security/grpc/cert.pem",
+        "key_file": "/usr/local/Ascend/Motor/conf/security/grpc/decrypt.cert.key.pem",
         "passwd_file": "",
         "tls_crl": ""
       }
