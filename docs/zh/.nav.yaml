@@ -29,6 +29,7 @@ nav:
               - ModelArts 与元戎:
                   - 简介: user_guide/deployment/cases/ModelArts_yuanrong/README.md
                   - GLM5 8机大EP部署: user_guide/deployment/cases/ModelArts_yuanrong/ModelArts_GLM5_yuanrong_Motor_8Node_BigEP_Deployment_Guide.md
+              - K8s Motor+MemCache: user_guide/deployment/cases/K8S_Motor_Memcache/README.md
       - 配置说明:
           - 全量配置参数说明: user_guide/configuration/config_reference.md
           - 热更新配置项说明: user_guide/configuration/update_config_whitelist.md
