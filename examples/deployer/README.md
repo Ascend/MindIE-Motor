@@ -4,24 +4,189 @@
 
 ## 使用说明
 
-本目录仅提供部署所需的脚本与示例配置。**完整的部署流程、环境要求、配置说明及故障排查请参考以下文档：**
-
-👉 **[PD Disaggregation 完整部署指南](../../docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation)**
+本目录提供部署所需的脚本与示例配置。正式部署前，请按[部署入口](#部署入口)中对应环境的指南完成环境准备与配置。其他部署方案见[部署方式说明](../../docs/zh/user_guide/deployment/README.md)。
 
 Ascend 950PR&950DT系列产品的 RoCE 现场改法见 **[950系列服务器跨超节点场景memcache池化后端服务部署指导](../../docs/zh/user_guide/features/inference_scheduling/kv_cache_store/memcache_950.md)**。按文件清单改部署副本，不直接合入主干。
 
-建议在正式部署前先阅读上述文档，按文档完成环境准备与配置后再使用本目录中的工具进行部署。
-
 ## 部署入口
 
-| 运行环境 | 入口 |
-|----------|------|
-| Kubernetes | `python3 deploy.py` |
-| Docker | `python3 docker_deploy.py` |
-| Slurm + Apptainer | `python3 slurm_deploy.py` |
+入口命令在 `examples/deployer/` 目录执行，文件路径相对于仓库根目录。执行前请按对应指南准备配置，并补齐指南中要求的参数。
 
-Slurm 的完整参数和共享文件系统要求见
-[Slurm 服务部署](../../docs/zh/user_guide/deployment/slurm/service_deployment.md)。
+| 运行环境 | 入口 | 文件路径 | 部署指南 |
+|----------|------|----------|----------|
+| Kubernetes | `python3 deploy.py` | [`examples/deployer/deploy.py`](deploy.py) | [Kubernetes PD 分离服务部署](../../docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md) |
+| Docker | `python3 docker_deploy.py` | [`examples/deployer/docker_deploy.py`](docker_deploy.py) | [Docker 多容器 PD 分离服务部署](../../docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md) |
+| Slurm + Apptainer | `python3 slurm_deploy.py start` | [`examples/deployer/slurm_deploy.py`](slurm_deploy.py) | [Slurm 服务部署](../../docs/zh/user_guide/deployment/slurm/service_deployment.md) |
+
+## Kubernetes 部署流程
+
+本节说明 `deploy.py` 如何读取配置、生成并应用 YAML，以及 Kubernetes 如何创建 Pod 并启动 Motor 组件。
+本节的示例命令均需先从源码仓库根目录进入 `examples/deployer/`：
+
+```bash
+cd examples/deployer
+```
+
+### 输入、模板和 ConfigMap
+
+运行 `deploy.py` 前，请按[部署入口](#部署入口)中的 Kubernetes 指南准备镜像、权重、节点标签和设备插件，
+并创建与 `motor_deploy_config.job_id` 同名的 namespace；脚本不会自动创建 namespace。
+
+1. 选择与模型、引擎及硬件匹配的配置目录。`deploy.py` 通过 `--config_dir` 查找
+   `user_config.json` 和 `env.json`；显式指定的 `--config`、`--env` 分别覆盖目录中的对应路径。
+   不指定目录时，两个文件路径需要成对提供。
+2. `deploy.py` 读取 `user_config.json`，执行安全预检和配置校验。
+   默认安全预检要求开启 `motor_deploy_config.tls_config.infer_tls_config.enable_tls`，
+   并配置 `motor_coordinator_config.mgmt_api_key_config` 的 `enable_api_key` 和 `api_key_file`。
+   字段见 [配置参数说明](../../docs/zh/user_guide/configuration/config_reference.md)，
+   管理鉴权行为见 [管理接口](../../docs/zh/user_guide/api/management_interfaces.md)。
+3. 非 `--dry-run` 部署时，`lib/utils.py` 的 `set_env_to_shell()` 读取 `env.json`，将公共环境段
+   `motor_common_env` 与各组件环境段合并（同名变量以组件值为准），写入
+   `startup/common.sh` 和 `startup/roles/*.sh` 中的 `set_*_env` 函数。
+   这一步会修改本地启动脚本，建议在单独的部署副本中运行。
+4. `deploy.py` 根据 `motor_deploy_config.deploy_mode` 选择 `lib/generator/` 中的生成器，
+   以 `yaml_template/` 中的模板为基础填入 `user_config.json` 的配置，生成 YAML 并写入 `output_yamls/`。
+   `env.json` 中的宿主 IPC 等开关也会影响生成的 PodSpec，因此两个配置文件需要一起准备。
+5. 检查生成资源的 NodePort 冲突后，创建或更新 namespace 内的 `motor-config` ConfigMap，
+   再依次应用本次生成的 YAML。ConfigMap 包含本次部署使用的 `user_config.json`、启动脚本、
+   探针与 preStop 等文件，角色脚本按文件名扁平化存放。`env.json` 不放入 ConfigMap，
+   也不通过 `envFrom` 导入；其中的环境变量已在第 3 步写入启动脚本。
+
+`deploy.py` 先用 `kubectl create configmap ... --dry-run=client -o yaml` 生成 ConfigMap 定义，
+再通过 `kubectl apply -f -` 创建或更新，不会生成单独的 `motor-config.yaml` 文件。
+本次实际使用的用户配置另存为 `output_yamls/.motor_config_user_config.json`，其中补入了解析后的
+`deploy_mode`；原始 `user_config.json` 不会被修改。
+
+下图展示正常部署和 `--dry-run` 预览的流程；`--update_config` 与 `--update_instance_num` 的用法见[其他操作](#其他操作)。
+
+```mermaid
+flowchart TD
+    A[选择 user_config.json 和 env.json] --> B[读取配置并执行预检和校验]
+    B --> C{是否 --dry-run}
+    C -->|否| D[合并 env.json 并更新启动脚本]
+    C -->|是| E[按 deploy_mode 渲染 YAML]
+    D --> E
+    E --> F[写入 output_yamls]
+    F --> G{是否 --dry-run}
+    G -->|是| H[打印 NodePort 冲突和建议端口后结束]
+    G -->|否| I[检查 NodePort 并更新 motor-config ConfigMap]
+    I --> J[按 deploy_mode 对应的顺序 kubectl apply]
+    J --> K[控制器创建 Pod，调度器为 Pod 分配节点]
+    K --> L[挂载 ConfigMap 并执行 boot.sh]
+    L --> M[common.sh 同步配置并按 ROLE 启动组件]
+```
+
+### deploy_mode 与 YAML 应用顺序
+
+`deploy_mode` 只接受以下三种值，省略时默认为 `infer_service_set`。所有输出文件均位于
+`output_yamls/`，模板与生成路径由 `lib/constant.py`、`lib/utils.py:get_deploy_paths()` 定义。
+建议始终通过 `deploy.py` 部署，由它创建 ConfigMap 并按下表顺序应用 YAML：
+
+| deploy_mode | 模板与生成资源 | 正常部署的实际应用顺序 |
+|-------------|----------------|------------------------|
+| `multi_deployment` | `controller_template.yaml` → `mindie_motor_controller.yaml`；`coordinator_template.yaml` → `mindie_motor_coordinator.yaml`；`engine_template.yaml` → 每个 E/P/D 或 E/U 实例一份引擎 YAML；按条件生成存储及 KV 等独立 YAML | `motor-config` → Controller → Coordinator → E 实例 → P、D 实例（或 U 实例）→ 可选存储 PVC → 可选 KV Store → 可选 KV Conductor → 可选 MF Store |
+| `infer_service_set` | `infer_service_template.yaml` → `infer_service.yaml`，包含 Controller、Coordinator、引擎及可选 KV 角色；按需另生成 `mindie_motor_storage_pvc.yaml` | `motor-config` → `infer_service.yaml` → 可选存储 PVC；需预先安装支持 `InferServiceSet` 的 CRD 和控制器 |
+| `single_container` | `single_container_template.yaml` → `mindie_motor_single_container.yaml`；动态 PVC 作为额外 YAML document 追加在同一文件中 | `motor-config` → `mindie_motor_single_container.yaml`；多个组件在同一容器中启动，不为各组件单独生成 YAML |
+
+引擎文件名形如 `vllm_p0.yaml`、`vllm_d0.yaml`，索引从 `0` 开始；可选 Encode 实例用
+`_e0.yaml`，PD 混部 Union 实例用 `_u0.yaml`。文件名前缀根据引擎选择：vLLM 为 `vllm`，
+SGLang 为 `sglang`，MindIE LLM 为 `mindie-server`。实例数为零时不生成对应实例文件。
+
+`multi_deployment` 的可选文件包括：
+
+- `mindie_motor_storage_pvc.yaml`：配置了需要动态创建的 PVC 时生成；使用 NFS、hostPath，
+  或通过 `claim_name` 引用已有 PVC 时不生成。
+- `mindie_motor_kv_store.yaml`：启用 KV Store 且需要创建独立 Store Pod 时生成；
+  复用其他 namespace 中已有的 Store，或使用 `yuanrong` 后端时不生成。
+- `mindie_motor_kv_conductor.yaml`：`kv_conductor_config.http_server_port` 非零时生成。
+- `mindie_motor_mf_store.yaml`：Prefill/Union 配置使用 SGLang 引擎时生成。
+
+表中顺序是 **apply 提交顺序，不是组件就绪顺序**，脚本不会在每次 apply 后等待对应 Pod
+就绪。`multi_deployment` 的动态 PVC 排在 Controller、Coordinator 和引擎实例之后，但在
+KV Store、KV Conductor、MF Store 之前；`infer_service_set` 的动态 PVC 排在
+`infer_service.yaml` 之后。因此依赖该 PVC 的 Pod 可能先处于 Pending，直到 PVC 完成绑定。
+若存储必须提前就绪，请在部署前准备好；引用的已有 PVC 必须位于 `job_id` 对应的 namespace。
+
+`output_yamls/` 可能残留上次部署或其他模式的文件。不要用 `kubectl apply -f output_yamls/`
+代替 `deploy.py`：这样不会更新 `motor-config` ConfigMap，还可能应用旧文件。
+
+### YAML 如何影响 Pod 创建
+
+`deploy.py` 不直接创建 Pod，而是通过 `kubectl apply` 提交 Deployment、Service、RBAC 或
+InferServiceSet 等资源，再由控制器创建 Pod：Deployment 的副本由 Kubernetes 内置控制器维护，
+InferServiceSet 的各角色及其工作负载由对应的自定义控制器管理。
+
+- `job_id` 决定 namespace；镜像、组件调度标签、附加 labels/annotations 等由生成器填入资源模板。
+- `multi_deployment` 的 `p_instances_num` / `d_instances_num` 决定实例 YAML 数量，
+  `single_p_instance_pod_num` / `single_d_instance_pod_num` 决定每个实例的 Pod 副本数，
+  `p_pod_npu_num` / `d_pod_npu_num` 决定单 Pod 的 NPU 资源请求和限制。
+  InferServiceSet 中角色的 `replicas` 对应实例数，角色下工作负载的 `spec.replicas` 对应每实例 Pod 数。
+- Pod 模板注入 `ROLE`、`JOB_NAME`、组件服务域名等环境变量，并通过 downward API 获得
+  `POD_IP`、`HOST_IP`；这些变量与 `env.json` 写入启动脚本的环境函数共同构成容器的运行环境。
+- `weight_mount_path` 更新权重卷及挂载路径；可选存储配置增加 NFS、hostPath 或 PVC，
+  `dshm_size` 调整 `/dev/shm`，`MOTOR_ENABLE_IPC_HOST` 的行为见「配置文件说明」中的 `env.json` 小节。
+- 普通主容器通过卷把 `motor-config` 挂载到 `/mnt/configmap`，并执行
+  `/bin/bash -c "source /mnt/configmap/boot.sh;"`。Render sidecar 的启动命令由生成器单独设置，
+  不执行 `boot.sh`。
+
+### Pod 内的组件启动和健康检查
+
+1. `startup/boot.sh` 先加载 `common.sh`，再根据 `ROLE` 加载对应角色脚本。
+   ConfigMap 中的脚本已扁平化，因此容器内加载的是同一目录下的 `controller.sh`、`engine.sh` 等文件，
+   而非源码中的 `roles/engine.sh` 路径。
+2. `common.sh` 设置公共环境，并将 ConfigMap 的 `user_config.json` 同步到可写的
+   `CONFIG_PATH`（模板默认 `/usr/local/Ascend/pyMotor/conf`），并设置 `USER_CONFIG_PATH`。
+   之后默认每 10 秒同步一次；配置文件同步不代表所有字段都支持热更新。
+3. 角色脚本设置组件环境并启动服务：`controller.sh` 启动 `motor.controller.main`，
+   `coordinator.sh` 启动 `motor.coordinator.main`；`engine.sh` 为 Encode/Prefill/Decode/Union
+   准备环境后启动 `motor.node_manager.main`，由 NodeManager 管理实际引擎进程。
+   因此 Engine Pod 进入 Running 不代表 vLLM/SGLang 已加载权重并可以提供服务。
+4. `single_container` 由 `all_combine_in_single_container.sh` 在同一容器内启动并监督多个组件子进程；
+   任一受监督的主要子进程退出时，脚本会清理其余子进程，因此各组件的生命周期相互绑定，不能按独立 Pod 理解。
+
+Controller/Coordinator 模板声明了 startup、readiness、liveness 探针，调用
+`probe/probe.sh` 与 `probe/probe.py` 检查对应健康接口。单容器模板的三类探针检查
+Controller 和 Coordinator。当前 Engine 模板未声明这三类探针，因此不能仅凭 Engine Pod 处于 Running
+判断引擎可用。
+
+Engine 和单容器模板还配置了 preStop hook，执行 `prestop/prestop.sh`：先通过
+`prestop.py` 请求 NodeManager 暂停服务，并尽量等待引擎中的请求处理完毕，再发送终止信号；整个过程受
+Pod 的 `terminationGracePeriodSeconds` 限制，不保证所有在途请求都能完成。
+
+### 生成预览、实际部署与检查
+
+完成前置配置后，可先预览 YAML，再执行实际部署：
+
+```bash
+python3 deploy.py --config_dir ../../model_configs/vllm --dry-run
+python3 deploy.py --config_dir ../../model_configs/vllm
+```
+
+`--dry-run` 仅对正常部署生效：它会生成或覆盖本地 YAML，但跳过启动脚本改写、
+ConfigMap 更新和工作负载 apply，也不显示启动进度。它仍会执行安全预检，生成 YAML 时还可能查询
+集群节点标签、可复用的 KV Store 和 NodePort 占用情况，因此并非完全离线的检查。
+**不要将它与 `--update_config` 或 `--update_instance_num` 组合使用来预演更新**：
+这两个操作会先于正常部署执行，即使加上 `--dry-run` 也可能修改集群。
+
+部署后，将 `NAMESPACE` 设为实际配置中的 `job_id`，再从 Pod 列表选择名称并填入 `POD_NAME`：
+
+```bash
+NAMESPACE=mindie-motor
+kubectl get pods -n "$NAMESPACE" -o wide
+kubectl get svc -n "$NAMESPACE"
+kubectl get configmap motor-config -n "$NAMESPACE"
+POD_NAME=your-pod-name
+kubectl describe pod "$POD_NAME" -n "$NAMESPACE"
+kubectl logs "$POD_NAME" -n "$NAMESPACE" --all-containers=true --tail=100
+```
+
+Pending 时先查看调度事件、节点标签、NPU 资源与 PVC；容器未启动时检查镜像和挂载；
+Running 但服务不可用时检查组件日志、探针和 NodeManager/引擎状态。
+使用 `--nostep` 可关闭部署后的进度监控，不影响资源创建；`single_container` 模式本身不显示该进度监控。
+
+如需阅读实现，可从以下文件入手：[deploy.py](deploy.py)、[配置路径解析](lib/config_validator.py)、
+[模板与环境脚本处理](lib/utils.py)、[ConfigMap 与 kubectl 调用](lib/generator/k8s_utils.py)、
+[ConfigMap 资产清单](lib/prepare_utils.py)、[Pod 启动入口](startup/boot.sh)。
 
 ## deploy.py使用方法
 
@@ -31,43 +196,44 @@ MindIE Motor服务部署参数说明如下所示：
 
 | 参数 | 简写 | 说明 |
 |------|------|------|
-| `--config_dir` | `--dir` | 配置文件所在目录，目录下需包含 `user_config.json` 和 `env.json` |
-| `--user_config_path` | `--config` | 用户配置文件路径，与 `--env` 必须同时指定 |
-| `--env_config_path` | `--env` | 环境配置文件路径，与 `--config` 必须同时指定 |
-| `--update_config` | - | 仅更新 ConfigMap，不重新部署 |
-| `--update_instance_num` | - | 根据配置扩缩容实例数量 |
-| `--dry-run` | - | 仅生成 YAML 文件，不执行 kubectl apply |
-| `--auto_log_collect` | - | 部署完成后自动启动日志采集 |
-| `--nostep` | - | 部署完成后不显示服务启动进度条 |
+| `--config_dir` | `--dir` | 默认从此目录读取 `user_config.json` 和 `env.json`；显式传入的配置文件路径优先。 |
+| `--user_config_path` | `--config` | 覆盖用户配置路径；不提供 `--config_dir` 时需同时指定 `--env`。 |
+| `--env_config_path` | `--env` | 覆盖环境配置路径；不提供 `--config_dir` 时需同时指定 `--config`。 |
+| `--update_config` | - | 仅更新 ConfigMap，不重新部署。 |
+| `--update_instance_num` | - | 根据配置扩缩容实例数量。 |
+| `--dry-run` | - | 仅生成 YAML，不执行 `kubectl apply`；不应与 `--update_config`、`--update_instance_num` 组合使用，否则更新操作仍会执行。 |
+| `--auto_log_collect` | - | 部署完成后自动启动日志采集。 |
+| `--nostep` | - | 部署完成后不显示服务启动进度条。 |
+| `--skip-check` | - | 安全预检未通过时仍继续部署；不会自动开启 TLS 或管理 API Key 认证。 |
 
-Motor**配置文件自动生成**参数说明
+Motor 配置文件自动生成参数：
 
 | 参数 | 简写 | 说明 |
 |------|------|------|
-| `--mode` | - | `deploy`（默认）或 `general_config`（从 vLLM 脚本生成配置） |
-| `--deploy-scenario` | - | `general_config` 必填：`hybrid` / `separate` |
-| `--hardware-type` | - | `general_config` 必填：`A2` / `A3` |
-| `--weight-path` | - | `general_config` 可选：权重挂载路径 |
-| `--image-name` | - | `general_config` 可选：镜像名称 |
+| `--mode` | - | `deploy`（默认）部署服务；`general_config` 从 vLLM 部署脚本生成 Motor 配置文件。 |
+| `--deploy-scenario` | - | `general_config` 必填：`hybrid` 或 `separate`。 |
+| `--hardware-type` | - | `general_config` 必填：`A2`、`A3` 或 `A5`。 |
+| `--weight-path` | - | `general_config` 可选：权重挂载路径。 |
+| `--image-name` | - | `general_config` 可选：镜像名称。 |
 
 ### 使用方式
 
 #### 方式零：交互式 TUI 模式
 
 ```bash
-python deploy.py
+python3 deploy.py
 ```
 
-**不带任何参数**启动 `deploy.py` 会进入交互式终端 UI（TUI），提供可视化的服务管理界面：
+在交互式终端中不带参数运行 `deploy.py`，会进入终端界面（TUI）：
 
 | 操作 | 按键 | 说明 |
 |------|------|------|
-| 部署服务 | `R` | 输入配置目录路径，执行部署 |
-| 显示启动进度 | `P` | 打开/关闭内嵌进度条，实时查看各 Engine Pod 启动状态 |
-| 日志采集 | `L` | 启动/重启日志采集 |
-| 更新配置 | `U` | 更新集群 ConfigMap |
-| 删除服务 | `D` | 输入 namespace 并确认后删除所有服务 |
-| 退出 | `Q` | 退出 TUI |
+| 部署服务 | `R` | 输入配置目录路径，执行部署。 |
+| 显示启动进度 | `P` | 打开或关闭内嵌进度条，实时查看各 Engine Pod 启动状态。 |
+| 日志采集 | `L` | 启动或重启日志采集。 |
+| 更新配置 | `U` | 更新集群 ConfigMap。 |
+| 删除服务 | `D` | 输入 namespace 并确认后删除所有服务。 |
+| 退出 | `Q` | 退出 TUI。 |
 
 **交互方式：**
 
@@ -80,7 +246,7 @@ python deploy.py
 #### 方式一：指定配置目录（推荐）
 
 ```bash
-python deploy.py --config_dir ../../model_configs/vllm
+python3 deploy.py --config_dir ../../model_configs/vllm
 ```
 
 程序会自动从指定目录下读取 `user_config.json` 和 `env.json`。
@@ -88,27 +254,35 @@ python deploy.py --config_dir ../../model_configs/vllm
 #### 方式二：单独指定配置文件
 
 ```bash
-python deploy.py --config ../../model_configs/vllm/user_config.json --env ../../model_configs/vllm/env.json
+python3 deploy.py --config ../../model_configs/vllm/user_config.json --env ../../model_configs/vllm/env.json
 ```
 
 #### 方式三：混合使用
 
 ```bash
-python deploy.py --config_dir ../../model_configs/vllm --config /path/to/custom_user_config.json --env /path/to/custom_env.json
+python3 deploy.py --config_dir ../../model_configs/vllm --config /path/to/custom_user_config.json --env /path/to/custom_env.json
 ```
 
-当同时指定 `--config_dir` 和 `--config`/`--env` 时，以 `--config` 和 `--env` 为准。
+`--config` 和 `--env` 各自覆盖对应的文件路径；只提供其中一个时，另一个仍从 `--config_dir` 读取。
 
-#### 方式四：基于vllm部署脚本生成Motor全量配置文件
+#### 方式四：从 vLLM 部署脚本生成 Motor 配置
 
-使用方式请参阅[Motor配置自动生成指导](../../model_configs/vllm/models/README.md)。
+按 [Motor 配置自动生成指南](../../model_configs/vllm/models/README.md)准备 vLLM 部署脚本后，执行以下命令生成配置（以 A2 PD 分离为例）：
+
+```bash
+python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A2
+```
+
+`--mode general_config` 将 `user_config.json` 和 `env.json` 写入 `config_tool/output_config/`，不部署服务。
+生成后，按方式一至方式三指定这些文件进行部署。Kubernetes 资源的组织方式由 `user_config.json` 中的
+`motor_deploy_config.deploy_mode` 决定，与 `--mode` 无关。
 
 ### 其他操作
 
 #### 更新配置
 
 ```bash
-python deploy.py --config_dir ../../model_configs/vllm --update_config
+python3 deploy.py --config_dir ../../model_configs/vllm --update_config
 ```
 
 仅更新集群中的 ConfigMap，不重新部署服务。
@@ -116,7 +290,7 @@ python deploy.py --config_dir ../../model_configs/vllm --update_config
 #### 扩缩容实例
 
 ```bash
-python deploy.py --config_dir ../../model_configs/vllm --update_instance_num
+python3 deploy.py --config_dir ../../model_configs/vllm --update_instance_num
 ```
 
 根据 `user_config.json` 中的 `p_instances_num` 和 `d_instances_num` 进行实例扩缩容。
@@ -127,16 +301,16 @@ python deploy.py --config_dir ../../model_configs/vllm --update_instance_num
 该目录不随 `examples/` 放入发布镜像；使用镜像中的 deployer 时，请从源码仓库获取典配，
 将所选配置目录挂载到容器，并通过 `--config_dir` 指定其实际路径。
 
-```bash
+```text
 model_configs/
 ├── vllm/                    # vLLM 引擎配置
 │   ├── user_config.json     # 快速启动用户配置
 │   ├── env.json             # 快速启动环境变量配置
 │   └── models/              # 特定模型配置
-│       └── deepseek/
-│           └── v3_1/
+│       └── deepseek_v3.1/
+│           └── A2/
 │               ├── user_config.json
-│               └── env_v3_1_A2_EP32.json
+│               └── env.json
 └── ...
 ```
 
@@ -283,7 +457,7 @@ Seed 可用于还原词表置换，必须与混淆权重同权限保管，禁止
 }
 ```
 
-将上述字段合并到现有 `motor_common_env` 中，保留其他环境变量。
+将 `MOTOR_ENABLE_IPC_HOST` 合并到现有 `motor_common_env` 中，保留其他环境变量。
 
 - Docker：创建引擎容器或单容器时添加 `--ipc=host`，替代 `--shm-size`，此时 `dshm_size` 不生效。
   设置为 `0` 或省略时保留原有共享内存配置。已有容器需重新创建；`--start` 不改变容器 IPC 模式。
@@ -321,11 +495,11 @@ Seed 可用于还原词表置换，必须与混淆权重同权限保管，禁止
 
 | 参数 | 自动管理方式 |
 |------|-------------|
-| `data-parallel-address` | Controller 根据组装结果确定 master DP 节点 IP，通过 `StartCmdMsg.master_dp_ip` 传给 Node Manager；vLLM Adapter 生成原生参数 |
-| `data-parallel-rank` | 由 Endpoint ID 决定，Node Manager 的 vLLM Adapter 直接生成原生参数 |
-| `node-rank` | Controller 按 Node Manager 注册先后顺序分配（先注册 = 主节点 rank 0），通过 `StartCmdMsg.node_rank` 传给 vLLM Adapter |
-| `master-addr` | vLLM Adapter 检测到跨节点 PCP/PP 模式（`nnodes > 1` 且 `master-port` 存在）时，自动将 `master-dp-ip` 作为 `--master-addr` 注入原生 vLLM 命令 |
-| `headless` | vLLM Adapter 在跨节点 PCP/PP 模式下，对 `node-rank != 0` 的从节点自动追加 `--headless` |
+| `data-parallel-address` | Controller 根据组装结果确定 master DP 节点 IP，通过 `StartCmdMsg.master_dp_ip` 传给 Node Manager；vLLM Adapter 生成原生参数。 |
+| `data-parallel-rank` | 由 Endpoint ID 决定，Node Manager 的 vLLM Adapter 直接生成原生参数。 |
+| `node-rank` | Controller 按 Node Manager 注册先后顺序分配（先注册 = 主节点 rank 0），通过 `StartCmdMsg.node_rank` 传给 vLLM Adapter。 |
+| `master-addr` | vLLM Adapter 检测到跨节点 PCP/PP 模式（`nnodes > 1` 且 `master-port` 存在）时，自动将 `master-dp-ip` 作为 `--master-addr` 注入原生 vLLM 命令。 |
+| `headless` | vLLM Adapter 在跨节点 PCP/PP 模式下，对 `node-rank != 0` 的从节点自动追加 `--headless`。 |
 
 >[!NOTE] 说明
 >跨节点 PCP/PP 场景下，用户仅需在 `engine_config` 中配置 `nnodes` 和 `master-port`，其余参数由 Motor 自动处理。当前不支持同一实例内 `data_parallel_size > 1` 且 `nnodes > 1`。
