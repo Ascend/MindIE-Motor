@@ -158,7 +158,7 @@
 
 ## 故障与恢复
 
-本类特性用于在故障发生时恢复服务，可根据实际故障场景，进行实例重调度、故障实例重启、主备倒换，提升服务可靠性；并可同时探测服务健康状态、控制请求流量。
+本类特性用于在故障发生时恢复服务，可根据实际故障场景，进行实例重调度、故障引擎重启、主备倒换，提升服务可靠性；并可同时探测服务健康状态、控制请求流量。
 
 <div class="feature-support-table">
 <table>
@@ -200,7 +200,7 @@
       <td>—</td>
     </tr>
     <tr>
-      <td><a href="./fault_tolerance/instance_rescheduling.md">故障实例重启（默认生效）</a></td>
+      <td><a href="./fault_tolerance/engine_relaunch.md">故障引擎重启（默认生效）</a></td>
       <td>可用</td>
       <td>支持</td>
       <td>支持</td>

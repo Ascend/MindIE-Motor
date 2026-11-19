@@ -35,6 +35,40 @@ MindIE Motor依赖Kubernetes提供的容器编排能力，包括Pod部署、服�
 >- Y：表示需要安装。
 >- N：表示不需要安装。
 
+## 安装指南
+
+### 硬件配置
+
+**节点说明**
+
+- **通算节点**：以 CPU 为核心，通用性强，负责实例管理、请求调度等常规逻辑任务。
+- **智算节点**：以 NPU / GPU 等 AI 芯片为核心，擅长大规模并行计算，负责模型推理等重负载 AI 任务。
+- **协作方式**：通算节点负责实例管理与请求调度，智算节点负责模型推理，二者分工协作。通算节点为可选项；未配置时，Controller、Coordinator 和推理引擎均运行在智算节点。
+
+> **部署建议**：推理引擎（如 vLLM）部署在智算节点；Controller 和 Coordinator 优先部署在通算节点。
+
+**配置要求**
+
+| **节点类型** | **配置项** | **推荐配置** | **最低要求** |
+| --- | --- | --- | --- |
+| 通算 | CPU 核心数与主频 | 2 × 48 核，2.6 GHz | 20 核 |
+| 通算 | 内存（DRAM） | 8 × 32 GB（总计 256 GB） | 8 GB |
+| 智算 | CPU 核心数与主频 | 128 核 | 64 核 |
+| 智算 | 内存（DRAM） | 1,000 GB | 256 GB |
+| 通算、智算 | 硬盘 | 12 × 1,920 GB SATA SSD（6 Gb/s） | 无明确限制 |
+
+> 通算 CPU 最低要求按实例数计算。每个 Controller 实例需 4 核，每个 Coordinator 实例需 16 核，各部署 1 个实例时合计 20 核。
+
+### 版本说明
+
+| **组件** | **版本要求** | **说明** |
+| --- | --- | --- |
+| Docker | 24.x.x 或更高版本 | 宿主机容器 |
+| Python | 3.11 或更高版本 | 宿主机运行环境 |
+| Kubernetes | 1.17.x 或更高版本 | 集群编排平台 |
+
+> 宿主机需安装 Docker 与 Python；集群需运行 Kubernetes。
+
 ## Ascend HDK与Docker安装
 
 1. 所有服务器已经安装过Ascend HDK。如未安装，请参考[Ascend HDK安装部署指导](https://support.huawei.com/enterprise/zh/ascend-computing/ascend-hdk-pid-252764743?category=installation-upgrade&subcategory=software-deployment-guide)，根据产品系列和型号选择对应版本驱动。

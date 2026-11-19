@@ -40,7 +40,7 @@
 
     - 方式二：在已有镜像中安装MindIE Motor
 
-        基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于vllm-ascend/sglang镜像安装MindIE Motor](../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor) 额外安装MindIE Motor。
+        基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于vllm-ascend/sglang镜像安装MindIE Motor](../maintenance/build_motor_image_from_vllm_ascend.md#自行制作mindie-motor镜像) 额外安装MindIE Motor。
 
     获取镜像后，请使用以下命令将镜像加载至服务器：
 
@@ -185,19 +185,19 @@
   </tr>
 </table>
 
-      对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](https://gitcode.com/Ascend/MindIE-Motor/blob/master/model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
-   2. 保存配置至服务器
+### 保存配置至服务器
 
-      进入examples目录下，将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下，再修改后保存：
+进入examples目录下，将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下，再修改后保存：
 
-      ```bash
-      cd /examples
-      mkdir -p ./config
-      # 将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下
-      vim ./config/user_config.json
-      vim ./config/env.json
-      ```
+```bash
+cd /examples
+mkdir -p ./config
+# 将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下
+vim ./config/user_config.json
+vim ./config/env.json
+```
 
 ## 服务部署与验证
 
@@ -339,7 +339,7 @@
         <tr><td>Qwen3-235B</td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td></tr>
       </table>
 
-      对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+    对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](https://gitcode.com/Ascend/MindIE-Motor/blob/master/model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
 3. 保存配置文件
 

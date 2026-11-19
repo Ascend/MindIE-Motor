@@ -43,7 +43,7 @@
   - 故障与恢复
     - [请求重调度](./features/fault_tolerance/request_rescheduler.md)
     - [实例重调度](./features/fault_tolerance/instance_rescheduling.md)
-    - [故障实例重启（默认生效）](./features/fault_tolerance/instance_rescheduling.md)
+    - [故障引擎重启（默认生效）](./features/fault_tolerance/engine_relaunch.md)
     - [ScaleP2D 故障恢复](./features/fault_tolerance/scale_p2d.md)
     - [DP 域缩容](./features/fault_tolerance/dp_scale_down.md)
     - [主备倒换特性](./features/fault_tolerance/standby.md)
