@@ -76,9 +76,16 @@ def _should_skip(rel_path: str) -> bool:
 
 def _has_license(lines: list[str]) -> bool:
     """Return True if *lines* already contains the Mulan PSL v2 block."""
-    for line in lines:
+    body = [line.rstrip("\r\n") for line in LICENSE_LINES[1:]]
+    for index, line in enumerate(lines):
         if _LICENSE_START_RE.match(line):
             return True
+        # External contributors retain their copyright while using the same
+        # complete project license. A copyright line alone is insufficient.
+        if line.startswith("# Copyright (c) ") and line[len("# Copyright (c) ") :].strip():
+            candidate = [item.rstrip("\r\n") for item in lines[index + 1 : index + len(LICENSE_LINES)]]
+            if candidate == body:
+                return True
     return False
 
 

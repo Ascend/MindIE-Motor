@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "name": "motor-demo",
+  "config_dir": "./native-config",
+  "hosts": [
+    {
+      "id": "node-a",
+      "ssh_target": "motor-node-a",
+      "pod_ip": "192.0.2.11",
+      "nic_name": "eth0",
+      "repo_dir": "/opt/MindIE-Motor",
+      "work_dir": "/var/lib/mindie-motor/motor-demo",
+      "observe_npu": true
+    },
+    {
+      "id": "node-b",
+      "ssh_target": "motor-node-b",
+      "pod_ip": "192.0.2.12",
+      "nic_name": "eth0",
+      "repo_dir": "/opt/MindIE-Motor",
+      "work_dir": "/var/lib/mindie-motor/motor-demo",
+      "observe_npu": true
+    }
+  ],
+  "control_plane": {
+    "mode": "managed",
+    "host_id": "node-a",
+    "controller_ip": "192.0.2.11",
+    "coordinator_ip": "192.0.2.11",
+    "coordinator_url": "http://192.0.2.11:1026"
+  },
+  "slots": [
+    {
+      "id": "prefill-a",
+      "role": "prefill",
+      "host_id": "node-a",
+      "devices": [0, 1],
+      "ports": {"node_manager": 3026, "base": 11000, "kv": 31000, "dp_rpc": 9100}
+    },
+    {
+      "id": "prefill-b",
+      "role": "prefill",
+      "host_id": "node-a",
+      "devices": [2, 3],
+      "ports": {"node_manager": 5026, "base": 14000, "kv": 32000, "dp_rpc": 9200}
+    },
+    {
+      "id": "decode-a",
+      "role": "decode",
+      "host_id": "node-b",
+      "devices": [0, 1],
+      "ports": {"node_manager": 4026, "base": 21000, "kv": 41000, "dp_rpc": 10100}
+    },
+    {
+      "id": "decode-b",
+      "role": "decode",
+      "host_id": "node-b",
+      "devices": [2, 3],
+      "ports": {"node_manager": 6026, "base": 22000, "kv": 42000, "dp_rpc": 10200}
+    }
+  ],
+  "desired": {"prefill": 1, "decode": 1},
+  "policy": {
+    "interval_seconds": 10,
+    "ready_timeout_seconds": 900,
+    "drain_timeout_seconds": 300,
+    "drain_grace_seconds": 5,
+    "retry_limit": 3,
+    "retry_backoff_seconds": 30,
+    "observation_max_age_seconds": 30
+  },
+  "autoscaling": {
+    "enabled": false,
+    "scale_in": false,
+    "cooldown_seconds": 120,
+    "stable_samples": 3,
+    "roles": {
+      "prefill": {"min": 1, "max": 2, "up_running": 4, "down_running": 0},
+      "decode": {"min": 1, "max": 2, "up_running": 4, "down_running": 0}
+    }
+  }
+}
