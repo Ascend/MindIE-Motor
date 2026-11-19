@@ -11,6 +11,7 @@
 """从 user_config.json 生成 docker_deploy.py 的启动命令。
 
 由 docker_deploy.py --show-commands 调用。只打印，不创建容器，也不启动服务。
+带 --start 时按容器内部署打印：每台服务器要创建哪些容器，以及进入容器后执行的命令。
 """
 
 from __future__ import annotations
@@ -20,10 +21,12 @@ import os
 import shlex
 import sys
 
+from lib import constant as C
 from lib.docker_utils import (
     DOCKER_KV_CONDUCTOR_NAME,
     kv_conductor_enabled,
     kv_store_enabled,
+    npu_docker_card_count,
     validate_docker_kv_conductor,
 )
 
@@ -78,6 +81,8 @@ def _shell_command(deployer_py: str, config_dir: str, argv: list[str]) -> str:
 _HOST_IP = '"<本机IP>"'
 _NIC = '"<本机网卡>"'
 _SERVER1_IP = '"<服务器1 IP>"'
+_KV_CONDUCTOR_IP = '"<KV Conductor所在服务器IP>"'
+_RENDER_IP = '"<Render所在服务器IP>"'
 _MANAGEMENT_NAME = "motor-ctrl"
 
 
@@ -116,6 +121,155 @@ def _format(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _argv_value(argv: list[str], flag: str) -> str:
+    return argv[argv.index(flag) + 1]
+
+
+def _engine_template_name(hardware_type: object) -> str:
+    """容器内创建清单里，推理容器对应的 docker run 模板名。"""
+    if not isinstance(hardware_type, str) or not hardware_type:
+        return "推理容器模板"
+    try:
+        if hardware_type in C.HARDWARE_TYPE_A5_POD16:
+            return "ENTER_DOCKER_RUN_A5_POD16"
+        if npu_docker_card_count(hardware_type) == 16:
+            return "ENTER_DOCKER_RUN_A3"
+        if hardware_type in C.HARDWARE_TYPE_A5:
+            return "ENTER_DOCKER_RUN_A5"
+    except ValueError:
+        return "推理容器模板"
+    return "ENTER_DOCKER_RUN_A2"
+
+
+def _shared_template(title: str) -> str:
+    if title == "kv_store":
+        return "ENTER_DOCKER_RUN_KVS"
+    return "ENTER_DOCKER_RUN_CTRL"
+
+
+def _optional_container_plans(
+    user_config: dict, main_name: str, *, kv_conductor: bool
+) -> list[tuple[int, str, str, str, list[str]]]:
+    """Render 与 KV Conductor 跟管理面同机，只出现在容器内方案里。"""
+    from lib.generator.render import docker_render_container_name, is_render_enabled
+
+    plans: list[tuple[int, str, str, str, list[str]]] = []
+    if is_render_enabled(user_config):
+        name = docker_render_container_name(main_name)
+        plans.append(
+            (
+                1,
+                "Render",
+                name,
+                "ENTER_DOCKER_RUN_CTRL",
+                ["--start", "--container-name", name, "--role", "render"],
+            )
+        )
+    if kv_conductor:
+        plans.append(
+            (
+                1,
+                "KV Conductor",
+                DOCKER_KV_CONDUCTOR_NAME,
+                "ENTER_DOCKER_RUN_CTRL",
+                [
+                    "--start",
+                    "--container-name",
+                    DOCKER_KV_CONDUCTOR_NAME,
+                    "--role",
+                    "kv_conductor",
+                    "--pod-ip",
+                    _HOST_IP,
+                    "--nic-name",
+                    _NIC,
+                    "--coordinator-ip",
+                    _SERVER1_IP,
+                    "--controller-ip",
+                    _SERVER1_IP,
+                ],
+            )
+        )
+    return plans
+
+
+def _container_hint(title: str) -> str:
+    """容器规划里，容器名后面的一句用途说明。"""
+    if title == "管理面":
+        return "管理面容器。"
+    if title == "kv_store":
+        return "池化后端。"
+    if title == "Render":
+        return "Render分词器。"
+    if title == "KV Conductor":
+        return "KV Cache索引。"
+    if title == "单容器":
+        return "单容器。"
+    if title.startswith("Prefill"):
+        return "Prefill推理容器。"
+    if title.startswith("Decode"):
+        return "Decode推理容器。"
+    if title.startswith("混部"):
+        return "混部推理容器。"
+    return f"{title}。"
+
+
+def _format_in_container(
+    plans: list[tuple[int, str, str, str, list[str]]],
+    deployer_py: str,
+    config_dir: str,
+    server_count: int,
+) -> str:
+    """plans 每项是 (服务器序号, 标题, 容器名, 模板名, 启动参数)。"""
+    lines = [
+        "容器内部署。先在对应服务器创建容器，再进入该容器执行启动命令。",
+        "本命令只打印计划，不创建容器，也不启动服务。",
+        "",
+        f"预计使用 {server_count} 台服务器。",
+        "",
+        "1、创建容器：",
+        "",
+    ]
+    grouped: dict[int, list[tuple[str, str]]] = {}
+    for server, title, container, _template, _argv in plans:
+        grouped.setdefault(server, []).append((title, container))
+    for server in range(1, server_count + 1):
+        items = grouped.get(server)
+        if not items:
+            continue
+        lines.append(f"服务器 {server}：")
+        for title, container in items:
+            lines.append(f"- {container}：{_container_hint(title)}")
+        lines.append("")
+    lines.extend(["在各个容器中执行以下启动命令。", ""])
+    for server, title, container, _template, argv in plans:
+        label = title if title.endswith("容器") else f"{title}容器"
+        lines.append(f"服务器 {server}：")
+        lines.append(f"  创建{label} {container}")
+        lines.append("  在容器内执行以下启动命令")
+        command = _shell_command(deployer_py, config_dir, argv)
+        lines.extend(f"  {line}" for line in command.splitlines())
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _in_container_plans(
+    servers: list[tuple[str, list[str]]],
+    shared: list[tuple[str, list[str]]],
+    user_config: dict,
+    *,
+    main_name: str,
+    engine_template: str,
+    kv_conductor: bool,
+) -> list[tuple[int, str, str, str, list[str]]]:
+    plans: list[tuple[int, str, str, str, list[str]]] = []
+    for title, argv in shared:
+        plans.append((1, title, _argv_value(argv, "--container-name"), _shared_template(title), argv))
+    plans.extend(_optional_container_plans(user_config, main_name, kv_conductor=kv_conductor))
+    for index, (title, argv) in enumerate(servers, start=1):
+        plans.append((index, title, _argv_value(argv, "--container-name"), engine_template, argv))
+    return plans
+
+
 def _engine_entries(
     *,
     role: str,
@@ -124,6 +278,7 @@ def _engine_entries(
     pod_num: int,
     in_container: bool,
     kv_enabled: bool,
+    kv_conductor: bool = False,
 ) -> list[tuple[str, list[str]]]:
     role_label = {"prefill": "Prefill", "decode": "Decode", "union": "混部"}[role]
     entries: list[tuple[str, list[str]]] = []
@@ -152,6 +307,8 @@ def _engine_entries(
             )
             if kv_enabled:
                 argv.extend(["--kv-store-ip", _SERVER1_IP])
+            if in_container and kv_conductor:
+                argv.extend(["--kv-conductor-ip", _KV_CONDUCTOR_IP])
             title = role_label + " " + instance_name
             if pod_num > 1:
                 title += f"（{pod_index + 1}/{pod_num}）"
@@ -178,12 +335,28 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
 
     kv_enabled = kv_store_enabled(user_config)
     kv_conductor = kv_conductor_enabled(user_config)
+    engine_template = _engine_template_name(deploy.get("hardware_type"))
     if deploy.get("deploy_mode") == DEPLOY_MODE_SINGLE_CONTAINER:
         argv = ["--start"] if in_container else []
         argv.extend(["--container-name", "motor-single", "--pod-ip", _HOST_IP, "--nic-name", _NIC])
         if kv_enabled:
             argv.extend(["--kv-store-ip", _HOST_IP])
-        return _format([("单容器", argv)], deployer_py, config_dir)
+        if in_container:
+            from lib.generator.render import is_render_enabled
+
+            if is_render_enabled(user_config):
+                argv.extend(["--render-ip", _RENDER_IP])
+        if not in_container:
+            return _format([("单容器", argv)], deployer_py, config_dir)
+        plans = _in_container_plans(
+            [("单容器", argv)],
+            [],
+            user_config,
+            main_name="motor-single",
+            engine_template=engine_template,
+            kv_conductor=False,
+        )
+        return _format_in_container(plans, deployer_py, config_dir, 1)
 
     hybrid = "hybrid_instances_num" in deploy
     separation = "p_instances_num" in deploy or "d_instances_num" in deploy
@@ -194,7 +367,7 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
 
     shared = [_management_entry(user_config, in_container, kv_enabled, kv_conductor)]
     if kv_enabled:
-        shared.append(_kv_store_entry(in_container))
+        shared.append(_kv_store_entry(in_container, kv_conductor=kv_conductor))
     if hybrid:
         servers = _engine_entries(
             role="union",
@@ -203,7 +376,18 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
             pod_num=_positive_int(deploy, "single_hybrid_instance_pod_num"),
             in_container=in_container,
             kv_enabled=kv_enabled,
+            kv_conductor=kv_conductor,
         )
+        if in_container:
+            plans = _in_container_plans(
+                servers,
+                shared,
+                user_config,
+                main_name=_MANAGEMENT_NAME,
+                engine_template=engine_template,
+                kv_conductor=kv_conductor,
+            )
+            return _format_in_container(plans, deployer_py, config_dir, len(servers))
         return _format(servers, deployer_py, config_dir, shared)
 
     servers = _engine_entries(
@@ -213,6 +397,7 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
         pod_num=_positive_int(deploy, "single_p_instance_pod_num"),
         in_container=in_container,
         kv_enabled=kv_enabled,
+        kv_conductor=kv_conductor,
     )
     servers.extend(
         _engine_entries(
@@ -222,8 +407,19 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
             pod_num=_positive_int(deploy, "single_d_instance_pod_num"),
             in_container=in_container,
             kv_enabled=kv_enabled,
+            kv_conductor=kv_conductor,
         )
     )
+    if in_container:
+        plans = _in_container_plans(
+            servers,
+            shared,
+            user_config,
+            main_name=_MANAGEMENT_NAME,
+            engine_template=engine_template,
+            kv_conductor=kv_conductor,
+        )
+        return _format_in_container(plans, deployer_py, config_dir, len(servers))
     return _format(servers, deployer_py, config_dir, shared)
 
 
@@ -247,6 +443,10 @@ def _management_entry(
     )
     if kv_enabled:
         argv.extend(["--kv-store-ip", _HOST_IP])
+    if in_container and kv_conductor:
+        argv.extend(["--kv-conductor-ip", _KV_CONDUCTOR_IP])
+    if in_container and is_render_enabled(user_config):
+        argv.extend(["--render-ip", _RENDER_IP])
     title = _management_title(
         render_enabled=is_render_enabled(user_config),
         kv_conductor=kv_conductor,
@@ -255,7 +455,7 @@ def _management_entry(
     return title, argv
 
 
-def _kv_store_entry(in_container: bool) -> tuple[str, list[str]]:
+def _kv_store_entry(in_container: bool, *, kv_conductor: bool = False) -> tuple[str, list[str]]:
     argv = ["--start"] if in_container else []
     argv.extend(
         [
@@ -273,6 +473,8 @@ def _kv_store_entry(in_container: bool) -> tuple[str, list[str]]:
             _HOST_IP,
         ]
     )
+    if in_container and kv_conductor:
+        argv.extend(["--kv-conductor-ip", _KV_CONDUCTOR_IP])
     return "kv_store", argv
 
 

@@ -90,9 +90,11 @@ def test_show_commands_hybrid_and_in_container():
     text = _text(_pd_config(conductor=True, affinity=True, hybrid=True), in_container=True)
     assert "--start" in text
     assert "--role union" in text
-    assert "--kv-conductor-ip" not in text
+    assert '--kv-conductor-ip "<KV Conductor所在服务器IP>"' in text
     assert "会同时拉起" not in text
-    assert "服务器 1：管理面\n" in text
+    assert "服务器 1：\n  创建管理面容器 motor-ctrl\n" in text
+    conductor = text.split("创建KV Conductor容器 motor-kvc", 1)[1].split("创建混部", 1)[0]
+    assert "--kv-conductor-ip" not in conductor
 
 
 def test_show_commands_fail_closed_affinity_without_port():

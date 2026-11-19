@@ -1,20 +1,20 @@
-# 基于Docker的容器内PD混部服务部署
+# 基于云平台的PD混部服务部署
 
-本文档指导用户在已创建的容器内部署PD混部服务。容器由云化平台（例如 ModelArts）或用户创建，用户进入容器后执行一条指令拉起服务。
+本文档**专用于云平台场景（例如ModelArts平台）的Motor部署方案指导**，如果无需云平台进行容器管理，请参考[宿主机部署docker服务指导](../host/pd_aggregation_deployment.md)。在云平台部署中，业务容器由用户自行创建，并在容器中启动Motor主进程。
 
 ## 准备镜像
 
-通过以下方式获取镜像：
+1. 通过以下方式获取镜像：
 
-- 方式一：下载官方完整的MindIE Motor镜像
+   - 方式一：下载官方完整的MindIE Motor镜像
 
-  进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框输入`motor`，单击“mindie-motor”卡片，在“镜像下载”页签根据设备型号下载对应的MindIE Motor镜像。
+     进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框输入`motor`，单击“mindie-motor”卡片，在“镜像下载”页签根据设备型号下载对应的MindIE Motor镜像。
 
-- 方式二：在已有镜像中安装MindIE Motor
+   - 方式二：在已有镜像中安装MindIE Motor
 
-  基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于已有镜像安装MindIE Motor](../../../maintenance/build_motor_image_from_vllm_ascend.md) 额外安装MindIE Motor。
+     基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于已有镜像安装MindIE Motor](../../../maintenance/build_motor_image_from_vllm_ascend.md) 额外安装MindIE Motor。
 
-获取镜像后，请使用以下命令**将镜像加载至每一台服务器**：
+2. 获取镜像后，请使用以下命令**将镜像加载至每一台服务器**：
 
    ```bash
    docker load -i xxxx.tar
@@ -66,91 +66,191 @@
    | data_parallel_size | int | ≥1 | 数据并行（DP）数 |
    | tensor_parallel_size | int | ≥1 | 张量并行（TP）数 |
 
+   - 开启池化功能（可选）
+
+     请参考[KV池化能力](../../../features/inference_scheduling/kv_cache_store/README.md)文档来修改user_config.json配置文件。并在创建容器小节中额外部署一个KV_store容器。
+
+   - 开启Render功能（可选）
+
+     请在 `/home/examples/config/user_config.json` 中增加以下配置：
+
+     ```json
+     {
+       ...
+       "motor_coordinator_config": {
+         "render_config": {
+           "enable": true
+         }
+       },
+       ...
+     }
+     ```
+
+     并在创建容器小节中额外部署一个Render容器。
+
+   - 开启KV亲和功能（可选）
+
+     请参考 [KV Cache亲和性调度](../../../features/inference_scheduling/kvcache_affinity.md)文档来修改user_config.json配置文件。并在创建容器小节中额外部署一个KV Conductor容器。
+
 3. <a id="step0003"></a>同步启动脚本配置。
 
    将整个/home/examples目录，**拷贝至所有服务器的相同路径**下。
 
-## 创建容器
+## 查看部署计划
 
-按照规划在集群内的服务器上创建容器，一共需要创建三类容器。容器名与[启动服务](#启动服务)回显中的`--container-name`一致。`examples/deployer/lib/constant.py`中的模板可供参考：
-
-| 容器类型 | 参考模板 | 配置说明 |
-| --- | --- | --- |
-| 管理面 | [ENTER_DOCKER_RUN_CTRL](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L611-L622) | 容器名`motor-ctrl`，创建在服务器 1。 |
-| 混部 | Atlas 800I A2：[ENTER_DOCKER_RUN_A2](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L448-L480)<br>Atlas 800I A3：[ENTER_DOCKER_RUN_A3](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L482-L522)<br>Ascend 950（8卡）：[ENTER_DOCKER_RUN_A5](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L524-L561)<br>Ascend 950（16卡）：[ENTER_DOCKER_RUN_A5_POD16](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L563-L609) | 1个实例只占1个容器时，容器名为`motor-u0`、`motor-u1`。1个实例拆成多个容器时，容器名为`motor-u0-0`、`motor-u0-1`。每台服务器仅创建1个容器。 |
-| kv_store | [ENTER_DOCKER_RUN_KVS](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L624-L638) | 开启池化时创建，容器名`motor-kvs`，放在服务器1。 |
-
-创建容器时，必须把服务启动脚本文件夹挂载进容器（例如：`-v /home/examples:/home/examples`），创建完成后进入容器：
-
-```bash
-docker exec -it <容器名> bash
-```
-
-## 启动服务
-
-默认情况下，一台服务器仅部署一个混部推理容器，如需**一台服务器部署多个混部推理实例（仅用于小模型）**，请参考[同一容器部署多个推理实例](#同一容器部署多个推理实例)。
-
-1. 获取服务启动命令
-
-   在已准备好`/home/examples`的服务器上执行。该命令只打印启动命令。
+1. 在任意服务器，执行以下命令。
 
    ```bash
    python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config --show-commands --start
    ```
 
-   回显如下：
+2. 回显示例如下：
+
+   「1、创建容器」代表容器规划，请按照该指引清单在对应服务器创建容器，对应操作请参考[创建容器](#创建容器)小节的指引。
+
+   「在各个容器中执行以下启动命令」代表在各个容器启动服务的命令，对应操作请参考[启动服务](#启动服务)小节的指引。下面按池化、Render、KV 亲和都开启来写。未开启的容器不会出现。
 
    ```output
+   容器内部署。先在对应服务器创建容器，再进入该容器执行启动命令。
+   本命令只打印计划，不创建容器，也不启动服务。
+
    预计使用 2 台服务器。
 
-   服务器 1：管理面
-   python3 /home/examples/deployer/docker_deploy.py \
-     --config_dir /home/examples/config \
-     --start \
-     --container-name motor-ctrl \
-     --role coordinator,controller \
-     --pod-ip "<本机IP>" \
-     --nic-name "<本机网卡>"
+   1、创建容器：
 
-   服务器 1：混部 u0
-   python3 /home/examples/deployer/docker_deploy.py \
-     --config_dir /home/examples/config \
-     --start \
-     --container-name motor-u0 \
-     --role union \
-     --instance-name u0 \
-     --pod-ip "<本机IP>" \
-     --nic-name "<本机网卡>" \
-     --coordinator-ip "<服务器1 IP>" \
-     --controller-ip "<服务器1 IP>"
+   服务器 1：
+   - motor-ctrl：管理面容器。
+   - motor-kvs：池化后端。
+   - motor-ctrl-vllm-render：Render分词器。
+   - motor-kvc：KV Cache索引。
+   - motor-u0：混部推理容器。
 
-   服务器 2：混部 u1
-   python3 /home/examples/deployer/docker_deploy.py \
-     --config_dir /home/examples/config \
-     --start \
-     --container-name motor-u1 \
-     --role union \
-     --instance-name u1 \
-     --pod-ip "<本机IP>" \
-     --nic-name "<本机网卡>" \
-     --coordinator-ip "<服务器1 IP>" \
-     --controller-ip "<服务器1 IP>"
+   服务器 2：
+   - motor-u1：混部推理容器。
+
+   在各个容器中执行以下启动命令。
+
+   服务器 1：
+     创建管理面容器 motor-ctrl
+     在容器内执行以下启动命令
+     python3 /home/examples/deployer/docker_deploy.py \
+       --config_dir /home/examples/config \
+       --start \
+       --container-name motor-ctrl \
+       --role coordinator,controller \
+       --pod-ip "<本机IP>" \
+       --nic-name "<本机网卡>" \
+       --kv-store-ip "<本机IP>" \
+       --kv-conductor-ip "<KV Conductor所在服务器IP>" \
+       --render-ip "<Render所在服务器IP>"
+
+   服务器 1：
+     创建kv_store容器 motor-kvs
+     在容器内执行以下启动命令
+     python3 /home/examples/deployer/docker_deploy.py \
+       --config_dir /home/examples/config \
+       --start \
+       --container-name motor-kvs \
+       --role kv_store \
+       --pod-ip "<本机IP>" \
+       --nic-name "<本机网卡>" \
+       --coordinator-ip "<本机IP>" \
+       --controller-ip "<本机IP>" \
+       --kv-conductor-ip "<KV Conductor所在服务器IP>"
+
+   服务器 1：
+     创建Render容器 motor-ctrl-vllm-render
+     在容器内执行以下启动命令
+     python3 /home/examples/deployer/docker_deploy.py \
+       --config_dir /home/examples/config \
+       --start \
+       --container-name motor-ctrl-vllm-render \
+       --role render
+
+   服务器 1：
+     创建KV Conductor容器 motor-kvc
+     在容器内执行以下启动命令
+     python3 /home/examples/deployer/docker_deploy.py \
+       --config_dir /home/examples/config \
+       --start \
+       --container-name motor-kvc \
+       --role kv_conductor \
+       --pod-ip "<本机IP>" \
+       --nic-name "<本机网卡>" \
+       --coordinator-ip "<服务器1 IP>" \
+       --controller-ip "<服务器1 IP>"
+
+   服务器 1：
+     创建混部 u0容器 motor-u0
+     在容器内执行以下启动命令
+     python3 /home/examples/deployer/docker_deploy.py \
+       --config_dir /home/examples/config \
+       --start \
+       --container-name motor-u0 \
+       --role union \
+       --instance-name u0 \
+       --pod-ip "<本机IP>" \
+       --nic-name "<本机网卡>" \
+       --coordinator-ip "<服务器1 IP>" \
+       --controller-ip "<服务器1 IP>" \
+       --kv-store-ip "<服务器1 IP>" \
+       --kv-conductor-ip "<KV Conductor所在服务器IP>"
+
+   服务器 2：
+     创建混部 u1容器 motor-u1
+     在容器内执行以下启动命令
+     python3 /home/examples/deployer/docker_deploy.py \
+       --config_dir /home/examples/config \
+       --start \
+       --container-name motor-u1 \
+       --role union \
+       --instance-name u1 \
+       --pod-ip "<本机IP>" \
+       --nic-name "<本机网卡>" \
+       --coordinator-ip "<服务器1 IP>" \
+       --controller-ip "<服务器1 IP>" \
+       --kv-store-ip "<服务器1 IP>" \
+       --kv-conductor-ip "<KV Conductor所在服务器IP>"
    ```
 
-   开启池化后，回显在服务器 1 增加容器名为`motor-kvs`的 kv_store 命令，管理面和混部命令增加`--kv-store-ip`。
+   `motor-kvc` 不要填写 `--instance-name`。开启 KV 亲和后，管理面、kv_store 和混部命令都要填写 `--kv-conductor-ip`，地址是实际创建 `motor-kvc` 的服务器。开启 Render 后，管理面要填写 `--render-ip`。管理面的 `--start` 和退出不会启动或停止这两个容器。
 
-2. 执行服务启动命令
+## 创建容器
 
-   进入回显中对应的容器，参照以下规则**修改上述启动指令**后执行。每个混部容器仅执行一次。
+   按照容器创建计划，在对应服务器上创建以下容器。容器名与回显中的名称一致。`examples/deployer/lib/constant.py`中的模板可供参考：
 
-   | 参数 | 说明 |
-   | :--- | :--- |
-   | --start | 在当前容器内拉起服务。 |
-   | --container-name | 当前容器名，与创建容器时的名称一致。 |
-   | --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`src`字段后面是`--pod-ip`值。 |
-   | --nic-name | 当前服务器对应的主网卡名。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`dev`字段后面是`--nic-name`值。 |
-   | --coordinator-ip/--controller-ip | 服务器 1 的 IP。管理面部署在服务器 1。 |
-   | --kv-store-ip | 服务器 1 的 IP。开启池化时 kv_store 也部署在服务器 1，与管理面同机。 |
+   | 容器类型 | 参考模板 | 配置说明 |
+   | --- | --- | --- |
+   | 管理面 | [ENTER_DOCKER_RUN_CTRL](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L611-L622) | 容器名`motor-ctrl`，只需创建一个。所在服务器以回显为准。 |
+   | 混部 | Atlas 800I A2：[ENTER_DOCKER_RUN_A2](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L448-L480)<br>Atlas 800I A3：[ENTER_DOCKER_RUN_A3](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L482-L522)<br>Ascend 950（8卡）：[ENTER_DOCKER_RUN_A5](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L524-L561)<br>Ascend 950（16卡）：[ENTER_DOCKER_RUN_A5_POD16](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L563-L609) | 1个实例只占1个容器时，容器名为`motor-u0`、`motor-u1`。1个实例拆成多个容器时，容器名为`motor-u0-0`、`motor-u0-1`。每台服务器仅创建1个容器。 |
+   | kv_store（可选） | [ENTER_DOCKER_RUN_KVS](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L624-L638) | 回显列出 `motor-kvs` 时创建，只需一个。所在服务器以回显为准。 |
+   | Render（可选） | [ENTER_DOCKER_RUN_CTRL](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L611-L622) | 回显列出 `motor-ctrl-vllm-render` 时创建，只需一个。所在服务器以回显为准。 |
+   | KV Conductor（可选） | [ENTER_DOCKER_RUN_CTRL](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L611-L622) | 回显列出 `motor-kvc` 时创建，只需一个。所在服务器以回显为准。 |
+
+   创建容器时，必须把服务启动脚本文件夹挂载进容器（例如：`-v /home/examples:/home/examples`），创建完成后进入容器：
+
+   ```bash
+   docker exec -it <容器名> bash
+   ```
+
+## 启动服务
+
+按照部署计划，进入对应容器执行启动命令，并按下表修改参数。每个混部容器仅执行一次。
+
+默认情况下，一台服务器仅部署一个混部推理容器，如需**一台服务器部署多个混部推理实例（仅用于小模型）**，请参考[同一容器部署多个推理实例](#同一容器部署多个推理实例)。
+
+| 参数 | 说明 |
+| :--- | :--- |
+| --start | 在当前容器内拉起服务。 |
+| --container-name | 当前容器名，与创建容器时的名称一致。 |
+| --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`src`字段后面是`--pod-ip`值。 |
+| --nic-name | 当前服务器对应的主网卡名。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`dev`字段后面是`--nic-name`值。 |
+| --coordinator-ip/--controller-ip | 管理面所在服务器的 IP。回显示例为服务器 1，按实际部署的机器修改。 |
+| --kv-store-ip | kv_store 所在服务器的 IP。回显示例为服务器 1，按实际部署的机器修改。 |
+| --kv-conductor-ip | KV Conductor 所在服务器的 IP。开启 KV 亲和后，管理面、kv_store 和混部容器必填，按实际创建 `motor-kvc` 的机器修改。 |
+| --render-ip | Render 所在服务器的 IP。开启 Render 后，管理面必填，按实际创建 Render 容器的机器修改。 |
+
+在对应容器的终端执行 `Ctrl+C` 即可停止该服务。
 
 ## 推理验证
 
@@ -189,32 +289,6 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 运行日志：examples/motor_workspace/motor-u0/u0/log/docker-union-u0-<时间戳>.log
 ```
 
-## 启用Render特性（可选）
-
-在 `/home/examples/config/user_config.json` 中增加以下配置：
-
-```json
-{
-  ...
-  "motor_coordinator_config": {
-    "render_config": {
-      "enable": true
-    }
-  },
-  ...
-}
-```
-
-在部署管理面的服务器上额外创建名为`motor-ctrl-vllm-render`的容器。该容器不挂载 NPU，挂载可参考管理面模板 [ENTER_DOCKER_RUN_CTRL](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/lib/constant.py#L611-L622)。管理面容器增加`-v /var/run/docker.sock:/var/run/docker.sock`。
-
-进入 Render 容器后执行：
-
-```bash
-python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config --start --role render
-```
-
-在管理面容器内执行`--start`时，会重启该 Render 容器。管理面进程退出时，会停止该 Render 容器。Render 退出后，Coordinator 继续运行。
-
 ## 调优指导
 
 ### 如何调整容器挂载
@@ -229,7 +303,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 1. 创建容器。
 
-   在宿主机执行一次。这个容器挂上两个实例要用的卡。管理面仍单独创建一个容器，按[启动服务](#启动服务)的回显执行。
+   在宿主机执行一次。这个容器挂上两个实例要用的卡。管理面仍单独创建一个容器，按[查看部署计划](#查看部署计划)的回显执行。
 
    ```bash
    python3 /home/examples/deployer/docker_deploy.py \

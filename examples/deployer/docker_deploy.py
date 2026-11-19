@@ -37,6 +37,11 @@ from lib.docker_commands import emit as emit_commands
 from lib.port_conflict import offer_engine_port_remap
 
 
+# Set on containers created by the host deploy path. In-container --start manages
+# Render and KV Conductor only when this variable is present.
+SIDECAR_MANAGE_ENV = "MOTOR_MANAGE_SIDECARS"
+
+
 def _write_file(path: str, content: str, executable: bool = False) -> None:
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(content)
@@ -286,6 +291,7 @@ def _prepare_and_render(args, deployer_dir: str):
             nic_name=getattr(args, "nic_name", None),
             kv_conductor_ip=getattr(args, "kv_conductor_ip", None),
             kv_conductor_enabled=params.kv_conductor_enabled,
+            infer_sidecar_ips=False,
         )
     except ValueError as exc:
         logger.error("%s", exc)
@@ -294,6 +300,7 @@ def _prepare_and_render(args, deployer_dir: str):
     engine_ports = D.engine_port_overrides_from_args(args)
     try:
         D.validate_engine_port_overrides(identity, engine_ports)
+        render_host = _require_render_ip(args, user_config, identity.role if identity else None)
     except ValueError as exc:
         logger.error("%s", exc)
         sys.exit(1)
@@ -317,6 +324,7 @@ def _prepare_and_render(args, deployer_dir: str):
             env_config_path,
             role=identity.role if identity else None,
             engine_ports=engine_ports,
+            render_host=render_host,
         )
     except ValueError as exc:
         logger.error("%s", exc)
@@ -665,27 +673,33 @@ def run(args, deployer_dir: str) -> int:
         return 1
     params, workspace, identity = _prepare_and_render(args, deployer_dir)
     _print_in_place_banner(workspace, identity, params)
-    if _restart_docker_kv_conductor_with_coordinator(args, deployer_dir) != 0:
-        return 1
-    restart_rc, since, render_name = _restart_docker_render_with_coordinator(args)
-    if restart_rc != 0:
-        return 1
+    manage_sidecars = _sidecar_management_enabled()
+    since = None
+    render_name = None
+    if manage_sidecars:
+        if _restart_docker_kv_conductor_with_coordinator(args, deployer_dir) != 0:
+            return 1
+        restart_rc, since, render_name = _restart_docker_render_with_coordinator(args)
+        if restart_rc != 0:
+            return 1
     follow = _open_render_log_follow(workspace, render_name, since) if render_name and since else None
 
     def on_stop() -> None:
-        stop_render = _docker_render_stop_hook(args)
-        if stop_render is not None:
-            stop_render()
+        if manage_sidecars:
+            stop_sidecars = _docker_render_stop_hook(args)
+            if stop_sidecars is not None:
+                stop_sidecars()
         if follow is not None:
             follow.stop()
 
     extra_lines: list[str] = []
     if follow is not None:
         extra_lines.append(f"Render 日志：{follow.log_path}")
-    kvc_line = _kv_conductor_log_line(args, deployer_dir)
-    if kvc_line:
-        extra_lines.append(kvc_line)
-        print(kvc_line, flush=True)
+    if manage_sidecars:
+        kvc_line = _kv_conductor_log_line(args, deployer_dir)
+        if kvc_line:
+            extra_lines.append(kvc_line)
+            print(kvc_line, flush=True)
     only_devices = (
         D.isolate_start_devices(
             identity.role if identity else None,
@@ -1002,6 +1016,75 @@ def insert_create_binds(template: str, host_paths: list[str]) -> str:
     return _insert_before_image(template, [f"  -v {shlex.quote(path)}:{shlex.quote(path)} \\\n" for path in host_paths])
 
 
+def insert_docker_env(template: str, name: str, value: str) -> str:
+    return _insert_before_image(template, [f"  -e {name}={shlex.quote(value)} \\\n"])
+
+
+def _host_deploy_manages_sidecars(role: str | None) -> bool:
+    """Host-created management / single-container processes own the sidecars."""
+    from lib.generator.render import role_needs_docker_render
+
+    return role_needs_docker_render(role) or D.role_needs_docker_kv_conductor(role)
+
+
+def _sidecar_management_enabled() -> bool:
+    return os.environ.get(SIDECAR_MANAGE_ENV) == "1"
+
+
+def _require_render_ip(args, user_config: dict, role: str | None) -> str | None:
+    """Management --start must be told where the user created Render."""
+    from lib.generator.render import is_render_enabled, role_needs_docker_render
+
+    render_ip = (getattr(args, "render_ip", None) or "").strip()
+    enabled = is_render_enabled(user_config)
+    if render_ip and not enabled:
+        raise ValueError("--render-ip was set but render_config.enable is false.")
+    needs = role_needs_docker_render(role)
+    if render_ip and not needs:
+        raise ValueError("--render-ip is only valid on the management role that calls Render.")
+    if enabled and needs and not render_ip:
+        raise ValueError(
+            "--render-ip is required when Render is enabled. "
+            "Container deploy does not assume where the user created the Render container."
+        )
+    return render_ip or None
+
+
+def _append_host_sidecar_ips(args, argv: list[str]) -> None:
+    """Host one-click already placed the sidecars. Write that decision into the inner --start."""
+    from lib.generator.render import is_render_enabled, role_needs_docker_render
+
+    user_config_path, _env_config_path = resolve_config_paths(
+        getattr(args, "config_dir", None),
+        getattr(args, "user_config_path", None),
+        getattr(args, "env_config_path", None),
+    )
+    user_config = read_json(user_config_path)
+    params = D.derive_params(user_config)
+    if params.kv_conductor_enabled and not (getattr(args, "kv_conductor_ip", None) or "").strip():
+        identity = D.resolve_runtime_identity(
+            user_config,
+            role=getattr(args, "role", None),
+            job_name=getattr(args, "job_name", None),
+            pod_ip=getattr(args, "pod_ip", None),
+            coordinator_ip=getattr(args, "coordinator_ip", None),
+            controller_ip=getattr(args, "controller_ip", None),
+            kv_store_ip=getattr(args, "kv_store_ip", None),
+            kv_store_enabled=params.kv_store_enabled,
+            nic_name=getattr(args, "nic_name", None),
+            kv_conductor_enabled=True,
+        )
+        if identity is not None and identity.role != D.ROLE_KV_CONDUCTOR and identity.kv_conductor_ip:
+            argv += ["--kv-conductor-ip", identity.kv_conductor_ip]
+    role = getattr(args, "role", None)
+    if (
+        is_render_enabled(user_config)
+        and role_needs_docker_render(role)
+        and not (getattr(args, "render_ip", None) or "").strip()
+    ):
+        argv += ["--render-ip", "127.0.0.1"]
+
+
 def build_in_place_inner_command(args, deployer_dir: str) -> str:
     script = os.path.join(os.path.abspath(deployer_dir), "docker_deploy.py")
     argv = ["python3", script, "--start"]
@@ -1031,10 +1114,12 @@ def build_in_place_inner_command(args, deployer_dir: str) -> str:
         ("--controller-ip", "controller_ip"),
         ("--kv-store-ip", "kv_store_ip"),
         ("--kv-conductor-ip", "kv_conductor_ip"),
+        ("--render-ip", "render_ip"),
     ):
         value = getattr(args, attr, None)
         if value:
             argv += [flag, str(value)]
+    _append_host_sidecar_ips(args, argv)
     for flag, attr in (
         ("--node-manager-port", "node_manager_port"),
         ("--data-parallel-rpc-port", "data_parallel_rpc_port"),
@@ -1360,6 +1445,8 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
             D.remove_docker_kv_conductor_sidecar()
         return 1
     command = attach_render_create_rollback(command, env["NAME"], kvc_name, render_name)
+    if _host_deploy_manages_sidecars(getattr(args, "role", None)):
+        command = insert_docker_env(command, SIDECAR_MANAGE_ENV, "1")
     print(command, end="", flush=True)
     merged = os.environ.copy()
     merged.update(env)
@@ -1466,8 +1553,10 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Print docker_deploy.py commands from user_config.json and exit. "
         "Does not create a container or start Motor. "
-        "One inference container is one server. Management, kv_store and kv_conductor share an inference server. "
-        "Pass --start to print in-container commands instead of host one-click commands.",
+        "One inference container is one server. Management, kv_store, Render and KV Conductor share server 1. "
+        "Pass --start to print the in-container plan: which containers to create on each server, "
+        "then the --start command to run inside each container. Render and KV Conductor are included when enabled. "
+        "Without --start, print host one-click commands. That management command launches the sidecars itself.",
     )
     parser.add_argument(
         "--start",
@@ -1541,9 +1630,18 @@ def parse_arguments() -> argparse.Namespace:
         "--kv-conductor-ip",
         type=str,
         default=None,
-        help="KV Conductor host IP. Optional: management defaults to --pod-ip, "
-        "other roles default to --coordinator-ip because conductor is co-located with Coordinator. "
+        help="KV Conductor host IP. Required on container --start when KV Conductor is enabled, "
+        "except --role kv_conductor (uses --pod-ip). Host one-click fills this itself. "
         "Error if conductor is disabled.",
+    )
+    parser.add_argument(
+        "--render-ip",
+        type=str,
+        default=None,
+        dest="render_ip",
+        help="Render host IP. Required on container --start of the management role when Render is enabled. "
+        "Host one-click uses 127.0.0.1 because it creates Render on the same machine. "
+        "Error if Render is disabled, or if set on a role that does not call Render.",
     )
     parser.add_argument(
         "--node-manager-port",

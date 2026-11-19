@@ -896,6 +896,7 @@ def resolve_runtime_identity(
     nic_name: str | None = None,
     kv_conductor_ip: str | None = None,
     kv_conductor_enabled: bool = False,
+    infer_sidecar_ips: bool = True,
 ) -> DockerRuntimeIdentity | None:
     if role is not None:
         role = normalize_docker_role(role)
@@ -966,12 +967,19 @@ def resolve_runtime_identity(
         raise ValueError("--kv-store-ip was set but KV Cache Store is disabled in user_config.")
 
     if kv_conductor_enabled:
-        if engine == ROLE_KV_CONDUCTOR or control in ("coordinator", ROLE_COORDINATOR_CONTROLLER):
+        if engine == ROLE_KV_CONDUCTOR:
             resolved_kvc = resolved_kvc or resolved_pod_ip
-        else:
-            resolved_kvc = resolved_kvc or resolved_coord
+        elif not resolved_kvc and infer_sidecar_ips and control in ("coordinator", ROLE_COORDINATOR_CONTROLLER):
+            resolved_kvc = resolved_pod_ip
+        elif not resolved_kvc and infer_sidecar_ips:
+            resolved_kvc = resolved_coord
             if not resolved_kvc:
                 raise ValueError("--kv-conductor-ip is required when it cannot be inferred from --coordinator-ip.")
+        elif not resolved_kvc:
+            raise ValueError(
+                "--kv-conductor-ip is required when KV Conductor is enabled. "
+                "Container deploy does not assume where the user created motor-kvc."
+            )
     elif resolved_kvc:
         raise ValueError("--kv-conductor-ip was set but kv_conductor_config.http_server_port is missing.")
 
@@ -1382,6 +1390,23 @@ def docker_controller_ports(user_config: dict) -> tuple[int, int]:
     )
 
 
+def apply_render_endpoint_host(user_config: dict, host: str) -> None:
+    """Point Coordinator at the Render address the user supplied with --render-ip."""
+    coordinator = user_config.get(C.MOTOR_COORDINATOR_CONFIG)
+    if not isinstance(coordinator, dict):
+        coordinator = {}
+        user_config[C.MOTOR_COORDINATOR_CONFIG] = coordinator
+    render = coordinator.get(C.RENDER_CONFIG)
+    if not isinstance(render, dict):
+        render = {}
+        coordinator[C.RENDER_CONFIG] = render
+    endpoint = render.get("endpoint")
+    if not isinstance(endpoint, dict):
+        endpoint = {}
+        render["endpoint"] = endpoint
+    endpoint["host"] = host
+
+
 def apply_docker_controller_port_defaults(user_config: dict) -> bool:
     """Write 2026/2027 into a config copy when the user left those keys unset."""
     section = user_config.get(C.MOTOR_CONTROLLER_CONFIG)
@@ -1413,6 +1438,7 @@ def prepare_configmap(
     *,
     role: str | None = None,
     engine_ports: EnginePortOverrides | None = None,
+    render_host: str | None = None,
 ) -> None:
     def apply_docker_overrides(dest_user_config) -> None:
         with dest_user_config.open(encoding="utf-8") as handle:
@@ -1420,6 +1446,9 @@ def prepare_configmap(
         if not isinstance(copied, dict):
             return
         changed = apply_docker_controller_port_defaults(copied)
+        if render_host:
+            apply_render_endpoint_host(copied, render_host)
+            changed = True
         if role and engine_ports and engine_ports.specified():
             apply_engine_port_overrides(copied, role, engine_ports)
             changed = True
