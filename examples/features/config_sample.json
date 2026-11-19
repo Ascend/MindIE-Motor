@@ -239,6 +239,10 @@
         "temporal_patch_size": 0
       }
     },
+    "count_tokens_config": {
+      "timeout_seconds": 30.0,
+      "max_inflight": 32
+    },
     "inference_workers_config": {
       "num_workers": 4,
       "worker_metaserver_base_port": 12000

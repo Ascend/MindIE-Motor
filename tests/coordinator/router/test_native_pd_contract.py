@@ -486,9 +486,10 @@ async def test_native_pd_client_uses_coordinator_inference_tls_config(monkeypatc
     endpoint = next(iter(next(iter(scheduler.p.endpoints.values())).values()))
     resource = ScheduledResource(instance=scheduler.p, endpoint=endpoint)
     fake_client = object()
-    pool = HTTPClientPool()
     get_client = AsyncMock(return_value=fake_client)
-    monkeypatch.setattr(pool, "get_client", get_client)
+    # Patch the class, not the singleton instance: undoing an instance-level setattr leaves the
+    # bound method in the singleton __dict__, shadowing class-level patches in later test files.
+    monkeypatch.setattr(HTTPClientPool, "get_client", get_client)
 
     async with router._client_for(resource) as client:
         assert client is fake_client
@@ -499,3 +500,4 @@ async def test_native_pd_client_uses_coordinator_inference_tls_config(monkeypatc
         tls_config=config.infer_tls_config,
         keepalive_expiry=config.timeout_config.engine_client_keepalive_expiry,
     )
+    assert "get_client" not in HTTPClientPool().__dict__

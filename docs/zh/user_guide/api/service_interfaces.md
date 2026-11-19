@@ -535,7 +535,7 @@ IP与端口请参见[业务接口的IP/端口与配置](./README.md#业务接口
 
 **接口功能**
 
-提供与 Anthropic `messages/count_tokens` 兼容的 Token 计数入口，用于预估输入消息的 Token 消耗。请求由 Coordinator 透明转发至 vLLM 后端引擎。仅 vLLM 后端模式可用。
+提供与 Anthropic `messages/count_tokens` 兼容的 Token 计数入口，用于预估输入消息的 Token 消耗。Coordinator 将原始请求直接发给提供该模型的 vLLM 原生计数接口。PD 分离部署只需健康的 P，Union 部署使用 U。计数不创建推理负载，也不依赖混部回退开关。无合适端点返回 503，启用数据混淆时返回 501。上游成功响应须未压缩且不超过 64 KiB，否则返回 502。部署镜像须支持该原生接口。详见[Count Tokens 实现与验收](../../design/anthropic_count_tokens.md)。
 
 **接口格式**
 

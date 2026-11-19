@@ -110,6 +110,30 @@ def is_retryable_upstream_error(error: BaseException) -> bool:
     )
 
 
+async def read_bounded_response_body(response: httpx.Response, limit: int) -> tuple[bytes, bool]:
+    """Read a streamed response body up to the given decoded-byte limit.
+
+    Return the bytes read and whether the response exceeded the limit.
+    """
+    limit = max(limit, 0)
+    probe_limit = limit + 1
+    body = bytearray()
+    chunk_size = min(8192, probe_limit)
+    if isinstance(response, httpx.Response):
+        chunks = response.aiter_bytes(chunk_size=chunk_size)
+    else:
+        # Compatibility for lightweight response doubles used by router tests.
+        chunks = response.aiter_bytes()
+    async for chunk in chunks:
+        if not chunk:
+            continue
+        remaining = probe_limit - len(body)
+        body.extend(chunk[:remaining])
+        if len(body) >= probe_limit:
+            return bytes(body[:limit]), True
+    return bytes(body), False
+
+
 def render_upstream_error(error: UpstreamHTTPError) -> Response:
     # Forward the engine's error body verbatim only when it is complete. A truncated body (engine
     # error exceeded upstream_error_body_max_bytes) may be cut mid-JSON, so forwarding it under the

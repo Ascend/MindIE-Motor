@@ -376,6 +376,18 @@ SGLang stays on native bootstrap (`CoordinationMode.BOOTSTRAP`); that path is un
 
 P99 acceptance greps `stage=dispatch_to_p` and takes `elapsed_ms` on successful-to-P requests; do not use `stage=select_and_allocate`.
 
+### Native Anthropic Count Tokens
+
+`POST /v1/messages/count_tokens` calls the worker-local `api_server/count_tokens.py` proxy directly.
+It uses the registered vLLM model's P pool, or U if no matching P pool exists, and rotates over normal
+non-headless endpoints of active instances that are neither circuit-broken nor paused for recovery.
+It performs no inference allocation, Render, or handoff. Missing instance or circuit-breaker views return 503.
+Token or image obfuscation rejects plaintext counting. The per-worker concurrency and request deadline
+come from `count_tokens_config`. Deadline cancellation lets HTTPcore finish shielded connection cleanup.
+The proxy requires identity encoding and caps successful responses at 64 KiB. The request uses the shared W3C
+trace propagator.
+Route regressions use `tests/coordinator/api_server/test_count_tokens.py`.
+
 ### Native Responses Create Route
 
 `POST /v1/responses` forwards the native Responses request body and path to the

@@ -97,6 +97,7 @@ nav:
           - 精度检测: design/fault_tolerance/precision_detection.md
       - KV Conductor: design/kv_conductor.md
       - 候选选点插件: design/scheduler_policy_plugin.md
+      - Anthropic Count Tokens 实现与验收: design/anthropic_count_tokens.md
       - Coordinator 调度热路径 Rust 重构: design/coordinator_scheduler_rust.md
       - 扩缩容: design/scaling.md
       - CRD 部署设计: design/crd_deployment.md

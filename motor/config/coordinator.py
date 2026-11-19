@@ -702,6 +702,14 @@ class TimeoutConfig:
 
 
 @dataclass
+class CountTokensConfig:
+    """Limits for native tokenizer requests in one inference worker."""
+
+    timeout_seconds: float = 30.0
+    max_inflight: int = 32
+
+
+@dataclass
 class APIKeyConfig:
     enable_api_key: bool = False
     valid_keys: set[str] = field(default_factory=set)
@@ -1018,6 +1026,7 @@ class CoordinatorConfig:
     mgmt_tls_config: TLSConfig = field(default_factory=TLSConfig)
     etcd_tls_config: TLSConfig = field(default_factory=TLSConfig)
     timeout_config: TimeoutConfig = field(default_factory=TimeoutConfig)
+    count_tokens_config: CountTokensConfig = field(default_factory=CountTokensConfig, kw_only=True)
     api_key_config: APIKeyConfig = field(default_factory=APIKeyConfig)
     mgmt_api_key_config: MgmtAPIKeyConfig = field(default_factory=MgmtAPIKeyConfig)
     rate_limit_config: RateLimitConfig = field(default_factory=RateLimitConfig)
@@ -1165,6 +1174,7 @@ class CoordinatorConfig:
                 ("scheduler_config", config.scheduler_config, scheduler_handlers),
                 ("inference_workers_config", config.inference_workers_config, None),
                 ("timeout_config", config.timeout_config, None),
+                ("count_tokens_config", config.count_tokens_config, None),
                 ("api_key_config", config.api_key_config, None),
                 ("mgmt_api_key_config", config.mgmt_api_key_config, None),
                 ("rate_limit_config", config.rate_limit_config, None),
@@ -1269,6 +1279,14 @@ class CoordinatorConfig:
             self._errors.append(f"log_level must be one of: {', '.join(valid_log_levels)}")
 
         self._validate_positive_number(self.logging_config.log_max_line_length, "log_max_line_length")
+
+        timeout = self.count_tokens_config.timeout_seconds
+        self._validate_positive_number(timeout, "count_tokens_config.timeout_seconds")
+        if isinstance(timeout, float) and not math.isfinite(timeout):
+            self._errors.append("count_tokens_config.timeout_seconds must be finite")
+        max_inflight = self.count_tokens_config.max_inflight
+        if isinstance(max_inflight, bool) or not isinstance(max_inflight, int) or max_inflight <= 0:
+            self._errors.append("count_tokens_config.max_inflight must be a positive integer")
 
         # Validate timeout configuration
         self._validate_positive_number(self.timeout_config.request_timeout, "request_timeout")

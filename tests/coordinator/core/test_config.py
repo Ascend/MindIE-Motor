@@ -39,6 +39,33 @@ def test_standalone_coordinator_config_needs_no_engine_or_controller_sections(tm
     assert config.get_aigw_models()["id"] == "test-model"
 
 
+def test_native_count_limits_load_from_user_config(tmp_path):
+    path = tmp_path / "user_config.json"
+    limits = {"max_inflight": 3, "timeout_seconds": 1.5}
+    path.write_text(json.dumps({"motor_coordinator_config": {"count_tokens_config": limits}}), encoding="utf-8")
+    config = CoordinatorConfig.from_json(str(path))
+    assert config.count_tokens_config.max_inflight == 3
+    assert config.count_tokens_config.timeout_seconds == 1.5
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("max_inflight", 0),
+        ("max_inflight", True),
+        ("max_inflight", 1.5),
+        ("timeout_seconds", 0),
+        ("timeout_seconds", float("nan")),
+        ("timeout_seconds", float("inf")),
+    ],
+)
+def test_reject_invalid_native_count_limits(key, value):
+    config = CoordinatorConfig()
+    setattr(config.count_tokens_config, key, value)
+    with pytest.raises(ValueError, match=f"count_tokens_config[.]{key}"):
+        config.validate_config()
+
+
 def test_controller_integration_enabled_is_ignored_when_present(tmp_path):
     """Legacy standalone configs may still carry the removed key; it is ignored."""
     config_path = tmp_path / "legacy-standalone.json"

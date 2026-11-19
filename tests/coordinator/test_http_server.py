@@ -3018,19 +3018,6 @@ class TestAnthropicEndpoints:
         )
         assert response.status_code == 200
 
-    # 4.5 Integration test for count_tokens
-    def test_anthropic_count_tokens(self):
-        """Count tokens request should succeed."""
-        response = self.inference_client.post(
-            "/v1/messages/count_tokens",
-            json={
-                "model": "claude-3",
-                "messages": [{"role": "user", "content": "Hello"}],
-            },
-            headers=self.auth_headers,
-        )
-        assert response.status_code == 200
-
     # 4.6 Error passthrough
     def test_anthropic_messages_missing_required_field(self):
         """Missing required field should return 400."""
@@ -3079,19 +3066,6 @@ class TestAnthropicEndpoints:
             headers=self.auth_headers,
         )
         assert response.status_code == 400
-
-    def test_anthropic_count_tokens_with_max_tokens_ok(self):
-        """Count tokens with max_tokens (extra field) should still succeed."""
-        response = self.inference_client.post(
-            "/v1/messages/count_tokens",
-            json={
-                "model": "claude-3",
-                "messages": [{"role": "user", "content": "Hello"}],
-                "max_tokens": 100,  # extra, not validated against
-            },
-            headers=self.auth_headers,
-        )
-        assert response.status_code == 200
 
     # 4.7 Regression test
     def test_openai_endpoints_still_work(self):

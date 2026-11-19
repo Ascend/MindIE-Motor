@@ -87,3 +87,5 @@
 | 2026-10-12 | deployer | vLLM 可选服务名被 Render 强制要求 | [vllm-service-name-fallback.md](deployer/vllm-service-name-fallback.md) | vLLM, served_model_name, Render, resolver, model fallback |
 | 2026-10-12 | deployer | 启动脚本强制预加载 jemalloc 导致自定义算子不兼容 | [forced-jemalloc-preload.md](deployer/forced-jemalloc-preload.md) | deployer, jemalloc, LD_PRELOAD, CANN, tiling |
 | 2026-10-16 | coordinator | 实例刷新遇到非法 role 时部分实例已注册 | [refresh-role-validation-partial-apply.md](coordinator/refresh-role-validation-partial-apply.md) | /instances/refresh, role validation, PDRole, partial apply, atomicity, HTTP-400, add/set/resume |
+| 2026-11-04 | coordinator | Count Tokens 被误送进 PD Handoff | [anthropic-count-tokens-handoff.md](coordinator/anthropic-count-tokens-handoff.md) | count_tokens, KV handoff, recovery_paused, deadline, HTTPX |
+| 2026-11-14 | coordinator | 单例实例级 monkeypatch 残留遮蔽类级 patch 致跨文件闪挂 | [pool-singleton-monkeypatch-residue.md](coordinator/pool-singleton-monkeypatch-residue.md) | HTTPClientPool, monkeypatch, singleton 残留, 测试隔离, xdist |

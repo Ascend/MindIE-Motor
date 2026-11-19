@@ -56,7 +56,7 @@ from motor.common.resources.instance import Instance
 from motor.common.resources.endpoint import Endpoint, Workload
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.router.workload import WorkloadActionHandler
-from motor.coordinator.router.upstream_error import UpstreamHTTPError
+from motor.coordinator.router.upstream_error import UpstreamHTTPError, read_bounded_response_body
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.scheduling import InstanceReadiness
 
@@ -591,7 +591,9 @@ class BaseRouter(ABC):
                     api,
                 )
             if not response.is_success:
-                error_body, body_truncated = await self._read_bounded_error_body(response)
+                error_body, body_truncated = await read_bounded_response_body(
+                    response, self.config.exception_config.upstream_error_body_max_bytes
+                )
                 upstream_error = UpstreamHTTPError.from_response(
                     response,
                     body=error_body,
@@ -678,7 +680,9 @@ class BaseRouter(ABC):
         ) as (response, streamed):
             if not response.is_success:
                 if streamed:
-                    error_body, body_truncated = await self._read_bounded_error_body(response)
+                    error_body, body_truncated = await read_bounded_response_body(
+                        response, self.config.exception_config.upstream_error_body_max_bytes
+                    )
                 else:
                     # Compatibility for lightweight internal/test clients that only
                     # implement post(). Production httpx clients use the bounded path.
@@ -740,30 +744,6 @@ class BaseRouter(ABC):
             yield response, False
         finally:
             await response.aclose()
-
-    async def _read_bounded_error_body(self, response: httpx.Response) -> tuple[bytes, bool]:
-        """Read at most ``upstream_error_body_max_bytes`` of a streamed error body.
-
-        Returns ``(body, truncated)``; ``truncated`` is True when the engine's error body
-        exceeded the cap, so the caller can avoid forwarding a body cut mid-payload.
-        """
-        limit = max(self.config.exception_config.upstream_error_body_max_bytes, 0)
-        probe_limit = limit + 1
-        body = bytearray()
-        chunk_size = min(8192, probe_limit)
-        if isinstance(response, httpx.Response):
-            chunks = response.aiter_bytes(chunk_size=chunk_size)
-        else:
-            # Compatibility for lightweight response doubles used by router tests.
-            chunks = response.aiter_bytes()
-        async for chunk in chunks:
-            if not chunk:
-                continue
-            remaining = probe_limit - len(body)
-            body.extend(chunk[:remaining])
-            if len(body) >= probe_limit:
-                return bytes(body[:limit]), True
-        return bytes(body), False
 
     def _infer_base_url_for_resource(self, resource: ScheduledResource) -> str:
         scheme = "https" if self.config.infer_tls_config.enable_tls else "http"

@@ -39,6 +39,7 @@ UPDATE_CONFIG_WHITELIST = {
         "logging_config": [
             "log_level",
         ],
+        "count_tokens_config": ["timeout_seconds", "max_inflight"],
         "exception_config": [
             "max_retry",
             "retry_delay",

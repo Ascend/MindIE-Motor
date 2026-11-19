@@ -21,7 +21,10 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any
 
+from anyio import fail_after
+from anyio.lowlevel import checkpoint_if_cancelled
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import Response
 from pydantic import TypeAdapter, ValidationError
 
 from motor.common.http.http_client import HTTPClientPool
@@ -31,6 +34,7 @@ from motor.common.resources.instance import PDRole
 from motor.config.coordinator import CoordinatorConfig, RateLimitConfig
 from motor.coordinator.api_server.app_builder import AppBuilder
 from motor.coordinator.api_server.base_server import BaseCoordinatorServer
+from motor.coordinator.api_server.count_tokens import COUNT_TOKENS_PATH, CountTokensProxy
 from motor.coordinator.domain.agent_hint import (
     AgentStatusHint,
     agent_hint_implies_manage_request,
@@ -54,6 +58,7 @@ from motor.coordinator.render.image_obfuscation_service import (
     ImageObfuscationService,
     resolve_image_obfuscation_config,
 )
+from motor.coordinator.render.obfuscation_library import is_obfuscation_enabled
 from motor.coordinator.render.token_obfuscation_service import (
     TokenObfuscationService,
     resolve_token_obfuscation_config,
@@ -329,6 +334,7 @@ class InferenceServer(BaseCoordinatorServer):
     ):
         super().__init__(config)
         self._request_manager = request_manager
+        self._count_tokens_proxy = CountTokensProxy()
         self._api_key_config = self.coordinator_config.api_key_config
         self._infer_ssl_config = self.coordinator_config.infer_tls_config
         self._log_configuration()
@@ -394,8 +400,6 @@ class InferenceServer(BaseCoordinatorServer):
 
         @app.get("/metrics")
         async def policy_metrics():
-            from fastapi.responses import Response
-
             client = self._get_scheduler_client()
             return Response(client.policy_metrics_text() if client else "", media_type="text/plain; version=0.0.4")
 
@@ -1014,26 +1018,22 @@ class InferenceServer(BaseCoordinatorServer):
             request_manager: RequestManager = Depends(get_request_manager),
         ):
             self.verify_api_key(request)
-            return await self._handle_anthropic_request(
-                request,
-                RequestType.ANTHROPIC,
-                request_manager,
-                require_max_tokens=True,
-            )
+            return await self._handle_anthropic_request(request, request_manager)
 
-        @self._inference_app.post("/v1/messages/count_tokens")
-        @self.timeout_handler()
-        async def anthropic_count_tokens(
-            request: Request,
-            request_manager: RequestManager = Depends(get_request_manager),
-        ):
+        @self._inference_app.post(COUNT_TOKENS_PATH)
+        async def anthropic_count_tokens(request: Request) -> Response:
             self.verify_api_key(request)
-            return await self._handle_anthropic_request(
-                request,
-                RequestType.ANTHROPIC,
-                request_manager,
-                require_max_tokens=False,
-            )
+            timeout = self.coordinator_config.count_tokens_config.timeout_seconds
+            try:
+                # HTTPcore shields connection cleanup from deadline cancellation in this scope.
+                with fail_after(timeout):
+                    response = await self._handle_anthropic_count_tokens(request)
+                    # A deadline that elapsed during shielded cleanup still returns 504.
+                    await checkpoint_if_cancelled()
+                    return response
+            except TimeoutError as exc:
+                logger.warning("Count Tokens request exceeded its %s second deadline", timeout)
+                raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, "Token count request timed out") from exc
 
         if self.coordinator_config.agent_status_config.enabled:
             self._register_agent_status_routes()
@@ -1064,18 +1064,35 @@ class InferenceServer(BaseCoordinatorServer):
         }
         return [enriched]
 
+    async def _handle_anthropic_count_tokens(self, request: Request) -> Response:
+        body = await request.body()
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (ValueError, RecursionError) as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid JSON request") from exc
+        if not isinstance(data, dict) or not isinstance(data.get("model"), str):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "A JSON object with a model name is required")
+        _validate_anthropic_request(data, require_max_tokens=False)
+        state = request.app.state
+        if is_obfuscation_enabled(
+            getattr(state, "token_obfuscation_service", None), getattr(state, "image_obfuscation_service", None)
+        ):
+            raise HTTPException(
+                status.HTTP_501_NOT_IMPLEMENTED, "Obfuscation does not support Anthropic token counting"
+            )
+        return await self._count_tokens_proxy.forward(
+            self._scheduler_connection.get_client(), self.coordinator_config, data["model"], body, request.headers
+        )
+
     async def _handle_anthropic_request(
         self,
         request: Request,
-        request_type: RequestType,
         request_manager: RequestManager,
-        *,
-        require_max_tokens: bool = True,
     ):
         try:
             body = await request.body()
             body_json = json.loads(body.decode("utf-8"))
-            _validate_anthropic_request(body_json, require_max_tokens=require_max_tokens)
+            _validate_anthropic_request(body_json)
             if not await self._is_available():
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
