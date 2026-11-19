@@ -604,6 +604,20 @@ class PrometheusMetricsConfig:
 
 
 @dataclass
+class ProfilingConfig:
+    """Coordinator-unified profiling trigger (vLLM-Ascend PyTorch Profiler).
+
+    The Coordinator exposes ``POST /profiling/start`` and ``POST /profiling/stop``
+    on the Observability port. Requests run serially with up to eight engine calls per request.
+    ``enable=False`` keeps the profiling API closed (HTTP 404).
+    """
+
+    enable: bool = False
+    request_timeout_seconds: float = 10.0
+    max_targets: int = 1024
+
+
+@dataclass
 class RescheduleConfig:
     # Cache token IDs so a streaming request can be rescheduled after a transient transport failure.
     # Engine-side recompute is independent of this switch.
@@ -996,6 +1010,7 @@ class CoordinatorConfig:
 
     logging_config: LoggingConfig = field(default_factory=LoggingConfig)
     prometheus_metrics_config: PrometheusMetricsConfig = field(default_factory=PrometheusMetricsConfig)
+    profiling_config: ProfilingConfig = field(default_factory=ProfilingConfig)
     exception_config: ExceptionConfig = field(default_factory=ExceptionConfig)
     scheduler_config: SchedulerConfig = field(default_factory=SchedulerConfig)
     inference_workers_config: InferenceWorkersConfig = field(default_factory=InferenceWorkersConfig)
@@ -1145,6 +1160,7 @@ class CoordinatorConfig:
             config_mappings = [
                 ("logging_config", config.logging_config, None),
                 ("prometheus_metrics_config", config.prometheus_metrics_config, None),
+                ("profiling_config", config.profiling_config, None),
                 ("exception_config", config.exception_config, exception_handlers),
                 ("scheduler_config", config.scheduler_config, scheduler_handlers),
                 ("inference_workers_config", config.inference_workers_config, None),
@@ -1570,6 +1586,19 @@ class CoordinatorConfig:
         # Validate Prometheus metrics configuration
         self._validate_positive_number(self.prometheus_metrics_config.reuse_time, "reuse_time")
         self._validate_capacity_planning()
+
+        # Validate unified profiling configuration
+        if not isinstance(self.profiling_config.enable, bool):
+            self._errors.append("profiling_config.enable must be a bool")
+        self._validate_positive_number(
+            self.profiling_config.request_timeout_seconds,
+            "profiling_config.request_timeout_seconds",
+        )
+        max_targets = self.profiling_config.max_targets
+        if isinstance(max_targets, bool) or not isinstance(max_targets, int):
+            self._errors.append("profiling_config.max_targets must be an integer")
+        elif max_targets < 1:
+            self._errors.append("profiling_config.max_targets must be greater than 0")
 
         # Validate standby configuration
         self._validate_positive_number(

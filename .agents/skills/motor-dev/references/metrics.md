@@ -122,6 +122,10 @@ Metrics endpoint:
 | `dp` | none (raw per-endpoint) | `dp_rank`, `role`, `instance_id`, `pod_ip` | Per-endpoint debugging |
 | `node` | NODE | `pod_ip`, `role` | Per-node monitoring |
 
+The same dimensions are the profiling target/result contract: the Coordinator profiling API
+selects engines by `service` (model_name), `instance_id`, `role`, `dp_rank` and returns those
+labels per target — see `references/coordinator.md` "Unified Profiling Trigger".
+
 ## vLLM Metrics: Critical Knowledge
 
 **All vLLM Counter metrics are cumulative since engine process start.** They never reset between `/metrics` scrapes. This follows standard Prometheus Counter semantics.

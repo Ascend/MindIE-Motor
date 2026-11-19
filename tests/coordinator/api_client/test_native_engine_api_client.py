@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from motor.common.http.http_client import HttpStatusError
 from motor.config.tls_config import TLSConfig
 from motor.coordinator.api_client.native_engine_api_client import NativeEngineApiClient
 
@@ -69,3 +70,55 @@ def test_query_metrics_non_success_status_returns_empty_text(mock_client):
     mock_client.return_value.__enter__.return_value.do_get.return_value = response
 
     assert NativeEngineApiClient.query_metrics("10.0.0.8:8000", None) == ""
+
+
+@patch("motor.coordinator.api_client.native_engine_api_client.SafeHTTPSClient")
+def test_start_profile_posts_dimensioned_body_with_inference_tls(mock_client):
+    tls_config = TLSConfig(enable_tls=True)
+    response = MagicMock(status_code=200)
+    mock_client.return_value.__enter__.return_value.do_post.return_value = response
+
+    NativeEngineApiClient.start_profile(
+        "10.0.0.8:8000",
+        tls_config,
+        timeout=7.5,
+        body={"profile_prefix": "motor_profile_svc-x_ins-0_role-prefill_dp-0"},
+    )
+
+    mock_client.assert_called_once_with(address="10.0.0.8:8000", tls_config=tls_config, timeout=7.5)
+    mock_client.return_value.__enter__.return_value.do_post.assert_called_once_with(
+        "/start_profile",
+        data={"profile_prefix": "motor_profile_svc-x_ins-0_role-prefill_dp-0"},
+    )
+
+
+@patch("motor.coordinator.api_client.native_engine_api_client.SafeHTTPSClient")
+def test_stop_profile_posts_without_a_body(mock_client):
+    response = MagicMock(status_code=200)
+    mock_client.return_value.__enter__.return_value.do_post.return_value = response
+
+    NativeEngineApiClient.stop_profile("10.0.0.8:8000", None)
+
+    mock_client.return_value.__enter__.return_value.do_post.assert_called_once_with("/stop_profile", data=None)
+
+
+@patch("motor.coordinator.api_client.native_engine_api_client.SafeHTTPSClient")
+def test_profile_control_rejects_non_success_status(mock_client):
+    response = MagicMock(status_code=503)
+    mock_client.return_value.__enter__.return_value.do_post.return_value = response
+
+    with pytest.raises(HttpStatusError) as error:
+        NativeEngineApiClient.start_profile("10.0.0.8:8000", None)
+
+    assert error.value.status_code == 503
+
+
+@patch("motor.coordinator.api_client.native_engine_api_client.SafeHTTPSClient")
+def test_profile_control_reports_http_404(mock_client):
+    response = MagicMock(status_code=404)
+    mock_client.return_value.__enter__.return_value.do_post.return_value = response
+
+    with pytest.raises(HttpStatusError) as error:
+        NativeEngineApiClient.stop_profile("10.0.0.8:8000", None)
+
+    assert error.value.status_code == 404

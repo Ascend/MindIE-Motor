@@ -1,6 +1,6 @@
 # 接口说明
 
-MindIE Motor提供推理[业务接口](#业务接口)、[管理接口](#管理接口)、[指标接口](#指标接口)和[观测接口](#观测接口)。
+MindIE Motor提供推理[业务接口](#业务接口)、[管理接口](#管理接口)、[指标接口](#指标接口)、[性能采集接口](#性能采集接口)和[观测接口](#观测接口)。
 
 ## 业务接口
 
@@ -100,6 +100,27 @@ MindIE Motor 的监控指标由 Coordinator 统一汇聚、聚合，通过 Coord
 >[!NOTE] 说明
 >指标接口端口（`coordinator_obs_port`，默认`1027`）与Controller观测接口端口（`observability_api_port`，默认`1027`）默认值相同，但属于不同组件、不同服务：指标接口位于`Coordinator`（nodePort `31017`），观测接口位于`Controller`（nodePort `31027`），使用时注意区分。
 
+## 性能采集接口
+
+Profiling（性能采集）由 Coordinator 统一触发，支持按服务、实例、实例内 DP 及 P/D 角色选择采集目标，采集配置及结果使用与指标一致的维度标识：
+
+- [启动采集接口](./profiling_interface.md#post-profilingstart)：`POST /profiling/start`
+- [停止采集接口](./profiling_interface.md#post-profilingstop)：`POST /profiling/stop`
+
+>[!NOTE] 说明
+>
+> - Profiling 接口位于 Coordinator Observability 端口（`coordinator_obs_port`，默认 `1027`；K8s nodePort 默认 `31017`），默认关闭，需配置 `motor_coordinator_config.profiling_config.enable=true` 后生效。
+> - 引擎需在 `engine_config` 中配置 `profiler-config`（vLLM Ascend PyTorch Profiler）。引擎调用失败时，该目标返回 `failed`，原因见 `detail`。
+> - 采集结果文件由各引擎写入自身 `profiler-config.torch_profiler_dir`，接口返回逐目标的 `service` / `instance_id` / `role` / `dp_rank` 与 `profile_prefix` 用于结果归属。
+
+### 性能采集接口的IP/端口与配置
+
+**IP**：同[指标接口的IP](#指标接口的ip端口与配置)。
+
+**端口**：使用 Coordinator Observability 端口，即 `coordinator_obs_port`（默认 `1027`）或 K8s 中 `mindie-motor-coordinator-obs` 的 `nodePort`（默认 `31017`）。
+
+**TLS 与鉴权**：TLS 由 `mgmt_tls_config.enable_tls` 控制；开启 `mgmt_api_key_config.enable_api_key` 时需携带 `X-Motor-Management-Key`。
+
 ## 观测接口
 
 Controller 观测接口提供模型服务清单与告警等运维观测数据（**不含指标**，指标请使用[指标接口](#指标接口)）：
@@ -134,7 +155,7 @@ Controller 观测接口提供模型服务清单与告警等运维观测数据（
 ## 安全、认证与限流
 
 - 安全协议：`infer_tls_config.enable_tls` / `mgmt_tls_config.enable_tls` 为 `true` 时，推理/管理接口端口使用 `https`。
-- 管理面认证：`mgmt_api_key_config.enable_api_key=true` 时，实例查询、实例刷新和精度告警状态清理接口必须携带 `X-Motor-Management-Key`；探针接口免鉴权。密钥由 `api_key_file` 指定的文件提供。
+- 管理面认证：`mgmt_api_key_config.enable_api_key=true` 时，实例查询、实例刷新、精度告警状态清理和性能采集接口必须携带 `X-Motor-Management-Key`；探针接口免鉴权。密钥由 `api_key_file` 指定的文件提供。
 - 请求头：
   - 必选：`Content-Type: application/json`
   - 可选：API Key

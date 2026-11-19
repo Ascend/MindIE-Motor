@@ -20,11 +20,12 @@ import json
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import TypeVar
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from motor.common.logger import get_logger
 from motor.common.http.cert_util import CertUtil
@@ -32,11 +33,17 @@ from motor.common.utils.net import format_address
 from motor.config.coordinator import CoordinatorConfig, MGMT_API_KEY_HEADER
 from motor.coordinator.api_server.base_server import BaseCoordinatorServer
 from motor.coordinator.api_server.app_builder import AppBuilder
+from motor.coordinator.domain.probe import is_master_from_role_shm
 from motor.coordinator.metrics.metrics_collector import MetricsCollector, parse_metric_text
 from motor.coordinator.metrics.runtime_guard_pipeline import RuntimeGuardPipeline
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.fault_tolerance.probe.router_probe import InternalRouterProbe
 from motor.coordinator.domain.agent_hint import AgentStatusHint
+from motor.coordinator.profiling.models import (
+    ProfilingStartRequest,
+    ProfilingTargetSelector,
+)
+from motor.coordinator.profiling.service import ProfilingError, ProfilingService
 from motor.coordinator.scheduler.runtime.agent_hint_lifecycle import CentralAgentLifecycle
 from motor.coordinator.scheduler.runtime.agent_hint_metrics import (
     KvcMetricsShmReader,
@@ -51,6 +58,10 @@ from motor.coordinator.scheduler.runtime.scheduler_metrics import (
 from motor.common.resources.instance import Instance
 
 logger = get_logger(__name__)
+
+_PROFILING_MAX_BODY_BYTES = 1024 * 1024
+_PROFILING_DETAIL_LIMIT = 512
+_ProfilingModel = TypeVar("_ProfilingModel", bound=BaseModel)
 
 
 class _SchedulerInstanceProvider:
@@ -95,6 +106,11 @@ class ObservabilityServer(BaseCoordinatorServer):
         # client subscribes to the scheduler's instance-change pub and keeps a live view.
         self._scheduler_connection = SchedulerConnectionManager.from_config(config)
         self._instance_provider = _SchedulerInstanceProvider(self._scheduler_connection)
+        self._profiling_service = ProfilingService(
+            config=config.profiling_config,
+            tls_config=config.infer_tls_config,
+            instances_provider=self._get_profiling_instances,
+        )
         self._runtime_guard_request_manager = RequestManager(config)
         status_cfg = config.agent_status_config
         self._central_lifecycle = (
@@ -252,6 +268,68 @@ class ObservabilityServer(BaseCoordinatorServer):
             return None
         return client.kv_usage_shm_name
 
+    async def _get_profiling_instances(self) -> dict[int, Instance]:
+        """Return the live available-instance view used to resolve profiling targets.
+
+        The Obs process has no local InstanceManager, so it reuses the scheduler
+        client cache — the same source MetricsCollector scrapes.
+        """
+        available, _ = await self._instance_provider.get_all_instances()
+        return available
+
+    def _verify_profiling_access(self, request: Request) -> None:
+        """Gate the profiling API behind its config switch, master role and management key."""
+        if not self.coordinator_config.profiling_config.enable:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "Profiling API is not enabled. Set "
+                    "motor_coordinator_config.profiling_config.enable=true to enable it."
+                ),
+            )
+        if self.coordinator_config.standby_config.enable_master_standby and not is_master_from_role_shm():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Coordinator is not master; trigger profiling on the master Coordinator",
+            )
+        self._verify_mgmt_api_key(request)
+
+    async def _parse_profiling_request(self, request: Request, model_class: type[_ProfilingModel]) -> _ProfilingModel:
+        """Parse and validate one profiling request body."""
+        raw_body = bytearray()
+        async for chunk in request.stream():
+            if len(raw_body) + len(chunk) > _PROFILING_MAX_BODY_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Request body exceeds {_PROFILING_MAX_BODY_BYTES} bytes",
+                )
+            raw_body.extend(chunk)
+        if not raw_body:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Request body cannot be empty",
+            )
+        try:
+            body = json.loads(raw_body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid JSON format: {str(e)}",
+            ) from e
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Request body must be a JSON object",
+            )
+        try:
+            return model_class.model_validate(body)
+        except ValidationError as e:
+            detail = f"Invalid profiling request: {e}"
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=detail[:_PROFILING_DETAIL_LIMIT],
+            ) from e
+
     def _register_routes(self):
         @self.observability_app.get("/instances")
         async def list_instances(request: Request):
@@ -295,6 +373,26 @@ class ObservabilityServer(BaseCoordinatorServer):
         @self.observability_app.get("/health")
         async def health():
             return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+        @self.observability_app.post("/profiling/start")
+        async def start_profiling(request: Request):
+            """Start profiling on the selected service/instance/DP/role targets."""
+            self._verify_profiling_access(request)
+            payload = await self._parse_profiling_request(request, ProfilingStartRequest)
+            try:
+                return await self._profiling_service.start(payload)
+            except ProfilingError as e:
+                raise HTTPException(status_code=e.status_code, detail=e.message) from e
+
+        @self.observability_app.post("/profiling/stop")
+        async def stop_profiling(request: Request):
+            """Stop profiling on the selected live targets."""
+            self._verify_profiling_access(request)
+            payload = await self._parse_profiling_request(request, ProfilingTargetSelector)
+            try:
+                return await self._profiling_service.stop(payload)
+            except ProfilingError as e:
+                raise HTTPException(status_code=e.status_code, detail=e.message) from e
 
         if self._central_lifecycle is not None:
 
@@ -447,6 +545,7 @@ class ObservabilityServer(BaseCoordinatorServer):
         new_mgmt_api_key = new_mgmt_api_key_config.load_api_key() if new_mgmt_api_key_config.enable_api_key else ""
         self._mgmt_api_key_config = new_mgmt_api_key_config
         self._mgmt_api_key = new_mgmt_api_key
+        self._profiling_service.update_config(new_config.profiling_config, new_config.infer_tls_config)
         if self._central_lifecycle is not None:
             status_cfg = new_config.agent_status_config
             self._central_lifecycle.update_limits(status_cfg.session_ttl_s, status_cfg.max_sessions)

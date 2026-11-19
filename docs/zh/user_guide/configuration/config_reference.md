@@ -281,6 +281,11 @@ motor_coordinator_config字段配置样例如下所示：
     "enable_kv_store_metrics": false,
     "kv_store_metrics_endpoint": ""
   },
+  "profiling_config": {
+    "enable": false,
+    "request_timeout_seconds": 10.0,
+    "max_targets": 1024
+  },
   "exception_config": {
     "reschedule_config": {
       "enable": false
@@ -523,6 +528,10 @@ motor_coordinator_config字段配置样例如下所示：
 | reuse_time | int | 后台采集周期，单位为秒，默认值：3。 |
 | enable_kv_store_metrics |bool|是否拉取 KV 池化后端（MemCache / Mooncake）的 metrics。配置了 `kv_cache_store_config` 时自动启用，无需手动开启；该字段仅在需要显式覆盖自动行为时使用，默认值：false。|
 | kv_store_metrics_endpoint |string|KV 池化 metrics 的 URL。配置了 `kv_cache_store_config` 时自动拼接（`http://{KVS_MASTER_SERVICE}:{KV_CACHE_STORE_PORT}/metrics`），无需手动配置；该字段仅在需要显式覆盖自动生成的 URL 时使用，默认值为空。|
+| **profiling_config字段** |-|Coordinator 统一 Profiling（性能采集）接口配置，接口说明见 [性能采集接口](../api/profiling_interface.md)。|
+| enable |bool|是否开启 Coordinator 统一 Profiling 接口，默认值：false。为 false 时 `/profiling/start`、`/profiling/stop` 返回 HTTP 404。开启后引擎仍需配置 `engine_config.profiler-config`。|
+| request_timeout_seconds |float|Coordinator 调用单个引擎 `/start_profile`、`/stop_profile` 的超时时间（秒），默认值：10.0。|
+| max_targets |int|单次 Profiling 请求允许解析出的最大目标（实例-DP）数，默认值：1024；超过时返回 HTTP 400。|
 | **exception_config字段** |-|-|
 | max_retry | int | 请求失败后的最大重试次数。默认值：`5`。 |
 | transport_max_retry | int/null | Coordinator 传输失败的最大尝试次数；`null` 时使用 `max_retry`。默认值：`null`。 |
@@ -581,7 +590,7 @@ motor_coordinator_config字段配置样例如下所示：
 | key_prefix | string | 头中 Key 的前缀，如`Bearer`。默认值：`Bearer`。|
 | skip_paths | array | 不校验 API Key 的路径列表（如 `/metrics`、`/liveness`、`/docs`、`/v1/metaserver` 等），可自定义。代码默认包含 `/v1/metaserver`（Decode layerwise 回调不带 Key）。 |
 | encryption_algorithm | string | Key 校验使用的加密算法，如 `PBKDF2_SHA256`。默认值：`PBKDF2_SHA256` |
-| **mgmt_api_key_config字段** |-|管理面独立 API Key 配置，仅保护实例查询、实例刷新和精度告警状态清理接口。启动、存活和就绪探针不鉴权。请求头固定为 `X-Motor-Management-Key`。|
+| **mgmt_api_key_config字段** |-|管理面独立 API Key 配置，仅保护实例查询、实例刷新、精度告警状态清理和性能采集接口。启动、存活和就绪探针不鉴权。请求头固定为 `X-Motor-Management-Key`。|
 | enable_api_key | bool | 是否开启管理面 API Key 鉴权。可选：`true` / `false`。默认值：`false`。|
 | api_key_file | string | API Key 文件路径。开启鉴权时必填；文件必须仅含一行非空密钥。Controller 与 Coordinator 分开部署时需挂载内容相同的密钥文件。|
 | **rate_limit_config字段** |-|行为与示例见 [服务限流](../features/fault_tolerance/rate_limiting.md)。|

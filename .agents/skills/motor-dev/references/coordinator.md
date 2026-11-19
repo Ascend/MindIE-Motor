@@ -429,7 +429,8 @@ Hot-reload is driven by a process-local `ConfigWatcher` in the **Inference Worke
 | `motor/coordinator/router/rescheduler/` | | `Rescheduler` (retry plans for failed requests) |
 | `motor/coordinator/api_client/` | | `ConductorApiClient` / `ControllerApiClient` / `NativeEngineApiClient` (HTTP clients to kv-conductor, controller, engine) |
 | `motor/coordinator/api_server/management_server.py` | | Mgmt: `/liveness`, `/readiness`, `GET /instances`（`status`/`pool`/`healthy` + 熔断快照）, `/instances/refresh`, `/precision/alarm_cleared` |
-| `motor/coordinator/api_server/observability_server.py` | | Obs: `/metrics`, `/health` (`/instance/metrics` deprecated → `GET /metrics?type=instance`) |
+| `motor/coordinator/api_server/observability_server.py` | | Obs: `/metrics`, `/health`, `/profiling/start`、`/profiling/stop` (`/instance/metrics` deprecated → `GET /metrics?type=instance`) |
+| `motor/coordinator/profiling/` | | Unified profiling: `models.py` (selector/result wire models), `targets.py` (service/role/instance/DP → engine endpoint resolution + dimensioned `profile_prefix`), `service.py` (bounded parallel calls to engine `/start_profile`/`/stop_profile`) |
 | `motor/coordinator/api_server/inference_server.py` | | Infer: `/v1/completions`, `/v1/chat/completions`, `/v1/responses`, `/v1/models`, `/v1/messages` + `/v1/messages/count_tokens` (Anthropic); dedicated metaserver app `POST /v1/metaserver` |
 | `motor/coordinator/domain/responses_input.py` | | Text-only scheduling view for native Responses input; maps `developer` to `system` without rewriting the engine request |
 | `motor/coordinator/scheduler/runtime/scheduler_connection_manager.py` | | Shared ZMQ DEALER to Mgmt control plane (used by Obs/Infer) |
@@ -528,6 +529,45 @@ adds Coordinator pool membership (`available` / `unavailable` / `paused`; `unkno
 (`state` / `trip_count` / `failure_count` / `current_timeout`), and derives `healthy` (`true` only when
 `pool=available`, `status=active`, and the breaker is `closed`).
 
+## Unified Profiling Trigger
+
+Profiling is **coordinator-triggered**, not per-node: vLLM-Ascend engines launched with
+`engine_config.profiler-config` expose `/start_profile` / `/stop_profile`; the Obs process
+resolves user-selected targets from its scheduler-client instance view and fans the calls out.
+
+**API** (Obs port, `coordinator_obs_port`, default 1027 / NodePort 31017; gated by
+`profiling_config.enable`, master role, and the management API key when enabled):
+
+- `POST /profiling/start` — selector `service` (instance `model_name`), `roles`
+  (`prefill|decode|union|encode`, aliases `both` and `hybrid` match `union`), `instances` (instance ids), `dps`
+  (rank list for all selected instances, or `{instance_id: [ranks]}` = exactly those pairs),
+  plus optional `profiler_options` forwarded to the engine.
+- `POST /profiling/stop` accepts the same selector and stops the profiler currently
+  active on each matching live target. Both endpoints resolve the topology per request
+  and return the results of that request. Coordinator does not retain profiling state.
+
+**Dimension contract** — targets/results reuse the metrics dimensions:
+`service` = instance `model_name`, `instance_id` = `Instance.id`, `role` = instance role,
+`dp_rank` = `Endpoint.id`, `pod_ip` = endpoint pod IP. Each started target gets
+`profile_prefix = motor_profile_svc-<service>_ins-<id>_role-<role>_dp-<rank>` (non
+`[0-9A-Za-z_.-]` service chars → `_`) so engine-side trace files can be mapped back to
+dimensions. Engines that ignore dynamic prefixes are mapped via the returned target metadata.
+
+**Rules**:
+
+- Coordinator serializes start and stop requests. Within one request, up to eight
+  workers call engines in parallel. The response preserves target selection order.
+  If the request task is cancelled, in-flight calls drain before the lock is released
+  and the remaining targets are skipped.
+- An engine call failure is reported as `failed` with its error message in `detail`;
+  the remaining calls still run. A start timeout may have taken effect on the engine,
+  so the operator can issue a stop using the same selector.
+- Selectors resolving multiple targets to the same engine address return 400. Raw
+  instance and DP selectors are capped at 4096 entries, including aggregate rank
+  count across a DP mapping. Unknown ID errors show a bounded sample.
+- Target resolution failures return 400; unavailable topology returns 503.
+  Engine requests use inference TLS and a per-target `request_timeout_seconds`.
+
 ## Fault Tolerance: Circuit Breaker & Precision Detection
 
 **Circuit breaker** (`domain/circuit_breaker.py`): per-instance state machine tracking consecutive failures. Each instance is `"closed"` (normal, schedulable) or `"open"` (tripped, blocked from scheduling). Workers report instance outcomes via `CIRCUIT_BREAKER_REPORT`; Mgmt's `CircuitBreakerManager` (inside `AsyncSchedulerServer`) is constructed from `circuit_config` (default: trip after 3 consecutive failures, 30s first timeout, 300s cap; `enable=false` disarms counting). Config is snapshotted at Coordinator startup. Success or auto-recovery resets the failure count. State changes are mirrored onto SHM `flags.BLOCKED` first; `CIRCUIT_BREAKER_TOPIC` PUB is sent only after that write succeeds (heartbeat retries both). Allocate CAS is the final gate for workers that miss the PUB. `select_router_class()` consults the Worker-local breaker cache: a P/D pair is only "compatible" if both roles have non-blocked instances, and 503 is returned when all instances are circuit-broken. Controller **DEL** and **SET** clear CB state only for instance IDs **removed from the Controller snapshot** (SHM unblock + PUB `closed`, same helper as DEL). Same-id SET refresh (structural update, unavailable/paused → available) and no-op SET do not mutate breaker state; **ADD** / **PAUSE** / **RESUME** likewise leave CB unchanged.
@@ -540,7 +580,12 @@ adds Coordinator pool membership (`available` / `unavailable` / `paused`; `unkno
 - **New router strategies**: subclass `BaseRouter`, implement `prepare_resource`/`forward_request`/`release_all`, place in `router/strategies/`, and wire the class into `select_router_class()` in `dispatch.py` (there is no static router map).
 - **New ZMQ request types**: add to `SchedulerRequestType` enum in `zmq_protocol.py`; add handler method in `scheduler_server.py`; add client method in `scheduler_client.py`.
 - **New process types**: subclass `BaseProcessManager`, implement `start()`/`stop()`/`health_check()`; add key to `PROCESS_KEY_*` constants; add to start/stop order in `process/constants.py`.
-- **Observability endpoints**: `/metrics` and the external `GET /instances` are served by ObsServer (port `coordinator_obs_port`, default 1027). The latter uses `GET_INSTANCE_STATUS` to read Mgmt-owned state. Controller and ccae_reporter connect to the obs port.
+- **Observability endpoints**: `/metrics`, the external `GET /instances`, and the profiling
+  API (`/profiling/start`、`/profiling/stop`) are served by ObsServer (port `coordinator_obs_port`,
+  default 1027). The latter uses `GET_INSTANCE_STATUS` to read Mgmt-owned state. Controller
+  and ccae_reporter connect to the obs port. Profiling target resolution reads the scheduler
+  client's available-instance cache instead, so its results carry the same
+  `service`/`instance_id`/`role`/`dp_rank` labels as metrics.
 - **HA**: StandbyManager is shm-agnostic — role byte is written by Daemon's `on_role_changed` callback, not by StandbyManager itself.
 
 ## Testing

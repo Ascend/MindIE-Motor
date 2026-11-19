@@ -170,6 +170,11 @@
       "enable_kv_store_metrics": false,
       "kv_store_metrics_endpoint": ""
     },
+    "profiling_config": {
+      "enable": false,
+      "request_timeout_seconds": 10.0,
+      "max_targets": 1024
+    },
     "exception_config": {
       "reschedule_config": {
         "enable": false

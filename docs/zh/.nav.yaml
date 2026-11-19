@@ -77,6 +77,7 @@ nav:
           - 服务接口: user_guide/api/service_interfaces.md
           - 管理接口: user_guide/api/management_interfaces.md
           - 指标接口: user_guide/api/metrics_interfaces.md
+          - 性能采集接口: user_guide/api/profiling_interface.md
           - 服务运行状态观测接口: user_guide/api/observability_interface.md
       - 错误码参考:
           - 使用说明: user_guide/error_code/usage_instruction.md
