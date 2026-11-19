@@ -259,6 +259,12 @@ and does not submit the same reconfiguration again.
 - **Thread safety**: always acquire `ins_lock` before accessing `self.instances`. Use `config_lock` for config changes.
 - **Fault strategy**: add new fault categories to `FaultCategory` enum; add corresponding strategy generation in `strategy/strategy.py`.
 - **ETCD persistence**: every new field in `Instance` must be JSON-serializable (used by `model_dump(mode='json')`).
+- **Endpoint ids are DP ranks**: in multi-endpoint single-node mode (`enable_multi_endpoints && nnodes <= 1`) the assembler
+  allocates endpoint ids from the free slots in `[0, dp_size)` (`_allocate_endpoint_ids`); a registration with no free slot
+  returns -1 and the NodeManager retries after `_filter_abnormal_endpoints` drops dead pods. Never derive ids from
+  `get_endpoints_num()`: a recreated Pod has a new IP, its dead predecessor's endpoint stays in the roster until the probe
+  filters it, and a count-based offset shifts DP ranks (e.g. 0/1 → 1/2). Cross-node PCP (`nnodes > 1`) and
+  single-endpoint mode keep count-based ids.
 
 ## Ascend Device Plugin ConfigMap Reference
 

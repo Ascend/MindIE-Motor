@@ -185,7 +185,7 @@
   </tr>
 </table>
 
-对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](https://gitcode.com/Ascend/MindIE-Motor/blob/master/model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
 ### 保存配置至服务器
 
@@ -339,7 +339,7 @@ vim ./config/env.json
         <tr><td>Qwen3-235B</td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td></tr>
       </table>
 
-    对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](https://gitcode.com/Ascend/MindIE-Motor/blob/master/model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+    对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
 3. 保存配置文件
 

@@ -341,8 +341,6 @@ class InstanceAssembler(ThreadSafeSingleton):
                         msg.pod_ip,
                     )
                     return -1
-                with metadata.lock:
-                    metadata.register_timestamp = time.time()
 
             if not join_assembled and metadata.instance.ft_capability != msg.ft_capability:
                 logger.error(
@@ -357,12 +355,34 @@ class InstanceAssembler(ThreadSafeSingleton):
         if join_assembled:
             return self._join_or_reject_assembled(msg)
 
-        if metadata.instance.has_node_mgr(msg.pod_ip):
-            logger.info("Pod %s already registered in node_managers, skip duplicate registration.", msg.pod_ip)
-            return 0
+        with metadata.lock:
+            if metadata.instance.has_node_mgr(msg.pod_ip):
+                metadata.register_timestamp = time.time()
+                logger.info("Pod %s already registered in node_managers, skip duplicate registration.", msg.pod_ip)
+                return 0
 
-        if msg.is_master:
-            with metadata.lock:
+            endpoint_ids = self._allocate_endpoint_ids(msg, metadata)
+            if endpoint_ids is None:
+                # A rejected retry must not refresh register_timestamp: otherwise a pod
+                # that can never get a rank would keep a stuck assembly alive forever and
+                # defeat the assemble-timeout cleanup. NodeManager retries registration
+                # with unlimited exponential backoff (register_manager._register, capped
+                # at 32s), so this pod rejoins as soon as the assembler loop filters the
+                # dead pod and frees the rank.
+                logger.warning(
+                    "Instance %s rejected registration from pod %s: no free DP rank slot "
+                    "(used=%s, expected=%d, required=%d); the NodeManager will retry after "
+                    "the assembler loop filters dead pods",
+                    msg.job_name,
+                    msg.pod_ip,
+                    sorted(metadata.instance.get_endpoint_ids()),
+                    self._expected_dp_rank_count(metadata.instance),
+                    self._endpoint_count_for_pod(msg),
+                )
+                return -1
+
+            metadata.register_timestamp = time.time()
+            if msg.is_master:
                 # Only keep the existing master when its node is still registered (a genuine
                 # concurrent conflict). If the old master was killed/filtered, let the new
                 # is_master take over instead of dispatching a dead pod as master_dp_ip.
@@ -385,9 +405,9 @@ class InstanceAssembler(ThreadSafeSingleton):
                         msg.job_name,
                     )
 
-        metadata.instance.add_node_mgr(msg.pod_ip, msg.nm_port, msg.device_num)
-        pod_endpoints = self._build_endpoints(msg, metadata)
-        metadata.instance.add_endpoints(msg.pod_ip, pod_endpoints)
+            metadata.instance.add_node_mgr(msg.pod_ip, msg.nm_port, msg.device_num)
+            pod_endpoints = self._build_endpoints(msg, metadata, endpoint_ids)
+            metadata.instance.add_endpoints(msg.pod_ip, pod_endpoints)
 
         logger.info("Endpoints added for instance %s from pod %s.", msg.job_name, msg.pod_ip)
 
@@ -497,13 +517,68 @@ class InstanceAssembler(ThreadSafeSingleton):
         # Instance not found anywhere
         return RegisterStatus.NOT_REGISTERED
 
-    def _build_endpoints(self, msg: RegisterMsg, metadata: AssembleInstanceMetadata) -> dict[int, Endpoint]:
-        id_offset = metadata.instance.get_endpoints_num()
+    @staticmethod
+    def _endpoint_count_for_pod(msg: RegisterMsg) -> int:
+        """Number of endpoints one pod registration contributes."""
+        if not msg.enable_multi_endpoints:
+            return 1
+        devices_per_endpoint = msg.parallel_config.local_world_size or 1
+        if devices_per_endpoint <= 0:
+            return 0
+        max_endpoints_by_device = msg.device_num // devices_per_endpoint
+        return max(0, min(len(msg.business_port), max_endpoints_by_device))
 
+    @staticmethod
+    def _expected_dp_rank_count(instance: Instance) -> int:
+        parallel_config = instance.parallel_config
+        dp_size = getattr(parallel_config, "dp_size", 0) or 0
+        return dp_size if isinstance(dp_size, int) and dp_size > 0 else 0
+
+    def _uses_dp_rank_slots(self, msg: RegisterMsg, metadata: AssembleInstanceMetadata) -> bool:
+        """Whether endpoint ids of this instance are DP ranks.
+
+        Only single-node DP groups use ``Endpoint.id`` as the DP rank. Cross-node PCP
+        (``nnodes > 1``) numbers endpoints as node indices, and single-endpoint mode is
+        keyed per pod, so both keep the legacy count-based offset.
+        """
+        if not msg.enable_multi_endpoints:
+            return False
+        nnodes = metadata.nnodes if isinstance(metadata.nnodes, int) else 1
+        return nnodes <= 1 and self._expected_dp_rank_count(metadata.instance) > 0
+
+    def _allocate_endpoint_ids(self, msg: RegisterMsg, metadata: AssembleInstanceMetadata) -> list[int] | None:
+        """Allocate the endpoint ids (DP ranks) for a registering pod.
+
+        For DP groups the endpoint id is the DP rank, so ids are taken from the free
+        slots in ``[0, dp_size)`` instead of being appended after the current endpoint
+        count. A failed pod's endpoints stay in the roster until the assembler loop
+        filters them; a count-based offset would then hand the replacement pod an
+        out-of-range rank (e.g. a DP=2 instance assembled as ranks 1 and 2).
+
+        Returns:
+            The allocated ids, or None when no free rank slot is available. The caller
+            rejects that registration so the NodeManager retries after the dead pod's
+            endpoints are filtered.
+        """
+        endpoint_count = self._endpoint_count_for_pod(msg)
+        if not self._uses_dp_rank_slots(msg, metadata):
+            id_offset = metadata.instance.get_endpoints_num()
+            return list(range(id_offset, id_offset + endpoint_count))
+
+        expected = self._expected_dp_rank_count(metadata.instance)
+        used_ids = metadata.instance.get_endpoint_ids()
+        free_ranks = [rank for rank in range(expected) if rank not in used_ids]
+        if len(free_ranks) < endpoint_count:
+            return None
+        return free_ranks[:endpoint_count]
+
+    def _build_endpoints(
+        self, msg: RegisterMsg, metadata: AssembleInstanceMetadata, endpoint_ids: list[int]
+    ) -> dict[int, Endpoint]:
         if msg.enable_multi_endpoints:
-            pod_endpoints = self._build_multi_endpoints(msg, id_offset)
+            pod_endpoints = self._build_multi_endpoints(msg, endpoint_ids)
         else:
-            pod_endpoints = self._build_single_endpoint(msg, id_offset)
+            pod_endpoints = self._build_single_endpoint(msg, endpoint_ids[0] if endpoint_ids else 0)
 
         if msg.ranktable is not None:
             if metadata.ranktable is None:
@@ -530,7 +605,7 @@ class InstanceAssembler(ThreadSafeSingleton):
             )
         }
 
-    def _build_multi_endpoints(self, msg: RegisterMsg, id_offset: int) -> dict[int, Endpoint]:
+    def _build_multi_endpoints(self, msg: RegisterMsg, endpoint_ids: list[int]) -> dict[int, Endpoint]:
         devices_per_endpoint = msg.parallel_config.local_world_size
         total_devices_needed = len(msg.business_port) * devices_per_endpoint
         total_devices_available = msg.device_num
@@ -564,8 +639,11 @@ class InstanceAssembler(ThreadSafeSingleton):
                 logger.warning("Not enough devices for endpoint %d, skipping", i)
                 break
 
-            device_infos = self._build_device_infos(msg, start_idx, devices_per_endpoint, id_offset)
-            endpoint_id = id_offset + i
+            if i >= len(endpoint_ids):
+                logger.warning("No allocated endpoint id for endpoint index %d, skipping", i)
+                break
+            endpoint_id = endpoint_ids[i]
+            device_infos = self._build_device_infos(msg, start_idx, devices_per_endpoint, endpoint_id)
             pod_endpoints[endpoint_id] = Endpoint(
                 id=endpoint_id,
                 ip=msg.pod_ip,
@@ -784,7 +862,7 @@ class InstanceAssembler(ThreadSafeSingleton):
         built = {}
         for idx, rank_id in enumerate(rank_ids):
             start_idx = devices_per_rank * idx
-            device_infos = self._build_device_infos(msg, start_idx, devices_per_rank, 0)
+            device_infos = self._build_device_infos(msg, start_idx, devices_per_rank, rank_id)
             if not device_infos:
                 device_infos = [
                     DeviceInfo(device_id=str(start_idx + j), rank_id=str(rank_id * devices_per_rank + j))
@@ -950,7 +1028,7 @@ class InstanceAssembler(ThreadSafeSingleton):
         )
 
     def _build_device_infos(
-        self, msg: RegisterMsg, start_idx: int, devices_per_endpoint: int, id_offset: int
+        self, msg: RegisterMsg, start_idx: int, devices_per_endpoint: int, endpoint_id: int
     ) -> list[DeviceInfo]:
         if isinstance(msg.ranktable, Ranktable):
             server = next(
@@ -963,7 +1041,7 @@ class InstanceAssembler(ThreadSafeSingleton):
         for j in range(devices_per_endpoint):
             device_idx = start_idx + j
             if device_idx < msg.device_num:
-                global_rank_id = id_offset * devices_per_endpoint + device_idx
+                global_rank_id = endpoint_id * devices_per_endpoint + j
                 physical_id = msg.physical_device_ids[device_idx] if msg.physical_device_ids else str(device_idx)
                 device_infos.append(DeviceInfo(device_id=physical_id, rank_id=str(global_rank_id)))
         return device_infos

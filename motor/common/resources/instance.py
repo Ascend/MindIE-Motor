@@ -682,6 +682,26 @@ class Instance(BaseModel):
                 return sum(len(pod_endpoints) for pod_endpoints in self.endpoints.values())
             return 0
 
+    def get_endpoint_ids(self, exclude_pod_ip: str | None = None) -> set[int]:
+        """Return the ``Endpoint.id`` values across the instance, optionally excluding one pod.
+
+        Args:
+            exclude_pod_ip: Pod IP whose endpoints are ignored, or None to include all.
+
+        Returns:
+            The set of endpoint ids (DP ranks in multi-endpoint mode). Empty when the
+            instance has no endpoints.
+        """
+        with self._lock:
+            if self.endpoints is None:
+                return set()
+            return {
+                endpoint.id
+                for pod_ip, pod_endpoints in self.endpoints.items()
+                if pod_ip != exclude_pod_ip
+                for endpoint in pod_endpoints.values()
+            }
+
     def get_endpoints(self, ip: str) -> MappingProxyType[int, Endpoint]:
         """Get endpoints by pod(server) ip"""
         with self._lock:

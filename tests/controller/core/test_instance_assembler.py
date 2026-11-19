@@ -146,6 +146,42 @@ def create_register_msg(job_name: str, pod_ip: str, config: dict, **kwargs) -> R
     return RegisterMsg(job_name=job_name, pod_ip=pod_ip, **defaults)
 
 
+def create_dp_rank_msg(job_name: str, pod_ip: str, dp_size: int = 2, nnodes: int = 1) -> RegisterMsg:
+    """RegisterMsg for a single-node DP group: one endpoint (one DP rank) per pod."""
+    return RegisterMsg(
+        job_name=job_name,
+        model_name="test_model",
+        role="prefill",
+        pod_ip=pod_ip,
+        business_port=["8080"],
+        nm_port="8088",
+        parallel_config=ParallelConfig(dp_size=dp_size, tp_size=1, local_world_size=1, world_size=dp_size),
+        enable_multi_endpoints=True,
+        device_num=1,
+        nnodes=nnodes,
+    )
+
+
+def create_multi_rank_msg(job_name: str, pod_ip: str, dp_size: int = 4, ranks_per_pod: int = 2) -> RegisterMsg:
+    """RegisterMsg for a single-node DP group whose pod owns several DP ranks."""
+    return RegisterMsg(
+        job_name=job_name,
+        model_name="test_model",
+        role="prefill",
+        pod_ip=pod_ip,
+        business_port=[str(8080 + 4 * index) for index in range(ranks_per_pod)],
+        nm_port="8088",
+        parallel_config=ParallelConfig(
+            dp_size=dp_size,
+            tp_size=ranks_per_pod,
+            local_world_size=ranks_per_pod,
+            world_size=dp_size * ranks_per_pod,
+        ),
+        enable_multi_endpoints=True,
+        device_num=ranks_per_pod * ranks_per_pod,
+    )
+
+
 def create_reregister_msg(job_name: str, pod_ip: str, instance_id: int, config: dict, endpoints: list) -> ReregisterMsg:
     """Create a ReregisterMsg with common defaults"""
     # Convert endpoints dict to list if needed
@@ -175,7 +211,7 @@ def test_build_endpoints_preserves_bootstrap_port(instance_assembler, test_confi
         bootstrap_port=9100,
     )
 
-    endpoints = instance_assembler._build_multi_endpoints(msg, 0)
+    endpoints = instance_assembler._build_multi_endpoints(msg, [0, 1])
 
     assert endpoints
     for endpoint in endpoints.values():
@@ -198,7 +234,7 @@ def test_build_multi_endpoints_slices_ranktable_devices_per_dp(instance_assemble
         ranktable=ranktable,
     )
 
-    endpoints = instance_assembler._build_multi_endpoints(msg, 0)
+    endpoints = instance_assembler._build_multi_endpoints(msg, [0, 1])
 
     assert [[device.device_id for device in endpoint.device_infos] for endpoint in endpoints.values()] == [
         ["14", "15"],
@@ -210,7 +246,7 @@ def test_build_multi_endpoints_slices_ranktable_devices_per_dp(instance_assemble
 def test_build_multi_endpoints_keys_by_global_id(instance_assembler, test_config):
     """Pod endpoint maps are keyed by global Endpoint.id, not the local 0..n-1 index."""
     msg = create_register_msg(test_config.get("job_name", "decode"), test_config["pod_ip1"], test_config)
-    endpoints = instance_assembler._build_multi_endpoints(msg, 4)
+    endpoints = instance_assembler._build_multi_endpoints(msg, [4, 5])
     assert list(endpoints.keys()) == [4, 5]
     assert [ep.id for ep in endpoints.values()] == [4, 5]
 
@@ -340,6 +376,166 @@ def test_register_existing_instance(instance_assembler, test_config):
     assert len(instance_assembler.instances) == 1
     metadata = instance_assembler.instances[job_name]
     assert len(metadata.instance.endpoints) == 2  # Two pods registered
+
+
+def endpoint_ids(metadata: AssembleInstanceMetadata) -> list[int]:
+    """Endpoint ids currently held by an assembling instance."""
+    return sorted(
+        endpoint.id for pod_endpoints in metadata.instance.endpoints.values() for endpoint in pod_endpoints.values()
+    )
+
+
+def test_register_replacement_pod_reclaims_missing_dp_rank(instance_assembler):
+    """A pod recreated with a new IP must never receive a DP rank >= dp_size.
+
+    Failure sequence: the rank-0 pod dies and is recreated with a new IP while its old
+    endpoint still occupies the roster. Counting endpoints handed the replacement rank 1
+    and the surviving peer rank 2, so the DP=2 instance assembled as ranks 1 and 2.
+    """
+    job_name = "dp2_replacement"
+    dead_ip, replacement_ip, peer_ip = "127.0.0.1", "127.0.0.11", "127.0.0.2"
+
+    assert instance_assembler.register(create_dp_rank_msg(job_name, dead_ip)) == 0
+    metadata = instance_assembler.instances[job_name]
+    assert endpoint_ids(metadata) == [0]
+
+    assert instance_assembler.register(create_dp_rank_msg(job_name, replacement_ip)) == 0
+    assert endpoint_ids(metadata) == [0, 1]
+
+    # Every DP rank is taken: the peer is rejected instead of receiving rank 2.
+    assert instance_assembler.register(create_dp_rank_msg(job_name, peer_ip)) == -1
+
+    def query_status(node_mgr):
+        if node_mgr.pod_ip == dead_ip:
+            raise RuntimeError("connection refused")
+        return {"status": "ok"}
+
+    with patch('motor.controller.core.instance_assembler.NodeManagerApiClient.query_status', side_effect=query_status):
+        with patch('motor.controller.core.instance_assembler.InstanceManager') as mock_im_class:
+            mock_im_class.return_value = MagicMock()
+            instance_assembler._assemble_instance(metadata)
+            assert metadata.register_status != RegisterStatus.ASSEMBLED
+
+        # The dead pod is filtered; the rejected peer retries and takes the freed rank.
+        assert instance_assembler.register(create_dp_rank_msg(job_name, peer_ip)) == 0
+        assert endpoint_ids(metadata) == [0, 1]
+
+        with patch('motor.controller.core.instance_assembler.InstanceManager') as mock_im_class:
+            mock_im_class.return_value = MagicMock()
+            instance_assembler._assemble_instance(metadata)
+            mock_im_class.return_value.add_instance.assert_called_once()
+
+    assert metadata.register_status == RegisterStatus.ASSEMBLED
+    assert endpoint_ids(metadata) == [0, 1]
+
+
+def test_register_fills_lowest_free_dp_rank(instance_assembler):
+    """A pod takes the lowest free DP rank instead of the endpoint count."""
+    job_name = "dp3_hole"
+    victim_ip, survivor_ip, newcomer_ip = "127.0.0.1", "127.0.0.2", "127.0.0.3"
+
+    assert instance_assembler.register(create_dp_rank_msg(job_name, victim_ip, dp_size=3)) == 0
+    assert instance_assembler.register(create_dp_rank_msg(job_name, survivor_ip, dp_size=3)) == 0
+    metadata = instance_assembler.instances[job_name]
+    assert endpoint_ids(metadata) == [0, 1]
+
+    def query_status(node_mgr):
+        if node_mgr.pod_ip == victim_ip:
+            raise RuntimeError("connection refused")
+        return {"status": "ok"}
+
+    with patch('motor.controller.core.instance_assembler.NodeManagerApiClient.query_status', side_effect=query_status):
+        instance_assembler._filter_abnormal_endpoints(metadata.instance)
+
+    assert instance_assembler.register(create_dp_rank_msg(job_name, newcomer_ip, dp_size=3)) == 0
+    assert endpoint_ids(metadata) == [0, 1]
+
+
+def test_register_multi_rank_pod_takes_lowest_free_block(instance_assembler):
+    """A pod owning several endpoints takes the lowest free block of DP ranks and reuses it."""
+    job_name = "dp4_multi_rank"
+    dead_ip, survivor_ip, newcomer_ip = "127.0.0.1", "127.0.0.2", "127.0.0.3"
+
+    assert instance_assembler.register(create_multi_rank_msg(job_name, dead_ip)) == 0
+    metadata = instance_assembler.instances[job_name]
+    assert endpoint_ids(metadata) == [0, 1]
+
+    assert instance_assembler.register(create_multi_rank_msg(job_name, survivor_ip)) == 0
+    assert endpoint_ids(metadata) == [0, 1, 2, 3]
+
+    # All four ranks are taken: another two-rank pod is rejected instead of overflowing.
+    assert instance_assembler.register(create_multi_rank_msg(job_name, newcomer_ip)) == -1
+
+    def query_status(node_mgr):
+        if node_mgr.pod_ip == dead_ip:
+            raise RuntimeError("connection refused")
+        return {"status": "ok"}
+
+    with patch('motor.controller.core.instance_assembler.NodeManagerApiClient.query_status', side_effect=query_status):
+        instance_assembler._filter_abnormal_endpoints(metadata.instance)
+
+    # The freed two-rank block is reused as a block, keeping the rank set canonical.
+    assert instance_assembler.register(create_multi_rank_msg(job_name, newcomer_ip)) == 0
+    assert endpoint_ids(metadata) == [0, 1, 2, 3]
+
+
+def test_register_multi_rank_pod_duplicate_keeps_block(instance_assembler):
+    """A duplicate registration of a multi-rank pod keeps its endpoint block."""
+    job_name = "dp4_multi_rank_duplicate"
+    pod_ip = "127.0.0.2"
+
+    assert instance_assembler.register(create_multi_rank_msg(job_name, pod_ip)) == 0
+    metadata = instance_assembler.instances[job_name]
+    assert endpoint_ids(metadata) == [0, 1]
+
+    assert instance_assembler.register(create_multi_rank_msg(job_name, pod_ip)) == 0
+    assert endpoint_ids(metadata) == [0, 1]
+    assert metadata.instance.get_endpoints_num() == 2
+
+
+def test_rejected_registration_does_not_refresh_register_timestamp(instance_assembler):
+    """A rejected retry must not extend the assemble timeout of a stuck instance."""
+    job_name = "dp2_reject_timestamp"
+    dead_ip, replacement_ip, peer_ip = "127.0.0.1", "127.0.0.11", "127.0.0.2"
+
+    assert instance_assembler.register(create_dp_rank_msg(job_name, dead_ip)) == 0
+    assert instance_assembler.register(create_dp_rank_msg(job_name, replacement_ip)) == 0
+    metadata = instance_assembler.instances[job_name]
+
+    time.sleep(0.01)
+    timestamp_before_rejection = metadata.register_timestamp
+    assert instance_assembler.register(create_dp_rank_msg(job_name, peer_ip)) == -1
+    assert metadata.register_timestamp == timestamp_before_rejection
+
+    # A duplicate from an already registered pod still refreshes it (the pod is alive).
+    time.sleep(0.01)
+    assert instance_assembler.register(create_dp_rank_msg(job_name, replacement_ip)) == 0
+    assert metadata.register_timestamp > timestamp_before_rejection
+
+
+def test_register_duplicate_pod_keeps_endpoint_ids(instance_assembler):
+    """A duplicate registration from the same pod keeps its endpoint ids and count."""
+    job_name = "dp2_duplicate"
+    pod_ip = "127.0.0.2"
+
+    assert instance_assembler.register(create_dp_rank_msg(job_name, pod_ip)) == 0
+    metadata = instance_assembler.instances[job_name]
+    assert endpoint_ids(metadata) == [0]
+
+    assert instance_assembler.register(create_dp_rank_msg(job_name, pod_ip)) == 0
+    assert endpoint_ids(metadata) == [0]
+    assert metadata.instance.get_endpoints_num() == 1
+
+
+def test_register_cross_node_pcp_keeps_count_based_endpoint_ids(instance_assembler):
+    """Cross-node PCP numbers endpoints as node indices; dp_size must not cap them."""
+    job_name = "pcp_nodes"
+
+    for pod_ip in ["127.0.0.1", "127.0.0.2", "127.0.0.3", "127.0.0.4"]:
+        assert instance_assembler.register(create_dp_rank_msg(job_name, pod_ip, dp_size=2, nnodes=2)) == 0
+
+    metadata = instance_assembler.instances[job_name]
+    assert endpoint_ids(metadata) == [0, 1, 2, 3]
 
 
 def test_register_rejects_inconsistent_ft_capability(instance_assembler, test_config):
@@ -744,7 +940,7 @@ def test_reregister_already_assembled_instance(instance_assembler, test_config):
 
     # First reregister and assemble (multi-endpoint mode: 2 pods × 2 endpoints = 4 endpoints)
     reg_msg = create_register_msg(job_name, test_config['pod_ip1'], test_config)
-    endpoints = instance_assembler._build_multi_endpoints(reg_msg, 0)
+    endpoints = instance_assembler._build_multi_endpoints(reg_msg, [0, 1])
     msg = create_reregister_msg(
         job_name, test_config['pod_ip1'], instance_id=0, config=test_config, endpoints=endpoints
     )
@@ -760,7 +956,7 @@ def test_reregister_already_assembled_instance(instance_assembler, test_config):
             pod_ip=test_config['pod_ip2'], pod_device_num=2 * test_config['tp'], rank_offset=2 * test_config['tp']
         ),
     )
-    endpoints2 = instance_assembler._build_multi_endpoints(reg_msg2, 2)
+    endpoints2 = instance_assembler._build_multi_endpoints(reg_msg2, [2, 3])
     msg2 = create_reregister_msg(
         job_name, test_config['pod_ip2'], instance_id=0, config=test_config, endpoints=endpoints2
     )
@@ -855,8 +1051,8 @@ def test_assembly_complete_instance_reregistration(instance_assembler, test_conf
         ),
     )
 
-    endpoints1 = instance_assembler._build_multi_endpoints(reg_msg1, 0)
-    endpoints2 = instance_assembler._build_multi_endpoints(reg_msg2, 2)
+    endpoints1 = instance_assembler._build_multi_endpoints(reg_msg1, [0, 1])
+    endpoints2 = instance_assembler._build_multi_endpoints(reg_msg2, [2, 3])
 
     # Reregister both pods
     msg1 = create_reregister_msg(job_name, test_config['pod_ip1'], 0, config=test_config, endpoints=endpoints1)
@@ -2986,7 +3182,7 @@ def test_register_rejected_when_reregister_assembling(instance_assembler, test_c
 
     # First, create an ASSEMBLING instance via reregister
     reg_msg = create_register_msg(job_name, test_config['pod_ip1'], test_config)
-    endpoints = instance_assembler._build_multi_endpoints(reg_msg, 0)
+    endpoints = instance_assembler._build_multi_endpoints(reg_msg, [0, 1])
     rereg_msg = create_reregister_msg(
         job_name, test_config['pod_ip1'], instance_id=10, config=test_config, endpoints=endpoints
     )
@@ -3040,7 +3236,7 @@ def test_reregister_rejected_when_register_assembling(instance_assembler, test_c
             pod_ip=test_config['pod_ip2'], pod_device_num=2 * test_config['tp'], rank_offset=2 * test_config['tp']
         ),
     )
-    endpoints = instance_assembler._build_multi_endpoints(reg_msg2, 2)
+    endpoints = instance_assembler._build_multi_endpoints(reg_msg2, [2, 3])
     rereg_msg = create_reregister_msg(
         job_name, test_config['pod_ip2'], instance_id=0, config=test_config, endpoints=endpoints
     )
@@ -3066,7 +3262,7 @@ def test_register_rejected_when_reregister_assembling_new_instance(instance_asse
 
     # Create an ASSEMBLING instance via reregister
     reg_msg = create_register_msg(job_name, test_config['pod_ip1'], test_config)
-    endpoints = instance_assembler._build_multi_endpoints(reg_msg, 0)
+    endpoints = instance_assembler._build_multi_endpoints(reg_msg, [0, 1])
     rereg_msg = create_reregister_msg(
         job_name, test_config['pod_ip1'], instance_id=10, config=test_config, endpoints=endpoints
     )
@@ -3185,7 +3381,7 @@ def test_reregister_succeeds_after_controller_restart(instance_assembler, test_c
 
             # Step 3: Pod 1 calls reregister → should succeed (returns 0, not -1)
             reg_msg = create_register_msg(job_name, test_config['pod_ip1'], test_config)
-            endpoints = new_assembler._build_multi_endpoints(reg_msg, 0)
+            endpoints = new_assembler._build_multi_endpoints(reg_msg, [0, 1])
             rereg_msg1 = create_reregister_msg(
                 job_name,
                 test_config['pod_ip1'],
@@ -3207,7 +3403,7 @@ def test_reregister_succeeds_after_controller_restart(instance_assembler, test_c
                     rank_offset=2 * test_config['tp'],
                 ),
             )
-            endpoints2 = new_assembler._build_multi_endpoints(reg_msg2, 2)
+            endpoints2 = new_assembler._build_multi_endpoints(reg_msg2, [2, 3])
             rereg_msg2 = create_reregister_msg(
                 job_name,
                 test_config['pod_ip2'],
@@ -3352,7 +3548,7 @@ def test_ranktable_free_registration_preserves_physical_ownership(instance_assem
     from motor.controller.fault_tolerance.fault_types import FaultInfo
 
     msg = create_register_msg("decode", test_config["pod_ip1"], test_config, physical_device_ids=physical_ids)
-    endpoints = instance_assembler._build_multi_endpoints(msg, 0)
+    endpoints = instance_assembler._build_multi_endpoints(msg, [0, 1])
     assert [[d.device_id for d in e.device_infos] for e in endpoints.values()] == [physical_ids[:2], physical_ids[2:]]
     instance = MagicMock(endpoints={msg.pod_ip: endpoints})
     assert FaultNormalizer.hardware_fault_affects_instance(instance, msg.pod_ip, FaultInfo(npu_name="npu-6"))

@@ -47,6 +47,7 @@
 
 | 日期 | 模块 | 案例 | 文件 | 关键词 |
 |------|------|------|------|--------|
+| 2026-11-19 | controller | Pod 故障重建后 DP rank 从 0/1 漂移到 1/2 | [endpoint-rank-shift-after-pod-recreate.md](controller/endpoint-rank-shift-after-pod-recreate.md) | DP rank, endpoint id, register, pod recreate, rank slot |
 | 2026-11-10 | testing | Router 边缘测试未锁住失败输出与精确边界 | [router-edge-assertions.md](testing/router-edge-assertions.md) | router, terminal frame, SSE, UTF-8, abort_request |
 | 2026-11-10 | deployer | Helm 策略更新脚本未通过提交检查 | [helm-policy-ci-checks.md](deployer/helm-policy-ci-checks.md) | Helm, scalingPolicy, kubeconfig, Bandit, pre-commit |
 | 2026-09-29 | node_manager | Relaunch 后同一 endpoint 再次异常未触发恢复 | [relaunch-fault-episode-dedup.md](node_manager/relaunch-fault-episode-dedup.md) | NodeManager, engine relaunch, suicide freeze, abnormal dedup, repeated recovery |

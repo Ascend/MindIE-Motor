@@ -28,6 +28,30 @@ def test_instance_active() -> None:
     assert instance.get_endpoints_num() == len(endpoints)
 
 
+def test_get_endpoint_ids() -> None:
+    pod_ip1, pod_ip2 = "127.0.0.1", "127.0.0.2"
+    instance = Instance(
+        job_name="test_endpoint_ids", model_name="test_model", id=1, role="prefill", parallel_config=ParallelConfig()
+    )
+    instance.add_endpoints(
+        pod_ip1,
+        {
+            0: Endpoint(id=0, ip=pod_ip1, business_port="1001"),
+            1: Endpoint(id=1, ip=pod_ip1, business_port="1002"),
+        },
+    )
+    instance.add_endpoints(pod_ip2, {2: Endpoint(id=2, ip=pod_ip2, business_port="1003")})
+
+    assert instance.get_endpoint_ids() == {0, 1, 2}
+    assert instance.get_endpoint_ids(exclude_pod_ip=pod_ip1) == {2}
+
+
+def test_get_endpoint_ids_without_endpoints() -> None:
+    instance = Instance(job_name="test_no_endpoints", model_name="test_model", id=1, role="prefill")
+
+    assert instance.get_endpoint_ids() == set()
+
+
 def test_add_endpoints() -> None:
     parallel_config = ParallelConfig(dp_size=4, tp_size=2)
     pod_ip1 = "127.0.0.1"
