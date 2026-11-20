@@ -1115,9 +1115,6 @@ class InstanceAssembler(ThreadSafeSingleton):
 
             get_ft_runtime_store().clear_dp_master(metadata.instance.id)
 
-        # If current is cold start instance, Master DP IP = first registered node (node_rank=0).
-        # get_all_endpoints() filters headless slaves, confirming it's the master.
-
         # If current is snapshot restored instance, Master DP IP = registered node with is_master=True
         master_dp_ip = metadata.snapshot_dp_master_ip
         node_managers = metadata.instance.get_node_managers()
@@ -1127,8 +1124,25 @@ class InstanceAssembler(ThreadSafeSingleton):
                 master_dp_ip,
                 metadata.instance.job_name,
             )
-        elif node_managers:
-            master_dp_ip = node_managers[0].pod_ip
+        else:
+            # Cold start / reconfiguration: the DP master is the pod owning rank 0.
+            # Registration order is not a valid proxy for the rank: after a rescheduled
+            # pod is filtered, the replacement takes the freed rank while an earlier
+            # replacement may already be registered.
+            master_endpoint = min(
+                metadata.instance.get_all_endpoints(include_headless=False),
+                key=lambda endpoint: endpoint.id,
+                default=None,
+            )
+            if master_endpoint is not None:
+                master_dp_ip = master_endpoint.ip
+            elif node_managers:
+                logger.warning(
+                    "Instance %s has no visible endpoint, falling back to first registered node %s as master_dp_ip",
+                    metadata.instance.job_name,
+                    node_managers[0].pod_ip,
+                )
+                master_dp_ip = node_managers[0].pod_ip
 
         if not master_dp_ip:
             logger.error("Failed to find master DP address for instance %s", metadata.instance.job_name)
@@ -1136,11 +1150,13 @@ class InstanceAssembler(ThreadSafeSingleton):
 
         d2d_enabled = self._is_d2d_enabled_for_role(metadata.instance.role)
 
-        # node_rank within PCP group = registration_index % nnodes.
+        # Cross-node PCP: node_rank within the PCP group = registration_index % nnodes.
+        # Single-node DP: node_rank is the pod's DP rank (lowest endpoint id), so the pod
+        # owning endpoint 0 is the only one a NodeManager may treat as the master.
         # Re-registration not handled here — _start_commmand_sender skips re-registered instances.
         nnodes = metadata.nnodes
         sent = 0
-        for rank, node_mgr in enumerate(node_managers):
+        for index, node_mgr in enumerate(node_managers):
             endpoints = metadata.instance.get_endpoints(node_mgr.pod_ip)
             if not endpoints:
                 logger.error(
@@ -1162,6 +1178,11 @@ class InstanceAssembler(ThreadSafeSingleton):
                         d2d_peer_ips,
                     )
 
+            if nnodes > 1:
+                node_rank = index % nnodes
+            else:
+                node_rank = min(endpoint.id for endpoint in endpoints.values())
+
             start_cmd_msg = StartCmdMsg(
                 job_name=metadata.instance.job_name,
                 role=metadata.instance.role,
@@ -1170,7 +1191,7 @@ class InstanceAssembler(ThreadSafeSingleton):
                 master_dp_ip=master_dp_ip,
                 ranktable=metadata.ranktable,
                 d2d_peer_ips=d2d_peer_ips,
-                node_rank=rank % nnodes if nnodes > 1 else rank,
+                node_rank=node_rank,
             )
 
             ok = NodeManagerApiClient.send_start_command(node_mgr, start_cmd_msg)
@@ -1322,7 +1343,7 @@ class InstanceAssembler(ThreadSafeSingleton):
         need_persist = False
 
         # Filter abnormal endpoints before assembling
-        self._filter_abnormal_endpoints(metadata.instance)
+        self._filter_abnormal_endpoints(metadata)
         # Drop stale snapshot master: if the recorded is_master node was killed
         # (filtered out above), never dispatch a dead pod as master_dp_ip.
         # Cold start never sets this field, so the lock-free guard makes this a no-op there.
@@ -1412,11 +1433,12 @@ class InstanceAssembler(ThreadSafeSingleton):
         if need_persist and enable_persistence and not self.persist_data():
             logger.warning("Failed to persist instance assembler data to ETCD")
 
-    def _filter_abnormal_endpoints(self, instance: Instance) -> None:
+    def _filter_abnormal_endpoints(self, metadata: AssembleInstanceMetadata) -> None:
         """
         Filter abnormal endpoints by checking node managers status.
         Remove any abnormal endpoints found during the check.
         """
+        instance = metadata.instance
         node_managers = instance.get_node_managers()
         if not node_managers:
             logger.warning(
@@ -1428,8 +1450,33 @@ class InstanceAssembler(ThreadSafeSingleton):
             if not self._is_node_manager_alive(node_mgr, instance):
                 instance.del_endpoints(node_mgr.pod_ip)
                 instance.del_node_mgr(node_mgr.pod_ip, node_mgr.port)
+                self._drop_ranktable_server(metadata, node_mgr.pod_ip)
 
         logger.info("Endpoint filtering completed for instance %s(id:%d)", instance.job_name, instance.id)
+
+    @staticmethod
+    def _drop_ranktable_server(metadata: AssembleInstanceMetadata, pod_ip: str) -> None:
+        """Drop a filtered pod's entries from the aggregated instance ranktable.
+
+        ``metadata.ranktable`` is appended on every registration but was never pruned,
+        so a rescheduled pod's old IP stayed in the HCCL ranktable sent by StartCmd
+        (and ``server_count`` only grew).
+        """
+        ranktable = metadata.ranktable
+        if not isinstance(ranktable, Ranktable):
+            return
+        kept = [server for server in ranktable.server_list if pod_ip not in (server.server_id, server.container_ip)]
+        if len(kept) == len(ranktable.server_list):
+            return
+        ranktable.server_list = kept
+        ranktable.server_count = str(len(kept))
+        logger.info(
+            "Removed filtered pod %s from ranktable of instance %s(id:%d), %d server(s) left",
+            pod_ip,
+            metadata.instance.job_name,
+            metadata.instance.id,
+            len(kept),
+        )
 
     def _is_node_manager_alive(self, node_mgr, instance: Instance) -> bool:
         """Check if a node manager is alive for instance"""

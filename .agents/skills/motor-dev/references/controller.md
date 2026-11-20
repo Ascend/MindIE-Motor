@@ -265,6 +265,11 @@ and does not submit the same reconfiguration again.
   `get_endpoints_num()`: a recreated Pod has a new IP, its dead predecessor's endpoint stays in the roster until the probe
   filters it, and a count-based offset shifts DP ranks (e.g. 0/1 → 1/2). Cross-node PCP (`nnodes > 1`) and
   single-endpoint mode keep count-based ids.
+- **Never derive role/master from registration order**: `_send_start_command` sets `master_dp_ip` to the pod owning the
+  lowest non-headless endpoint id (DP rank 0), and for `nnodes == 1` sets `node_rank` to the pod's lowest endpoint id.
+  Registration order can diverge from rank order after a dead pod is filtered and a later replacement takes the freed
+  rank. `_filter_abnormal_endpoints` also prunes the filtered pod's `ServerInfo` from the aggregated `metadata.ranktable`;
+  keep that pruning in sync whenever node managers/endpoints are removed.
 
 ## Ascend Device Plugin ConfigMap Reference
 

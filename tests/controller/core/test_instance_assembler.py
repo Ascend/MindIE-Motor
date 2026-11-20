@@ -445,7 +445,7 @@ def test_register_fills_lowest_free_dp_rank(instance_assembler):
         return {"status": "ok"}
 
     with patch('motor.controller.core.instance_assembler.NodeManagerApiClient.query_status', side_effect=query_status):
-        instance_assembler._filter_abnormal_endpoints(metadata.instance)
+        instance_assembler._filter_abnormal_endpoints(metadata)
 
     assert instance_assembler.register(create_dp_rank_msg(job_name, newcomer_ip, dp_size=3)) == 0
     assert endpoint_ids(metadata) == [0, 1]
@@ -472,7 +472,7 @@ def test_register_multi_rank_pod_takes_lowest_free_block(instance_assembler):
         return {"status": "ok"}
 
     with patch('motor.controller.core.instance_assembler.NodeManagerApiClient.query_status', side_effect=query_status):
-        instance_assembler._filter_abnormal_endpoints(metadata.instance)
+        instance_assembler._filter_abnormal_endpoints(metadata)
 
     # The freed two-rank block is reused as a block, keeping the rank set canonical.
     assert instance_assembler.register(create_multi_rank_msg(job_name, newcomer_ip)) == 0
@@ -1145,6 +1145,43 @@ def test_send_start_command_partial_failure(instance_assembler, test_config):
 
         assert result is False  # Should return False if any fails
         assert mock_send.call_count == len(metadata.instance.node_managers)
+
+
+def test_send_start_command_master_and_node_rank_follow_dp_rank(instance_assembler):
+    """DP master is the pod owning rank 0, even when it registered after rank 1.
+
+    Reschedule sequence: the faulty pod's extra registration holds rank 0, the healthy
+    slot's replacement registers while that dead endpoint is still in the roster (so it
+    takes rank 1), the filter drops the dead pod, and the faulty slot's replacement then
+    takes the freed rank 0. Registration order is [rank 1, rank 0].
+    """
+    job_name = "dp2_master_by_rank"
+    dead_ip, rank1_ip, rank0_ip = "127.0.0.1", "127.0.0.2", "127.0.0.12"
+
+    assert instance_assembler.register(create_dp_rank_msg(job_name, dead_ip)) == 0
+    metadata = instance_assembler.instances[job_name]
+    assert instance_assembler.register(create_dp_rank_msg(job_name, rank1_ip)) == 0
+    assert endpoint_ids(metadata) == [0, 1]
+
+    # The assembler loop already filtered the dead pod before this registration.
+    metadata.instance.del_endpoints(dead_ip)
+    metadata.instance.del_node_mgr(dead_ip, "8088")
+    assert instance_assembler.register(create_dp_rank_msg(job_name, rank0_ip)) == 0
+    assert endpoint_ids(metadata) == [0, 1]
+
+    sent = {}
+
+    def capture_call(node_mgr, start_cmd_msg):
+        sent[node_mgr.pod_ip] = (start_cmd_msg.master_dp_ip, start_cmd_msg.node_rank)
+        return True
+
+    with patch(
+        'motor.controller.core.instance_assembler.NodeManagerApiClient.send_start_command', side_effect=capture_call
+    ):
+        assert instance_assembler._send_start_command(metadata)
+
+    assert sent[rank0_ip] == (rank0_ip, 0)
+    assert sent[rank1_ip] == (rank0_ip, 1)
 
 
 def test_send_start_command_no_endpoints(instance_assembler, test_config):
@@ -1934,7 +1971,7 @@ def test_filter_abnormal_endpoints_all_normal(instance_assembler, test_config):
     with patch('motor.controller.core.instance_assembler.NodeManagerApiClient.query_status') as mock_query_status:
         mock_query_status.return_value = {"status": True}
 
-        instance_assembler._filter_abnormal_endpoints(instance)
+        instance_assembler._filter_abnormal_endpoints(AssembleInstanceMetadata(instance=instance))
 
         # Verify query_status was called for each node manager
         assert mock_query_status.call_count == 2
@@ -1966,7 +2003,7 @@ def test_filter_abnormal_endpoints_with_abnormal(instance_assembler, test_config
         # Both calls succeed, regardless of status content
         mock_query_status.side_effect = [{"status": True}, {"status": False}]
 
-        instance_assembler._filter_abnormal_endpoints(instance)
+        instance_assembler._filter_abnormal_endpoints(AssembleInstanceMetadata(instance=instance))
 
         # No endpoints should be removed since both node managers are reachable
         assert instance.get_endpoints_num() == 2  # Both endpoints remain
@@ -1995,7 +2032,7 @@ def test_filter_abnormal_endpoints_invalid_response(instance_assembler, test_con
     with patch('motor.controller.core.instance_assembler.NodeManagerApiClient.query_status') as mock_query_status:
         mock_query_status.return_value = {"invalid": "response"}  # No 'status' field, but call succeeds
 
-        instance_assembler._filter_abnormal_endpoints(instance)
+        instance_assembler._filter_abnormal_endpoints(AssembleInstanceMetadata(instance=instance))
 
         # No endpoints should be removed since node manager is reachable
         assert instance.get_endpoints_num() == 1
@@ -2022,7 +2059,7 @@ def test_filter_abnormal_endpoints_connection_error(instance_assembler, test_con
     with patch('motor.controller.core.instance_assembler.NodeManagerApiClient.query_status') as mock_query_status:
         mock_query_status.side_effect = Exception("Connection failed")
 
-        instance_assembler._filter_abnormal_endpoints(instance)
+        instance_assembler._filter_abnormal_endpoints(AssembleInstanceMetadata(instance=instance))
 
         # Verify endpoints were removed due to connection failure
         assert instance.get_endpoints_num() == 0
@@ -2053,13 +2090,59 @@ def test_filter_abnormal_endpoints_mixed_scenarios(instance_assembler, test_conf
     with patch('motor.controller.core.instance_assembler.NodeManagerApiClient.query_status') as mock_query_status:
         mock_query_status.side_effect = [{"status": True}, Exception("Connection failed")]
 
-        instance_assembler._filter_abnormal_endpoints(instance)
+        instance_assembler._filter_abnormal_endpoints(AssembleInstanceMetadata(instance=instance))
 
         # Only unreachable node manager's endpoints should be removed
         assert instance.get_endpoints_num() == 1
         assert "127.0.0.1" in instance.endpoints  # Reachable node manager's endpoints remain
         assert "127.0.0.2" not in instance.endpoints  # Unreachable node manager's endpoints removed
         assert len(instance.node_managers) == 1  # Only unreachable node manager removed
+
+
+def test_filter_removes_dead_pod_from_ranktable(instance_assembler, test_config):
+    """A filtered pod is dropped from the aggregated ranktable sent by StartCmd."""
+    job_name = "ranktable_filter"
+    dead_ip, peer_ip = "127.0.0.1", "127.0.0.2"
+
+    assert (
+        instance_assembler.register(
+            create_register_msg(
+                job_name,
+                dead_ip,
+                test_config,
+                ranktable=build_pod_ranktable(pod_ip=dead_ip, pod_device_num=2 * test_config['tp']),
+            )
+        )
+        == 0
+    )
+    assert (
+        instance_assembler.register(
+            create_register_msg(
+                job_name,
+                peer_ip,
+                test_config,
+                ranktable=build_pod_ranktable(
+                    pod_ip=peer_ip, pod_device_num=2 * test_config['tp'], rank_offset=2 * test_config['tp']
+                ),
+            )
+        )
+        == 0
+    )
+    metadata = instance_assembler.instances[job_name]
+    assert [server.container_ip for server in metadata.ranktable.server_list] == [dead_ip, peer_ip]
+    assert metadata.ranktable.server_count == "2"
+
+    def query_status(node_mgr):
+        if node_mgr.pod_ip == dead_ip:
+            raise RuntimeError("connection refused")
+        return {"status": "ok"}
+
+    with patch('motor.controller.core.instance_assembler.NodeManagerApiClient.query_status', side_effect=query_status):
+        instance_assembler._assemble_instance(metadata)
+
+    assert metadata.register_status != RegisterStatus.ASSEMBLED
+    assert [server.container_ip for server in metadata.ranktable.server_list] == [peer_ip]
+    assert metadata.ranktable.server_count == "1"
 
 
 def test_filter_abnormal_endpoints_no_node_managers(instance_assembler, test_config, caplog):
@@ -2074,7 +2157,7 @@ def test_filter_abnormal_endpoints_no_node_managers(instance_assembler, test_con
     )
 
     with caplog.at_level('WARNING'):
-        instance_assembler._filter_abnormal_endpoints(instance)
+        instance_assembler._filter_abnormal_endpoints(AssembleInstanceMetadata(instance=instance))
 
     # Method should complete without error when no node managers
     assert "No node managers found for instance test_filter_no_managers(id:1), cannot filter endpoints" in caplog.text
@@ -2102,7 +2185,8 @@ def test_assemble_instance_with_abnormal_endpoints(instance_assembler, test_conf
     metadata = AssembleInstanceMetadata(instance=instance, register_timestamp=time.time())
 
     # Mock _filter_abnormal_endpoints to remove some endpoints (simulate abnormal detection)
-    def mock_filter(instance_to_filter):
+    def mock_filter(metadata_to_filter):
+        instance_to_filter = metadata_to_filter.instance
         # Remove 2 endpoints, leaving only 2 which is less than dp_size=4
         if "127.0.0.1" in instance_to_filter.endpoints:
             instance_to_filter.del_endpoints("127.0.0.1")

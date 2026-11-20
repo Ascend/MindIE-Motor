@@ -47,6 +47,7 @@
 
 | 日期 | 模块 | 案例 | 文件 | 关键词 |
 |------|------|------|------|--------|
+| 2026-11-20 | controller | 重调度后 rank 正确但 master_dp_ip 指向 rank 1 | [dp-master-rank-order.md](controller/dp-master-rank-order.md) | DP master, master_dp_ip, node_rank, ranktable, reschedule |
 | 2026-11-19 | controller | Pod 故障重建后 DP rank 从 0/1 漂移到 1/2 | [endpoint-rank-shift-after-pod-recreate.md](controller/endpoint-rank-shift-after-pod-recreate.md) | DP rank, endpoint id, register, pod recreate, rank slot |
 | 2026-11-10 | testing | Router 边缘测试未锁住失败输出与精确边界 | [router-edge-assertions.md](testing/router-edge-assertions.md) | router, terminal frame, SSE, UTF-8, abort_request |
 | 2026-11-10 | deployer | Helm 策略更新脚本未通过提交检查 | [helm-policy-ci-checks.md](deployer/helm-policy-ci-checks.md) | Helm, scalingPolicy, kubeconfig, Bandit, pre-commit |
