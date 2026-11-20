@@ -113,6 +113,10 @@ _TRIGGER_CAPABILITY = DispatchPlan.CONCURRENT_ENGINE_SYNC.value
 _HANDOFF_CAPABILITY = DispatchPlan.PREFILL_HANDOFF_DECODE.value
 
 
+class MissingMessagesPrefillKVError(UpstreamHTTPError):
+    """Missing Messages handoff ticket; terminate without retry or hybrid fallback."""
+
+
 @dataclass(frozen=True)
 class ReleaseWorkItem:
     stage: str
@@ -717,7 +721,7 @@ class UnifiedPDRouter(BaseRouter):
             reason = AttemptStopReason.PEER_FAILED
             reason_str = str(error)
             retry = allow_retry and attempt_index < max_retry - 1
-            if isinstance(error, HTTPException):
+            if isinstance(error, (HTTPException, MissingMessagesPrefillKVError)):
                 retry = False
             elif isinstance(error, (UpstreamHTTPError, httpx.RequestError)):
                 retry = retry and is_retryable_upstream_error(error)
@@ -736,6 +740,11 @@ class UnifiedPDRouter(BaseRouter):
             error_msg = str(f"{label}, because of {reason_str}, {retry=}")
             trace_obj.set_trace_error_message(error_msg)
             self.logger.warning("%s", error_msg)
+
+        if isinstance(error, MissingMessagesPrefillKVError):
+            # Cleanup must finish before bypassing the caller's hybrid fallback.
+            self.req_info.update_state(ReqState.EXCEPTION)
+            raise error
 
         if retry:
             await asyncio.sleep(self.config.exception_config.retry_delay * (2**attempt_index))
@@ -2661,7 +2670,13 @@ class UnifiedPDRouter(BaseRouter):
         try:
             prefill_metadata = adapter.parse_prefill_response(response_body)
         except EngineProtocolError as error:
-            raise UpstreamHTTPError(
+            error_type = UpstreamHTTPError
+            if (
+                self.req_info.effective_entry_api().strip("/") == "v1/messages"
+                and response_body.get("kv_transfer_params") is None
+            ):
+                error_type = MissingMessagesPrefillKVError
+            raise error_type(
                 status_code=502,
                 body=str(error).encode("utf-8"),
                 headers={"content-type": "text/plain; charset=utf-8"},

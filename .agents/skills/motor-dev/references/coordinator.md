@@ -349,6 +349,15 @@ Mode selection uses allocated-instance `dispatch_capabilities` **and** cluster d
 
 SGLang stays on native bootstrap (`CoordinationMode.BOOTSTRAP`); that path is unchanged.
 
+For native vLLM HANDOFF on `/v1/messages`, a Prefill response with missing or
+`null` `kv_transfer_params` raises `MissingMessagesPrefillKVError` (HTTP 502).
+`_process_response_error` stops the attempt and marks the request EXCEPTION, then
+raises this error directly before retry sleep or the caller's hybrid fallback.
+Decode is neither allocated nor dispatched. Stream failures use the pre-commit
+error response because Prefill never marks the commit barrier ready. Other APIs
+and other invalid ticket shapes retain the existing protocol-error policy.
+This guard does not apply to TRIGGER, which dispatches Decode before Prefill.
+
 **Trigger metaserver (per Worker, not on the infer port):**
 
 - `RequestInfo` is process-local. Infer workers share `coordinator_api_infer_port` via `SO_REUSEPORT`, so Decode's metaserver callback cannot land on the infer socket.

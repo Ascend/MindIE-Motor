@@ -709,12 +709,18 @@ async def test_unified_pd_process_response_error_wraps_cancelled_as_request_canc
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_vllm_uses_native_handoff_before_selecting_decode(monkeypatch):
+@pytest.mark.parametrize("api", ["v1/completions", "v1/messages"])
+async def test_unified_pd_vllm_uses_native_handoff_before_selecting_decode(monkeypatch, api):
+    request = {"model": "m", "stream": False, "max_tokens": 8}
+    if api == "v1/messages":
+        request["messages"] = [{"role": "user", "content": "hello"}]
+    else:
+        request["prompt"] = "hello"
     req_info = RequestInfo(
         req_id="root-cpcd",
-        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
-        api="v1/completions",
-        entry_api="v1/completions",
+        req_data=request,
+        api=api,
+        entry_api=api,
         req_len=10,
     )
     scheduler = _Scheduler(
@@ -1325,6 +1331,75 @@ async def test_unified_pd_vllm_rejects_missing_native_ticket_without_decode_or_p
     assert len(p_client.requests) == 1
     assert d_client.requests == []
     assert scheduler.update_workload.await_count == 1
+    release = scheduler.update_workload.await_args.args[0]
+    assert release.role == PDRole.ROLE_P
+    assert release.workload_action == WorkloadAction.RELEASE_TOKENS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True], ids=["nonstream", "stream"])
+@pytest.mark.parametrize("prefill_body", [{}, {"kv_transfer_params": None}], ids=["missing", "null"])
+async def test_unified_pd_messages_missing_ticket_fails_without_retry_or_hybrid_fallback(
+    monkeypatch,
+    stream,
+    prefill_body,
+):
+    """A Messages P response without a handoff ticket must never reach another inference leg."""
+    req_info = RequestInfo(
+        req_id="root-messages-missing-ticket",
+        req_data={
+            "model": "m",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": stream,
+            "max_tokens": 8,
+        },
+        api="v1/messages",
+        entry_api="v1/messages",
+        req_len=10,
+    )
+    config = _config()
+    config.exception_config.max_retry = 3
+    config.exception_config.transport_max_retry = 3
+    scheduler = _Scheduler(prefill_engine_type="vllm", decode_engine_type="vllm")
+    scheduler.select_and_allocate = AsyncMock(side_effect=scheduler.select_and_allocate)
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    p_client = _HTTPErrorClient("prefill", 200, prefill_body)
+    d_client = _Client("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        yield p_client if resource.instance.role == PDRole.ROLE_P else d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    for gate in (
+        "_should_use_hybrid_fallback_nonstream",
+        "_should_use_hybrid_fallback_stream_restart",
+        "_should_use_hybrid_fallback_stream_resume",
+    ):
+        monkeypatch.setattr(router, gate, AsyncMock(return_value=True))
+    build_hybrid = MagicMock(side_effect=RuntimeError("Unexpected hybrid fallback"))
+    monkeypatch.setattr(router, "_build_hybrid_fallback_router", build_hybrid)
+
+    if stream:
+        response = await router.handle_request()
+        messages = await asyncio.wait_for(_invoke_asgi_response(response), timeout=5)
+        assert messages[0]["status"] == 502
+    else:
+        with pytest.raises(UpstreamHTTPError) as exc_info:
+            await router.handle_request()
+        assert exc_info.value.status_code == 502
+
+    build_hybrid.assert_not_called()
+    assert len(p_client.requests) == 1
+    assert d_client.requests == []
+    scheduler.select_and_allocate.assert_awaited_once()
+    assert scheduler.select_and_allocate.await_args.args[0] == PDRole.ROLE_P
+    scheduler.update_workload.assert_awaited_once()
     release = scheduler.update_workload.await_args.args[0]
     assert release.role == PDRole.ROLE_P
     assert release.workload_action == WorkloadAction.RELEASE_TOKENS
