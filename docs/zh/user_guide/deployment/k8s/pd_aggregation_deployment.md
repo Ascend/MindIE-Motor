@@ -56,7 +56,7 @@ PD混部部署支持的硬件环境如下所示。
   进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框输入`motor`，单击“mindie-motor”卡片，在“镜像下载”页签根据设备型号下载对应的MindIE Motor镜像。
 - 方式二：在已有镜像中安装MindIE Motor
 
-  基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于vllm-ascend/sglang镜像安装MindIE Motor](../../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor) 额外安装MindIE Motor。
+  基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[自行制作mindie-motor镜像](../../maintenance/build_motor_image_from_vllm_ascend.md#自行制作mindie-motor镜像) 额外安装MindIE Motor。
 
 获取镜像后，请使用以下命令将镜像加载至服务器：
 
@@ -156,6 +156,15 @@ motor_deploy_config字段下的参数主要用于部署与资源相关配置，�
 | job_id | string | 部署任务名，同时作为K8s命名空间使用，如：mindie-motor。|
 | hardware_type | string | 硬件类型，取值为800I_A2或800I_A3。 |
 | weight_mount_path | string | 宿主机上模型权重挂载路径，容器内model需与此挂载路径一致。 |
+
+>[!NOTE]跳过 ranktable 生成
+>如果在启动服务时出现通过hccl_tool获取卡ip失败的情况，会导致推理引擎启动失败。建议您优先检查roce网络是否可用、卡ip是否设置等，如果确定不需要roce网络，可在`user_config.json`的`motor_deploy_config`中配置`"skip_generate_ranktable": true`跳过ranktable的生成，引擎主要推理功能不受影响。参考以下配置：
+>
+>```json
+>"motor_deploy_config": {
+>  "skip_generate_ranktable": true
+>}
+>```
 
 **motor_coordinator_config**
 

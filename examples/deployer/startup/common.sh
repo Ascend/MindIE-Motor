@@ -415,9 +415,31 @@ set_a5_engine_env() {
     fi
 }
 
+_motor_deploy_skip_ranktable() {
+    local cfg=""
+    if [ -n "$USER_CONFIG_PATH" ] && [ -f "$USER_CONFIG_PATH" ]; then
+        cfg="$USER_CONFIG_PATH"
+    elif [ -n "$USER_CONFIG_FILE" ] && [ -f "$USER_CONFIG_FILE" ]; then
+        cfg="$USER_CONFIG_FILE"
+    fi
+    if [ -z "$cfg" ]; then
+        return 1
+    fi
+    local skip
+    skip=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print(d.get('motor_deploy_config',{}).get('skip_generate_ranktable',''))" "$cfg" 2>/dev/null || echo "")
+    case "$skip" in
+        true|True|TRUE|1) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 gen_ranktable_config() {
     if is_a5_hardware; then
         echo "hardware_type is in A5 list, skip gen_ranktable_config (no hccl/ranktable on this platform)"
+        return
+    fi
+    if _motor_deploy_skip_ranktable; then
+        echo "skip_generate_ranktable is set to true in user_config.json, skip gen_ranktable_config"
         return
     fi
     if [ -f "$CONFIGMAP_PATH/hccl_tools.py" ]; then

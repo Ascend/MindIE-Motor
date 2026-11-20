@@ -361,12 +361,19 @@ class RegisterManager(ThreadSafeSingleton):
             return False
         return True
 
+    def _is_skip_generate_ranktable(self) -> bool:
+        with self.config_lock:
+            return self._config.basic_config.skip_generate_ranktable
+
     def _get_ranktable(self) -> Ranktable | None:
         """Get ranktable from HCCL file"""
         with self.config_lock:
             hardware_type = str(self._config.basic_config.hardware_type)
         if HardwareType.is_a5(hardware_type):
             logger.info("A5 platform does not require ranktable, skip loading from HCCL file")
+            return None
+        if self._is_skip_generate_ranktable():
+            logger.info("skip_generate_ranktable is set to true in motor_deploy_config, skip loading ranktable")
             return None
         try:
             with open(Env.hccl_path, "r", encoding="utf-8") as f:

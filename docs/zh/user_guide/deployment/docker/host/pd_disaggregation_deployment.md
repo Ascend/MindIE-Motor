@@ -97,6 +97,15 @@
       | data_parallel_size | int | ≥1 | 数据并行（DP）数。 |
       | tensor_parallel_size | int | ≥1 | 张量并行（TP）数。 |
 
+     >[!NOTE]跳过 ranktable 生成
+     >如果在启动服务时出现通过hccl_tool获取卡ip失败的情况，会导致推理引擎启动失败。建议您优先检查roce网络是否可用、卡ip是否设置等，如果确定不需要roce网络，可在`user_config.json`的`motor_deploy_config`中配置`"skip_generate_ranktable": true`跳过ranktable的生成，引擎主要推理功能不受影响。参考以下配置：
+     >
+     >```json
+     >"motor_deploy_config": {
+     >  "skip_generate_ranktable": true
+     >}
+     >```
+
 4. <a id="step0003"></a>同步启动脚本配置。
 
     将整个/home/examples目录，**拷贝至所有服务器的相同路径**下。

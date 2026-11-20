@@ -19,6 +19,7 @@ motor_deploy_config字段为部署与资源相关配置，由deploy.py读取并�
   "job_id": "mindie-motor",
   "hardware_type": "800I_A3",
   "weight_mount_path": "/mnt/weight/",
+  "skip_generate_ranktable": false,
   "tls_config": { ...
   }
 }
@@ -39,6 +40,7 @@ motor_deploy_config字段为部署与资源相关配置，由deploy.py读取并�
 | hardware_type | string | 硬件类型：<ul><li>Atlas 800I A2推理服务器：`800I_A2`</li><li>Atlas 800I A3超节点服务器：`800I_A3`</li><li>Ascend 950PR&950DT系列产品：`Ascend950`</li></ul> Atlas 800I A2推理服务器/Atlas 800I A3超节点服务器的 `nodeSelector` 含 `accelerator: huawei-Ascend910` 与 `accelerator-type`（Atlas 800I A2推理服务器、Atlas 800I A3超节点服务器的 accelerator 相同，须用 accelerator-type 区分产品形态）；Ascend 950PR&950DT系列产品为 `accelerator: huawei-npu`，不带 accelerator-type。<br>**主备/容错场景建议必填**：未配置时默认按未知硬件处理，linkdown（CardNetworkUnhealthy）故障会按 legacy 行为存储并可能压制 ENGINE_DEAD 故障、阻塞引擎重启；配置为非 Atlas 800I A2推理服务器（如：800I_A3）后，链路误报将作为噪声被忽略，不再影响容错决策。 |
 | weight_mount_path | string | 宿主机上模型权重挂载路径，容器内 `model` 路径需与此挂载路径一致，例如 `"/mnt/weight/"`。使用标准 deployer 时，该路径会同时挂载到 P/D（或 Union）引擎和 Coordinator；开启 `context_budget_mode: "on"` 后，Coordinator 也必须能够读取 `engine_config.model` 中的 tokenizer 文件。该字段使用 `hostPath`，因此 Coordinator 可能调度到的节点均需存在该路径，或通过 `coordinator_node_selector` 限制其调度范围。 |
 | tls_config | object | 可选；TLS相关配置，包含mgmt_tls_config、infer_tls_config、etcd_tls_config、grpc_tls_config和observability_tls_config五类。 |
+| skip_generate_ranktable | bool | 可选；是否跳过 ranktable 生成，默认为 `false`。设为 `true` 时，启动阶段将跳过 `hccl_tools.py` 的 ranktable.json 生成步骤。如果在启动服务时出现通过hccl_tool获取卡ip失败的情况，会导致推理引擎启动失败。建议您优先检查roce网络是否可用、卡ip是否设置等，如果确定不需要roce网络，可通过此配置项跳过ranktable的生成，引擎主要推理功能不受影响。 |
 
 ## 组件级Kubernetes Labels和Annotations<a id="additional-labels-annotations"></a>
 

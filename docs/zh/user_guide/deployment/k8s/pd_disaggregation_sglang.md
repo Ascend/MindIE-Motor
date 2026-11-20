@@ -49,6 +49,15 @@
 
    **`job_id`**：本示例为 `mindie-motor-sglang`，后续将作为 Kubernetes 命名空间。
 
+   >[!NOTE]跳过 ranktable 生成
+   >如果在启动服务时出现通过hccl_tool获取卡ip失败的情况，会导致推理引擎启动失败。建议您优先检查roce网络是否可用、卡ip是否设置等，如果确定不需要roce网络，可在`user_config.json`的`motor_deploy_config`中配置`"skip_generate_ranktable": true`跳过ranktable的生成，引擎主要推理功能不受影响。参考以下配置：
+   >
+   >```json
+   >"motor_deploy_config": {
+   >  "skip_generate_ranktable": true
+   >}
+   >```
+
 ## 服务部署与验证
 
 以下操作均在 Kubernetes 集群的 master 节点执行。
