@@ -8,7 +8,7 @@
 
 PD混部将Prefill与Decode实例部署在同一类原生引擎实例中。部署时不再分别拉起prefill、decode两类角色，而是由union角色承载完整推理能力；Coordinator以single_node调度模式将请求分发到可用的union实例。
 
-与[PD服务分离部署](../README.md#k8s-pd-disaggregation)相比，PD混部减少了P/D角色拆分和KV跨角色传输配置，适用于快速验证、中小规模服务、资源规模较小或暂不需要独立规划P/D实例比例的场景。若业务需要针对Prefill、Decode两阶段分别规划资源、独立扩缩容或使用PD分离相关能力，建议使用PD分离服务部署。
+与[PD分离服务部署](./pd_disaggregation_deployment.md)相比，PD混部减少了P/D角色拆分和KV跨角色传输配置，适用于快速验证、中小规模服务、资源规模较小或暂不需要独立规划P/D实例比例的场景。若业务需要针对Prefill、Decode两阶段分别规划资源、独立扩缩容或使用PD分离相关能力，建议使用PD分离服务部署。
 
 ### 部署入口与流程
 
@@ -16,12 +16,12 @@ PD混部将Prefill与Decode实例部署在同一类原生引擎实例中。部�
 
 - user_config.json配置文件：部署与业务的总配置，PD混部重点配置hybrid_*、motor_engine_union_config字段以及Coordinator的single_node调度模式。
 - env.json配置文件：各组件环境变量，PD混部的原生引擎环境变量配置在motor_engine_union_env字段中。
-- deploy.py部署脚本：读取user_config.json和env.json配置文件，生成K8s YAML文件、更新启动脚本、创建ConfigMap并执行"kubectl apply"。
+- deploy.py部署脚本：读取user_config.json和env.json配置文件，生成K8s YAML文件、更新启动脚本、创建ConfigMap并执行`kubectl apply`命令。
 
 **部署方式**：
 
 - （推荐）CRD方式（infer_service_set）：PD混部默认使用CRD方式（infer_service_set），由InferServiceSet中的union角色拉起混部实例。
-- 多YAML Deployment方式：在motor_deploy_config.deploy_mode字段中显式配置为"multi_deployment"。
+- 多YAML Deployment方式：在motor_deploy_config.deploy_mode字段中显式配置为`multi_deployment`。
 
 ### 限制与约束
 
@@ -33,7 +33,7 @@ PD混部将Prefill与Decode实例部署在同一类原生引擎实例中。部�
 
 ### 硬件环境
 
-PD混部部署支持的硬件环境如下所示。
+PD混部部署支持的硬件环境如下所示：
 
 **表 1** PD混部部署支持的硬件列表
 
@@ -82,7 +82,7 @@ PD混部部署支持的硬件环境如下所示。
 
 - 从容器镜像获取：若无完整代码仓，但已拉取MindIE Motor推理镜像，可使用镜像内预置的示例目录，路径为：/tmp/motor/examples（目录结构与仓库中的examples一致）。
 
-  在已拉取镜像的机器上执行以下命令（将`IMAGE`替换为实际镜像名或镜像ID，可与user_config.json配置文件中motor_deploy_config.image_name字段值保持一致。）：
+  在已拉取镜像的机器上执行以下命令（将`IMAGE`替换为实际镜像名或镜像ID，可与user_config.json配置文件中motor_deploy_config.image_name字段值保持一致）：
 
   ```bash
   # 自定义一个存镜像名或镜像ID的变量IMAGE
@@ -110,12 +110,12 @@ examples/
 │   ├── startup/               # 启动脚本
 │   ├── log_collect/           # 日志采集
 │   └── output_yamls/          # 生成的 YAML 输出目录
-└── model_configs/
-    └── vllm/
-        └── pd_hybrid/
-            ├── user_config.json   # PD 混部用户配置示例
-            ├── env.json           # PD 混部环境变量配置示例
-            └── README.md          # 示例说明
+model_configs/
+└── vllm/
+    └── pd_hybrid/
+        ├── user_config.json   # PD 混部用户配置示例
+        ├── env.json           # PD 混部环境变量配置示例
+        └── README.md          # 示例说明
 ```
 
 - PD混部示例配置请参考[PD混部部署示例](../../../../../model_configs/vllm/pd_hybrid/README.md)。
@@ -176,9 +176,9 @@ PD混部场景不需要配置Coordinator调度模式。Coordinator会根据运�
 "motor_coordinator_config": {}
 ```
 
-**配置示例（KV Cache亲和调度，可选）**：
+**配置示例（KV Cache性调度，可选）**：
 
-启用KV Cache亲和调度时，在 model_configs/vllm/pd_hybrid/user_config.json配置文件中按以下示例修改motor_coordinator_config、motor_engine_union_config字段，并增加 kv_conductor_config字段即可。详情请参考[KV Cache亲和性调度](../../features/inference_scheduling/kvcache_affinity.md)。
+启用KV Cache亲和性调度时，在model_configs/vllm/pd_hybrid/user_config.json配置文件中按以下示例修改motor_coordinator_config、motor_engine_union_config字段，并增加kv_conductor_config字段即可。详情请参考[KV Cache亲和性调度](../../features/inference_scheduling/kvcache_affinity.md)。
 
 ```json
 "motor_coordinator_config": {
@@ -192,11 +192,11 @@ PD混部场景不需要配置Coordinator调度模式。Coordinator会根据运�
 }
 ```
 
-**表 3** KV Cache亲和调度参数说明
+**表 3** KV Cache亲和性调度参数说明
 
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
-| scheduler_config.scheduler_type | string | 调度类型，默认值为load_balance。<br>启用 KV Cache亲和调度时配置为kv_cache_affinity。|
+| scheduler_config.scheduler_type | string | 调度类型，默认值为load_balance。<br>启用 KV Cache亲和性调度时配置为kv_cache_affinity。|
 | scheduler_config.kv_affinity.mode | string | KV亲和子策略。<ul><li>unified（默认值）</li><li>load_gated</li></ul>|
 | scheduler_config.kv_affinity.load_weight | float | unified模式下负载权重，默认值为：1.0。 |
 | scheduler_config.kv_affinity.overlap_credit | float | 缓存前缀对prefill成本的折扣系数，默认值为：1.0。 |
@@ -207,7 +207,7 @@ PD混部场景不需要配置Coordinator调度模式。Coordinator会根据运�
 
 **motor_engine_union_config**
 
-motor_engine_union_config字段用于配置PD混部原生引擎。其结构与PD分离中的 motor_engine_prefill_config/motor_engine_decode_config字段类似，但无需分别配置P/D两套引擎，也无需配置kv_transfer_config字段的producer/consumer角色，配置示例如下所示。
+motor_engine_union_config字段用于配置PD混部原生引擎。其结构与PD分离中的motor_engine_prefill_config/motor_engine_decode_config字段类似，但无需分别配置P/D两套引擎，也无需配置kv_transfer_config字段的producer/consumer角色，配置示例如下所示。
 
 ```json
 "motor_engine_union_config": {
@@ -238,16 +238,16 @@ motor_engine_union_config字段用于配置PD混部原生引擎。其结构与PD
 | engine_config.gpu_memory_utilization | float | NPU内存使用占比上限，取值范围：[0,1]。 |
 | engine_config.data_parallel_size | int | 数据并行大小。 |
 | engine_config.tensor_parallel_size | int | 张量并行大小。 |
-| engine_config.pipeline_parallel_size | int | 流水并行大小。 |
-| engine_config.enable_expert_parallel | bool | 是否启用EP。 |
-| engine_config.data_parallel_rpc_port | int | DP侧RPC端口。 |
+| engine_config.pipeline_parallel_size | int | 流水线并行大小。 |
+| engine_config.enable_expert_parallel | bool | 是否启用专家并行（EP）。 |
+| engine_config.data_parallel_rpc_port | int | 数据并行（DP）侧RPC端口。 |
 | engine_config.max_model_len | int | 最大模型上下文长度。 |
-| engine_config.kv-events-config | object | 启用KV Cache亲和时配置KV事件发布（请参考[KV Cache 亲和部署](../../features/inference_scheduling/kvcache_affinity.md)）。 |
-| engine_config.enable-prefix-caching | bool | 启用KV Cache亲和时建议开启前缀缓存。 |
-| 其它键 | - | 引擎原生参数，按所选引擎文档直接填写。 |
+| engine_config.kv-events-config | object | 启用KV Cache亲和性调度时配置KV事件发布（请参考[KV Cache亲和性调度](../../features/inference_scheduling/kvcache_affinity.md)）。 |
+| engine_config.enable-prefix-caching | bool | 启用KV Cache亲和性调度时建议开启前缀缓存。 |
+| 其他键 | - | 引擎原生参数，按所选引擎文档直接填写。 |
 
 >[!NOTE] 说明
->启用KV Cache亲和调度时，Coordinator会从motor_engine_union_config.engine_config.kv-events-config字段中自动合并prefill_kv_event_config，无需再配置 motor_engine_prefill_config字段。同时需在user_config.json配置文件根节点中配置 kv_conductor_config字段（其中至少包含http_server_port参数）。
+>启用KV Cache亲和性调度时，Coordinator会从motor_engine_union_config.engine_config.kv-events-config字段中自动合并prefill_kv_event_config，无需再配置motor_engine_prefill_config字段。同时需在user_config.json配置文件根节点中配置kv_conductor_config字段（其中至少包含http_server_port参数）。
 
 ### 配置env.json文件
 
@@ -290,7 +290,7 @@ PD混部可直接参考代码仓model_configs/vllm/pd_hybrid/env.json文件进�
 
 ### 前置条件
 
-- 已按照[环境准备](../../environment_preparation.md)章节完成Kubernetes、MindCluster、NPU驱动和固件。
+- 已按照[环境准备](../../environment_preparation.md)章节完成Kubernetes、MindCluster、NPU驱动和固件的安装。
 - 已创建与`job_id`同名的命名空间，示例如下：
 
   ```bash
@@ -302,7 +302,7 @@ PD混部可直接参考代码仓model_configs/vllm/pd_hybrid/env.json文件进�
 
 ### 部署命令
 
-在/examples/deployer目录下执行以下命令，支持两种指定配置的方式。
+在/examples/deployer目录下执行以下命令，支持两种指定配置的方式：
 
 - 方式一：指定配置目录（推荐）
 
@@ -340,15 +340,15 @@ PD混部可直接参考代码仓model_configs/vllm/pd_hybrid/env.json文件进�
 
 ### 查看集群状态与日志
 
-- **查看Pod列表**：
+- **查看Pod列表**
 
   ```bash
   kubectl get pods -n <job_id>
   ```
 
-  在CRD默认方式下，InferServiceSet会拉起controller、coordinator和union角色对应的Pod。Pod状态为Running仅表示已成功调度并启动，是否业务就绪仍需结合日志进一步确认。
+  在CRD默认方式下，InferServiceSet会拉起Controller、Coordinator和union角色对应的Pod。Pod状态为Running仅表示已成功调度并启动，业务是否就绪仍需结合日志进一步确认。
 
-- **查看日志**：
+- **查看日志**
 
   1. 配置log_collect/log_config.ini，设置name_space属性为实际的命名空间，此处为mindie-motor。
 
@@ -361,20 +361,20 @@ PD混部可直接参考代码仓model_configs/vllm/pd_hybrid/env.json文件进�
 
       日志生成路径：examples/deployer/log_collect/log/\<YYYYMMDD_hhmmss>。
 
-      单个Pod的日志文件命名格式为\<pod_name>\_\<node_name>\_\<retry_count>.log，例如： vllm-0-controller-0-xxxx_node01_0.log。
+      单个Pod的日志文件命名格式为\<pod_name>\_\<node_name>\_\<retry_count>.log，例如：vllm-0-controller-0-xxxx_node01_0.log。
   3. 使用以下命令查看日志内容。
 
       ```bash
       tail -f log_collect/log/<YYYYMMDD_hhmmss>/<pod_name>_<node_name>_<retry_count>.log
       ```
 
-- **查看单个Pod日志**：
+- **查看单个Pod日志**
 
   ```bash
   kubectl logs <pod_name> -n <job_id>
   ```
 
-- **进入容器内部查看日志**：
+- **进入容器内部查看日志**
 
   ```bash
   kubectl exec -it <pod_name> -n <job_id> -- bash
@@ -382,7 +382,7 @@ PD混部可直接参考代码仓model_configs/vllm/pd_hybrid/env.json文件进�
 
 ## 发送推理请求
 
-服务就绪后，可通过/v1/chat/completions接口测试服务是否拉起正常。推理入口为Coordinator对外暴露的端口（默认为31015）。请将`<IP>`替换为实际访问地址，将`model`替换为user_config.json配置文件中motor_engine_union_config字段下`served_model_name`参数配置的模型名称。
+服务就绪后，可通过/v1/chat/completions接口测试服务是否正常拉起。推理入口为Coordinator对外暴露的端口（默认为31015）。请将`<IP>`替换为实际访问地址，将`model`替换为user_config.json配置文件中motor_engine_union_config字段下`served_model_name`参数配置的模型名称。
 
 ```bash
 curl -X POST http://<IP>:31015/v1/chat/completions \
@@ -416,10 +416,10 @@ python3 deploy.py --config_dir ../../model_configs/vllm/pd_hybrid --update_insta
 
 >[!NOTE] 说明
 >
->- hybrid_instances_num参数的取值范围必须为：(0,16]。
+>- hybrid_instances_num参数的取值范围必须为：[0,16]。
 >- 扩缩容基线来自集群ConfigMap motor-config。
 >- 只能修改user_config.json配置文件中motor_deploy_config字段下hybrid_instances_num参数，不允许同时修改其他参数。
->- CRD默认方式下，脚本更新infer_service.yaml中union角色的replicas后执行apply，由 CRD controller完成扩缩容。
+>- CRD默认方式下，脚本更新infer_service.yaml中union角色的replicas后执行apply，由CRD controller完成扩缩容。
 
 手动扩缩容更多详细说明请参考[手动扩缩容](../../features/scaling_deployment/manual_scaling.md)。
 
@@ -444,4 +444,4 @@ bash delete.sh mindie-motor
 
 - **镜像与权重**：确保image_name在集群内可正常拉取；weight_mount_path在宿主机上存在，且engine_config.model指向容器内正确路径。
 - **实例角色错误**：PD混部需确保部署产生union角色实例；Coordinator会自动识别，无需额外调度模式配置。
-- **Prefix Cache 特性对性能测试的影响**：Prefix Cache默认开启，若期望获取推理服务的基线性能数据，可在vLLM的engine_config中增加"no-enable-prefix-caching": true。
+- **Prefix Cache特性对性能测试的影响**：Prefix Cache默认开启，若期望获取推理服务的基线性能数据，可在vLLM的engine_config中增加`"no-enable-prefix-caching": true`。

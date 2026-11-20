@@ -1,14 +1,14 @@
 # Slurm集群环境准备
 
-本文档介绍如何为运行MindIE Motor准备Slurm集群环境，涵盖Slurm及依赖安装、集群基础服务与资源配置（slurm.conf、gres.conf、cgroup.conf）、服务启动与验证，以及 Apptainer 安装，适用于集群部署与运维人员。
+本文档介绍如何为运行MindIE Motor准备Slurm集群环境，涵盖Slurm及依赖安装、集群基础服务与资源配置（slurm.conf、gres.conf、cgroup.conf）、服务启动与验证，以及Apptainer安装，适用于集群部署与运维人员。
 
 ## 环境说明
 
-主节点运行 `slurmctld`；计算节点运行 `slurmd`。主节点若参与计算，同时运行 `slurmd`。下列主机名、CPU、内存、卡数按实际环境替换。
+主节点运行`slurmctld`；计算节点运行`slurmd`。主节点若参与计算，同时运行`slurmd`。下列主机名、CPU、内存、卡数按实际环境替换。
 
-全部节点使用同一份 `/etc/munge/munge.key`、`/etc/slurm/slurm.conf`、`/etc/slurm/gres.conf`、`/etc/slurm/cgroup.conf`。
+全部节点使用同一份`/etc/munge/munge.key`、`/etc/slurm/slurm.conf`、`/etc/slurm/gres.conf`、`/etc/slurm/cgroup.conf`。
 
-## 安装 Slurm 及依赖
+## 安装Slurm及依赖
 
 ### 安装系统依赖
 
@@ -26,9 +26,9 @@ dnf install -y \
     mariadb-devel perl-devel
 ```
 
-### 构建并安装 Slurm
+### 构建并安装Slurm
 
-在一台机器准备 `slurm-25.05.2.tar.bz2`：
+在一台机器上准备`slurm-25.05.2.tar.bz2`：
 
 ```bash
 rpmbuild -ta slurm-25.05.2.tar.bz2
@@ -92,7 +92,7 @@ chown -R slurm:slurm /var/spool/slurmctld /var/log/slurm
 chown -R root:root /var/spool/slurmd
 ```
 
-### 配置 Munge
+### 配置Munge
 
 主节点：
 
@@ -122,7 +122,7 @@ systemctl enable --now munge
 
 所有节点 `md5sum /etc/munge/munge.key` 须一致。
 
-## 配置 Slurm 资源
+## 配置Slurm资源
 
 ### 采集节点参数
 
@@ -137,7 +137,7 @@ ls /dev/davinci[0-9]*
 
 `/etc/hosts`（或 DNS）须能将节点地址解析为 `slurm.conf` 中的 `NodeName`。IPv6 集群请确认节点名和地址解析均支持 IPv6。
 
-### 配置 slurm.conf
+### 配置slurm.conf
 
 所有节点同一份 `/etc/slurm/slurm.conf`。以下示例以 **Atlas 800I A2推理服务器（单机 8 卡）** 为例，其它机型按实际卡数修改 `Gres=npu:` 与 `gres.conf`：
 
@@ -176,7 +176,7 @@ GresTypes=npu
 NodeName=<compute-node-1> CPUs=<cpu-num> Boards=<boards> SocketsPerBoard=<sockets> CoresPerSocket=<cores> ThreadsPerCore=<threads> RealMemory=<memory-mb> Gres=npu:8 State=UNKNOWN
 NodeName=<compute-node-2> CPUs=<cpu-num> Boards=<boards> SocketsPerBoard=<sockets> CoresPerSocket=<cores> ThreadsPerCore=<threads> RealMemory=<memory-mb> Gres=npu:8 State=UNKNOWN
 
-# 分区名仅为示例, 请替换为实际的 Slurm 分区名.
+# 分区名仅为示例，请替换为实际的Slurm分区名。
 PartitionName=<partition-name> Nodes=<compute-node-1>,<compute-node-2> Default=YES MaxTime=INFINITE State=UP
 ```
 
@@ -190,7 +190,7 @@ PartitionName=<partition-name> Nodes=<compute-node-1>,<compute-node-2> Default=Y
 scp /etc/slurm/slurm.conf root@<compute-node>:/etc/slurm/slurm.conf
 ```
 
-### 配置 gres.conf
+### 配置gres.conf
 
 所有节点 `/etc/slurm/gres.conf`（8 卡）：
 
@@ -199,11 +199,11 @@ AutoDetect=off
 Name=npu File=/dev/davinci[0-7]
 ```
 
-卡数不是 8 时，同步修改区间与节点行 `Gres=npu:`。
+卡数不是8时，同步修改区间与节点行`Gres=npu:`。
 
-### 配置 cgroup.conf
+### 配置cgroup.conf
 
-所有节点 `/etc/slurm/cgroup.conf`（cgroup v1）：
+所有节点`/etc/slurm/cgroup.conf`（cgroup v1）：
 
 ```text
 CgroupPlugin=cgroup/v1
@@ -213,9 +213,9 @@ ConstrainRAMSpace=no
 ConstrainSwapSpace=no
 ```
 
-cgroup v2 环境将 `CgroupPlugin` 改为 `cgroup/v2`。
+cgroup v2环境将`CgroupPlugin`改为`cgroup/v2`。
 
-### 配置 NPU 设备权限
+### 配置NPU设备权限
 
 所有计算节点：
 
@@ -237,7 +237,7 @@ udevadm trigger
 
 ## 启动与验证
 
-### 启动 Slurm 服务
+### 启动Slurm服务
 
 主节点：
 
@@ -261,7 +261,7 @@ systemctl enable --now slurmd
 scontrol ping
 sinfo
 sinfo -N -o "%N %G %T %P"
-srun -N<节点数> -n<节点数> --ntasks-per-node=1 hostname
+srun -N <节点数> -n <节点数> --ntasks-per-node=1 hostname
 srun -N 1 -p <partition-name> --gres=npu:8 hostname
 ```
 
@@ -274,7 +274,7 @@ journalctl -u slurmctld -n 100 --no-pager
 journalctl -u slurmd -n 100 --no-pager
 ```
 
-## 安装 Apptainer
+## 安装Apptainer
 
 Motor 服务以 Apptainer 容器运行。建议在 Slurm 集群验证通过后安装 Apptainer 1.3.6，并将相同版本分发到所有参与调度的节点。
 
@@ -311,7 +311,7 @@ srun -N<节点数> -n<节点数> --ntasks-per-node=1 \
     bash -c 'echo "$(hostname): $(apptainer version)"'
 ```
 
-`.sif` 与模型权重须在各计算节点上路径一致。
+`.sif` 与模型权重须在各计算节点上的路径一致。
 
 ## 启动服务
 

@@ -1,8 +1,8 @@
-# PD 分离
+# PD分离
 
 ## 特性介绍
 
-PD分离（Prefill & Decode 分离）将大语言模型推理的两个阶段部署到不同实例上，使各阶段按自身资源特征独立运行。
+PD分离（Prefill&Decode分离）将大语言模型推理的两个阶段部署到不同实例上，使各阶段按自身资源特征独立运行。
 
 - **Prefill（P）**：对输入prompt执行一次完整前向计算，生成该序列的KV Cache。该阶段计算密集，每个新请求均需执行一次。
 - **Decode（D）**：接收P传来的KV Cache，逐步生成后续token。单步计算量小，但需反复执行直至生成结束，主要消耗访存带宽。
@@ -15,12 +15,12 @@ MindIE Motor中的PD分离调度与实例角色能力，由Coordinator统一编�
 
 一次请求的角色分工具体如下所示：
 
-![PD 分离请求路径](../../../imgs/pd_disaggregation_infer_flow.png)
+![PD分离请求路径](../../../imgs/pd_disaggregation_infer_flow.png)
 
 1. **入口**：客户端请求仅发送至Coordinator。Controller负责实例注册、健康检测与生命周期管理，不参与单请求转发。
 2. **选路**：Coordinator依据当前可用实例的角色，选择一对Prefill与Decode实例。
 3. **Prefill**：Prefill实例对prompt执行完整前向计算，生成该序列的KV Cache。
-4. **KV 传输**：Prefill至Decode的KV Cache由引擎侧Connector完成传输。Coordinator仅负责选定实例并注入握手元数据，不承担KV数据搬运。
+4. **KV传输**：Prefill至Decode的KV Cache由引擎侧Connector完成传输。Coordinator仅负责选定实例并注入握手元数据，不承担KV数据搬运。
 5. **Decode**：Decode实例按token逐步解码，生成结果经Coordinator返回客户端。
 
 ### 特性收益

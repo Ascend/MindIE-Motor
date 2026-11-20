@@ -1,14 +1,14 @@
-# Agent Hint 会话亲和与调度
+# Agent Hint会话亲和与调度
 
 ## 特性介绍
 
-Agent Hint 特性让 Coordinator 识别 Agent 框架通过 `X-Agent-Hint` 请求头下发的会话提示，把同一会话（及其派生子会话）的推理请求粘滞到同一实例以复用 KV Cache、为并发新建会话做负载均衡放置、为高优先级请求提供准入预留，并在会话结束（finalize）时释放亲和绑定与缓存保留声明。
+Agent Hint特性让Coordinator识别Agent框架通过`X-Agent-Hint`请求头下发的会话提示，把同一会话（及其派生子会话）的推理请求粘滞到同一实例以复用KV Cache、为并发新建会话做负载均衡放置、为高优先级请求提供准入预留，并在会话结束（finalize）时释放亲和绑定与缓存保留声明。
 
 **收益**：
 
-- 多轮对话、多 Agent 协作场景下同一会话/父子会话复用同一实例的 KV Cache，减少重复 prefill，降低 TTFT；
-- 并发新建会话 burst 按“钉扎会话数 + 在途负载 + 单调计数”摊匀落点，避免请求在少数实例上聚集被粘滞放大；
-- 服务过载时，高优先级请求仍能穿透限流预留、豁免软负载门槛，保障关键链路；
+- 多轮对话、多 Agent 协作场景下同一会话/父子会话复用同一实例的 KV Cache，减少重复 prefill，降低 TTFT。
+- 并发新建会话 burst 按“钉扎会话数 + 在途负载 + 单调计数”摊匀落点，避免请求在少数实例上聚集被粘滞放大。
+- 服务过载时，高优先级请求仍能穿透限流预留、豁免软负载门槛，保障关键链路。
 - 会话生命周期（running/tool/pause/suspend/finalize）可上报并驱动亲和 pin 的释放，长连接场景不再依赖 LRU 兜底。
 
 该功能具有以下特点：
@@ -72,7 +72,7 @@ flowchart LR
 | 引擎 | 与推理引擎类型无关；本阶段 hint 只影响调度与亲和，不下发引擎、不改变引擎 KV 驱逐策略。 |
 | 特性互斥 | 无，可在既有基线上增量开启。 |
 | 软件依赖 | 无额外依赖。`MOTOR_SESSION_AFFINITY_SHARED=1` 依赖容器内 `/dev/shm` 可写。 |
-| 客户端依赖 | 需在 Agent 框架（harness）侧安装并启用对应 agent-hint 插件（DSH/LangChain/Hermes/Pi/Dify，见[对接 Agent 框架](#对接-agent-框架harness-插件)）。 |
+| 客户端依赖 | 需在 Agent 框架（harness）侧安装并启用对应 agent-hint 插件（DSH/LangChain/Hermes/Pi/Dify，见[对接 Agent 框架](#对接agent框架harness插件)）。 |
 | 其他限制 | <ul><li>环境变量在 Coordinator 进程启动时读取，修改后需重启 Coordinator 生效。</li><li>`X-Agent-Hint` 仅支持请求头通道（请求体 `agent_hint` 为冻结的 legacy 通道，spec 字段不进入 body）。</li><li>`cache_control` 生命周期交付的是 **affinity TTL**（路由表与 pin 生命周期），不是引擎 KV 驻留保证：pin 存在时 KV 仍可能被引擎驱逐，pin 删除后 KV 也可能仍驻留。</li><li>ZMQ PUB 事件不排队，worker 未就绪时可能漏收 finalize，残留 pin 由 epoch/stale/LRU 兜底。</li><li>畸形 hint / 畸形 `/agent-status` 字段只 WARN + 丢弃（HTTP 200 + `applied=false`），不会使请求失败。</li></ul> |
 
 ## 特性使用
@@ -83,9 +83,9 @@ flowchart LR
 - 所有开关通过 Coordinator 的环境变量与 `user_config.json` 配置。K8s/Helm 场景将环境变量写入 `env.json` 的 `motor_coordinator_env`（ConfigMap `user-config` 内或 Helm `envConfig`）；Docker 场景写入 `env.json` 后由 deployer 注入。
 - 修改环境变量后需重启 Coordinator；`user_config.json` 中的新增配置段均有默认值，热更新行为见各小节说明。
 - 使用共享亲和表（`MOTOR_SESSION_AFFINITY_SHARED=1`）时，确认 Coordinator 容器内 `/dev/shm` 可写（默认可用）。
-- 已在 Agent 框架（harness）侧安装并启用对应的 agent-hint 插件（见[对接 Agent 框架](#对接-agent-框架harness-插件)），否则请求不会携带 `X-Agent-Hint` 与会话状态信号。
+- 已在 Agent 框架（harness）侧安装并启用对应的 agent-hint 插件（见[对接 Agent 框架](#对接agent框架harness插件)），否则请求不会携带 `X-Agent-Hint` 与会话状态信号。
 
-### 对接 Agent 框架（harness 插件）
+### 对接Agent框架（harness插件）
 
 Motor 侧只提供消费端能力：解析 `X-Agent-Hint` 请求头、接收 `/agent-status` 带外事件。**hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生**——插件在主线模型请求上按请求注入 `X-Agent-Hint`（base64url 编码 JSON，含会话标识、优先级、缓存保留声明等），并可选通过带外通道上报会话生命周期事件到 `/agent-status`。插件只增加一个 HTTP 请求头、不改动请求体与系统提示（不改变模型可见负载），也不修改 harness 源码。
 
@@ -199,6 +199,8 @@ Motor 侧只提供消费端能力：解析 `X-Agent-Hint` 请求头、接收 `/a
 
    客户端通过 `X-Agent-Hint` 的 `priority.level` 声明等级。`priority_reserve_ratio` 支持热更新（`max_requests`/`window_size`/`priority_reserve_ratio` 均可运行时重载）。
 
+    <a id="step2"></a>
+
 4. 开启 strict_priority 信任门（硬优先级）。
 
    “硬优先级”指受信任的 `strict_priority`：请求需携带与 `strict_priority_config.tokens` 匹配的 `X-Strict-Priority-Token`，校验通过后全局旁路限流并完全豁免软负载门槛。
@@ -221,7 +223,7 @@ Motor 侧只提供消费端能力：解析 `X-Agent-Hint` 请求头、接收 `/a
    | `strict_priority_config.enabled` | bool | `false` | 信任门开关；开启时 `tokens` 必须非空，否则启动校验报错。 |
    | `strict_priority_config.tokens` | list[str] | `[]` | 可信 token 列表（bootstrap 静态凭据）。 |
 
-   客户端请求同时携带 `X-Agent-Hint: {"strict_priority": {"level": 3}}` 与 `X-Strict-Priority-Token: <token>`。校验通过后该请求全局旁路限流（不消耗令牌、不受限流拒绝）、完全豁免软负载门槛；未通过则入口剥离 `strict_priority`（置空 + WARN），不会出现“未鉴权但被消费”的路径。
+   客户端请求同时携带 `X-Agent-Hint: {"strict_priority": {"level": 3}}` 与 `X-Strict-Priority-Token: <token>`。校验通过后该请求全局旁路限流（不消耗令牌、不受限流拒绝）、完全豁免软负载门槛；未通过则入口剥离 `strict_priority`（置空 + WARN），不会出现“未认证但被消费”的路径。
 
 5. 开启 agent_status 带外通道。
 
@@ -247,7 +249,7 @@ Motor 侧只提供消费端能力：解析 `X-Agent-Hint` 请求头、接收 `/a
 
    开启后推理面新增：
 
-   - `POST /agent-status`：上报会话状态事件 `{"session": {"session_id": "s-1"}, "agent_status": {"state": "running"}}`；
+   - `POST /agent-status`：上报会话状态事件 `{"session": {"session_id": "s-1"}, "agent_status": {"state": "running"}}`。
    - `GET /agent-status?session_id=s-1`：查询当前状态记录。
 
    `finalize` 状态会释放该会话的亲和 pin（本地即时生效 + PUB 广播至全体 worker）。
@@ -334,12 +336,12 @@ Motor 侧只提供消费端能力：解析 `X-Agent-Hint` 请求头、接收 `/a
 
    关注新增字段：
 
-   ```text
+   ```output
    ... prio=<level> aff=<hit|parent|fresh|stale|epoch|none|-> reason=<...> sp=<level>
    ```
 
-   - 同一 `session_id` 第二次请求应出现 `aff=hit`（子会话复用父实例为 `aff=parent`）；
-   - 新建会话（`fresh`）在均衡放置下应出现 affinity INFO 行 `placement=balanced`；
+   - 同一 `session_id` 第二次请求应出现 `aff=hit`（子会话复用父实例为 `aff=parent`）。
+   - 新建会话（`fresh`）在均衡放置下应出现 affinity INFO 行 `placement=balanced`。
    - 携带 hint 的请求应能看到 `prio=` / `reason=` 回填；可信硬优先级请求 `sp=` 非空。
 
 2. **验证会话粘滞**：对同一 `session_id` 连续发送两次请求，两次应调度到相同 `instance=`（`aff=hit`）。
@@ -378,7 +380,7 @@ Motor 侧只提供消费端能力：解析 `X-Agent-Hint` 请求头、接收 `/a
 
 ## 常见问题
 
-### 请求未携带 X-Agent-Hint（日志 aff=none、无优先级）
+### 请求未携带X-Agent-Hint（日志aff=none、无优先级）
 
 **问题描述**
 
@@ -390,7 +392,7 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 
 **解决步骤**
 
-1. 按[对接 Agent 框架](#对接-agent-框架harness-插件)在对应 harness 侧安装并启用 agent-hint 插件（DSH/LangChain/Hermes/Pi/Dify）。
+1. 按[对接 Agent 框架](#对接agent框架harness插件)在对应 harness 侧安装并启用 agent-hint 插件（DSH/LangChain/Hermes/Pi/Dify）。
 2. 确认插件仅对主线模型请求注入 `X-Agent-Hint`（辅助调用如上下文压缩、标题生成不注入属正常）。
 3. 查看/抓包确认请求头携带 `X-Agent-Hint`；若同时启用了多个生产者，关闭多余插件避免争用同一请求头。
 
@@ -410,7 +412,7 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 2. 重启 Coordinator（K8s 删除 Pod 或触发滚动重启）。
 3. 确认请求携带了 `session_id`（`X-Agent-Hint` 或 legacy `agent_hint`），否则 `aff=none`。
 
-### 多 worker 部署下同会话经常不命中
+### 多worker部署下同会话经常不命中
 
 **问题描述**
 
@@ -418,7 +420,7 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 
 **原因分析**
 
-未开启共享表时，每个推理 Worker 进程各自持有进程内亲和表，只能看到自己记录的 pin。
+未开启共享表时，每个推理 worker 进程各自持有进程内亲和表，只能看到自己记录的 pin。
 
 **解决步骤**
 
@@ -453,7 +455,7 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 **解决步骤**
 
 1. 确认 `X-Agent-Hint` 的 `priority.level` ≥ `priority_admission_level`。
-2. 需要无条件穿透时，改用 strict 信任门（步骤 4）并携带正确的 `X-Strict-Priority-Token`。
+2. 需要无条件穿透时，改用 strict 信任门（[步骤4](#step2)）并携带正确的 `X-Strict-Priority-Token`。
 3. 确认 `rate_limit_config.enable_rate_limit=true` 且预留比例已热更新生效（观察日志 `priority_reserve=`）。
 
 ### 硬优先级被剥离
@@ -472,7 +474,7 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 2. 确认请求头 `X-Strict-Priority-Token` 与配置完全一致（大小写、空白）。
 3. 热更新轮转 token 后旧 token 立即失效，需同步更新客户端。
 
-### /agent-status 返回 404 或 400
+### /agent-status返回404或400
 
 **问题描述**
 
@@ -488,7 +490,7 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 2. 请求体需为合法 JSON 对象，且同时包含 `session.session_id` 与 `agent_status`。
 3. 字段级畸形（如非法 `state`）会返回 HTTP 200 + `applied=false` + WARN，属预期行为，不会失败。
 
-### 升级后旧客户端的 cache_control.type=pin 静默失效
+### 升级后旧客户端的cache_control.type=pin静默失效
 
 **问题描述**
 
@@ -500,7 +502,7 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 
 **解决步骤**
 
-1. 升级前用日志统计存量 `pin` 流量：
+1. 升级前用日志统计存量 `pin` 流量。
 
    ```bash
    kubectl logs -n <namespace> <coordinator-pod> | grep -cE \
@@ -525,5 +527,3 @@ hint 信号由 Agent 框架（harness）侧的 agent-hint 插件产生；若未�
 1. 确认客户端显式携带了 `cache_control.ttl_s`（未携带不入账，按默认 LRU 行为）。
 2. 将 TTL 设在 [60, 3600] 区间；如需更大值，调整 `MOTOR_CACHE_CONTROL_TTL_MAX_S`。
 3. 需要真正的 KV 驻留/置换控制时，等待引擎侧块级 retain/offload/prefetch 能力（当前为后续能力）。
-
-> 详细设计见 [Agent Hint 设计文档](../../../design/agent_hint.md)，测试与验证记录见 [Agent Hint 验证记录](../../../design/agent_hint_verification.md)。

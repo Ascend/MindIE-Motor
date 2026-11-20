@@ -2,7 +2,7 @@
 
 MindIE Motor支持两种业务拓扑结构和三种服务部署方式，本文档将对相关内容进行说明，避免用户混淆。
 
-简单说明
+**表 1** 业务拓扑与服务部署方式说明
 
 | 分类 | 选项 | 说明 |
 |------|------|--------------|
@@ -37,12 +37,12 @@ Prefill与Decode由同一类实例（union）承载，适用于快速验证与�
 }
 ```
 
-**表 2** 配置选项参数解释
+**表 2** deploy_mode参数说明
 
 | 取值 | 说明 |
 |------|------|
-| infer_service_set | 默认方式。生成单个infer_service.yaml文件，由CRD controller统一拉起controller、coordinator、prefill、decode（PD分离）或 union（PD混部）等Pod。|
+| infer_service_set | 默认方式，生成单个infer_service.yaml文件，由CRD controller统一拉起controller、coordinator、prefill、decode（PD分离）或 union（PD混部）等Pod。|
 | multi_deployment | 生成controller、coordinator、engine、kv_pool等多个独立的YAML文件，分别创建Pod。|
-| single_container | 单容器方式。将P/D合并到单个容器中运行，适用于小规模或测试场景。 |
+| single_container | 单容器方式,将P/D合并到单个容器中运行，适用于小规模或测试场景。 |
 
 如需了解user_config.json文件的其余配置字段，请参考[user_config.json配置文件全量参数说明](../../configuration/config_reference.md)。

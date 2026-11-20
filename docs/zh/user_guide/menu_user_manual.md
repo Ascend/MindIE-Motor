@@ -5,7 +5,7 @@
 - [准备MindIE Motor镜像](./maintenance/build_motor_image_from_vllm_ascend.md)
 - [服务化部署]()
   - [部署方式说明](./deployment/README.md)
-  - [k8s部署]()
+  - [K8s部署]()
     - [PD混部服务部署（基于vLLM推理引擎）](./deployment/k8s/pd_aggregation_deployment.md)
     - [PD分离服务部署（基于vLLM推理引擎）](./deployment/README.md#k8s-pd-disaggregation)
     - [PD分离服务部署（基于SGLang推理引擎）](./deployment/README.md#k8s-pd-disaggregation-sglang)

@@ -1,4 +1,4 @@
-# max_tokens 自适应
+# max_tokens自适应
 
 ## 特性介绍
 
@@ -73,7 +73,7 @@ Coordinator 会将该请求的 `max_tokens` 修改为 `14688` 后再进行调度
 - Prefill（PD 分离）或 Union（PD 混部）引擎配置中的 `model` 必须指向 Coordinator
   可访问的模型目录，用于加载与推理引擎一致的 tokenizer。
 - 使用 `examples/deployer/deploy.py` 部署时，`motor_deploy_config.weight_mount_path` 会以相同容器路径挂载到 P/D（或 Union）引擎和 Coordinator。将它配置为包含`engine_config.model` 的宿主机目录，例如模型路径为 `/data/weights/model-a` 时可配置`weight_mount_path: "/data/weights"`。Coordinator至少需要具备对该模型目录中tokenizer文件的读取权限。为确保与推理引擎使用相同版本的tokenizer，建议以只读方式挂载完整的模型目录。
-- `weight_mount_path` 使用 Kubernetes `hostPath`。因此 Coordinator 可能被调度到的每一台节点上，都必须存在该宿主机路径及对应模型文件；若权重只存在于部分节点，应通过`coordinator_node_selector` 将 Coordinator 调度到可访问权重的节点。P/D（或 Union）引擎节点也需要满足同一条件。
+- `weight_mount_path` 使用 Kubernetes `hostPath`。因此 Coordinator 可能被调度到的每一个节点上，都必须存在该宿主机路径及对应模型文件；若权重只存在于部分节点，应通过`coordinator_node_selector` 将 Coordinator 调度到可访问权重的节点。P/D（或 Union）引擎节点也需要满足同一条件。
 - 使用自定义 YAML、旧版部署产物或其他部署工具时，需要在 Coordinator Pod 中显式添加与`engine_config.model` 一致的模型目录挂载；仅将权重挂载到 P/D（或 Union）引擎 Pod 不足以启用该功能。
 - 必须提供有效的上下文上限。PD 分离配置会自动将 Prefill、Decode 引擎的 `max_model_len`分别填充为 `aigw.p_max_seqlen`、`aigw.d_max_seqlen`；无法自动填充时需要显式配置 `aigw`。
 - 启用该功能时，每个 Coordinator Inference worker 会在启动阶段初始化进程内的`TokenizerManager` 单例，并从模型目录加载 tokenizer；不会创建独立的 tokenizer 服务进程。模型目录不可访问或 tokenizer 加载失败时，对应 Inference worker 将无法正常启动。
@@ -154,7 +154,7 @@ curl -X POST http://{coordinator-ip}:1025/v1/chat/completions \
 
 发生裁剪时，Coordinator 会输出如下 INFO 日志：
 
-```text
+```output
 Context budget clamped req_id=<request-id> parameter=max_tokens requested=20000 effective=14688 prompt_tokens=100000 max_model_len=114688
 ```
 
@@ -162,11 +162,11 @@ Context budget clamped req_id=<request-id> parameter=max_tokens requested=20000 
 
 | 字段 | 说明 |
 |------|------|
-| `parameter` | 本次调整的请求参数。 |
-| `requested` | 客户端请求的输出 token 上限。 |
-| `effective` | Coordinator 实际转发给引擎的输出 token 上限。 |
-| `prompt_tokens` | Coordinator 使用模型 tokenizer 计算的输入 token 数。 |
-| `max_model_len` | Prefill、Decode 上下文上限中的较小值。 |
+| parameter | 本次调整的请求参数。 |
+| requested | 客户端请求的输出 token 上限。 |
+| effective | Coordinator 实际转发给引擎的输出 token 上限。 |
+| prompt_tokens | Coordinator 使用模型 tokenizer 计算的输入 token 数。 |
+| max_model_len | Prefill、Decode 上下文上限中的较小值。 |
 
 如果请求的输出上限未超过剩余上下文，则不会打印裁剪日志，请求参数保持不变。
 
@@ -203,7 +203,7 @@ Prefill 引擎配置缺少有效的 `model` 或 `max_model_len`，Decode 引擎�
 
 1. 检查 `motor_coordinator_config.context_budget_mode` 是否为 `on`。
 2. 确认请求是否携带有效的正整数 `max_tokens` 或 `max_completion_tokens`。
-3. 确认客户端指定的输出上限是否确实大于"模型上下文上限减去输入token数"。
+3. 确认客户端指定的输出上限是否确实大于“模型上下文上限减去输入token数”。
 4. 检查 Inference worker 日志中 TokenizerManager 是否完成初始化，以及 Coordinator 是否能够使用模型tokenizer处理当前请求。
 
 ### 为什么没有将超长输入的 max_tokens 改为1

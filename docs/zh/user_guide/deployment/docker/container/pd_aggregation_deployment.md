@@ -12,7 +12,7 @@
 
    - 方式二：在已有镜像中安装MindIE Motor
 
-     基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于已有镜像安装MindIE Motor](../../../maintenance/build_motor_image_from_vllm_ascend.md) 额外安装MindIE Motor。
+    基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于已有镜像安装MindIE Motor](../../../maintenance/build_motor_image_from_vllm_ascend.md)额外安装MindIE Motor。
 
 2. 获取镜像后，请使用以下命令**将镜像加载至每一台服务器**：
 
@@ -54,17 +54,17 @@
    ```
 
    >[!NOTE] 说明
-   >上述Motor配置仅给出一种可行的模型切分示例，**用户可根据实际情况调整模型划分策略**，关注以下表中参数即可，但必须满足以下公式的限制：
+   >上述Motor配置仅给出一种可行的模型切分示例，**用户可根据实际情况调整模型划分策略**，关注以下表中的参数即可，但必须满足以下公式的限制：
    >
-   >1个混部实例占用的NPU卡数 = single_hybrid_instance_pod_num（占用几个pod，跨几机） × hybrid_pod_npu_num（每个Pod占用的NPU数）= data_parallel_size × tensor_parallel_size
+   >1个混部实例占用的NPU卡数 = single_hybrid_instance_pod_num（占用几个Pod，跨几机） × hybrid_pod_npu_num（每个Pod占用的NPU数）= data_parallel_size × tensor_parallel_size
 
    | 配置项 | 取值类型 | 取值范围 | 配置说明 |
    | --- | --- | --- | --- |
    | hybrid_instances_num | int | ≥1 | 混部实例数量。 |
    | single_hybrid_instance_pod_num | int | ≥1 | 1 个混部实例拆成几个 Pod。 |
    | hybrid_pod_npu_num | int | ≥1，单 Pod 最大 16 卡 | 每个混部 Pod 使用的 NPU 卡数。 |
-   | data_parallel_size | int | ≥1 | 数据并行（DP）数 |
-   | tensor_parallel_size | int | ≥1 | 张量并行（TP）数 |
+   | data_parallel_size | int | ≥1 | 数据并行（DP）数。 |
+   | tensor_parallel_size | int | ≥1 | 张量并行（TP）数。 |
 
    >[!NOTE]跳过 ranktable 生成
    >如果在启动服务时出现通过hccl_tool获取卡ip失败的情况，会导致推理引擎启动失败。建议您优先检查roce网络是否可用、卡ip是否设置等，如果确定不需要roce网络，可在`user_config.json`的`motor_deploy_config`中配置`"skip_generate_ranktable": true`跳过ranktable的生成，引擎主要推理功能不受影响。参考以下配置：
@@ -278,7 +278,7 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 
 若返回以下内容，表示服务尚未就绪，可稍后重试。
 
-```Output
+```output
 {"detail":"Service is not available"}
 ```
 
@@ -295,7 +295,7 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 ```output
 容器内服务已终止，可执行以下命令重新部署服务。
 python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config --start --container-name motor-u0 --role union --instance-name u0 --pod-ip <本机IP地址> --nic-name <本机主网卡名称>
-运行日志：examples/motor_workspace/motor-u0/u0/log/docker-union-u0-<时间戳>.log
+运行日志:examples/motor_workspace/motor-u0/u0/log/docker-union-u0-<时间戳>.log
 ```
 
 ## 调优指导
@@ -314,12 +314,14 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
    在宿主机执行一次。这个容器挂上两个实例要用的卡。管理面仍单独创建一个容器，按[查看部署计划](#查看部署计划)的回显执行。
 
+   --devices：该容器挂载两个实例需要用的卡。
+
    ```bash
    python3 /home/examples/deployer/docker_deploy.py \
      --config_dir /home/examples/config \
      --create \
      --container-name motor-hybrid \
-     --devices 0,1,2,3    # 这个容器挂载两个实例要用的卡
+     --devices 0,1,2,3
    ```
 
 2. 进入容器。

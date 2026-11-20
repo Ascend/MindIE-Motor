@@ -2,7 +2,7 @@
 
 ## 特性介绍
 
-MemCache为MindIE Motor默认池化后端，基于 [memcache_hybrid](https://gitcode.com/Ascend/memcache) 提供高效KV池化能力，已预装在MindIE Motor镜像中，无需额外安装。通过池化机制实现KV缓存跨请求复用，提升缓存命中率，降低推理TTFT，减少重复计算，提升推理吞吐。跨超节点场景（基于1825网卡进行参数面数据传输）、跨超节点场景（基于UB_RTP协议进行参数面数据传输）和跨超节点场景（基于 UBoE 协议进行参数面数据传输）的参数面池化部署，见 [950系列服务器跨超节点场景memcache池化后端服务部署指导](memcache_950.md)。
+MemCache为MindIE Motor默认池化后端，基于 [memcache_hybrid](https://gitcode.com/Ascend/memcache) 提供高效KV池化能力，已预装在MindIE Motor镜像中，无需额外安装。通过池化机制实现KV Cache跨请求复用，提升缓存命中率，降低推理TTFT，减少重复计算，提升推理吞吐。跨超节点场景（基于1825网卡进行参数面数据传输）、跨超节点场景（基于UB_RTP协议进行参数面数据传输）和跨超节点场景（基于 UBoE 协议进行参数面数据传输）的参数面池化部署，见 [950系列服务器跨超节点场景memcache池化后端服务部署指导](memcache_950.md)。
 
 ### 工作原理
 
@@ -87,7 +87,7 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
     - `inprocess`：vLLM 进程内分配 DRAM，部署简单，资源占用少。
     - `standalone`：独立 LocalService 进程，NodeManager 自动拉起并监控，内存隔离更好，LocalService 崩溃不影响 vLLM。
 
-    Atlas 800I A3 使用 standalone。如需覆盖 A2/A5 以外的默认值，在 `user_config.json` 中显式配置 `local_service_mode`。两种模式的差异和部署示例详见 [MemCache 分离部署方案](https://gitcode.com/Ascend/memcache/wiki/MemCache+vLLM+A3分离部署方案.md)。
+    Atlas 800I A3推理服务器 使用 standalone。如需覆盖 Atlas 800I A2推理服务器与Ascend 950PR系列产品 以外的默认值，在 `user_config.json` 中显式配置 `local_service_mode`。两种模式的差异和部署示例详见 [MemCache 分离部署方案](https://gitcode.com/Ascend/memcache/wiki/MemCache+vLLM+A3分离部署方案.md)。
 
 4. （可选）开启 KV events 广播。<a id="kv-events-affinity"></a>
 

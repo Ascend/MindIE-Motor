@@ -285,7 +285,7 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 {"detail":"Service is not available"}
 ```
 
-开启池化后，再用不少于 128 token 的 prompt 发一次请求。请求成功后，在 kv_store 日志中查看`Keys`，由 0 变为大于 0 即表示 block 已入池。日志路径示例：
+开启池化后，再用不少于128个token的prompt发一次请求。请求成功后，在kv_store日志中查看`Keys`，由0变为大于0即表示block已入池。日志路径示例：
 
 ```text
 /home/examples/motor_workspace/motor-kvs/kvs/log/docker-kv_store-<时间戳>.log
@@ -295,7 +295,7 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 
 在终端执行`Ctrl+C`可终止服务，但不会退出容器。服务终止后会出现如下提示，便于用户重新部署。
 
-```text
+```output
 容器内服务已终止，可执行以下命令重新部署服务。
 python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config --start --container-name motor-ctrl --role coordinator,controller --pod-ip <本机IP地址> --nic-name <本机主网卡名称>
 运行日志：examples/motor_workspace/motor-ctrl/ctrl/log/docker-coordinator-controller-<时间戳>.log
@@ -317,12 +317,14 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
    在宿主机执行一次。这个容器挂上两个实例要用的卡。管理面仍单独创建一个容器，按[查看部署计划](#查看部署计划)的回显执行。
 
+   --devices：该容器挂载两个实例需要用的卡。
+
    ```bash
    python3 /home/examples/deployer/docker_deploy.py \
      --config_dir /home/examples/config \
      --create \
      --container-name motor-pd \
-     --devices 0,1,2,3    # 这个容器挂载两个实例要用的卡
+     --devices 0,1,2,3
    ```
 
 2. 进入容器。

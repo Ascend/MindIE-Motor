@@ -45,7 +45,10 @@
 
 2. 准备配置文件。
 
-   MindIE Motor已提供[PD混部配置示例](../../../../../../model_configs/vllm/pd_hybrid/README.md)。实例数量用`hybrid_instances_num`，单个实例的容器数用`single_hybrid_instance_pod_num`，每个容器的卡数用`hybrid_pod_npu_num`，引擎配置在`motor_engine_union_config`，环境变量在`motor_engine_union_env`。**将配置文件拷贝至/home/examples/config目录**下。
+   实例数量用`hybrid_instances_num`，单个实例的容器数用`single_hybrid_instance_pod_num`，每个容器的卡数用`hybrid_pod_npu_num`，引擎配置在`motor_engine_union_config`，环境变量在`motor_engine_union_env`。**将配置文件拷贝至/home/examples/config目录**下。
+
+   >[!NOTE] 说明
+   >以下仅为`motor_deploy_config`片段示例，完整配置文件（含`motor_engine_union_config`和`motor_engine_union_env`）请参考[PD混部服务部署](../../k8s/pd_aggregation_deployment.md#配置user_configjson文件)。
 
    ```json
    {
@@ -137,8 +140,8 @@
 
    | 参数 | 说明 |
    | :--- | :--- |
-   | --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`src`字段后面是`--pod-ip`值。 |
-   | --nic-name | 当前服务器对应的主网卡名。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`dev`字段后面是`--nic-name`值。 |
+   | --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get <IP>`命令查看，`src`字段后面是`--pod-ip`值。 |
+   | --nic-name | 当前服务器对应的主网卡名。<br>可执行`ip -4 route get <IP>`命令查看，`dev`字段后面是`--nic-name`值。 |
    | --coordinator-ip/--controller-ip | 服务器 1 的 IP。管理面部署在服务器 1。 |
    | --kv-store-ip | 服务器 1 的 IP。开启池化时 kv_store 也部署在服务器 1，与管理面同机。 |
 

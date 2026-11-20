@@ -56,7 +56,7 @@ MindIE Motor/
 4. **可选：配图与其它静态文件**
    图片等若放在 **`docs/zh`** 下，请使用相对当前 Markdown 的路径引用；若使用 **`docs/mkdocs/hooks/img_width.py`** 支持的 HTML `<img width="...">` 写法，构建时会转为 Material 可用的属性语法。
 
-## 导航配置（`.nav.yaml`）
+## 导航配置（.nav.yaml）
 
 插件 **`mkdocs-awesome-nav`** 读取 **`docs/zh/.nav.yaml`**，顶层一般为：
 

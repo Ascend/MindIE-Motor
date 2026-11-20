@@ -12,10 +12,10 @@ Yuanrong 以内存为中心，提供近计算部署的分布式对象缓存，�
 
 Yuanrong 提供了异构数据对象抽象，支持 key/value 读写，并构建了由 HBM、DRAM、SSD 组成的分级缓存体系，通过以下关键技术实现高性能、大容量、易用的分布式数据访问：
 
-- **D2D 高效访问**：支持卡间 HBM 数据直接通信，自动管理动态链路建立、P2P 通信算子调度与负载均衡，降低跨设备传输延迟，简化多卡编程；
-- **H2D/D2H 高性能访问**：采用内存大页聚合与批量 SDMA/RDMA 操作，显著提升 KB 级小数据的传输效率，实现单卡高达 20GB/s 的传输吞吐；
-- **H2H 零冗余拷贝**：通过共享内存与通信内存的复用机制，实现进程间数据零冗余拷贝，一次 URMA Write 单边写操作，传输速率可达 48GB/s；
-- **跨节点 H2D 直通访问**：基于 NPU NIC 支持主机内存到设备内存的直接访问，避免数据经由 HBM 中转，降低 KV Cache 等场景的跨机访问延迟；
+- **D2D 高效访问**：支持卡间 HBM 数据直接通信，自动管理动态链路建立、P2P 通信算子调度与负载均衡，降低跨设备传输延迟，简化多卡编程。
+- **H2D/D2H 高性能访问**：采用内存大页聚合与批量 SDMA/RDMA 操作，显著提升 KB 级小数据的传输效率，实现单卡高达 20GB/s 的传输吞吐。
+- **H2H 零冗余拷贝**：通过共享内存与通信内存的复用机制，实现进程间数据零冗余拷贝，一次 URMA Write 单边写操作，传输速率可达 48GB/s。
+- **跨节点 H2D 直通访问**：基于 NPU NIC 支持主机内存到设备内存的直接访问，避免数据经由 HBM 中转，降低 KV Cache 等场景的跨机访问延迟。
 - **SSD 容量扩展与分级管理**：将数据自动溢出至 SSD，并智能调度数据在 DRAM 与 SSD 间的迁移与淘汰，实现存储容量与访问性能的平衡。
 
 ### 约束与限制
@@ -31,8 +31,8 @@ Yuanrong 提供了异构数据对象抽象，支持 key/value 读写，并构建
 
 ### 环境准备
 
-- 已使用 MindIE Motor 完成 PD 分离基础推理服务部署，服务运行正常。参考 [PD 分离服务部署](../../../deployment/README.md#k8s-pd-disaggregation)。
-- 已部署外部 ETCD，并保证其客户端地址在 P/D Pod 容器网络内可达。ETCD 部署方式可参考 [Yuanrong 部署指南](https://pages.openeuler.openatom.cn/openyuanrong-datasystem/docs/zh-cn/latest/deployment/deploy.html#etcd)。
+- 已使用 MindIE Motor 完成 PD 分离基础推理服务部署，服务运行正常。参考 [PD分离服务部署](../../../deployment/README.md#k8s-pd-disaggregation)。
+- 已部署外部 ETCD，并保证其客户端地址在 P/D Pod 容器网络内可达。ETCD 部署方式可参考 [Yuanrong部署指南](https://pages.openeuler.openatom.cn/openyuanrong-datasystem/docs/zh-cn/latest/deployment/deploy.html#etcd)。
 
    ```bash
    # 确认连通性
@@ -53,7 +53,7 @@ Yuanrong 提供了异构数据对象抽象，支持 key/value 读写，并构建
 
    修改 `boot.sh`，添加 `pip install xxx.whl` 命令，在启动服务时安装：
 
-   ```sh
+   ```bash
    ...
    case "$ROLE" in
        "SINGLE_CONTAINER")
@@ -139,7 +139,7 @@ Yuanrong 提供了异构数据对象抽象，支持 key/value 读写，并构建
      }
      ```
 
-   **表 2** kv_transfer_config 关键参数说明
+   **表 2** kv_transfer_config关键参数说明
 
    | 字段 | 说明 |
    |------|------|
@@ -261,7 +261,7 @@ Yuanrong 提供了异构数据对象抽象，支持 key/value 读写，并构建
 
    预期输出：
 
-   ```text
+   ```output
    Starting Yuanrong Worker: dscli start ...
    Yuanrong Worker is ready at <POD_IP>:18481
    ```
@@ -298,7 +298,7 @@ Yuanrong 提供了异构数据对象抽象，支持 key/value 读写，并构建
 
 | 场景 | 关键参数 | 建议取值 | 说明 |
 |------|----------|----------|------|
-| 通用 | `shared_memory_size_mb` | 模型 KV Cache 预估大小的 1.5~2 倍 | Worker DRAM 池上限；过小导致缓存频繁淘汰，过大挤占容器内存甚至被 OOM 终止 |
+| 通用 | shared_memory_size_mb | 模型 KV Cache 预估大小的 1.5~2 倍 | Worker DRAM 池上限；过小导致缓存频繁淘汰，过大挤占容器内存甚至被 OOM 终止 |
 | 多 NUMA 节点 + 大共享内存 | `start_args` 中的 `interleave` | 跨全部 NUMA 节点（如 `"0-7"` 或 `"all"`） | 内存交错分配，避免大块共享内存集中占用单个 NUMA 节点导致内存不均；取值遵循 numactl 节点语法 |
 | 大共享内存池 | `worker_args` 中的 `enable_huge_tlb` | `true` | 开启共享内存大页：共享内存按 2 MiB 大页（hugetlbfs）映射，减少页表开销、提升内存访问性能。前提是节点已预留足够大页（`/proc/sys/vm/nr_hugepages`；配合 `interleave` 交错分配时，参与交错的各 NUMA 节点均需预留），预留不足时 Worker 启动失败。 |
 | Worker 启动慢 | `start_args` 中的 `timeout`（短参数 `t`） | 按实际启动耗时增大，例如 120 | `dscli` 等待服务就绪的最大时间（秒），默认 90；该值不改变 NodeManager 的 30 秒就绪等待时间 |

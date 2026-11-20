@@ -3,20 +3,20 @@
 本文档指导用户基于Docker在单机上完成推理服务的部署，在1台服务器、1个容器内完成整个PD分离的部署，适用于小模型（权重小于100GB）场景，该部署方式不依赖K8s。大模型或多机部署可参见[基于Docker的多容器PD分离服务部署](host/pd_disaggregation_deployment.md)。KV池化需要单独的kv_store容器，请使用宿主机部署并参考[开启KV池化（可选）](./host/pd_disaggregation_deployment.md#开启kv池化可选)。
 
 >[!NOTE] 说明
->单容器部署中，Prefill与Decode在同1个容器、同1台机器上，不支持 Ascend 950PR 与 950DT 混合组网。混合组网请使用[宿主机部署：PD 分离](./host/pd_disaggregation_deployment.md#启动服务)，Prefill 命令放到 950PR 上，Decode 命令放到 950DT 上。
+>单容器部署中，Prefill与Decode在同1个容器、同1台机器上，不支持Ascend 950PR系列产品与Ascend 950DT系列产品混合组网。混合组网请使用[基于Docker的多容器PD分离服务部署](./host/pd_disaggregation_deployment.md#启动服务)，Prefill命令放到Ascend 950PR系列产品上，Decode命令放到Ascend 950DT系列产品上。
 
 ## 部署流程示意图
 
 ![部署流程示意图](../../../imgs/docker_deploy_flow.png)
 
-**首次部署**：
+**首次部署**
 
-- 部署前需要准备部署脚本和配置文件；
-- 执行“容器创建命令”，系统会自动创建容器并进入容器内部；
-- 系统在容器内自动执行部署脚本，随后等待服务部署完毕；
+- 部署前需要准备部署脚本和配置文件。
+- 执行“容器创建命令”，系统会自动创建容器并进入容器内部。
+- 系统在容器内自动执行部署脚本，随后等待服务部署完毕。
 - 若用户通过Ctrl+C终止服务，不会退出容器，而是回到可重新部署的状态。
 
-**重复部署**：
+**重复部署**
 
 - 在容器已存在的前提下，用户可直接执行部署命令；
 - 系统再次等待服务部署完毕，完成新一轮部署。
@@ -125,7 +125,7 @@
 
 ## 启用Render特性（可选）
 
-修改以下配置可以开启Render特性。特性开启后，部署单容器服务时，`docker_deploy.py`会在宿主机额外创建名为`{NAME}-vllm-render`的新容器`{NAME}`（即`--container-name`），并在其中运行vLLM Render服务。当用户终止服务时，请注意回收该容器。Render创建失败则不再创建主容器；主容器创建失败会删掉本次启动的Render。
+修改以下配置可以开启Render特性。特性开启后，部署单容器服务时，`docker_deploy.py`会在宿主机额外创建名为`{NAME}-vllm-render`的新容器（`{NAME}`即`--container-name`指定的主容器名），并在其中运行vLLM Render服务。当用户终止服务时，请注意回收该容器。Render创建失败则不再创建主容器；主容器创建失败会删掉本次启动的Render。
 
 容器内`--start`会`docker restart` Render兄弟容器；Coordinator退出时`docker stop` Render。Render退出后Coordinator继续运行。为此会把宿主机`/var/run/docker.sock`挂进单容器；已创建的旧容器需重建后才具备该挂载。
 
@@ -154,7 +154,7 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_
 ```bash
 python3 docker_deploy.py --config_dir ../../model_configs/vllm \
   --container-name motor-single --devices 0,1 \
-  --pod-ip <本机 IP地址> --nic-name <本机主网卡名称>
+  --pod-ip <本机IP地址> --nic-name <本机主网卡名称>
 ```
 
 上述命令执行后，窗口将自动创建容器、进入容器以及启动服务，用户在屏幕上可观察到日志打印。`--devices`需覆盖Prefill和Decode使用的卡。
@@ -166,8 +166,8 @@ python3 docker_deploy.py --config_dir ../../model_configs/vllm \
 | --config_dir | user_config.json和env.json配置文件所在目录。 |
 | --container-name | 容器名，可自定义。 |
 | --devices | 本容器挂载的NPU卡号，如`0,1`。如不填写，默认挂载服务器所有卡。 |
-| --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`src`字段后面是`--pod-ip`值。 |
-| --nic-name | 当前服务器对应`--pod-ip`的网卡名。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`dev`字段后面是`--nic-name`值。 |
+| --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get <IP>`命令查看，`src`字段后面是`--pod-ip`值。 |
+| --nic-name | 当前服务器对应`--pod-ip`的网卡名。<br>可执行`ip -4 route get <IP>`命令查看，`dev`字段后面是`--nic-name`值。 |
 
 ## 推理验证
 

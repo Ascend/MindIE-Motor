@@ -6,7 +6,7 @@
 
 ![MindIE Motor 接入 UCM Prefix Cache 的部署架构](../../../../imgs/ucm-motor-architecture.svg)
 
-> [!IMPORTANT]UCM 不是 `AscendStoreConnector` 的 backend
+> [!IMPORTANT]UCM 不是 `AscendStoreConnector` 的 Backend
 >
 > 不要配置 `"backend": "ucm"`。用于 P/D 传输的 Mooncake Connector 位于 `connectors[0]`，`UCMConnector` 位于 `connectors[1]`。Mooncake Connector 的具体类型由 PD 方案决定，并不限定为 `MooncakeConnectorV1`。
 
@@ -26,7 +26,7 @@ fi
 
 `boot.sh` 会在 Engine Pod 启动时执行；这里只为 Prefill 安装 UCM，因为 Decode 不加载 `UCMConnector`。请确保通配符只匹配一个 wheel。
 
-## 修改 `user_config.json`
+## 修改user_config.json
 
 复制 `model_configs/vllm/ucm_pd/user_config.json`，再按实际环境修改下面几部分。
 
@@ -164,7 +164,7 @@ Prefill 的 `kv_transfer_config` 使用 `MultiConnector`，并将 UCM 配置内�
 
 其中 `storage_backends: "/mnt/ucm"` 对应前面的 `storage[].mount_path`，`posix_capacity_gb` 应小于存储卷的实际可用容量。
 
-`connectors[0]` 也可以按 PD 方案使用 MindIE Motor 当前已识别的其他 Mooncake 传输 Connector，例如 `MooncakeHybridConnector` 或 `MooncakeLayerwiseConnector`。不同 Connector 的执行模式和参数并不相同，应按 [PD 分离特性说明](../../../../design/pd_disaggregation.md#connector-驱动执行计划) 配置，并保证 Prefill 与 Decode 使用相互匹配的传输配置；`UCMConnector` 仍保持在 `connectors[1]`。
+`connectors[0]` 也可以按 PD 方案使用 MindIE Motor 当前已识别的其他 Mooncake 传输 Connector，例如 `MooncakeHybridConnector` 或 `MooncakeLayerwiseConnector`。不同 Connector 的执行模式和参数并不相同，应按 [PD分离特性说明](../../../../design/pd_disaggregation.md#connector-驱动执行计划) 配置，并保证 Prefill 与 Decode 使用相互匹配的传输配置；`UCMConnector` 仍保持在 `connectors[1]`。
 
 > 混合 attention 模型（V4 系列）须用 `MooncakeHybridConnector`，见 [P/D传输Connector选型](README.md#table_Connector)。
 
@@ -188,13 +188,13 @@ Decode 使用与 Prefill 匹配的 Mooncake Connector，不配置 UCM。以下�
 
 ## 部署和删除
 
-在 `examples/deployer` 目录执行一句命令完成部署：
+在 `examples/deployer` 目录执行一条命令完成部署：
 
 ```bash
 python3 deploy.py --config_dir ../../model_configs/vllm/ucm_pd
 ```
 
-使用 `user_config.json` 中的 `job_id` 作为命名空间，一句命令删除部署：
+使用 `user_config.json` 中的 `job_id` 作为命名空间，一条命令删除部署：
 
 ```bash
 bash delete.sh mindie-motor

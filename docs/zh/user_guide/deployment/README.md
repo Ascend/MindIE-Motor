@@ -2,33 +2,31 @@
 
 推荐部署方案如下，两种方案**均可以基于 Motor 优秀的调度算法获得性能收益**：
 
-1. k8s部署
+1. K8s部署
 
     推荐已**具备K8s 环境、且对高阶可靠性有较强诉求**的用户使用。
 
-    [基于k8s平台的PD分离服务部署（vLLM）](#k8s-pd-disaggregation)
+    [基于K8s平台的PD分离服务部署（vLLM）](#k8s-pd-disaggregation)
 
-    [基于k8s平台的PD分离服务部署（SGLang）](#k8s-pd-disaggregation-sglang)
+    [基于K8s平台的PD分离服务部署（SGLang）](#k8s-pd-disaggregation-sglang)
 
-2. docker only部署
+2. Docker Only部署
 
     推荐**不具备 K8s 部署环境**的用户使用，该方案仅具备**基础可靠性能力**。
 
-    [基于docker的PD分离服务部署（vLLM）](#docker-pd-disaggregation)
+    [基于Docker的PD分离服务部署（vLLM）](#docker-pd-disaggregation)
 
 除推荐方案外，Motor还提供了 PD 混部、云平台部署、Slurm 流水线的部署方案，请参考[**全量部署方案**](#all-deployments)。
 
 <a id="k8s-pd-disaggregation"></a>
 
-# 基于k8s平台的PD分离服务部署（vLLM）
+## 基于K8s平台的PD分离服务部署（vLLM）
 
 本文旨在指导开发者基于MindIE Motor的vLLM推理引擎完成Kubernetes环境下的PD分离部署，并提供生产环境配置优化实践指导。
 
-## 前置准备
+### 前置准备
 
-1. 按照以下要求准备环境。
-
-    - 所有服务器均已完成[环境准备](../environment_preparation.md)。
+1. 所有服务器均已参考[环境准备](../environment_preparation.md)完成环境准备。
 
 2. 准备镜像。
 
@@ -77,11 +75,11 @@
 
         git clone代码仓后，启动脚本位于`/examples`目录。
 
-## 配置获取
+### 配置获取
 
-   1. MindIE Motor已在下表中提供了常用模型的配置示例(deepseek_v4.1_flash、glm 5.2、glm 5.3等)，**用户修改少量配置后可直接使用**。
+   1. MindIE Motor已在下表中提供了常用模型的配置示例(DeepSeek_V4.1-Flash、GLM-5.2、GLM-5.3等)，**用户修改少量配置后可直接使用**。
 
-### 常用模型
+#### 常用模型
 
 <table>
   <tr><th style="font-size:18px" align="center" colspan="5">常用模型</th></tr>
@@ -199,7 +197,7 @@ vim ./config/user_config.json
 vim ./config/env.json
 ```
 
-## 服务部署与验证
+### 服务部署与验证
 
 以下操作均在**K8s集群的master节点**执行。
 
@@ -273,11 +271,11 @@ vim ./config/env.json
 
 <a id="docker-pd-disaggregation"></a>
 
-# 基于docker的PD分离服务部署（vLLM）
+## 基于Docker的PD分离服务部署（vLLM）
 
-本文档指导用户基于docker组件部署PD分离服务。用户在**宿主机执行一条指令创建容器并部署服务**，但容器的生命周期需要用户手动管理。
+本文档指导用户基于Docker组件部署PD分离服务。用户在**宿主机执行一条指令创建容器并部署服务**，但容器的生命周期需要用户手动管理。
 
-## 准备镜像
+### 准备镜像
 
 通过以下方式获取镜像：
 
@@ -295,9 +293,9 @@ vim ./config/env.json
    docker load -i xxxx.tar
    ```
 
-## 准备服务启动脚本
+### 准备服务启动脚本
 
-在**任意一台服务器**，执行以下操作
+在任意一台服务器上，执行以下操作：
 
 1. 获取启动脚本。
 
@@ -316,7 +314,7 @@ vim ./config/env.json
 
 2. 准备配置文件。
 
-     MindIE Motor已提供常用模型（deepseek_v4_flash、deepseek_v4_pro、GLM 5.1等）的[PD分离配置示例](../../../../model_configs/vllm/models/README.md)，基于模型和服务器类型选择配置示例，并**将配置文件拷贝至/home/examples/config目录**下。
+     MindIE Motor已提供常用模型（DeepSeek-V4-Flash、DeepSeek-V4-Pro、GLM 5.1等）的[PD分离配置示例](../../../../model_configs/vllm/models/README.md)，基于模型和服务器类型选择配置示例，并**将配置文件拷贝至/home/examples/config目录**下。
 
       <table>
         <tr><th style="font-size:18px" align="center" colspan="4">常用模型</th></tr>
@@ -339,9 +337,9 @@ vim ./config/env.json
         <tr><td>Qwen3-235B</td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td></tr>
       </table>
 
-    对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+      对于未提供典型配置的模型，可参考[MindIE Motor配置自动生成指导](../../../../model_configs/vllm/models/README.md)，自动生成配置文件`user_config.json`与`env.json`。
 
-3. 保存配置文件
+3. 保存配置文件。
 
     进入examples目录下，将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下，再修改后保存：
 
@@ -382,7 +380,7 @@ vim ./config/env.json
 
     将整个/home/examples目录，**拷贝至所有服务器的相同路径**下。
 
-## 启动服务
+### 启动服务
 
 1. 获取服务启动命令
 
@@ -394,7 +392,7 @@ vim ./config/env.json
 
     回显如下（一台服务器部署一个推理容器）。下例为 2 个 Prefill、2 个 Decode，每个实例 1 个容器、2 张卡：
 
-    ```text
+    ```output
     预计使用 4 台服务器。
 
     服务器 1：管理面
@@ -432,14 +430,14 @@ vim ./config/env.json
 
     | 参数 | 说明 |
     | :--- | :--- |
-    | --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`src`字段后面是`--pod-ip`值。 |
-    | --nic-name | 当前服务器对应的主网卡名。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`dev`字段后面是`--nic-name`值。 |
+    | --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get <IP>`命令查看，`src`字段后面是`--pod-ip`值。 |
+    | --nic-name | 当前服务器对应的主网卡名。<br>可执行`ip -4 route get <IP>`命令查看，`dev`字段后面是`--nic-name`值。 |
     | --coordinator-ip/--controller-ip | 服务器 1 的 IP。管理面部署在服务器 1。 |
     | --kv-store-ip | 服务器 1 的 IP。开启池化时 kv_store 也部署在服务器 1，与管理面同机。 |
 
     【可选】如果需要**一台服务器部署多个推理容器**，请参考[同一服务器部署多个推理容器](./docker/host/pd_disaggregation_deployment.md#同一服务器部署多个推理容器)部署服务。
 
-## 推理验证
+### 推理验证
 
 在**部署管理服务的服务器上**发送如下推理请求，即可进行推理验证：
 
@@ -456,26 +454,25 @@ curl -X POST http://<coordinator管理服务所在服务器的IP地址>:1025/v1/
 
 若返回以下内容，表示服务尚未就绪，可稍后重试。
 
-```Output
+```output
 {"detail":"Service is not available"}
 ```
 
-## 终止服务与重复部署
+### 终止服务与重复部署
 
 在终端执行`Ctrl+C`可终止服务，但不会退出容器。服务终止后会出现如下提示，便于用户重新部署。
 
-```text
+```output
 容器内服务已终止，可执行以下命令重新部署服务。
 python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config --start --container-name motor-ctrl --role coordinator,controller --pod-ip <本机IP地址> --nic-name <本机主网卡名称>
 运行日志：examples/motor_workspace/motor-ctrl/ctrl/log/docker-coordinator-controller-<时间戳>.log
 ```
 
-如需查阅常用特性的开启方式，请参见[PD分离服务部署常用特性使用指导](./k8s/pd_disaggregation_deployment.md#特性配置)；
-若要查看 Motor 已支持的全部特性，请点击[motor特性支持](../features/supported_features.md)。
+如需查阅常用特性的开启方式，请参见[PD分离服务部署常用特性使用指导](./k8s/pd_disaggregation_deployment.md#特性配置)；若要查看Motor已支持的全部特性，请点击[Motor特性支持](../features/supported_features.md)。
 
 <a id="k8s-pd-disaggregation-sglang"></a>
 
-# PD分离服务部署（基于SGLang推理引擎）
+## PD分离服务部署（基于SGLang推理引擎）
 
 本文指导开发者基于 MindIE Motor 的 SGLang 推理引擎，完成 Kubernetes 环境下的 PD 分离部署。
 
@@ -483,7 +480,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 下面以 DeepSeek-V4-Flash 模型、Atlas 800I A3 超节点服务器为例，演示部署全流程。
 
-## 获取镜像
+### 获取镜像
 
 - 基本检查
 
@@ -493,15 +490,15 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 - 下载镜像
 
-    1、进入[昇腾镜像仓库](https://www.hiascend.com/developer/ascendhub)，打开 **mindie-motor** 镜像仓。
+    1、进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，打开 **mindie-motor** 镜像仓。
 
-    2、打开**镜像下载**页签，在右侧搜索框搜索 `sglang` ，选择镜像版本：`3.2.0-sglang0.5.21-a3-ubuntu22.04-py3.12`。
+    2、打开**镜像下载**页签，在右侧搜索框搜索 `sglang`，选择镜像版本：`3.2.0-sglang0.5.21-a3-ubuntu22.04-py3.12`。
 
     3、按操作系统架构选择 ARM 或 x86 对应镜像并下载。
 
     4、下载后，请确认 Kubernetes 集群各工作节点都能使用该镜像。
 
-## 准备配置文件
+### 准备配置文件
 
 从 MindIE Motor 仓库获取本示例的配置文件：
 
@@ -526,7 +523,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
     **`job_id`**：本示例为 `mindie-motor-sglang`，后续将作为 Kubernetes 命名空间。
 
-## 服务部署与验证
+### 服务部署与验证
 
 以下操作均在 Kubernetes 集群的 master 节点执行。
 
@@ -553,12 +550,12 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
     | 服务 Pod 名称                    | 说明                |
     | ---------------------------- | ----------------- |
-    | `mindie-motor-controller-*`  | 服务管理              |
-    | `mindie-motor-coordinator-*` | 请求调度与业务入口         |
-    | `mindie-motor-mf-store`                   | KV Cache 传输       |
-    | `sglang-p*`                  | Prefill 实例        |
-    | `sglang-d*`                  | Decode 实例         |
-    | `mindie-motor-kv-conductor-*`             | KV 亲和调度（未开启则不会出现） |
+    | mindie-motor-controller-*  | 服务管理              |
+    | mindie-motor-coordinator-* | 请求调度与业务入口         |
+    | mindie-motor-mf-store                  | KV Cache 传输       |
+    | sglang-p*                  | Prefill 实例        |
+    | sglang-d*                  | Decode 实例         |
+    | mindie-motor-kv-conductor-*             | KV 亲和调度（未开启则不会出现） |
 
 4. 查看日志
 
@@ -601,7 +598,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 <a id="all-deployments"></a>
 
-# 全量部署方案
+## 全量部署方案
 
 <table cellspacing="0" cellpadding="6" style="border-collapse:collapse;border-spacing:0;">
   <tr><th align="left" width="220">方案</th><th align="left" width="420">额外说明</th><th align="center" width="72">文档</th></tr>

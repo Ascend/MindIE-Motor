@@ -21,7 +21,7 @@
 
 ### 环境准备
 
-主备倒换依赖ETCD分布式锁功能，涉及集群内不同POD间通信，建议使用CA证书做双向认证。ETCD集群部署包含两部分：生成ETCD安全证书和部署ETCD服务端。ETCD服务端仅需部署一套，Coordinator、Controller主备倒换特性可以共用一套ETCD。
+主备倒换依赖ETCD分布式锁功能，涉及集群内不同Pod间通信，建议使用CA证书做双向认证。ETCD集群部署包含两部分：生成ETCD安全证书和部署ETCD服务端。ETCD服务端仅需部署一套，Coordinator、Controller主备倒换特性可以共用一套ETCD。
 
 #### 生成ETCD安全证书（可选）
 
@@ -339,7 +339,7 @@
 
         返回结果如下所示表示创建成功：
 
-        ```bash
+        ```output
         persistentvolume/etcd-data-0 created
         persistentvolume/etcd-data-1 created
         persistentvolume/etcd-data-2 created
@@ -353,7 +353,7 @@
 
         返回结果如下所示表示创建成功：
 
-        ```bash
+        ```output
         node/<节点名> labeled
         ```
 
@@ -561,13 +561,13 @@
         >   kubectl -n <namespace> exec etcd-0 -- etcdctl --endpoints=https://etcd-0.etcd:2379 --cacert=/etc/ssl/certs/etcdca/ca.pem --cert=/etc/ssl/certs/etcdca/server.pem --key=/etc/ssl/certs/etcdca/server.key snapshot save /tmp/etcd-backup.db
         >   ```
         >
-        >   备份文件位于容器内 /tmp/etcd-backup.db ，可执行以下命令导出到本地。
+        >   备份文件位于容器内 /tmp/etcd-backup.db，可执行以下命令导出到本地。
         >
         >   ```bash
         >   kubectl -n <namespace> cp <etcd-pod>:/tmp/etcd-backup.db ./etcd-backup.db
         >   ```
         >
-        >- 再删除etcd-0，etcd-1，etcd-2数据库中内容（删除前请确认已完成备份，且该目录仅用于本ETCD集群）：
+        >- 再删除etcd-0、etcd-1、etcd-2数据库中的内容（删除前请确认已完成备份，且该目录仅用于本ETCD集群）：
         >
         >    ```bash
         >    rm -rf /mnt/data/etcd-0/*
@@ -580,7 +580,7 @@
 当硬件出现故障时（如机器重启），K8s集群无法迅速感知容器Pod的状态，导致推理业务无法在指定时间内恢复，可通过执行如下步骤以加快业务恢复速度。
 
 >[!NOTE] 说明
->如果不要求硬件故障影响时长，可不执行下述步骤。
+>如果对硬件故障影响时长没有要求，可不执行下述步骤。
 
 1. 执行以下命令查询K8s管理节点心跳超时标记阈值（`node-monitor-grace-period`），如果结果为空表示为默认值。
 
@@ -588,7 +588,7 @@
     kubectl describe pod <kube-controller-manager-pod 名> -n kube-system | grep "node-monitor-grace-period"
     ```
 
-2. 执行以下命令打开并修改节点心跳超时标记阈值（`node-monitor-grace-period`），配置文件所在路径一般存放在控制平面节点（运行kube-controller-manager的节点）的/etc/kubernetes/manifests/kube-controller-manager.yaml目录。
+2. 执行以下命令打开并修改节点心跳超时标记阈值（`node-monitor-grace-period`），配置文件所在路径一般存放在控制平面节点（运行kube-controller-manager的节点）的/etc/kubernetes/manifests/目录下，文件名为kube-controller-manager.yaml目录。
 
     ```bash
     vi /etc/kubernetes/manifests/kube-controller-manager.yaml
@@ -610,7 +610,7 @@
       ```
 
     >[!NOTE] 说明
-    >- 修改前建议先备份原文件： cp /etc/kubernetes/manifests/kube-controller-manager.yaml /root/kube-controller-manager.yaml.bak。
+    >- 修改前建议先备份原文件：cp /etc/kubernetes/manifests/kube-controller-manager.yaml /root/kube-controller-manager.yaml.bak。
     >- 该文件由kubelet监听并据此重建Pod，metadata、name、namespace、spec的缩进层级错误会导致kube-controller-manager无法启动。
 
 3. 按 Esc 键，输入`:wq!`，按 Enter 保存并退出编辑。
@@ -680,7 +680,7 @@
 
 2. 配置user_config.json配置文件，开启TLS认证。（如果不开启CA证书，请跳过此步骤。）
 
-    开启CA证书认证：
+    开启CA：
     - 设置tls_config/etcd_tls_config的`enable_tls`为true；
     - 设置`ca_file`/`cert_file`/`key_file`为对应的文件路径。
 
@@ -717,7 +717,7 @@
     - false：关闭主备；
     - true：开启主备。
     >[!NOTE] 说明
-    >默认使用default工作空间下的ETCD服务端，端口号默认为2379。如果需要修改，在motor_controller_config中修改ETCD信息。域名通常为etcd.{namespace}.svc.cluster.local。
+    >默认使用default命名工作空间下的ETCD服务端，端口号默认为2379。如果需要修改，在motor_controller_config中修改ETCD信息。域名通常为etcd.{namespace}.svc.cluster.local。
     >
     > ```json
     > ...
@@ -915,7 +915,7 @@
 5. 发送请求验证服务是否启动成功。
 
     有以下两种方式发送请求：
-    - Coordinator主节点的PodIP和端口号：http://PodIP:1025。（其中仅有READY为1/1的才可执行推理请求）
+    - Coordinator主节点的PodIP和端口号：http://PodIP:1025。（其中仅有READY为1/1的Coordinator才可执行推理请求）
     - K8s集群内任意物理机IP:31015（端口号需与 examples/deployer/yaml_template/coordinator_template.yaml（multi_deployment 场景）或 examples/deployer/yaml_template/infer_service_template.yaml（CRD 场景）中 mindie-motor-coordinator-infer 的 nodePort 端口保持一致）。
 
     该样例使用物理机IP和端口号方式：
@@ -961,11 +961,11 @@ kubectl -n <namespace> logs <pod名> | grep "Role changed"
 kubectl -n <namespace> get pod -owide
 ```
 
-有且仅有一个Controller/Coordinator pod READY状态为1/1，表示该节点为主节点；READY为0/1的为备节点，属预期现象。
+有且仅有一个Controller/Coordinator Pod READY状态为1/1，表示该节点为主节点；READY为0/1的为备节点，属预期现象。
 
 **方式三：检查主备角色（接口方式，可选）**
 
-Controller使用管理面端口（`motor_controller_config.api_config.controller_api_port`，默认1026），Coordinator使用管控面端口（`motor_coordinator_config.api_config.coordinator_api_mgmt_port`，默认1026），访问`/readiness`：
+Controller使用管理面端口（`motor_controller_config.api_config.controller_api_port`，默认1026），Coordinator使用管理面端口（`motor_coordinator_config.api_config.coordinator_api_mgmt_port`，默认1026），访问`/readiness`：
 
 ```bash
 # Controller
@@ -1051,7 +1051,7 @@ Controller/Coordinator的两个Pod长期都是0/1，服务不可用。
 
 **问题描述**
 
-开启主备后只起来一个Pod，另一个长期Pending。
+开启主备后只启动了一个Pod，另一个长期Pending。
 
 **原因分析**
 

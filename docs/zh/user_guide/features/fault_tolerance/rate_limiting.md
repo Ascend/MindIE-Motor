@@ -15,7 +15,7 @@
 
 该能力只挂在Coordinator推理面应用上，覆盖以下接口：
 
-| 提供者 | 实现方式 |
+| 方法 | 实现方式 |
 |----------|------|
 | POST | /v1/completions |
 | POST | /v1/chat/completions |
@@ -70,7 +70,7 @@ simple 限流器在每次判定后，计算已用额度 used = max_requests - av
 
 **请求体大小**
 
-`max_request_body_size` 单位是 MB（1 MB = 1024×1024 字节），允许小数，例如 `0.5`。启动校验拒绝负数。运行时小于等于 0 表示不限制；大于 0 时，体大小检查发生在消耗令牌之前。
+`max_request_body_size` 单位是 MB（1 MB = 1024×1024 Byte），允许小数，例如 `0.5`。启动校验拒绝负数。运行时小于等于 0 表示不限制；大于 0 时，请求体大小检查发生在消耗令牌之前。
 
 | 场景 | 处理方式 |
 |------|------|
@@ -89,7 +89,7 @@ simple 限流器在每次判定后，计算已用额度 used = max_requests - av
 无 `Content-Length` 且实际字节超限时，`message` 为：
 
 ```text
-`Request body size exceeds maximum (<上限字节数> bytes)`。
+`Request body size exceeds maximum (<上限字节数> bytes)`
 ```
 
 **拒绝响应与响应头**
@@ -128,9 +128,9 @@ Coordinator 将该路径写入环境变量 `OLC_CONFIG_PATH`，并挂载 `OlcFas
 | Method | HTTP 方法 |
 | IP | 客户端地址，取不到时为 `unknown` |
 
-配额、并发等规则由 OLC 配置决定，见仓库示例 `examples/features/http/overload_control` 与 [OLC 文档](https://gitcode.com/openFuyao/olc-python)。
+配额、并发等规则由 OLC 配置决定，见仓库示例 `examples/features/http/overload_control` 与 [OLC文档](https://gitcode.com/openFuyao/olc-python)。
 
-OLC 中间件创建失败时，Coordinator 记录错误日志
+OLC 中间件创建失败时，Coordinator 记录错误日志：
 
 ```text
 Using simple rate limit, Failed to create olc limit middleware
@@ -142,7 +142,7 @@ Using simple rate limit, Failed to create olc limit middleware
 
 启动时已创建 simple 限流器之后（enable_rate_limit=true 且 provider 为 simple，或 olc 创建失败后已回退），热更新会立即修改以下字段：
 
-| 标签 | 来源 |
+| 配置项 | 热更新行为 |
 |------|------|
 | skip_paths、error_message、error_status_code、max_request_body_size | 立即生效。 |
 | enable_rate_limit | 写入运行时开关。改为 `false` 后，后续请求直接放行，请求体大小检查也不再执行；改回 `true` 后继续走已有令牌桶。 |
@@ -152,9 +152,9 @@ Using simple rate limit, Failed to create olc limit middleware
 
 以下变更不能靠热更新完成，需要重启 Coordinator：
 
-- 启动时 `enable_rate_limit=false`，之后想补装限流中间件
-- 切换 `provider`，或修改 `olc_config_path`
-- 修改 `scope`（当前实现也不读取该字段做分桶）
+- 启动时 `enable_rate_limit=false`，之后想补装限流中间件。
+- 切换 `provider`，或修改 `olc_config_path`。
+- 修改 `scope`（当前实现也不读取该字段做分桶）。
 
 字段清单详见 [热更新配置项说明](../../configuration/update_config_whitelist.md)。
 
@@ -182,7 +182,7 @@ Using simple rate limit, Failed to create olc limit middleware
 ### 使用场景
 
 - 需要限制 Coordinator 推理入口的请求速率，避免突发流量打满调度和推理实例。
-- 需要拒绝过大的请求体，避免超大 body 占用内存。
+- 需要拒绝过大的请求体，避免超大请求体占用内存。
 - 需要按 URL、方法或客户端地址使用外部过载规则，而不是单一全局额度。
 
 ### 使用样例
@@ -235,7 +235,7 @@ Using simple rate limit, Failed to create olc limit middleware
 }
 ```
 
-使用 OLC 时先安装库，再把 `olc_config_path` 指到规则目录：
+使用 OLC 时先安装库，再把 `olc_config_path` 指向规则目录：
 
 ```bash
 pip install git+https://gitcode.com/openFuyao/olc-python.git@v0.1.0
@@ -337,9 +337,14 @@ OLC 未安装，或规则目录里的规则加载失败。Coordinator 已回退�
 
 **解决步骤**
 
-1. 安装 OLC：`pip install git+https://gitcode.com/openFuyao/olc-python.git@v0.1.0`。
+1. 安装OLC。
+
+    ``` bash
+    pip install git+https://gitcode.com/openFuyao/olc-python.git@v0.1.0
+    ```
+
 2. 确认 `olc_config_path` 指向的目录存在，且包含 `overload-config.properties` 和 `olc.json`。
-3. 重启 Coordinator。
+3. 重启Coordinator。
 
 ### 启动报错 olc_config_path 或 error_status_code
 

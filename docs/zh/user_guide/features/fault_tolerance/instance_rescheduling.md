@@ -22,17 +22,17 @@
 
 ### 约束与限制
 
-| 约束维度   | 要求                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 部署方式   | 仅支持K8s部署，依赖MindCluster管理推理任务。Docker only部署没有实例调度器，不支持实例重调度。                                                                                                                                                                                                                                                                                                                                                                                              |
-| 推理引擎   | 支持vLLM和SGLang。实例重调度位于容器和实例生命周期层，不依赖请求协议。                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| 软件依赖   | 需要安装与当前Motor版本配套的Kubernetes、Volcano、Ascend Device Plugin、ClusterD和MindCluster Infer Operator。配套版本请参见[版本配套说明](../../../release_note_motor.md)。                                                                                                                                                                                                                                                                                                                |
-| 资源要求   | 集群中必须存在满足实例NPU数量、硬件型号、节点标签、亲和性和网络拓扑要求的健康资源。资源不足时，新Pod会保持`Pending`，实例无法恢复。                                                                                                                                                                                                                                                                                                                                                      |
-| 多Pod实例  | 实例级重调度需要回收并重建完整实例。直接删除P/D多Pod实例中的单个Pod不保证触发完整实例重调度，也可能导致剩余Pod等待集合通信。验证故障恢复时应通过真实故障或按部署平台支持的实例级方式触发。                                                                                                                                                                                                                                                                                                 |
+| 约束维度   | 要求   |
+| ---------- | --------- |
+| 部署方式   | 仅支持K8s部署，依赖MindCluster管理推理任务。Docker only部署没有实例调度器，不支持实例重调度。 |
+| 推理引擎   | 支持vLLM和SGLang。实例重调度位于容器和实例生命周期层，不依赖请求协议。 |
+| 软件依赖   | 需要安装与当前Motor版本配套的Kubernetes、Volcano、Ascend Device Plugin、ClusterD和MindCluster Infer Operator。配套版本请参见[版本配套说明](../../../release_note_motor.md)。 |
+| 资源要求   | 集群中必须存在满足实例NPU数量、硬件型号、节点标签、亲和性和网络拓扑要求的健康资源。资源不足时，新Pod会保持`Pending`，实例无法恢复。  |
+| 多Pod实例  | 实例级重调度需要回收并重建完整实例。直接删除P/D多Pod实例中的单个Pod不保证触发完整实例重调度，也可能导致剩余Pod等待集合通信。验证故障恢复时应通过真实故障或按部署平台支持的实例级方式触发。  |
 | RoCE网络   | RoCE网络未配置或网络不健康时，非超节点调度场景下的单机推理实例仍可能正常完成调度，但推理实例之间的KV传输可能异常，导致推理任务无法正常运行。超节点调度场景下，逻辑超节点数量为1时也存在相同风险。实例处于`Running`或已完成重调度不代表KV传输链路正常，详细说明请参见MindCluster 26.0文档《[部署MindIE Motor推理任务](https://www.hiascend.com/document/detail/zh/mindcluster/2600/clustersched/dlug/docs/zh/scheduling/usage/mindie_motor_best_practice/01_deploying_mindie_motor.md)》。 |
-| 业务连续性 | 故障实例从调度池移除到新实例`ACTIVE`期间，该实例不承接新请求。若没有其他健康实例，推理接口可能暂时不可用；已在故障实例上执行的请求是否续推取决于请求重调度配置。                                                                                                                                                                                                                                                                                                                         |
-| 状态数据   | 实例重调度会创建新Pod并重新拉起引擎，Pod本地的非持久化数据不会保留。模型权重、配置、日志及KV Cache等需要按业务要求使用共享存储或持久卷。                                                                                                                                                                                                                                                                                                                                                   |
-| 其他特性   | 容器快照可以缩短重调度后的引擎恢复时间；PR/DT异构部署下，Prefill只能重调度到PR节点，Decode只能重调度到DT节点。对应类型没有空闲节点时无法恢复。                                                                                                                                                                                                                                                                                                                                             |
+| 业务连续性 | 故障实例从调度池移除到新实例`ACTIVE`期间，该实例不承接新请求。若没有其他健康实例，推理接口可能暂时不可用；已在故障实例上执行的请求是否续推取决于请求重调度配置。  |
+| 状态数据   | 实例重调度会创建新Pod并重新拉起引擎，Pod本地的非持久化数据不会保留。模型权重、配置、日志及KV Cache等需要按业务要求使用共享存储或持久卷。  |
+| 其他特性   | 容器快照可以缩短重调度后的引擎恢复时间；PR/DT异构部署下，Prefill只能重调度到PR节点，Decode只能重调度到DT节点。对应类型没有空闲节点时无法恢复。  |
 
 ## 特性使用
 
@@ -56,17 +56,17 @@ spec:
         fault-retry-times: "10000"
 ```
 
-参数说明如下。完整的版本化定义请参见MindCluster最新《[任务YAML配置说明](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/06_api/15_yaml_configuration.md)》。其中，Deployment及Infer Operator工作负载支持多个`fault-scheduling`取值：
+参数说明如下,完整的版本化定义请参见MindCluster最新《[任务YAML配置说明](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/06_api/15_yaml_configuration.md)》。其中，Deployment及Infer Operator工作负载支持多个`fault-scheduling`取值：
 
-| 参数                  | 取值                          | 说明                                                                                                                                                                                                                                                     |
-| --------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fault-scheduling`  | `grace`                     | 由Volcano先优雅删除原Pod。                                                                                                                                                                                                                               |
-| `fault-scheduling`  | `force`                     | 由Volcano强制删除原Pod。                                                                                                                                                                                                                                 |
-| `fault-scheduling`  | `external-force`            | Volcano只将故障原因写入Pod annotation，由Infer Operator等外部组件感知故障并强制删除原Pod，适用于由Infer Operator负责实例级重调度的场景。                                                                                                                 |
-| `fault-scheduling`  | `external-grace`            | Volcano只将故障原因写入Pod annotation，由Infer Operator等外部组件感知故障并优雅删除原Pod。                                                                                                                                                               |
-| `fault-scheduling`  | `external-force-pod-failed` | Volcano只标注故障，由Infer Operator等外部组件处理；仅在业务面故障，即Pod内进程非零退出时强制删除原Pod，硬件故障时不删除故障节点上的Pod。Motor在Controller和引擎侧DP故障恢复开关同时开启时，会为对应推理Pod生成该值，并同时配置`pod-rescheduling: on`。 |
-| `fault-scheduling`  | `off`、未配置或其他值       | 不启用MindCluster断点续训故障处理，K8s工作负载自身的重试机制仍可能生效。                                                                                                                                                                                 |
-| `fault-retry-times` | 大于`0`的整数               | 业务面故障允许无条件重试的次数。使用该能力要求进程发生业务面故障时以非零状态退出；未配置或配置为`0`时，不启用业务面故障无条件重试。Motor模板默认值为`10000`。                                                                                        |
+| 参数 | 取值  | 说明  |
+| --- | --- | --- |
+| fault-scheduling  | grace | 由Volcano先优雅删除原Pod。 |
+| fault-scheduling  | force  | 由Volcano强制删除原Pod。  |
+| fault-scheduling  | external-force | Volcano只将故障原因写入Pod annotation，由Infer Operator等外部组件感知故障并强制删除原Pod，适用于由Infer Operator负责实例级重调度的场景。 |
+| fault-scheduling  | external-grace | Volcano只将故障原因写入Pod annotation，由Infer Operator等外部组件感知故障并优雅删除原Pod。    |
+| fault-scheduling  | external-force-pod-failed | Volcano只标注故障，由Infer Operator等外部组件处理；仅在业务面故障，即Pod内进程非零退出时强制删除原Pod，硬件故障时不删除故障节点上的Pod。Motor在Controller和引擎侧DP故障恢复开关同时开启时，会为对应推理Pod生成该值，并同时配置`pod-rescheduling: on`。 |
+| fault-scheduling  | off`、未配置或其他值  | 不启用MindCluster断点续训故障处理，K8s工作负载自身的重试机制仍可能生效。 |
+| fault-retry-times | 大于0的整数  | 业务面故障允许无条件重试的次数。使用该能力要求进程发生业务面故障时以非零状态退出；未配置或配置为0时，不启用业务面故障无条件重试。Motor模板默认值为10000。 |
 
 如需确认部署结果，执行以下命令：
 

@@ -1,23 +1,23 @@
 
 # MindIE Motor简介
 
-**MindIE Motor**是面向大语言模型（LLM）分布式推理，如**PD分离推理**（Prefill与Decode阶段分离）的请求调度框架。它通过开放、可扩展的推理服务化平台架构，对接[vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)和[SGLang](https://github.com/sgl-project/sglang)原生运行时，旨在满足大语言模型的高性能推理需求。
+**MindIE Motor**是面向大语言模型（LLM）分布式推理，如**PD分离推理**（Prefill与Decode阶段分离）的请求调度框架。MindIE Motor通过开放、可扩展的推理服务化平台架构，对接[vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)和[SGLang](https://github.com/sgl-project/sglang)原生运行时，旨在满足大语言模型的高性能推理需求。
 
 >[!NOTE] 说明
->MindIE Motor 的软件定位与基本功能保持不变，对接vLLM-Ascend与SGLang原生推理引擎。
+>MindIE Motor的软件定位与基本功能保持不变，对接vLLM-Ascend与SGLang原生推理引擎。
 
 ## 核心能力
 
 MindIE Motor主要提供以下两个方面的能力：
 
 - **PD分离的请求调度**：主要将外部的客户请求分发到负载最低的Prefill/Decode实例上，起到**负载均衡**的作用。
-- **RAS（Reliability，Availability and Serviceability）**：增强 PD 分离服务的**可靠性、可用性和可服务性**。
+- **RAS（Reliability，Availability and Serviceability）**：增强PD分离服务的**可靠性、可用性和可服务性**。
 
 ## 系统架构
 
 MindIE Motor与周边组件交互架构如图1所示，展示Coordinator、Controller、Deployer、NodeManager四大模块的协作调用关系及对外推理引擎接口。
 
-**图1 MindIE Motor 架构图**
+**图1 MindIE Motor架构图**
 
 ![架构图](./imgs/MindIE_Motor_Architecture.png)
 
@@ -37,11 +37,11 @@ MindIE Motor核心组件定义如下：
 
 ### Controller
 
-作为集群的**状态管控器和决策大脑**，负责全局业务状态管控及 RAS 能力决策。
+作为集群的**状态管控器和决策大脑**，负责全局业务状态管控及RAS能力决策。
 
 - **FaultManager**：故障管理模块，负责接收故障上报并执行隔离、重启、自愈恢复等操作。
-- **InsManager**：实例管理器，负责 PD 实例身份（Prefill 或 Decode）的分配与动态调整。
-- **CCAEReporter**：运维管理信息上报，将实例状态及 Metrics 信息同步至[CCAE](https://www.hiascend.com/software/ccae)等运维管理平台。
+- **InsManager**：实例管理器，负责PD实例身份（Prefill 或 Decode）的分配与动态调整。
+- **CCAEReporter**：运维管理信息上报，将实例状态及Metrics信息同步至[CCAE](https://www.hiascend.com/software/ccae)等运维管理平台。
 - **EventPusher**：事件推送器，同步实例状态信息给Coordinator。
 
 ### Deployer
@@ -57,12 +57,12 @@ MindIE Motor核心组件定义如下：
 
  节点级服务管理器，提供如下能力：
 
-- **节点级服务进程启动**：向Controller注册，获取实例身份，并直接拉起本节点的原生 vLLM 或 SGLang 进程。
+- **节点级服务进程启动**：向Controller注册，获取实例身份，并直接拉起本节点的原生vLLM或SGLang进程。
 - **节点级健康状态管理**：监控推理服务子进程状态，并向Controller上报健康状态和心跳。
 
 ### 周边组件
 
 - **[vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)**: 原生推理引擎，提供模型实例加速能力。支持范围见[支持的推理引擎](./user_guide/supported_inference_engines.md)。
 - **[SGLang](https://github.com/sgl-project/sglang)**: 原生推理引擎，提供模型实例加速能力。支持范围见[支持的推理引擎](./user_guide/supported_inference_engines.md)。
-- **[MindCluster](https://gitcode.com/Ascend/mind-cluster)**: 昇腾集群使能组件，提供Kubernetes底层支持能力，PD分离 CRD定义和配套Operator
-- **[CCAE](https://www.hiascend.com/software/ccae)**(可选)：华为算存网一体化运维可视化平台。
+- **[MindCluster](https://gitcode.com/Ascend/mind-cluster)**: 昇腾集群使能组件，提供Kubernetes底层支持能力，PD分离CRD和配套Operator。
+- **[CCAE](https://www.hiascend.com/software/ccae)**（可选）：华为算存网一体化运维可视化平台。

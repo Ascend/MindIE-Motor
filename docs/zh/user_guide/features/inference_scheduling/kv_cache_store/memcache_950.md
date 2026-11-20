@@ -1,4 +1,4 @@
-# 950系列服务器跨超节点场景memcache池化后端服务部署指导
+# Ascend 950PR&950DT系列产品超节点场景memcache池化后端服务部署指导
 
 本文按组网分成三章。节点名、IP、网口、卡号、hugepage 和 hixlep 目录都换成现场自己的值。MemCache 后端的特性说明见 [MemCache 后端特性](memcache.md)。
 
@@ -97,9 +97,9 @@ PD 分离同时通过 MultiConnector 做 KV 池化时，把 `ascend_local_comm_r
       vim mmc-local-standalone.conf
       ```
 
-  2. 搜索协议项，手工改成 `device_rdma` 并保存。不要整文件贴出替换。
+  2. 搜索协议项，手工改成 `device_rdma` 并保存。不要整篇文件贴出替换。
 
-  3. inprocess 模板里每个 worker 的 DRAM 从 `0GB` 改成现场池大小。这套例子是 `100GB`。
+  3. inprocess 模板里每个 worker 的 DRAM 从 `0GB` 改成现场池大小，当前以 `100GB` 为例。
 
       >[!NOTE] 说明
       > `user_config.json` 里的 `kv_cache_store_config.port` 是池化服务的端口。memcache conf 里的 meta 服务端口要写成同一个数。只改其中一个时，引擎找不到池化服务。
@@ -267,7 +267,7 @@ PD 分离同时通过 MultiConnector 做 KV 池化时，把 `ascend_local_comm_r
       >[!NOTE] 说明
       > 该场景会自动开启推理引擎所在容器的 root 权限，并额外挂载 `/dev/ummu`、`/dev/uburma` 两条宿主机路径。同时为引擎 Pod 打开 host 网络（`hostNetwork`）。暂不支持单机多容器场景。
 
-## 跨超节点场景（基于 UBoE 协议进行参数面数据传输）
+## 跨超节点场景（基于UBoE协议进行参数面数据传输）
 
 在 PD 分离部署指导的基础上，额外修改以下内容，即可完成部署。
 

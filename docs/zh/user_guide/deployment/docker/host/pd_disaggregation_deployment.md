@@ -45,7 +45,7 @@
 
 2. 准备配置文件。
 
-     MindIE Motor已提供常用模型（deepseek_v4_flash、deepseek_v4_pro、GLM 5.1等）的[PD分离配置示例](../../../../../../model_configs/vllm/models/README.md)，基于模型和服务器类型选择配置示例，并**将配置文件拷贝至/home/examples/config目录**。
+     MindIE Motor已提供常用模型（DeepSeek-V4-Flash、DeepSeek-V4-Por、GLM-5.1等）的[PD分离配置示例](../../../../../../model_configs/vllm/models/README.md)，基于模型和服务器类型选择配置示例，并**将配置文件拷贝至/home/examples/config目录**。
 
       <table>
         <tr><th style="font-size:18px" align="center" colspan="4">常用模型</th></tr>
@@ -67,7 +67,7 @@
         <tr><td>Qwen3-235B</td><td align="center"><a href="../../../../../../model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="../../../../../../model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td></tr>
       </table>
 
-      对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+      对于未提供典型配置的模型，可参考 [MindIE Motor配置自动生成指导](../../../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
 3. 保存配置文件。
 
@@ -84,16 +84,16 @@
      >[!NOTE] 说明
      >上述Motor配置仅给出一种可行的模型切分示例，**用户可根据实际情况调整模型划分策略**，关注以下表中参数即可，但必须满足以下公式的限制：
      >
-     > 1个P实例占用的NPU卡数 = single_p_instance_pod_num（占用几个pod，跨几机） × p_pod_npu_num （每个pod占用的NPU数）= data_parallel_size × tensor_parallel_size
+     > 1个P实例占用的NPU卡数 = single_p_instance_pod_num（占用几个Pod，跨几机） × p_pod_npu_num（每个Pod占用的NPU数）= data_parallel_size × tensor_parallel_size
 
       | 配置项 | 取值类型 | 取值范围 | 配置说明 |
       | --- | --- | --- | --- |
-      | p_instances_num | int | ≥1 | Prefill 实例数量。 |
-      | d_instances_num | int | ≥1| Decode 实例数量。 |
-      | single_p_instance_pod_num | int | ≥1 | 1 个 P 实例拆成几个 Pod。|
-      | single_d_instance_pod_num | int | ≥1 | 1 个 D 实例拆成几个 Pod。 |
-      | p_pod_npu_num | int | ≥1，单 Pod 最大 16 卡 | 每个 P Pod 使用的 NPU 卡数。 |
-      | d_pod_npu_num | int | ≥1，单 Pod 最大 16 卡 | 每个 D Pod 使用的 NPU 卡数。 |
+      | p_instances_num | int | ≥1 | Prefill实例数量。 |
+      | d_instances_num | int | ≥1| Decode实例数量。 |
+      | single_p_instance_pod_num | int | ≥1 | 1个P实例拆成几个Pod。|
+      | single_d_instance_pod_num | int | ≥1 | 1个D实例拆成几个Pod。 |
+      | p_pod_npu_num | int | ≥1，单Pod最大16卡 | 每个P Pod使用的NPU卡数。 |
+      | d_pod_npu_num | int | ≥1，单Pod最大16卡 | 每个D Pod使用的NPU卡数。 |
       | data_parallel_size | int | ≥1 | 数据并行（DP）数。 |
       | tensor_parallel_size | int | ≥1 | 张量并行（TP）数。 |
 
@@ -164,8 +164,8 @@
 
     | 参数 | 说明 |
     | :--- | :--- |
-    | --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`src`字段后面是`--pod-ip`值。 |
-    | --nic-name | 当前服务器对应的主网卡名。<br>可执行`ip -4 route get 1.1.1.1`命令查看，`dev`字段后面是`--nic-name`值。 |
+    | --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get <IP>`命令查看，`src`字段后面是`--pod-ip`值。 |
+    | --nic-name | 当前服务器对应的主网卡名。<br>可执行`ip -4 route get <IP>`命令查看，`dev`字段后面是`--nic-name`值。 |
     | --coordinator-ip/--controller-ip | 服务器 1 的 IP。管理面部署在服务器 1。 |
     | --kv-store-ip | 服务器 1 的 IP。开启池化时 kv_store 也部署在服务器 1，与管理面同机。 |
 
@@ -222,7 +222,7 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
 
 ### 同一服务器部署多个推理容器
 
-记录[启动服务](#启动服务)里 `--show-commands` 的回显，按下面修改。下面以 1 台 8 卡服务器部署 2 个 Prefill、2 个 Decode 为例。每个实例 1 个容器、2 张卡，卡号依次为 `0,1`、`2,3`、`4,5`、`6,7`。
+记录[启动服务](#启动服务)里 `--show-commands` 的回显，按下面修改。下面以1台8卡服务器部署2个Prefill、2个Decode为例。每个实例1个容器、2张卡，卡号依次为`0,1`、`2,3`、`4,5`、`6,7`。
 
 1. 管理面启动命令。
 

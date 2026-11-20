@@ -5,7 +5,7 @@
 分离式编码器将多模态大语言模型的视觉编码器阶段运行在与预填充/解码阶段分离的进程中。将这两个阶段部署在独立的vLLM实例中的优势详见[vLLM Ascend EPD分离特性说明](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/epd_disaggregation.html)，主要包括：
 
 - **独立、细粒度的扩缩容**：视觉编码器较轻量，语言模型规模大几个数量级，编码器实例可以独立于语言模型并行度单独增减。
-- **更低的首Token时延（TTFT）**：纯文本请求完全绕过视觉编码器，编码器输出仅在需要的注意力层注入，缩短预填充关键路径。
+- **更低的首Token延迟（TTFT）**：纯文本请求完全绕过视觉编码器，编码器输出仅在需要的注意力层注入，缩短预填充关键路径。
 - **编码器输出的跨进程复用与缓存**：编码器结果可通过共享缓存供多个实例复用，避免重复计算。
 
 MindIE Motor部署EPD分离特性支持`infer_service_set`和`multi_deployment`模式下部署，支持`CPCD`和`CDP`调度模式。
@@ -203,8 +203,8 @@ MindIE Motor部署EPD分离只需修改user_config.json配置文件后，通过d
 
    >[!NOTE] 说明
    >
-   >- 在motor_deploy_config配置中，`e_instances_num`表示E实例的个数，`single_e_instance_pod_num`表示每个E实例占用的pod个数，`e_pod_npu_num`表示每个E实例的pod占用的NPU卡数。
-   >- 增加motor_engine_encode_config配置，其中E实例的engine_config需要增加`ec-transfer-config`配置，并将`ec_role`配置为`ec_producer`。详细参考[《vLLM Ascend EPD分离特性说明》](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/epd_disaggregation.html)。
+   >- 在motor_deploy_config配置中，`e_instances_num`表示E实例的个数，`single_e_instance_pod_num`表示每个E实例占用的Pod个数，`e_pod_npu_num`表示每个E实例的Pod占用的NPU卡数。
+   >- 增加motor_engine_encode_config配置，其中E实例的engine_config需要增加`ec-transfer-config`配置，并将`ec_role`配置为`ec_producer`。详细参考[vLLM Ascend EPD分离特性说明](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/epd_disaggregation.html)。
    >- 同时motor_engine_prefill_config中的engine_config需要增加`ec-transfer-config`配置，并将`ec_role`配置为`ec_consumer`。
    >- `infer_service_set`模式下`single_e_instance_pod_num`、`e_pod_npu_num`未配置时默认为1；`multi_deployment`模式下未配置时沿用引擎Deployment模板默认值，建议显式配置。
 
@@ -223,7 +223,7 @@ MindIE Motor部署EPD分离只需修改user_config.json配置文件后，通过d
 
    执行后看到如下内容，说明执行成功：
 
-   ```bash
+   ```output
    ...... all deploy end.
    ```
 

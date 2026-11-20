@@ -1,11 +1,10 @@
 # Slurm服务部署
 
-本文介绍如何使用 `examples/deployer/slurm_deploy.py`，通过 Slurm 和 Apptainer 部署
-MindIE Motor。部署前请先完成[环境准备](./environment_preparation.md)。
+本文介绍如何使用`examples/deployer/slurm_deploy.py`，通过Slurm和Apptainer部署MindIE Motor。部署前请先完成[环境准备](./environment_preparation.md)。
 
 ## 部署入口
 
-在 `examples/deployer` 目录执行：
+在`examples/deployer`目录执行以下命令：
 
 ```bash
 python3 slurm_deploy.py start \
@@ -15,7 +14,7 @@ python3 slurm_deploy.py start \
   --controller-service <controller-address>
 ```
 
-`--config_dir` 指向包含 `user_config.json` 和 `env.json` 的目录。也可以分别指定两个文件：
+`--config_dir`指向包含`user_config.json`和`env.json`的目录，也可以分别指定两个文件：
 
 ```bash
 python3 slurm_deploy.py start \
@@ -28,32 +27,33 @@ python3 slurm_deploy.py start \
 
 ## 参数配置
 
-当前 Apptainer 启动方式默认共享宿主 IPC 和 `/dev/shm`，无需额外设置 IPC 参数。
-`env.json` 中的 `MOTOR_ENABLE_IPC_HOST` 用于 Docker 和 Kubernetes 部署，不影响 Slurm 容器启动参数。
+当前Apptainer启动方式默认共享宿主机IPC和`/dev/shm`，无需额外设置IPC参数。
 
-命令行参数优先于环境变量，环境变量优先于 `slurm_deploy.py` 中的默认值。
+`env.json`中的`MOTOR_ENABLE_IPC_HOST`用于Docker和Kubernetes部署，不影响Slurm容器启动参数。
+
+命令行参数优先于环境变量，环境变量优先于`slurm_deploy.py`中的默认值。
 
 | 命令行参数 | 环境变量 | 默认值 | 说明 |
 |------------|----------|--------|------|
-| `--partition` | `PARTITION` | `<partition>` | Slurm 分区 |
-| `--device` | `DEVICE` | `npu` | Engine 作业使用的 GRES 设备名 |
-| `--coordinator-cpus` | `COORDINATOR_CPUS` | `64` | Coordinator task 申请的 CPU 数 |
-| `--controller-cpus` | `CONTROLLER_CPUS` | `8` | Controller task 申请的 CPU 数 |
-| `--kv-store-cpus` | `KV_STORE_CPUS` | `8` | KV Store task 申请的 CPU 数 |
-| `--kv-conductor-cpus` | `KV_CONDUCTOR_CPUS` | `8` | KV Conductor task 申请的 CPU 数 |
-| `--mf-store-cpus` | `MF_STORE_CPUS` | `8` | MF Store task 申请的 CPU 数 |
-| `--encode-cpus` | `ENCODE_CPUS` | `16` | 每个 Encode task 申请的 CPU 数 |
-| `--prefill-cpus` | `PREFILL_CPUS` | `16` | 每个 Prefill task 申请的 CPU 数 |
-| `--decode-cpus` | `DECODE_CPUS` | `16` | 每个 Decode task 申请的 CPU 数 |
-| `--union-cpus` | `UNION_CPUS` | `16` | 每个 Union task 申请的 CPU 数 |
-| `--distribution-path` | `SLURM_DISTRIBUTION_PATH` | `/tmp` | 计算节点上的分发根目录 |
-| `--log-path` | `SLURM_LOG_PATH` | `./slurm_workspace` | 计算节点上的日志根目录 |
-| `--coordinator-service` | `COORDINATOR_SERVICE` | `<coordinator-ip>` | Coordinator 地址 |
-| `--controller-service` | `CONTROLLER_SERVICE` | `<controller-ip>` | Controller 地址 |
-| `--kvs-master-service` | `KVS_MASTER_SERVICE` | `<kvs-master-ip>` | KV Store 地址 |
-| `--kv-conductor-service` | `KV_CONDUCTOR_SERVICE` | `<kv-conductor-ip>` | KV Conductor 地址 |
-| `--mf-store-service` | `MF_STORE_SERVICE` | `<mf-store-ip>` | MF Store 地址 |
-| `--ascend-mf-store-port` | `ASCEND_MF_STORE_PORT` | `50089` | MF Store 监听端口 |
+| --partition | PARTITION | `<partition>` | Slurm 分区 |
+| --device | DEVICE | npu | Engine 作业使用的 GRES 设备名 |
+| --coordinator-cpus | COORDINATOR_CPUS | 64 | Coordinator task 申请的 CPU 数 |
+| --controller-cpus | CONTROLLER_CPUS | 8 | Controller task 申请的 CPU 数 |
+| --kv-store-cpus | KV_STORE_CPUS | 8 | KV Store task 申请的 CPU 数 |
+| --kv-conductor-cpus | KV_CONDUCTOR_CPUS | 8 | KV Conductor task 申请的 CPU 数 |
+| --mf-store-cpus | MF_STORE_CPUS | 8 | MF Store task 申请的 CPU 数 |
+| --encode-cpus | ENCODE_CPUS | 16 | 每个 Encode task 申请的 CPU 数 |
+| --prefill-cpus | PREFILL_CPUS | 16 | 每个 Prefill task 申请的 CPU 数 |
+| --decode-cpus | DECODE_CPUS | 16 | 每个 Decode task 申请的 CPU 数 |
+| --union-cpus | UNION_CPUS | 16 | 每个 Union task 申请的 CPU 数 |
+| --distribution-path | SLURM_DISTRIBUTION_PATH | /tmp | 计算节点上的分发根目录 |
+| --log-path | SLURM_LOG_PATH | ./slurm_workspace | 计算节点上的日志根目录 |
+| --coordinator-service | COORDINATOR_SERVICE | `<coordinator-ip>` | Coordinator 地址 |
+| --controller-service | CONTROLLER_SERVICE | `<controller-ip>` | Controller 地址 |
+| --kvs-master-service | KVS_MASTER_SERVICE | `<kvs-master-ip>` | KV Store 地址 |
+| --kv-conductor-service | KV_CONDUCTOR_SERVICE | `<kv-conductor-ip>` | KV Conductor 地址 |
+| --mf-store-service | MF_STORE_SERVICE | `<mf-store-ip>` | MF Store 地址 |
+| --ascend-mf-store-port | ASCEND_MF_STORE_PORT | 50089 | MF Store 监听端口 |
 
 例如，可以使用环境变量配置站点信息：
 
@@ -153,7 +153,7 @@ ConfigMap 数据写入作业脚本后，脚本大小不能超过 Slurm 的 `MaxS
 Job ID 和 Task ID 用于隔离不同作业和不同节点上的运行目录。ConfigMap 以只读方式挂载到
 Apptainer 容器中的相同绝对路径。标准输出和标准错误写入独立日志目录下的 `.log` 文件。
 
-任务退出时会删除本 task 的目录和当前作业的分发脚本；节点上最后一个任务退出后，还会删除已经
+任务退出时会删除该任务的目录和当前作业的分发脚本；节点上最后一个任务退出后，还会删除已经
 为空的 deployment 目录。日志文件保留，查看日志时需要登录对应节点。如需长期保留日志，应将
 日志路径放在可靠的本地存储上。
 
@@ -180,13 +180,9 @@ python3 slurm_deploy.py start \
   --update_instance_num
 ```
 
-扩容会从当前最大实例编号继续提交 Engine 作业，缩容会从最大实例编号开始取消作业。
-Coordinator、Controller 和存储服务不会重启，
-`SLURM_DEPLOYMENT_ID` 也不会改变。
+扩容会从当前最大实例编号继续提交 Engine 作业，缩容会从最大实例编号开始取消作业。Coordinator、Controller 和存储服务不会重启，`SLURM_DEPLOYMENT_ID`也不会改变。
 
-扩缩容时只允许修改 `e_instances_num`、`p_instances_num`、`d_instances_num` 或
-`hybrid_instances_num`。如果配置的其他内容发生变化，或本地记录的实例与已准备配置不一致，
-命令会直接报错，不会自动推测或重建状态。
+扩缩容时只允许修改 `e_instances_num`、`p_instances_num`、`d_instances_num` 或`hybrid_instances_num`。如果配置的其他内容发生变化，或本地记录的实例与已准备配置不一致，命令会直接报错，不会自动推测或重建状态。
 
 ## KV Store、KV Conductor 和 MF Store
 

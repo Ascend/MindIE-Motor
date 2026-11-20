@@ -1,31 +1,31 @@
 # Coordinator独立部署
 
-在物理机 / 虚拟机（无 K8s）上单独部署 Motor Coordinator，对接已存在的原生 vLLM Prefill / Decode 引擎，支持多 P 多 D。Coordinator 是纯 CPU 服务，不依赖 NPU、Controller、Node Manager。
-
-实例注册（安装 motor 后即可用）：`python3 -m motor.coordinator.register`。对外监听时可选编写配置，见第二节。
-
-日常增删查见 [附录 C：实例增删查](#附录-c实例增删查)。KV Cache 亲和为可选增强，见 [附录 B：KV Cache 亲和（可选）](#附录-bkv-cache-亲和可选)。
+在物理机/虚拟机（无K8s）上单独部署MindIE Motor Coordinator，对接已存在的原生vLLM Prefill/Decode 引擎，支持多P D。Coordinator是纯CPU服务，不依赖NPU、Controller和Node Manager。
 
 ## 部署总流程
 
-1. 获取代码并安装依赖 + motor
-2. （可选）编写 `coordinator.json`
-3. 拉起 Coordinator
-4. 注册 P/D 实例
-5. 端到端验证
+1. 获取代码并安装依赖和MindIE Motor。
+2. （可选）编写`coordinator.json`。
+3. 启动Coordinator。
+4. 注册P/D实例。
+5. 端到端验证。
 
 ## 前置条件
 
-| 项 | 要求 |
+| 维度 | 要求 |
 |----|------|
-| OS | Linux（aarch64 / x86_64），与运行环境相同 glibc |
+| 操作系统 | Linux（aarch64 / x86_64），与运行环境相同的glibc。 |
 | Python | `>= 3.11` |
-| 源码可编辑（方式 A） | 已具备可用的 Rust 工具链（`cargo --version` 成功）。本页不展开 Rust 安装步骤 |
-| 自打包（方式 B） | `curl`、C 编译器（`build-essential` / `gcc`）；无 cargo 时 `build.sh` 会 rustup 安装 |
-| 网络 | 可达各 P/D 引擎 HTTP 端口（常见 `8000` / `10000`） |
-| 端口 | 本机 `1025`（推理）/ `1026`（管理）/ `1027`（观测）空闲 |
+| 源码可编辑（方式一） | 已具备可用的Rust工具链（`cargo --version`成功），请自行获取Rust的安装步骤。 |
+| 自打包whl（方式二） | `curl`、C编译器（`build-essential` / `gcc`）；无cargo时`build.sh`会通过rustup安装。 |
+| 网络 | 可达各P/D引擎HTTP端口（常见：`8000` / `10000`）。 |
+| 端口 | 本机`1025`（推理）/ `1026`（管理）/ `1027`（观测）空闲。 |
 
-## 一、安装
+## 安装
+
+### 安装依赖
+
+使用以下命令安装依赖：
 
 ```bash
 git clone https://gitcode.com/Ascend/MindIE-Motor.git
@@ -38,49 +38,57 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-安装 motor，以下三选一。
+### 安装MindIE Motor
 
-**A. 源码可编辑**（前提：已有可用 cargo；pip 不会编译 Rust）
+- **方式一：源码可编辑**
 
-```bash
-pip install --no-deps -e .
-cargo build --release --manifest-path motor/coordinator/workload_shm_rs/Cargo.toml
-```
+  该方式使用前提：已有可用cargo，pip不会编译Rust。
 
-需要 [KV Cache 亲和](#附录-bkv-cache-亲和可选) 时另编 kv-conductor（本机须已有 libzmq）：
+  ```bash
+  pip install --no-deps -e .
+  cargo build --release --manifest-path motor/coordinator/workload_shm_rs/Cargo.toml
+  ```
 
-```bash
-cargo build --release --manifest-path motor/kv_conductor/Cargo.toml
-```
+  **pip install --no-deps -e .**：只把源码树做成可编辑安装，不会编译Rust。须在已有cargo的前提下另编两个产物：`libmindie_workload_shm.so`（Coordinator启动必需）和`kv-conductor`（仅[附录B：KV Cache亲和性调度（可选）](#附录bkv-cache亲和性调度可选)需要）。运行时从对应crate的`target/release/`加载，不必再拷到`lib/`、`bin/`。改过 `.rs` 后对相应 crate 重新执行上面的 `cargo build --release`。本页不展开 Rust 工具链安装。
 
-**B. 自打包 whl**（workload-shm 必需；有 cargo+libzmq 时再打 kv-conductor，缺 zmq 自动跳过）
+  >[!NOTE] 说明
+  >需要开启[附录B：KV Cache亲和性调度（可选）](#附录bkv-cache亲和性调度可选)时还需要另编kv-conductor（本机须已有libzmq）：
+  >
+  >```bash
+  >cargo build --release --manifest-path motor/kv_conductor/Cargo.toml
+  >```
 
-```bash
-bash build.sh
-pip install --no-deps --force-reinstall dist/motor-*.whl
-```
+- **方式二：自打包whl**
 
-显式跳过 kv-conductor 时，将 `bash build.sh` 换成 `SKIP_KV_CONDUCTOR_BUILD=1 bash build.sh`。
+  该方式使用前提：需启用workload-shm，检测到cargo+libzmq时，则一并构建kv-conductor，缺zmq时自动跳过。
 
-**C. 现成 whl**
+  ```bash
+  bash build.sh
+  pip install --no-deps --force-reinstall dist/motor-*.whl
+  ```
 
-```bash
-pip install --no-deps --force-reinstall /path/to/motor-*.whl
-```
+  显式跳过kv-conductor时，需要将`bash build.sh`换成`SKIP_KV_CONDUCTOR_BUILD=1 bash build.sh`。
 
-`--no-deps`：whl 不声明依赖，须先装 `requirements.txt`。离线场景见 [附录 A](#附录-a离线安装)。
+  >[!NOTE] 说明
+  >- 已有 `lib/*.so` / `bin/kv-conductor` 时 `bash build.sh` 默认跳过 cargo；改 `.rs` 后用 `SKIP_WORKLOAD_SHM_BUILD=0` / `SKIP_KV_CONDUCTOR_BUILD=0`。
+  >- 不能装 rustup 时用 `WORKLOAD_SHM_PREBUILT=/path/to/libmindie_workload_shm.so`。
+  >- 打出的 wheel包必须含 `libmindie_workload_shm.so`，缺库时 `build.sh` 拒绝出包并打印 `refusing to emit`；缺 conductor 二进制且有 cargo + libzmq 时同时含 `kv-conductor`（`unzip -l dist/motor-*.whl | grep -E 'kv-conductor|libmindie_workload_shm.so'`）。
 
-方式 A：`pip install --no-deps -e .` 只把源码树做成可编辑安装，**不会**编译 Rust。须在已有 cargo 的前提下另编两个产物：`libmindie_workload_shm.so`（Coordinator 启动必需）和 `kv-conductor`（仅 [KV Cache 亲和](#附录-bkv-cache-亲和可选)需要）。运行时从对应 crate 的 `target/release/` 加载，不必再拷到 `lib/`、`bin/`。改过 `.rs` 后对相应 crate 重新执行上面的 `cargo build --release`。本页不展开 Rust 工具链安装。
+- **方式三：使用已有whl包**
 
-方式 B：已有 `lib/*.so` / `bin/kv-conductor` 时 `bash build.sh` 默认跳过 cargo；改 `.rs` 后用 `SKIP_WORKLOAD_SHM_BUILD=0` / `SKIP_KV_CONDUCTOR_BUILD=0`。不能装 rustup 时用 `WORKLOAD_SHM_PREBUILT=/path/to/libmindie_workload_shm.so`。打出的 wheel **必须**含 `libmindie_workload_shm.so`，缺库时 `build.sh` 拒绝出包并打印 `refusing to emit`；缺 conductor 二进制且有 cargo + libzmq 时同时含 `kv-conductor`（`unzip -l dist/motor-*.whl | grep -E 'kv-conductor|libmindie_workload_shm.so'`）。
+  ```bash
+  pip install --no-deps --force-reinstall /path/to/motor-*.whl
+  ```
 
-## 二、配置文件（可选）
+  **--no-deps**：whl不声明依赖，须先装`requirements.txt`。离线场景请参见[附录A：离线安装](#附录a离线安装)。
+
+## 配置文件（可选）
 
 主流程默认在 Coordinator 所在机器完成启动、注册和验证，无需配置文件。Coordinator 默认监听 `127.0.0.1`，后续命令可直接复制执行。
 
-需要跨主机访问，或使用 Docker / Kubernetes 部署时，按 [附录 D](#附录-d监听地址) 配置监听地址。管理端口 `1026` 对本机以外开放时，生产环境还应按 [附录 E](#附录-e管理面-api-key) 开启独立 API Key。
+需要跨主机访问，或使用 Docker / Kubernetes 部署时，按 [附录D：监听地址](#附录d监听地址) 配置监听地址。管理端口 `1026` 对本机以外开放时，生产环境还应按 [附录E：管理面 API Key](#附录e管理面-api-key) 开启独立 API Key。
 
-## 三、拉起 Coordinator
+## 拉起 Coordinator
 
 在已安装 Motor 的环境中执行。脚本后台拉起 Coordinator 后立即返回，不安装依赖，也不注册 P/D，也不等待 `/liveness`。起来之后自行执行 `curl http://127.0.0.1:1026/liveness` 确认。此时 `/readiness` 仍为 false 是正常的。
 
@@ -92,9 +100,9 @@ source /opt/motor-coord/venv/bin/activate
 
 脚本用 `CoordinatorConfig.from_json` 读同一份配置，不再另加开关。`render_config.enabled` 或 `render_config.enable` 为布尔值 true 时拉起 Render。Render 或 kv-conductor 因配置错误以退出码 2 结束时，脚本不再重启，并以该退出码退出。`kv_conductor_config.http_server_port` 若是 `tcp://地址:端口`，只取其中的端口；值为 0 时不拉起 kv-conductor，脚本继续启动其余进程。开启 Render 时 `render_config.endpoint` 必须是对象，`endpoint.host` 为 `127.0.0.1`、`localhost` 或 `::1`，进程按该地址监听，`localhost` 视为 `127.0.0.1`。`endpoint.port` 缺省为 8100，显式给出的值必须是 1 到 65535 的整数。Ascend `set_env.sh` 执行失败时脚本继续启动。管理端口或 kv 端口为 null 时按未配置处理，不会写成字符串 `None`。`kv_conductor_config.conductor_service` 经配置重定向后非空，且去掉端口后缀后的地址是本机回环地址时拉起 kv-conductor；空字符串表示不启用。探测用的地址和端口就是进程实际绑定的地址和端口，不另读一份环境变量。脚本中途失败时，会停掉本次已经拉起的进程。日志默认在 `/tmp/motor-coord/`（目录权限 700），可用 `MOTOR_LOG_PATH` 改目录。`-h` 只打印帮助，不创建日志目录。
 
-## 四、注册 P/D 实例
+## 注册 P/D 实例
 
-各引擎已 `vllm serve` 且可达。一个 `--prefill` / `--decode` = 一个实例；同一实例的多个 DP endpoint 用逗号连接（单 DP 只写一个 `IP:PORT`）。首次部署用默认 `set` 覆盖全表；之后增删查见 [附录 C](#附录-c实例增删查)。
+各引擎已 `vllm serve` 且可达。一个 `--prefill` / `--decode` = 一个实例；同一实例的多个 DP endpoint 用逗号连接（单 DP 只写一个 `IP:PORT`）。首次部署用默认 `set` 覆盖全表；之后增删查见 [附录C：实例增删查](#附录-c实例增删查)。
 
 ```bash
 python3 -m motor.coordinator.register \
@@ -109,12 +117,9 @@ curl http://127.0.0.1:1026/instances   # 列出已登记实例
 curl http://127.0.0.1:1026/readiness   # 调度是否就绪（需同时有可用 P 和 D）
 ```
 
-External Deployer 也可以直接向 `POST /instances/refresh` 发送精简事件。
-Coordinator standalone 当前只支持单模型。省略 `model_name` 时，Coordinator 会按
-`instances[]` 顺序访问第一个可达 vLLM endpoint 的 `/v1/models`；接口只返回一个模型
-ID 时自动采用该 ID。多模型场景必须在请求顶层显式携带 `model_name`。
-`dispatch_capabilities` 和 `engine_type` 也可以省略并使用默认值，因此 `instances[]`
-中的每个元素只需提供 `id`、`role` 和 `endpoints[]`。
+- External Deployer也可以直接向`POST /instances/refresh`发送精简事件。
+- Coordinator standalone当前只支持单模型。省略`model_name`时，Coordinator会按`instances[]`顺序- 访问第一个可达vLLM endpoint的`/v1/models`；接口只返回一个模型ID 时自动采用该ID。多模型场景必须在请求顶层显式携带`model_name`。
+- `dispatch_capabilities`和`engine_type`也可以省略并使用默认值，因此`instances[]`中的每个元素只需提供`id`、`role`和`endpoints[]`。
 
 ### 请求模板
 
@@ -194,22 +199,22 @@ curl -X POST http://127.0.0.1:1026/instances/refresh \
 
 | 字段 | 层级 | 必填 | 说明 |
 |------|------|------|------|
-| `event` | 顶层 | 是 | 事件类型：`set` 全量替换；`add` 增量加入；`del` 增量删除 |
-| `model_name` | 顶层 | 否（多模型时必填） | 单模型时默认从第一个可达 endpoint 的 `/v1/models` 自动获取；接口返回多个模型时必须显式指定。若 Coordinator 配置了 `motor_coordinator_config.aigw.id`，须与其一致（大小写不敏感） |
-| `dispatch_capabilities` | 顶层 | 否 | 仅允许 `prefill_handoff_decode`（默认，handoff）与 `concurrent_engine_sync`（trigger/sync）；`decode_colocation` 等其余值会被拒绝 |
-| `engine_type` | 顶层 | 否 | 默认 `vllm`；External Deployer 当前仅支持 `vllm` |
-| `instances` | 顶层 | 是 | 本批次涉及的实例列表；`set` 时为完整拓扑，`add`/`del` 时为增量子集 |
-| `instances[].id` | 实例 | 是 | 全局唯一实例 ID，整数 ≥ 1；同一请求内不可重复 |
-| `instances[].role` | 实例 | 是 | 实例角色：`prefill` 或 `decode` |
-| `instances[].endpoints` | 实例 | 是 | 该实例可达的引擎 HTTP 端点，至少 1 个；多 DP 时在同一数组内列出多个 endpoint |
-| `endpoints[].id` | 端点 | 是 | 实例内 DP 序号，整数 ≥ 0；同一实例内不可重复 |
-| `endpoints[].address` | 端点 | 是 | 引擎 `host:port`；IPv6 使用 `[addr]:port`（如 `"[2001:db8::1]:8200"`） |
+| event | 顶层 | 是 | 事件类型：`set` 全量替换；`add` 增量加入；`del` 增量删除。 |
+| model_name | 顶层 | 否（多模型时必填） | 单模型时默认从第一个可达 endpoint 的 `/v1/models` 自动获取；接口返回多个模型时必须显式指定。若 Coordinator 配置了 `motor_coordinator_config.aigw.id`，须与其一致（大小写不敏感）。 |
+| dispatch_capabilities | 顶层 | 否 | 仅允许 `prefill_handoff_decode`（默认，handoff）与 `concurrent_engine_sync`（trigger/sync）；`decode_colocation` 等其余值会被拒绝。 |
+| engine_type | 顶层 | 否 | 默认 `vllm`；External Deployer 当前仅支持 `vllm`。 |
+| instances | 顶层 | 是 | 本批次涉及的实例列表；`set` 时为完整拓扑，`add`/`del` 时为增量子集。 |
+| instances[].id | 实例 | 是 | 全局唯一实例 ID，整数 ≥ 1；同一请求内不可重复。 |
+| instances[].role | 实例 | 是 | 实例角色：`prefill` 或 `decode`。 |
+| instances[].endpoints | 实例 | 是 | 该实例可达的引擎 HTTP 端点，至少 1 个；多 DP 时在同一数组内列出多个 endpoint。 |
+| endpoints[].id | 端点 | 是 | 实例内 DP 序号，整数 ≥ 0；同一实例内不可重复。 |
+| endpoints[].address | 端点 | 是 | 引擎 `host:port`；IPv6 使用 `[addr]:port`（如 `"[2001:db8::1]:8200"`）。 |
 
 `set` 全量替换纳管拓扑，`add` 增量加入纳管，`del` 增量踢出纳管。这些事件只改变
 Coordinator 的内存实例池，不会启动、停止或销毁 P/D 进程。Coordinator 重启后，
 External Deployer 必须重放完整 `set`。
 
-## 五、端到端验证
+## 端到端验证
 
 ```bash
 curl http://127.0.0.1:1025/v1/completions \
@@ -219,7 +224,7 @@ curl http://127.0.0.1:1025/v1/completions \
 
 期望 HTTP 200。`model` 填引擎实际对外的模型名。
 
-## 六、常见问题
+## 常见问题
 
 | 现象 | 处理 |
 |------|------|
@@ -229,7 +234,7 @@ curl http://127.0.0.1:1025/v1/completions \
 | 注册后推理 503（Service is not available） | 核对引擎 `IP:PORT`；`--dry-run` 看 payload |
 | 日志目录不对 | 设 `MOTOR_LOG_PATH` |
 
-## 附录 A：离线安装
+## 附录A：离线安装
 
 ```bash
 # 有源机：
@@ -242,9 +247,9 @@ curl http://127.0.0.1:1025/v1/completions \
 
 含二进制扩展的包须匹配目标机架构与 Python 版本。
 
-## 附录 B：KV Cache 亲和（可选）
+## 附录B：KV Cache亲和性调度（可选）
 
-仅 `scheduler_type=kv_cache_affinity` 时需要。完整字段见 [KV Cache 亲和](../features/inference_scheduling/kvcache_affinity.md)。
+仅 `scheduler_type=kv_cache_affinity` 时需要。完整字段见 [KV Cache亲和性调度](../features/inference_scheduling/kvcache_affinity.md)。
 
 ```json
 {
@@ -257,7 +262,7 @@ curl http://127.0.0.1:1025/v1/completions \
     "http_server_port": 13333,
     "npu_endpoint": "tcp://*:5557",
     "replay_endpoint": "tcp://*:6667",
-    "engine_type": "vLLM",
+    "engine_type": "vllm",
     "model_path": "/mnt/weight/Qwen3-8B",
     "block_size": 128,
     "re_register_interval_sec": 30
@@ -265,26 +270,33 @@ curl http://127.0.0.1:1025/v1/completions \
 }
 ```
 
-`npu_endpoint` 与 P 引擎 `--kv-events-config` 一致；`block_size` 与引擎 `--block-size` 一致（默认 128），否则命中率恒为 0。
+- `npu_endpoint` 与 P 引擎 `--kv-events-config` 一致；`block_size` 与引擎 `--block-size` 一致（默认 128），否则命中率恒为 0。
+- 默认按 `npu_endpoint` 的端口加 DP rank 订阅 KV events。
+- 同一台机器部署多个 Prefill 实例且各实例的 DP rank 都从 0 开始时，可为每个实例显式指定不同的起始端口。
+- 参数顺序与 `--prefill` 组的顺序一致，组内各 DP 使用起始端口加 endpoint id：
 
-默认按 `npu_endpoint` 的端口加 DP rank 订阅 KV events。
-同一台机器部署多个 Prefill 实例且各实例的 DP rank 都从 0 开始时，可为每个实例显式指定不同的起始端口；
-参数顺序与 `--prefill` 组的顺序一致，组内各 DP 使用起始端口加 endpoint id：
+  ```bash
+  python3 -m motor.coordinator.register add \
+      --prefill "10.10.0.11:8000" \
+      --prefill "10.10.0.11:9000" \
+      --kv-events-port 5557 \
+      --kv-events-port 6557 \
+      --kv-replay-port 6667 \
+      --kv-replay-port 7667
+  ```
 
-```bash
-python3 -m motor.coordinator.register add \
-    --prefill "10.10.0.11:8000" \
-    --prefill "10.10.0.11:9000" \
-    --kv-events-port 5557 \
-    --kv-events-port 6557 \
-    --kv-replay-port 6667 \
-    --kv-replay-port 7667
-```
+- `--kv-replay-port` 独立指定每个 Prefill 实例的 replay 起始端口，顺序与 `--prefill` 一致，组内按 DP 偏移。
+- 需配置 `kv_conductor_config.replay_endpoint`（例如 `tcp://*:6667`）提供地址模板；未配置时不启用 replay。
+- 不传该参数时沿用全局 replay 基址加 rank。引擎侧须分别配置匹配的实际 events/replay 监听端口。
+- 该注册命令不会修改引擎监听配置。已有实例修改端口请使用默认 `set`，`add` 会拒绝同 ID 的端口变更。
 
-`--kv-replay-port` 独立指定每个 Prefill 实例的 replay 起始端口，顺序与 `--prefill` 一致，组内按 DP 偏移。
-需配置 `kv_conductor_config.replay_endpoint`（例如 `tcp://*:6667`）提供地址模板；未配置时不启用 replay。
-不传该参数时沿用全局 replay 基址加 rank。引擎侧须分别配置匹配的实际 events/replay 监听端口；
-该注册命令不会修改引擎监听配置。已有实例修改端口请使用默认 `set`，`add` 会拒绝同 ID 的端口变更。
+  ```bash
+  source /opt/motor-coord/venv/bin/activate
+  python3 -c "from motor.kv_conductor import get_binary_path; p=get_binary_path(); print(p); assert p and p.is_file()"
+  export RUST_LOG=info,kv_conductor=debug
+  export MOTOR_LOG_PATH=/opt/motor-coord/logs
+  nohup python3 -m motor.kv_conductor --host 0.0.0.0 --port 13333 &
+  ```
 
 本机 kv-conductor 不必单独敲 `nohup`。`conductor_service` 写成 `127.0.0.1` 后，直接执行：
 
@@ -299,7 +311,7 @@ python3 -m motor.coordinator.register add \
 `set`（默认）替换整张实例表；`add` / `del` 按同样的 `IP:PORT` 增量；`list` 查询当前登记。实例 `id` 由 `role` + 排序后的完整 endpoint 组派生，endpoint 输入顺序不影响注册结果，增删不必另记数字 id。
 
 如果开启了管理面 API Key，以下所有 `register` 命令都需追加
-`--mgmt-api-key-file /opt/motor-coord/secrets/mgmt-api-key`，见 [附录 E](#附录-e管理面-api-key)。
+`--mgmt-api-key-file /opt/motor-coord/secrets/mgmt-api-key`，见 [附录E：管理面 API Key](#附录e管理面-api-key)。
 
 ### 查
 
@@ -344,7 +356,7 @@ python3 -m motor.coordinator.register list --coordinator http://10.10.0.1
 python3 -m motor.coordinator.register --help
 ```
 
-## 附录 D：监听地址
+## 附录D：监听地址
 
 `coordinator_api_host` 同时作用于推理端口 `1025`、管理端口 `1026` 和观测端口 `1027`。
 
@@ -402,7 +414,7 @@ env:
 
 仓库的 Coordinator 部署模板已包含该配置。注入后 Coordinator 默认绑定 Pod IP，客户端通常通过 Service DNS 访问。自定义 YAML 如果未注入 `POD_IP`，也未配置 `coordinator_api_host`，将回退到 `127.0.0.1`，Service 无法访问。
 
-## 附录 E：管理面 API Key
+## 附录E：管理面 API Key
 
 默认不开启管理面 API Key，不影响本机启动、注册和推理。管理端口 `1026` 可被本机以外的主体访问时，生产环境应开启独立 API Key。
 
@@ -457,4 +469,4 @@ curl http://10.10.0.20:1026/instances \
     -H "X-Motor-Management-Key: $(< /opt/motor-coord/secrets/mgmt-api-key)"
 ```
 
-管理 API Key 保护实例查询、实例刷新和精度告警状态清理接口；启动、存活和就绪探针不鉴权。API Key 只做身份校验，不加密流量。跨主机访问管理端口时，还应配置 `mgmt_tls_config` 或由受信代理终止 TLS，并通过防火墙、容器网络或 NetworkPolicy 限制访问范围；不要把 `1026` 直接暴露到公网。
+管理 API Key 保护实例查询、实例刷新和精度告警状态清理接口；启动、存活和就绪探针做认证。API Key 只做身份校验，不加密流量。跨主机访问管理端口时，还应配置 `mgmt_tls_config` 或由受信代理终止 TLS，并通过防火墙、容器网络或 NetworkPolicy 限制访问范围；不要把 `1026` 直接暴露到公网。

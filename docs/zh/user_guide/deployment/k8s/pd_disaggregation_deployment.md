@@ -2,12 +2,9 @@
 
 本文旨在指导开发者基于MindIE Motor的vLLM推理引擎完成Kubernetes环境下的PD分离部署，并提供生产环境配置优化实践指导。
 
----
-
 ## 前置准备
 
-1. 按照以下要求准备环境。
-   - 所有服务器均已完成[环境准备](../../environment_preparation.md)。
+1. 所有服务器均已参考[环境准备](../../environment_preparation.md)完成环境准备。
 
 2. 准备镜像。
 
@@ -57,11 +54,11 @@
 
 ## 配置获取
 
-   1. MindIE Motor已在[常用模型配置连接](../README.md#常用模型)中提供了常用模型的配置示例(deepseek_v4.1_flash、glm 5.2、glm 5.3等)，请选择与模型及硬件匹配的配置示例，修改少量配置后可直接使用。对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](../../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+   1. MindIE Motor已在[常用模型](../README.md#常用模型)中提供了常用模型的配置示例（DeepSeek_V4.1-Flash、GLM-5.2、GLM-5.3等），请选择与模型及硬件匹配的配置示例，修改少量配置后可直接使用。对于未提供典型配置的模型，可参考 [MindIE Motor配置自动生成指导](../../../../../model_configs/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
    2. 保存配置至服务器
 
-      进入examples目录下，将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下，再修改后保存：
+      进入examples目录下，将所选模型目录下的user_config.json、env.json粘贴到./config目录下，再修改后保存：
 
       ```bash
       cd /examples
@@ -152,7 +149,7 @@
 
 ## 特性配置
 
-[配置获取](#配置获取)中获取的user_config.json与env.json是基础部署配置。若要开启或调整主备倒换、异常实例重启、服务限流、KV 亲和性调度、KV 池化等能力，可参照本节内容做最小配置修改。
+[配置获取](#配置获取)中获取的user_config.json与env.json是基础部署配置。若要开启或调整主备倒换、异常实例重启、服务限流、KV Cache亲和性调度、KV池化等能力，可参照本节内容做最小配置修改。
 
 ### 主备倒换
 
@@ -178,7 +175,7 @@
 
 **关闭特性**
 
-删除standby_config参数配置块，或将enable_master_standby参数设为：false。
+删除standby_config参数配置块，或将enable_master_standby参数设为`false`。
 
 ### 异常实例重启
 
@@ -186,7 +183,8 @@ P/D实例出现异常时，重启推理实例，避免实例长时间处于异�
 
 **特性原理**
 
-推理主进程异常退出等情况时，Motor 自动重启对应实例。重启期间吞吐能力下降，重启后恢复正常。
+推理主进程异常退出等情况时，MindIE Motor自动重启对应实例。重启期间吞吐能力下降，重启后恢复正常。
+
 **开启特性**
 
 默认开启，无需额外操作。
@@ -219,7 +217,7 @@ Coordinator记录一段时间内接收到的请求数量，达到阈值后停止
 
 **关闭特性**
 
-删除rate_limit_config参数配置块，或将enable_rate_limit参数设置为：false。
+删除rate_limit_config参数配置块，或将enable_rate_limit参数设置为`false`。
 
 >[!NOTE] 说明
 >该特性详细文档请参考[服务限流](../../features/fault_tolerance/rate_limiting.md)。字段说明请参考 [user_config.json配置文件全量参数说明](../../configuration/config_reference.md#motor_coordinator_config)中的rate_limit_config字段。
@@ -231,7 +229,7 @@ NodeManager负责原生引擎的就绪探测、进程监管和虚推健康探测
 - **就绪探测**：轮询原生引擎业务端口的`/health`，在startup_timeout窗口内保持STARTING，成功后才允许调度。
 - **进程存活**：监管原生引擎进程组，主进程或工作进程异常退出时触发实例恢复。
 - **vLLM虚推**：对DP0实例发送轻量级推理请求，并结合AI Cube利用率识别静默故障；达到失败阈值后降级状态，但不直接终止进程。
-- **SGLang 健康探测**：使用SGLang原生生成式`GET /health`，不创建Motor虚推monitor。
+- **SGLang健康探测**：使用SGLang原生生成式`GET /health`，不创建Motor虚推monitor。
 - **软件故障**：引擎提供`/fault_tolerance/status`时，可由EngineFtManager补充软件故障上报。
 
 **开启特性**
@@ -256,23 +254,23 @@ NodeManager负责原生引擎的就绪探测、进程监管和虚推健康探测
 
 vLLM虚推仅允许在最终引擎环境ASCEND_GLOBAL_LOG_LEVEL=3（未配置时默认为ERROR）时开启。该特性详细文档请参考[虚拟推理健康探测](../../features/fault_tolerance/sim_inference.md)。
 
-### KV Cache亲和调度
+### KV Cache亲和性调度
 
 将具有相同前缀的请求调度到同一实例，复用已有KV Cache，减少Prefill耗时。
 
 **特性原理**
 
-MindIE Motor的KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake Conductor 组件，允许调度器根据 KV Cache 位置优先将请求调度到缓存了对应 KV 的实例，从而减少 KV Cache 跨实例传输开销，提升推理吞吐与响应速度。
+MindIE Motor的KV Cache亲和性调度能力依赖Mooncake社区的Mooncake Conductor组件，允许调度器根据KV Cache位置优先将请求调度到缓存了对应KV 实例，从而减少KV Cache跨实例传输开销，提升推理吞吐与响应速度。
 
 **开启特性**
 
 - motor_coordinator_config字段：开启KV Cache亲和性调度。
-- motor_engine_prefill_config字段：开启KV事件发布、开启prefix cache特性。
-- kv_conductor_config字段：kv conductor配置，与motor_engine_prefill_config处于同一层级。
+- motor_engine_prefill_config字段：开启KV事件发布、开启Prefix Cache特性。
+- kv_conductor_config字段：KV Conductor配置，与motor_engine_prefill_config处于同一层级。
 
 ```json
 "motor_coordinator_config": {
-  "scheduler_config": { "scheduler_type": "kv_cache_affinity" }
+  "scheduler_config": { "prefill_scheduler_type": "kv_cache_affinity" }
 },
 "motor_engine_prefill_config": {
   "engine_config": {
@@ -301,7 +299,7 @@ MindIE Motor的KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake C
 
 ### PD异构（PR/DT）调度
 
-Ascend 950PR&950DT系列产品分为PR、DT两类，两者的内存存在差异，DT的内存带宽更大、性能更好，更适合部署Decode；Prefill可部署在PR上。因此**PR + DT 组网**时，需要把P实例调度到PR节点，D实例调度到DT节点。
+Ascend 950PR&950DT系列产品分为PR、DT两类，两者的内存存在差异，DT的内存带宽更大、性能更好，更适合部署Decode；Prefill可部署在PR上。因此**PR + DT组网**时，需要把P实例调度到PR节点，D实例调度到DT节点。
 
 **特性原理**
 
@@ -314,13 +312,13 @@ Ascend 950PR&950DT系列产品分为PR、DT两类，两者的内存存在差异�
 | 特性 | PR+DT 异构 | 说明 |
 |------|------------|------|
 | ScaleP2D（缩P保D） | 不支持 | 停掉P后释放的是PR节点，D仍只能调度到DT，无法占用这些节点完成恢复。 |
-| MindCluster实例重调度、容器快照默认重调度 | 受限 | P只能再调度到空闲PR，D只能再到空闲DT，对应类型没有空闲节点时无法恢复。 |
+| MindCluster实例重调度、容器快照默认重调度 | 受限 | P只能再调度到空闲PR，D只能再调度到空闲DT，对应类型没有空闲节点时无法恢复。 |
 | 自动弹性扩缩容 | 受限 | 只能按角色在PR/DT上分别增减，不能靠缩P把PR资源转给D扩容。扩P需要空闲PR，扩D需要空闲DT。 |
 | 手动扩缩容 | 受限 | 只能按角色在PR/DT上分别增减，不能靠缩P把PR资源转给D扩容。扩P需要空闲PR，扩D需要空闲DT。 |
 | 异常实例原地重启、引擎重拉 | 支持 | 仍在原Pod/原节点，不换卡类型。 |
 | Controller/Coordinator主备倒换 | 支持 | 管理面不使用PR/DT的`nodeSelector`。 |
 | Coordinator故障场景请求重调度 | 支持 | 将请求转到其他健康实例，不改变P/D的节点类型绑定。 |
-| 故障隔离、虚推健康探测、token 级重推 | 支持 | 不依赖跨PR/DT占节点。 |
+| 故障隔离、虚推健康探测、token 级重推 | 支持 | 不依赖跨PR/DT占用节点。 |
 | KV Cache亲和调度、KV池化、服务限流、Tracing | 支持 | 与卡类型调度无关。 |
 
 建议在PR+DT组网下保持`enable_scale_p2d`为`false`。实例重调度与弹性扩缩容仅在对应类型节点有空闲容量时按原能力工作。
@@ -343,11 +341,11 @@ Ascend 950PR&950DT系列产品分为PR、DT两类，两者的内存存在差异�
 删除上述字段或不填。
 
 >[!NOTE] 说明
->仅Kubernetes PD分离生效。`hardware_type`为`Ascend950`时基础`nodeSelector`为`accelerator: huawei-npu`；芯片名标签是额外一条，全PR或全DT组网无需填写。基于Docker部署无调度器，按[基于Docker的多容器PD分离服务部署指导](../docker/host/pd_disaggregation_deployment.md#启动服务)的打印结果部署即可（即Prefill命令放到 PR上，Decode命令放到DT上）。
+>仅Kubernetes PD分离生效。`hardware_type`为`Ascend950`时基础`nodeSelector`为`accelerator: huawei-npu`；芯片名标签是额外一条，全PR或全DT组网无需填写。基于Docker部署无调度器，按[基于Docker的多容器PD分离服务部署指导](../docker/host/pd_disaggregation_deployment.md#启动服务)的打印结果部署即可（即Prefill命令放到PR上，Decode命令放到DT上）。
 
 ### KV池化能力
 
-通过MultiConnector将KV缓存卸载到共享池，支持跨实例复用，降低显存压力。
+通过MultiConnector将KV Cache缓存卸载到共享池，支持跨实例复用，降低显存压力。
 
 **特性原理**
 

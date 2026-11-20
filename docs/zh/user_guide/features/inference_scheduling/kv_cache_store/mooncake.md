@@ -2,13 +2,13 @@
 
 ## 特性介绍
 
-Mooncake 后端通过分布式共享内存池化机制实现跨引擎 KV 缓存共享，由 vLLM Ascend 天然集成，**无需额外安装任何组件**。该特性允许 Prefill 引擎将 KV Cache 存入共享池，Decode 引擎从池中读取，实现 P/D 分离场景下的 KV 缓存复用，减少重复计算。
+Mooncake 后端通过分布式共享内存池化机制实现跨引擎 KV Cache共享，由 vLLM Ascend 天然集成，**无需额外安装任何组件**。该特性允许 Prefill 引擎将 KV Cache 存入共享池，Decode 引擎从池中读取，实现 P/D 分离场景下的 KV 缓存复用，减少重复计算。
 
 ### 工作原理
 
 Mooncake 后端采用分布式共享内存池架构，通过 `mooncake_master` 进程管理全局池化元数据，各引擎节点通过 `mooncake_store_service` 进程贡献或消费池化内存。其核心工作流程如下：
 
-1. **池化内存注册**：各节点通过 mooncake_master 注册自身存储节点信息，形成全局可见的分布式 KV 池。
+1. **池化内存注册**：各节点通过 mooncake_master 注册自身存储节点信息，形成全局可见的KV存储池。
 2. **KV 入池**：Prefill 引擎通过 AscendStoreConnector 将计算完成的 KV Cache 按 128 token 分块写入共享池。
 3. **KV 出池**：Decode 引擎通过 AscendStoreConnector 从共享池读取所需的 KV Cache 块。
 4. **P2P 直传**：支持通过 MooncakeConnectorV1 实现 Prefill 到 Decode 的直接传输（不落池），降低延迟。
@@ -71,7 +71,7 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
 | 硬件 | 环境变量 | 说明 |
 |------|-------|------|
 | Ascend 950PR系列产品 | <ul><li>使用 UBOE 协议时：ASCEND_GLOBAL_RESOURCE_CONFIG={"comm_resource_config.protocol_desc":["uboe:device"]}</li><li>使用 UB 协议时：ASCEND_LOCAL_COMM_RES={"version":"1.3"}</li></ul> | UBOE / UB 二选一，按实际使用的通信协议配置。 |
-| Atlas 800I A3超节点服务器 | ASCEND_ENABLE_USE_FABRIC_MEM=1 | **推荐方案**。<br>启用统一内存地址直传方案。若开启 SSD offload，相关内存大小需按 1GB 对齐,详见 vLLM Ascend 文档 [Fabric memory size alignment](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_cache_pool_ascend_store.html#issue-3-fabric-memory-misalignment-causing-allocation-failure)。 |
+| Atlas 800I A3超节点服务器 | ASCEND_ENABLE_USE_FABRIC_MEM=1 | **推荐方案**。<br>启用统一内存地址直传方案。若开启 SSD offload，相关内存大小需按 1GB 对齐，详情请参见 [Fabric memory size alignment](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_cache_pool_ascend_store.html#issue-3-fabric-memory-misalignment-causing-allocation-failure)。 |
 | Atlas 800I A3超节点服务器 | ASCEND_BUFFER_POOL=4:8 | 当[表 1](#table001)依赖列软件版本不满足时，使用该方案。<br>配置 NPU Device 上用于聚合与 KV 传输的 buffer 个数与大小（例如 `4:8` 表示 4 个 8MB buffer）。 |
 | Atlas 800I A2推理服务器 | — | 无需额外环境变量，通用必配项即可。 |
 
@@ -93,7 +93,7 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
 
 #### 场景一：embedded 模式配置
 
-1. 在 user_config.json配置文件 中配置 Mooncake 后端字段 kv_cache_store_config，样例如下。
+1. 在user_config.json配置文件中配置Mooncake后端`kv_cache_store_config`字段，样例如下。
 
     ```json
     "kv_cache_store_config": {
@@ -116,7 +116,7 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
     | eviction_ratio | 无 | 是 | 单次驱逐比例，建议值为：0.1；`deploy.py` 强制校验，缺失报错。 |
 
     >[!NOTE] 说明
-    >可选配置 `target_job_id` 复用其他推理服务的 kv_store（值为目标服务的 `job_id`），详情请参见[多套服务共享kv_store](README.md#table_Connector)。
+    >可选配置 `target_job_id` 复用其他推理服务的 kv_store（值为目标服务的 `job_id`），详情请参见[多套服务共享kv_store](README.md#step3)。
 
 2. 参考[环境准备](#环境准备)章节在 `env.json` 中配置通用环境变量，确保 Prefill 和 Decode 配置一致。
 
@@ -153,10 +153,10 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
 
     | 字段 | 默认值 | 必填 | 说明 |
     |------|--------|------|------|
-    | enable | false | 是 | 池化总开关，需配置为： true 。|
-    | backend | memcache | 是 | 需配置为： "mooncake" 。|
-    | store_mode | embedded | 是 | standalone 模式需配置为： "standalone"。 |
-    | global_segment_size | 无 | 是 | store 进程贡献的池化内存大小，如 ："200GB"。 |
+    | enable | false | 是 | 池化总开关，需配置为：true。|
+    | backend | memcache | 是 | 需配置为： "mooncake"。|
+    | store_mode | embedded | 是 | standalone 模式需配置为："standalone"。 |
+    | global_segment_size | 无 | 是 | store 进程贡献的池化内存大小，如："200GB"。 |
     | eviction_high_watermark_ratio | 无 | 是 | 驱逐水位阈值，建议 0.9；`deploy.py` 强制校验，缺失报错。 |
     | eviction_ratio | 无 | 是 | 单次驱逐比例，建议 0.1；`deploy.py` 强制校验，缺失报错。 |
 
@@ -235,7 +235,7 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
       }
       ```
 
-    **表 6** kv_transfer_config 参数说明
+    **表 6** kv_transfer_config参数说明
 
     | 字段 | 默认值 | 必填 | 说明 |
     |------|--------|------|------|
@@ -295,8 +295,8 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
    >[!NOTE] 说明
    >若 user_config.json 中 motor_deploy_config.deploy_mode 为multi_deployment，则修改 examples/deployer/yaml_template/engine_template.yaml：在引擎 Pod 的 spec.template.spec 下增加与上述相同的字段（hostNetwork: true、dnsPolicy: ClusterFirstWithHostNet）。
 
-2. 补充 Ascend 950PR系列产品 引擎环境变量。
-   编辑 examples/deployer/startup/common.sh 中的 set_a5_engine_env（由 roles/engine.sh 在 Ascend 950PR系列产品 场景调用），补齐示例如下：
+2. 补充Ascend 950PR系列产品引擎环境变量。
+   编辑 examples/deployer/startup/common.sh 中的 set_a5_engine_env（由 roles/engine.sh 在 Ascend 950PR系列产品场景调用），补齐示例如下：
 
    ```bash
    set_a5_engine_env() {
@@ -356,7 +356,7 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
    done
    ```
 
-2. 找到业务容器并查 PID。
+2. 找到业务容器并查询PID。
 
    在本机执行 `docker ps`，按容器名区分 pause 沙箱与推理业务容器。Docker 下 K8s 容器名大致为：
 
@@ -366,7 +366,7 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
 
    | 片段 | 含义 | 示例 |
    |------|------|------|
-   | k8s_POD_... | pause 沙箱，无须使用 | k8s_POD_vllm-0-decode-0-0_mindie-motor_... |
+   | k8s_POD_... | pause 沙箱，无需使用 | k8s_POD_vllm-0-decode-0-0_mindie-motor_... |
    | k8s_vllm_... | 业务容器（镜像里容器名常为： vllm） |k8s_vllm_vllm-0-decode-0-0_mindie-motor_... |
 
    >[!NOTE] 说明

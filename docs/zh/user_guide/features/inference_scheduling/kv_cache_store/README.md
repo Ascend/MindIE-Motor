@@ -25,10 +25,10 @@ KV 池化通过 `MultiConnector` 组合传输 Connector 和 Store Connector。�
 
 MindIE Motor 使用 `MultiConnector` 组合 P/D 传输 Connector 与 Store Connector。当前支持以下池化功能：
 
-- **基于 Mooncake 的共享 KV Pool**：P/D 均加载 `AscendStoreConnector`，并配置 `backend: "mooncake"`，分别写入和读取共享 KV Cache。详细信息请参见 [Mooncake Backend](./mooncake.md)。
-- **基于 MemCache 的共享 KV Pool**：P/D 均加载 `AscendStoreConnector`，并配置 `backend: "memcache"`，分别写入和读取共享 KV Cache。详细信息请参见 [MemCache Backend](./memcache.md)。
+- **基于 Mooncake 的共享 KV Pool**：P/D 均加载 `AscendStoreConnector`，并配置 `backend: "mooncake"`，分别写入和读取共享 KV Cache。详细信息请参见 [Mooncake 后端特性](./mooncake.md)。
+- **基于 MemCache 的共享 KV Pool**：P/D 均加载 `AscendStoreConnector`，并配置 `backend: "memcache"`，分别写入和读取共享 KV Cache。详细信息请参见 [MemCache 后端特性](./memcache.md)。
 - **基于 Yuanrong 的共享 KV Pool**：P/D 均加载 `AscendStoreConnector`，并配置 `backend: "yuanrong"`；NodeManager 在每个 P/D Pod 内启动 Yuanrong Worker。详细信息请参见 [Yuanrong 后端](./yuanrong.md)。
-- **UCM**：通过 `UCMConnector` 的 `store_pipeline` 组合 Cache、POSIX 等 UCM Store。当前分布式 P/D 方案在 Prefill 保存和加载跨请求前缀，Decode 不加载 UCM。详细信息请参见 [MindIE Motor 中部署 UCM](./ucm.md)。
+- **UCM**：通过 `UCMConnector` 的 `store_pipeline` 组合 Cache、POSIX 等 UCM Store。当前分布式 P/D 方案在 Prefill 侧保存和加载跨请求前缀，Decode 不加载 UCM。详细信息请参见 [MindIE Motor 中部署 UCM](./ucm.md)。
 
 > [!NOTE] 说明
 >
@@ -42,7 +42,7 @@ MindIE Motor 使用 `MultiConnector` 组合 P/D 传输 Connector 与 Store Conne
 | 硬件 | MemCache 后端的 `local_service_mode` 默认值与硬件类型相关。<ul><li>Atlas 800I A2推理服务器和Ascend 950PR系列产品：默认为`inprocess`</li><li>Atlas 800I A3超节点服务器：默认为 `standalone`</li></ul> |
 | 部署场景 | 仅支持 PD 分离部署场景。 |
 | 引擎 | 仅支持 vLLM 推理引擎。 |
-| 特性互斥 | <ul><li>禁止配置 `"backend": "ucm"`，UCM 不通过 `AscendStoreConnector` 的 backend 机制。</li><li>`AscendStoreConnector` 和 `kv_cache_store_config` 中的 `backend` 必须保持一致。</li><li>`MooncakeConnectorV1` 等负责 P/D 实时传输，与 `AscendStoreConnector` 的 Mooncake Backend 不是同一层配置，不可混淆。</li></ul> |
+| 特性互斥 | <ul><li>禁止配置 `"backend": "ucm"`，UCM 不通过 `AscendStoreConnector` 的 backend 机制接入。</li><li>`AscendStoreConnector` 和 `kv_cache_store_config` 中的 `backend` 必须保持一致。</li><li>`MooncakeConnectorV1` 等负责 P/D 实时传输，与 `AscendStoreConnector` 的 Mooncake Backend 不是同一层配置，不可混淆。</li></ul> |
 | 软件依赖 | <ul><li>依赖 vllm-ascend KV 传输层。</li><li>MemCache 无需额外安装，已预装在 Motor 镜像中。</li><li>Mooncake 由 vllm-ascend 集成，无需额外安装。</li><li>Yuanrong 需额外安装 wheel，并准备可访问的外部 ETCD。</li><li>UCM 需额外安装 UCM wheel。</li></ul> |
 | 其他限制 | <ul><li>`lookup_rpc_port` 无需手动填写，由 Motor 自动适配。</li><li>`default_kv_lease_ttl` 需大于 `env.json` 中的 `ASCEND_CONNECT_TIMEOUT` 和 `ASCEND_TRANSFER_TIMEOUT`。</li><li>Mooncake 后端的 `eviction_high_watermark_ratio` 和 `eviction_ratio` 为必填参数，`deploy.py` 会进行强制校验。</li><li>MemCache 内部配置项在对应模式的 `mmc-local-inprocess.conf` 或 `mmc-local-standalone.conf` 中管理，无需在 `user_config.json` 中配置。</li></ul> |
 
@@ -51,7 +51,7 @@ MindIE Motor 使用 `MultiConnector` 组合 P/D 传输 Connector 与 Store Conne
 ### 环境准备
 
 - 已按照[PD 分离服务部署](../../../deployment/README.md#k8s-pd-disaggregation) 完成P/D分离推理服务部署，并且服务运行正常。KV池化在该服务基础上开启，不会改变Controller和Coordinator的部署方式。
-- KV池化的通用约束请参见[vllm-ascend kv_pool](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_cache_pool_ascend_store.html)。启用UCM功能时，还需满足[UCM 部署文档](ucm.md) 中的要求。
+- KV池化的通用约束请参见[vllm-ascend kv_pool](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_cache_pool_ascend_store.html)。启用UCM功能时，还需满足[UCM部署文档](ucm.md) 中的要求。
 - 开启前请先参考[MindIE Motor 快速开始](../../../quick_start.md)，确保基础P/D分离服务可以正常部署。
 - 后续所有操作只在K8s集群的管理节点（master节点）执行。
 
@@ -78,13 +78,13 @@ P/D传输Connector选型如下表所示：
 
 | 模型 attention 架构 | `connectors[0]` | 典型模型 |
 |---------------------|-----------------|----------|
-| 标准 attention | `MooncakeConnectorV1` / `MooncakeConnectorV2` | Qwen3、GLM-5、DeepSeek V3.1 |
-| 混合 attention | `MooncakeHybridConnector` | DeepSeek V4 / V4 Flash / V4 Pro |
+| 标准 attention | MooncakeConnectorV1 / MooncakeConnectorV2 | Qwen3、GLM-5、DeepSeek V3.1 |
+| 混合 attention | MooncakeHybridConnector | DeepSeek V4 / V4 Flash / V4 Pro |
 
 >[!WARNING] 注意
 > `MooncakeConnectorV1` 与 `MooncakeConnectorV2` 仅支持标准 attention 模型；混合attention模型误配后，Decode节点可能在推理时崩溃重启。
 
-1. 在 `user_config.json` 配置文件中，分别在 P 实例的 `motor_engine_prefill_config` 字段和 D 实例的 `motor_engine_decode_config` 字段下，为 `engine_config` 配置 **kv_transfer_config** 字段。
+1. 在 `user_config.json` 配置文件中，分别在 P 实例的 `motor_engine_prefill_config` 字段和 D 实例的 `motor_engine_decode_config` 字段下，为 `engine_config` 配置 `kv_transfer_config` 字段。
 
      - **P 实例（motor_engine_prefill_config）：**
 
@@ -172,31 +172,31 @@ P/D传输Connector选型如下表所示：
 
     | 配置项 | 类型 | 取值范围 | 必填/选填 | 默认值 | 说明 |
     | --- | --- | --- | --- | --- | --- |
-    | `backend` | string | `mooncake`、`memcache`、`yuanrong` | 选填 | `memcache` | 池化后端；未配置时默认 `memcache` |
-    | `target_job_id` | string | 目标服务的 motor_deploy_config.job_id（即目标 namespace） | 选填 | 未配置 | 复用其他 K8s 推理服务的 kv_store |
-    | `master_server_address` | string | `10.0.0.5:50088`、`etcd://h1:2379;h2:2379`、`redis://h:6379` | 选填 | 未配置 | 显式指定 Mooncake master 地址（支持外部与 HA 部署）。配置后引擎侧与 standalone store 侧都原样使用该值，且不再部署本 namespace 的 kv-store Pod；未配置时由 `KVS_MASTER_SERVICE` + `port` 推导 |
+    | backend | string | mooncake、memcache、yuanrong | 选填 | memcache | 池化后端；未配置时默认 `memcache` |
+    | target_job_id | string | 目标服务的 motor_deploy_config.job_id（即目标 namespace） | 选填 | 未配置 | 复用其他 K8s 推理服务的 kv_store |
+    | master_server_address | string | `10.0.0.5:50088`、`etcd://h1:2379;h2:2379`、`redis://h:6379` | 选填 | 未配置 | 显式指定 Mooncake master 地址（支持外部与 HA 部署）。配置后引擎侧与 standalone store 侧都原样使用该值，且不再部署本 namespace 的 kv-store Pod；未配置时由 `KVS_MASTER_SERVICE` + `port` 推导 |
 
     **表 3** Mooncake 专属参数
 
     | 配置项 | 类型 | 取值范围 | 必填/选填 | 默认值 | 说明 |
     | --- | --- | --- | --- | --- | --- |
-    | `metadata_server` | string | `P2PHANDSHAKE` | 选填 | `P2PHANDSHAKE` | 元数据服务器模式，默认为点对点握手模式 |
-    | `protocol` | string | `ascend` | 选填 | `ascend` | 底层传输协议 |
-    | `device_name` | string | 网卡名称 | 选填 | `""` | 指定绑定的网卡名称，为空则自动选择 |
-    | `global_segment_size` | string | 显存段大小 | 选填 | `1GB` | 全局共享显存段大小 |
-    | `port` | int | 端口号 | 选填 | `50088` | KV Pool 服务端口；未配置时 deploy.py 将按默认值补齐 |
-    | `default_kv_lease_ttl` | int | 需大于 `ASCEND_CONNECT_TIMEOUT` 和 `ASCEND_TRANSFER_TIMEOUT` | 选填 | `11000` | KV 对象默认租约 TTL（毫秒） |
-    | `eviction_high_watermark_ratio` | float | 建议 0.9 | 必填 | 无 | 池化空间高水位驱逐线，传递给 `mooncake_master` 进程；deploy.py 强制校验，缺失报错 |
-    | `eviction_ratio` | float | 建议 0.1 | 必填 | 无 | 单次驱逐比例，传递给 `mooncake_master` 进程；deploy.py 强制校验，缺失报错 |
-    | `store_mode` | string | `embedded`、`standalone` | 选填 | `embedded` | Store 部署模式 |
-    | `local_buffer_size` | string | 大小值 | 选填 | `1GB` | standalone 模式下引擎侧传输 staging buffer |
-    | `store_http_port` | int | 端口号 | 选填 | `0` | standalone 模式下 store 进程的 REST 端口；默认 `0` 由内核分配临时端口 |
+    | metadata_server | string | P2PHANDSHAKE | 选填 | P2PHANDSHAKE | 元数据服务器模式，默认为点对点握手模式 |
+    | protocol | string | ascend | 选填 | ascend | 底层传输协议 |
+    | device_name | string | 网卡名称 | 选填 | "" | 指定绑定的网卡名称，为空则自动选择 |
+    | global_segment_size | string | 显存段大小 | 选填 | 1GB | 全局共享显存段大小 |
+    | port | int | 端口号 | 选填 | 50088 | KV Pool 服务端口；未配置时 deploy.py 将按默认值补齐 |
+    | default_kv_lease_ttl | int | 需大于ASCEND_CONNECT_TIMEOUT和ASCEND_TRANSFER_TIMEOUT | 选填 | 11000 | KV 对象默认租约 TTL（毫秒） |
+    | eviction_high_watermark_ratio | float | 建议 0.9 | 必填 | 无 | 池化空间高水位驱逐线，传递给 `mooncake_master` 进程；deploy.py 强制校验，缺失报错 |
+    | eviction_ratio | float | 建议 0.1 | 必填 | 无 | 单次驱逐比例，传递给 `mooncake_master` 进程；deploy.py 强制校验，缺失报错 |
+    | store_mode | string | embedded、standalone | 选填 | embedded | Store 部署模式 |
+    | local_buffer_size | string | 大小值 | 选填 | 1GB | standalone 模式下引擎侧传输 staging buffer |
+    | store_http_port | int | 端口号 | 选填 | 0 | standalone 模式下 store 进程的 REST 端口；默认 `0` 由内核分配临时端口 |
 
     **表 4** MemCache 专属参数
 
     | 配置项 | 类型 | 取值范围 | 必填/选填 | 默认值 | 说明 |
     | --- | --- | --- | --- | --- | --- |
-    | `local_service_mode` | string | `inprocess`、`standalone` | 选填 | Atlas 800I A2推理服务器/Ascend 950PR系列产品：`inprocess`；Atlas 800I A3超节点服务器：`standalone` | LocalService 部署模式：`inprocess`（与 vLLM 同进程）或 `standalone`（独立进程） |
+    | local_service_mode | string | inprocess、standalone | 选填 | Atlas 800I A2推理服务器/Ascend 950PR系列产品：`inprocess`；Atlas 800I A3超节点服务器：`standalone` | LocalService 部署模式：`inprocess`（与 vLLM 同进程）或 `standalone`（独立进程） |
 
     > [!NOTE] 说明
     > 所有 MemCache 内部配置项（DRAM 池大小、通信协议、MetaService 端口、SSD 缓存、UBSIO 参数等）均由用户在对应模式的 `mmc-local-inprocess.conf` 或 `mmc-local-standalone.conf` 中管理，无需在 `user_config.json` 中配置。请参见 [MemCache 后端文档](./memcache.md)。
@@ -295,7 +295,7 @@ P/D传输Connector选型如下表所示：
 
     - 集群中会创建/更新 ConfigMap `motor-config`（内容来自当前输入的 `user_config.json`），作为后续扩缩容与刷新的基线。
     - `output_yamls/` 下会生成各服务 YAML 文件。
-    - 使用 UCM 时，还需按 UCM 部署文档为 Prefill 安装 UCM、挂载 UCM Store 所需目录；当前样例同时生成 Mooncake kv_store/master 资源。
+    - 使用 UCM 时，还需按UCM部署文档为 Prefill 安装 UCM、挂载 UCM Store 所需目录；当前样例同时生成 Mooncake kv_store/master 资源。
 
 #### 连接外部 / HA Mooncake master（可选）
 
@@ -324,12 +324,12 @@ P/D传输Connector选型如下表所示：
 
 行为说明：
 
-- 该值会**原样**写入推理 Pod 内的两份配置：引擎侧 `kv_cache_store_config.json` 与 standalone store 侧 `mooncake_store_config.json`，不会再拼接端口；
-- 配置后 deployer **不再部署**本 namespace 的 kv-store Pod/Service（与 `target_job_id` 复用布尔一致），因此需要自行保证 master 可达；
-- 与 `target_job_id` 同时配置时，`master_server_address` 优先；
-- 该字段对 `store_mode` 不敏感：`standalone` 下引擎侧与 store 侧都使用该值；`embedded`（默认）下没有独立 store 进程，只有引擎侧客户端使用该值，但**仍会跳过本地 kv-store Pod**；
-- `metadata_server` 同样原样下发，可填 `P2PHANDSHAKE`、`etcd://h1:2379,h2:2379`、`redis://h:6379` 或 `http://h:8080/metadata`；
-- HA 地址是 etcd/redis 连接串，无法推导出单一 host，因此下面两项需要显式指向 leader（VIP/DNS），不能再用 `*` 占位：
+- 该值会**原样**写入推理 Pod 内的两份配置：引擎侧 `kv_cache_store_config.json` 与 standalone store 侧 `mooncake_store_config.json`，不会再拼接端口。
+- 配置后 deployer **不再部署**本 namespace 的 kv-store Pod/Service（与 `target_job_id` 复用布尔一致），因此需要自行保证 master 可达。
+- 与 `target_job_id` 同时配置时，`master_server_address` 优先。
+- 该字段对 `store_mode` 不敏感：`standalone` 下引擎侧与 store 侧都使用该值；`embedded`（默认）下没有独立 store 进程，只有引擎侧客户端使用该值，但**仍会跳过本地 kv-store Pod**。
+- `metadata_server` 同样原样下发，可填 `P2PHANDSHAKE`、`etcd://h1:2379,h2:2379`、`redis://h:6379` 或 `http://h:8080/metadata`。
+- HA 地址是 etcd/redis 连接串，无法推导出单一 host，因此下面两项需要显式指向 leader（VIP/DNS），不能再用 `*` 占位。
 
   ```json
   "kv_conductor_config": {
@@ -450,11 +450,11 @@ MemCache MetaService 启动失败。
 
 确保两处 `backend` 值相同；修改后重新执行 `python deploy.py --config_dir ../../model_configs/vllm` 部署。
 
-### 为什么 UCM 样例中仍然有 backend: "mooncake"`
+### 为什么 UCM 样例中仍然有 backend: "mooncake"
 
 **问题描述**
 
-UCM 样例中仍存在 `backend: "mooncake"` 配置。
+UCM 样例中仍存在 backend: "mooncake" 配置。
 
 **原因分析**
 
@@ -486,8 +486,8 @@ UCM 样例中仍存在 `backend: "mooncake"` 配置。
 
 **原因分析**
 
-引擎 Pod 的 `/dev/shm` 默认是 `256Gi`（Docker 部署默认 `--shm-size=256g`）。若 MemCache 池化的长序列负载超过该容量，Decode 侧仍会因 shm 不足崩溃。
+引擎 Pod 的 `/dev/shm` 默认是 `256GiB`（Docker 部署默认 `--shm-size=256g`）。若 MemCache 池化的长序列负载超过该容量，Decode 侧仍会因 shm 不足崩溃。
 
 **解决步骤**
 
-在 `user_config.json` 的 `motor_deploy_config` 中把 `dshm_size` 调到大于 `256Gi`（例如 `"512Gi"`）后重新部署。
+在 `user_config.json` 的 `motor_deploy_config` 中把 `dshm_size` 调到大于256GiB（例如 "512Gi"）后重新部署。
