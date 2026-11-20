@@ -464,7 +464,8 @@ VOLCANO_QUEUE_ANNOTATION = "scheduling.volcano.sh/queue-name"
 # Docker-only create templates (examples/deployer/docker_deploy.py --create / one-click).
 # Edit these literals to change host devices and binds. Do not add --rm.
 # Host binds /root/ascend/log, /root/.cache, /var/coredump, /data match K8s hostPath
-# (plog-path / cache-path / coredump / data). docker_deploy.py mkdir -p these before create.
+# (plog-path / cache-path / coredump / data). docker_deploy.py creates the log/cache/coredump
+# output directories before create; /data is an input host path and remains required.
 # Engine / single-container templates use --shm-size=256g to match K8s dshm emptyDir sizeLimit 256Gi.
 # CTRL / KVS YAML has no dshm volume, so those templates omit --shm-size.
 # motor_deploy_config.dshm_size overrides an existing --shm-size line only (does not insert one).

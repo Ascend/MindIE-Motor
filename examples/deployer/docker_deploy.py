@@ -782,6 +782,28 @@ def _resolve_bind_host_path(raw: str, env: dict[str, str]) -> str:
     return (env.get(name) or os.environ.get(name) or "").strip()
 
 
+_AUTO_CREATE_HOST_BIND_PATHS = frozenset(
+    {
+        "/root/ascend/log",
+        "/root/.cache",
+        "/var/coredump",
+        "/var/log",
+    }
+)
+
+
+def apply_driver_bind_fallback(template: str) -> str:
+    """Use the standard Ascend driver when the compatibility directory is absent."""
+    marker = "-v /driver:/driver"
+    lines = template.splitlines(keepends=True)
+    if not any(line.strip().rstrip("\\").strip() == marker for line in lines):
+        return template
+    if os.path.isdir("/driver") or not os.path.isdir("/usr/local/Ascend/driver"):
+        return template
+    logger.info("Host /driver is absent; using /usr/local/Ascend/driver for the KV Store container.")
+    return "".join(line for line in lines if line.strip().rstrip("\\").strip() != marker)
+
+
 def _require_host_binds(template: str, env: dict[str, str] | None = None) -> None:
     missing: list[str] = []
     seen: set[str] = set()
@@ -794,6 +816,11 @@ def _require_host_binds(template: str, env: dict[str, str] | None = None) -> Non
         if label in seen:
             continue
         seen.add(label)
+        if host_path and os.path.normpath(host_path) in _AUTO_CREATE_HOST_BIND_PATHS:
+            try:
+                os.makedirs(host_path, exist_ok=True)
+            except OSError as exc:
+                raise ValueError(f"Failed to create host bind directory {host_path}: {exc}") from exc
         if not host_path or not os.path.exists(host_path):
             missing.append(label)
     if missing:
@@ -1413,6 +1440,7 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
     except ValueError as exc:
         logger.error("%s", exc)
         return 1
+    command = apply_driver_bind_fallback(command)
     try:
         _require_host_binds(command, env)
     except ValueError as exc:

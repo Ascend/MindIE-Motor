@@ -309,6 +309,59 @@ class DockerDeployTests(unittest.TestCase):
                 leftover.wait(timeout=2)
 
 
+def test_output_host_binds_are_created_but_data_is_not():
+    """Output binds are safe to create; the input data path remains mandatory."""
+    template = (
+        "  -v /root/ascend/log:/root/ascend/log \\\n"
+        "  -v /root/.cache:/root/.cache \\\n"
+        "  -v /var/coredump:/var/coredump \\\n"
+        "  -v /var/log:/var/log \\\n"
+        "  -v /data:/data \\\n"
+    )
+    with (
+        patch.object(docker_deploy.os, "makedirs") as make_dirs,
+        patch.object(docker_deploy.os.path, "exists", return_value=True),
+    ):
+        docker_deploy._require_host_binds(template)
+    assert [entry.args[0] for entry in make_dirs.call_args_list] == [
+        "/root/ascend/log",
+        "/root/.cache",
+        "/var/coredump",
+        "/var/log",
+    ]
+    assert all(entry.kwargs == {"exist_ok": True} for entry in make_dirs.call_args_list)
+
+
+def test_output_host_bind_create_failure_is_reported():
+    template = "  -v /var/coredump:/var/coredump \\\n"
+    with patch.object(docker_deploy.os, "makedirs", side_effect=PermissionError("denied")):
+        with pytest.raises(ValueError, match="Failed to create host bind directory /var/coredump"):
+            docker_deploy._require_host_binds(template)
+
+
+def test_driver_bind_falls_back_to_standard_driver_directory():
+    with patch.object(docker_deploy.os.path, "isdir", side_effect=lambda path: path == "/usr/local/Ascend/driver"):
+        command = docker_deploy.apply_driver_bind_fallback(C.ENTER_DOCKER_RUN_KVS)
+    assert "-v /driver:/driver" not in command
+    assert "-v /usr/local/Ascend/driver:/usr/local/Ascend/driver" in command
+
+
+def test_driver_bind_is_kept_when_compatibility_directory_exists():
+    with patch.object(docker_deploy.os.path, "isdir", return_value=True):
+        command = docker_deploy.apply_driver_bind_fallback(C.ENTER_DOCKER_RUN_KVS)
+    assert "-v /driver:/driver" in command
+
+
+def test_driver_bind_fallback_does_not_hide_missing_driver():
+    template = "  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \\\n  -v /driver:/driver \\\n"
+    with patch.object(docker_deploy.os.path, "isdir", return_value=False):
+        command = docker_deploy.apply_driver_bind_fallback(template)
+    assert "-v /driver:/driver" in command
+    with patch.object(docker_deploy.os.path, "exists", return_value=False):
+        with pytest.raises(ValueError, match="/driver"):
+            docker_deploy._require_host_binds(command)
+
+
 def _multi_pod_pd_config():
     """P: dp=2/tp=8 two containers; D: dp=8/tp=4 four containers."""
     return {
