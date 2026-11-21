@@ -137,6 +137,39 @@ def _logical_slice_indices(index: int, device_size: int, local_world_size: int) 
     return list(range(start_device_id, end_device_id))
 
 
+def list_visible_device_ids(env: Mapping[str, str] | None = None) -> list[str]:
+    """Host-visible chip ids for Controller registration.
+
+    Reads ``ASCEND_VISIBLE_DEVICES`` only, then ``/dev/davinciN`` when ``env``
+    is omitted. ``ASCEND_RT_VISIBLE_DEVICES`` and ``ASCEND_ALLOCATED_DEVICES``
+    belong to the engine's logical space and are ignored.
+    """
+    source = env if env is not None else os.environ
+    raw = source.get("ASCEND_VISIBLE_DEVICES")
+    if raw:
+        ids = [part.strip() for part in raw.split(",") if part.strip()]
+        if ids:
+            return _sort_device_id_strings(ids)
+    if env is not None:
+        return []
+    return list_davinci_char_devices()
+
+
+def slice_physical_device_ids(device_ids: list[str], device_offset: int, device_num: int) -> list[str]:
+    """Slice a sorted visible list by this role's ``device_offset``.
+
+    ``--devices 2,3,4,5`` with prefill offset 0 yields ``2,3``; decode offset 2
+    yields ``4,5``. The engine does not consume this result.
+    """
+    if device_num <= 0 or device_offset < 0:
+        return []
+    ordered = _sort_device_id_strings(list(device_ids))
+    end = device_offset + device_num
+    if end > len(ordered):
+        return []
+    return ordered[device_offset:end]
+
+
 def calc_endpoint_visible_device_ids(
     index: int,
     device_size: int,
@@ -151,6 +184,10 @@ def calc_endpoint_visible_device_ids(
     When ``pod_physical_ids`` comes from real ``/dev/davinciN`` nodes, slice
     that list (pass-through physical chips). Contiguous 0..n-1 is the remap
     case and yields the same numbers as logical indices.
+
+    Single container keeps ``device_offset`` as this role's logical slot.
+    The engine uses that logical index. Controller registration slices
+    host-visible ids separately.
     """
     logical_indices = _logical_slice_indices(index, device_size, local_world_size)
 

@@ -34,8 +34,9 @@ from motor.config.node_manager import NodeManagerConfig
 from motor.node_manager.api_client.controller_api_client import ControllerApiClient
 from motor.node_manager.core.api_ready_event import wait_until_api_ready
 from motor.node_manager.core.services.native_engine.ascend_device_ids import (
-    calc_endpoint_visible_device_ids,
     list_pod_device_ids,
+    list_visible_device_ids,
+    slice_physical_device_ids,
 )
 
 logger = get_logger(__name__)
@@ -334,11 +335,12 @@ class RegisterManager(ThreadSafeSingleton):
         return True
 
     def _get_physical_device_ids(self, device_num: int) -> list[str]:
-        """Device ids this pod owns, in the order native engines use them.
+        """Device ids this pod reports to the Controller.
 
-        Returns an empty list when the ids cannot be determined or do not match
-        ``device_num`` (configured, not discovered). Registration must stay
-        non-blocking: the Controller then falls back to synthesized ids.
+        Multi-container ids follow the native engine launch order. A single
+        container reports host-visible ids sliced by ``device_offset``; the
+        engine keeps logical indices plus that offset. Registration stays
+        non-blocking when multi-container ids cannot be determined.
         """
         if device_num <= 0:
             return []
@@ -348,14 +350,20 @@ class RegisterManager(ThreadSafeSingleton):
                 single = self._config.single_container_config
 
             if single.single_container_flag:
-                return calc_endpoint_visible_device_ids(
-                    0,
+                device_offset = single.device_offset or 0
+                visible_ids = list_visible_device_ids()
+                physical_ids = slice_physical_device_ids(visible_ids, device_offset, device_num)
+                if physical_ids:
+                    return physical_ids
+                physical_ids = [str(device_offset + index) for index in range(device_num)]
+                logger.warning(
+                    "Single container visible devices %s cannot cover offset %d size %d; reporting logical ids %s",
+                    visible_ids,
+                    device_offset,
                     device_num,
-                    device_num,
-                    pod_physical_ids=None,
-                    single_container_flag=True,
-                    device_offset=single.device_offset,
-                ).split(",")
+                    physical_ids,
+                )
+                return physical_ids
 
             pod_ids = list_pod_device_ids(device_num=device_num)
             if not pod_ids:
@@ -398,7 +406,6 @@ class RegisterManager(ThreadSafeSingleton):
             device_num = self._config.basic_config.device_num
             nnodes = self._config.basic_config.nnodes
 
-        # Report launch-order device ids on every registration.
         physical_device_ids = self._get_physical_device_ids(device_num)
 
         register_msg = RegisterMsg(
