@@ -15,7 +15,7 @@ import time
 import shutil
 
 from motor.common.resources.endpoint import Endpoint
-from motor.common.resources.http_msg_spec import Ranktable, RegisterMsg, StartCmdMsg, ReregisterMsg
+from motor.common.resources.http_msg_spec import RegisterMsg, StartCmdMsg, ReregisterMsg
 from motor.common.utils.env import Env
 from motor.common.utils.net import normalize_ip_address
 from motor.common.logger import get_logger
@@ -30,12 +30,12 @@ from motor.common.utils.snapshot_utils import (
     MOTOR_SNAPSHOT_WEIGHT_DIR,
     MOTOR_SNAPSHOT_CONFIGMAP_DIR,
 )
-from motor.config.node_manager import HardwareType, NodeManagerConfig
+from motor.config.node_manager import NodeManagerConfig
 from motor.node_manager.api_client.controller_api_client import ControllerApiClient
 from motor.node_manager.core.api_ready_event import wait_until_api_ready
 from motor.node_manager.core.services.native_engine.ascend_device_ids import (
     calc_endpoint_visible_device_ids,
-    list_runtime_device_ids,
+    list_pod_device_ids,
 )
 
 logger = get_logger(__name__)
@@ -51,8 +51,6 @@ class RegisterManager(ThreadSafeSingleton):
             config = NodeManagerConfig.from_json()
         self._config = config
         self.config_lock = threading.RLock()
-        self.ranktable: Ranktable = None
-        self.instance_ranktable: Ranktable = None
         self.instance_id: int = 0
         self.d2d_peer_ips: list[str] | None = None
         self.node_rank: int = 0
@@ -259,7 +257,6 @@ class RegisterManager(ThreadSafeSingleton):
         ):
             self.is_snapshot_master = True
 
-        self._write_ranktable_to_file(start_cmd.ranktable)
         return True
 
     def get_restart_params(self) -> dict | None:
@@ -287,31 +284,6 @@ class RegisterManager(ThreadSafeSingleton):
                 self._register_thread.join(timeout=2.0)
         except Exception as e:
             logger.error("Failed to stop engine manager: %s", e)
-
-    def _write_ranktable_to_file(self, ins_ranktable: Ranktable | None):
-        """Write the instance's ranktable to a local JSON file."""
-        if ins_ranktable is None:
-            logger.info("Ranktable is None, skip writing to file")
-            return
-
-        output_path = Env.ranktable_path
-        if output_path is None:
-            logger.warning("RANKTABLE_PATH env is not set, skip writing ranktable to file")
-            return
-
-        try:
-            # If ranktable is Ranktable type, use model_dump; otherwise, use as list[DeviceInfo]
-            if isinstance(ins_ranktable, Ranktable):
-                rk_dump = ins_ranktable.model_dump(exclude_none=True)
-            else:
-                rk_dump = ins_ranktable
-
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(rk_dump, f, ensure_ascii=False, indent=2)
-
-            logger.info("Ranktable written to %s", output_path)
-        except Exception as e:
-            logger.error("Failed to write ranktable to file: %s", e)
 
     def _check_cmd_para(self, start_cmd: StartCmdMsg) -> bool:
         # Read config values under lock protection
@@ -361,46 +333,53 @@ class RegisterManager(ThreadSafeSingleton):
             return False
         return True
 
-    def _is_skip_generate_ranktable(self) -> bool:
-        with self.config_lock:
-            return self._config.basic_config.skip_generate_ranktable
+    def _get_physical_device_ids(self, device_num: int) -> list[str]:
+        """Device ids this pod owns, in the order native engines use them.
 
-    def _get_ranktable(self) -> Ranktable | None:
-        """Get ranktable from HCCL file"""
-        with self.config_lock:
-            hardware_type = str(self._config.basic_config.hardware_type)
-        if HardwareType.is_a5(hardware_type):
-            logger.info("A5 platform does not require ranktable, skip loading from HCCL file")
-            return None
-        if self._is_skip_generate_ranktable():
-            logger.info("skip_generate_ranktable is set to true in motor_deploy_config, skip loading ranktable")
-            return None
+        Returns an empty list when the ids cannot be determined or do not match
+        ``device_num`` (configured, not discovered). Registration must stay
+        non-blocking: the Controller then falls back to synthesized ids.
+        """
+        if device_num <= 0:
+            return []
+
         try:
-            with open(Env.hccl_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if self._config.single_container_config.single_container_flag:
-                device_offset = self._config.single_container_config.device_offset
-                device_num = self._config.single_container_config.device_num
-                server_list_key = 'server_list'
-                device_key = 'device'
-                if (
-                    server_list_key in data
-                    and len(data[server_list_key]) > 0
-                    and device_key in data[server_list_key][0]
-                ):
-                    data[server_list_key][0][device_key] = data[server_list_key][0][device_key][
-                        device_offset : device_offset + device_num
-                    ]
-            return Ranktable(**data)
+            with self.config_lock:
+                single = self._config.single_container_config
+
+            if single.single_container_flag:
+                return calc_endpoint_visible_device_ids(
+                    0,
+                    device_num,
+                    device_num,
+                    pod_physical_ids=None,
+                    single_container_flag=True,
+                    device_offset=single.device_offset,
+                ).split(",")
+
+            pod_ids = list_pod_device_ids(device_num=device_num)
+            if not pod_ids:
+                return []
+            if (
+                len(pod_ids) != device_num
+                or len(set(pod_ids)) != device_num
+                or any(not part.isdigit() for part in pod_ids)
+            ):
+                logger.warning(
+                    "Pod device ids %s do not match configured device_num=%d; "
+                    "registration will omit physical device ids",
+                    pod_ids,
+                    device_num,
+                )
+                return []
+            return pod_ids
         except Exception as e:
-            logger.error("Failed to load ranktable from %s: %s", Env.hccl_path, e)
-            return None
+            logger.error("Failed to resolve physical device ids: %s", e)
+            return []
 
     def _gen_register_msg(self) -> RegisterMsg | None:
         if not self._check_config_paras():
             return None
-
-        self.ranktable = self._get_ranktable()
 
         # Read config values under lock protection
         with self.config_lock:
@@ -419,20 +398,8 @@ class RegisterManager(ThreadSafeSingleton):
             device_num = self._config.basic_config.device_num
             nnodes = self._config.basic_config.nnodes
 
-        physical_device_ids = []
-        if self.ranktable is None:
-            runtime_ids = list_runtime_device_ids(device_num=device_num)
-            with self.config_lock:
-                single = self._config.single_container_config
-                if runtime_ids or single.single_container_flag:
-                    physical_device_ids = calc_endpoint_visible_device_ids(
-                        0,
-                        device_num,
-                        device_num,
-                        pod_physical_ids=runtime_ids,
-                        single_container_flag=single.single_container_flag,
-                        device_offset=single.device_offset,
-                    ).split(",")
+        # Report launch-order device ids on every registration.
+        physical_device_ids = self._get_physical_device_ids(device_num)
 
         register_msg = RegisterMsg(
             job_name=job_name,
@@ -448,7 +415,6 @@ class RegisterManager(ThreadSafeSingleton):
             parallel_config=parallel_config,
             enable_multi_endpoints=enable_multi_endpoints,
             device_num=device_num,
-            ranktable=self.ranktable,
             physical_device_ids=physical_device_ids,
             nnodes=nnodes,
             is_master=self.is_snapshot_master,

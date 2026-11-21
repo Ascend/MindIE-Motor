@@ -1628,8 +1628,8 @@ def parse_arguments() -> argparse.Namespace:
         "Ignored for dedicated control-plane, kv_store and kv_conductor create. "
         "On --start with --role prefill/decode/union, limits this process to those "
         "cards, exports MOTOR_START_DEVICES for NodeManager and this parent "
-        "(so a second --start / Ctrl+C only reaps this instance), and writes "
-        "hccl.json/ranktable.json under a per-instance config directory. "
+        "(so a second --start / Ctrl+C only reaps this instance), and keeps its "
+        "config under a per-instance config directory. "
         "Host one-click inner --start does not forward --devices. "
         "Omit on --start to use every card already attached to the container; "
         "unmarked --start still reaps every Motor/vLLM leftover in this container.",

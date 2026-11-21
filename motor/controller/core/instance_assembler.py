@@ -21,8 +21,6 @@ from motor.common.resources import (
     Instance,
     Endpoint,
     DeviceInfo,
-    Ranktable,
-    ServerInfo,
     PDRole,
 )
 from motor.common.etcd.etcd_client import EtcdClient
@@ -54,9 +52,6 @@ class AssembleInstanceMetadata(BaseModel):
     start_command_send_times: int = Field(default=0, description="Number of times start command was sent")
     register_timestamp: float = Field(default=0.0, description="Registration timestamp")
     is_reregister: bool = Field(default=False, description="Whether this is a re-registration")
-    ranktable: Ranktable | None = Field(
-        default=None, description="Instance level ranktable, only use in A2, A3. A5 will be None"
-    )
     nnodes: int = Field(default=1, description="Expected PCP cross-node count")
     snapshot_dp_master_ip: str | None = Field(
         default=None,
@@ -580,14 +575,6 @@ class InstanceAssembler(ThreadSafeSingleton):
         else:
             pod_endpoints = self._build_single_endpoint(msg, endpoint_ids[0] if endpoint_ids else 0)
 
-        if msg.ranktable is not None:
-            if metadata.ranktable is None:
-                metadata.ranktable = msg.ranktable
-            else:
-                for server_info in msg.ranktable.server_list:
-                    metadata.ranktable.server_list.append(server_info)
-                metadata.ranktable.server_count = str(len(metadata.ranktable.server_list))
-
         return pod_endpoints
 
     def _build_single_endpoint(self, msg: RegisterMsg, id_offset: int) -> dict[int, Endpoint]:
@@ -906,7 +893,6 @@ class InstanceAssembler(ThreadSafeSingleton):
         INITIAL so min(id) stays on the live group. Otherwise keep the previous
         "all other pods" list. When card-level scale-up is on, prefer the
         scale-down recorded DP master so later joiners/rounds do not re-elect.
-        Ranktable is still rebuilt for A3 cross-server HCCL; A5 has none.
         """
         from motor.common.resources.endpoint import EndpointStatus
         from motor.controller.fault_tolerance.dp_scale_down import get_ft_runtime_store
@@ -959,7 +945,6 @@ class InstanceAssembler(ThreadSafeSingleton):
             instance_id=instance.id,
             endpoints=list(endpoints.values()),
             master_dp_ip=master_dp_ip,
-            ranktable=self._instance_ranktable_for_replacement(instance, msg),
             node_rank=node_rank,
             # Joiner / warmup Pod for elastic scale-up: engine starts in
             # VLLM_ELASTIC_EP_SCALE_UP_LAUNCH mode until /scale_elastic_ep + resume.
@@ -967,75 +952,20 @@ class InstanceAssembler(ThreadSafeSingleton):
         )
         return NodeManagerApiClient.send_start_command(node_mgr, start_cmd_msg)
 
-    @staticmethod
-    def _pod_ranktable_servers(msg: RegisterMsg | ReregisterMsg) -> list:
-        ranktable = getattr(msg, "ranktable", None)
-        if not isinstance(ranktable, Ranktable) or not ranktable.server_list:
-            return []
-        matched = [
-            server.model_copy(deep=True)
-            for server in ranktable.server_list
-            if msg.pod_ip in (server.container_ip, server.server_id)
-        ]
-        return matched or [ranktable.server_list[0].model_copy(deep=True)]
-
-    @classmethod
-    def _instance_ranktable_for_replacement(
-        cls, instance: Instance, msg: RegisterMsg | ReregisterMsg
-    ) -> Ranktable | None:
-        """Rebuild the instance ranktable so a cross-server joiner sees survivors and itself.
-
-        First-start aggregation lives on AssembleInstanceMetadata and is dropped
-        after ``StartCmdMsg``. Replacement therefore rebuilds from live survivor
-        endpoint device rows, then appends the joiner's own HCCL servers. A5
-        joiners send no ranktable and have no device rows, so this returns None.
-        """
-        servers: list[ServerInfo] = []
-        seen: set[tuple[str, str]] = set()
-        joiner_ip = msg.pod_ip
-        for nm in instance.get_node_managers():
-            if nm.pod_ip == joiner_ip:
-                continue
-            devices = [
-                device.model_copy(deep=True)
-                for endpoint in instance.get_endpoints(nm.pod_ip).values()
-                for device in endpoint.device_infos
-            ]
-            if not devices:
-                continue
-            key = (nm.pod_ip, nm.pod_ip)
-            if key in seen:
-                continue
-            seen.add(key)
-            servers.append(ServerInfo(server_id=nm.pod_ip, container_ip=nm.pod_ip, device=devices))
-        for server in cls._pod_ranktable_servers(msg):
-            key = (server.server_id, server.container_ip)
-            if key in seen:
-                continue
-            seen.add(key)
-            servers.append(server)
-        if not servers:
-            return None
-        version = "1.2"
-        joiner_table = getattr(msg, "ranktable", None)
-        if isinstance(joiner_table, Ranktable) and joiner_table.version:
-            version = joiner_table.version
-        return Ranktable(
-            version=version,
-            status="completed",
-            server_count=str(len(servers)),
-            server_list=servers,
-        )
-
     def _build_device_infos(
         self, msg: RegisterMsg, start_idx: int, devices_per_endpoint: int, endpoint_id: int
     ) -> list[DeviceInfo]:
-        if isinstance(msg.ranktable, Ranktable):
-            server = next(
-                (item for item in msg.ranktable.server_list if msg.pod_ip in (item.container_ip, item.server_id)),
-                msg.ranktable.server_list[0],
-            )
-            return server.device[start_idx : start_idx + devices_per_endpoint]
+        # Physical ids are the launch-order truth; registrations without them
+        # fall back to synthesized local ids.
+        physical_ids = msg.physical_device_ids[start_idx : start_idx + devices_per_endpoint]
+        if physical_ids:
+            return [
+                DeviceInfo(
+                    device_id=device_id,
+                    rank_id=str(endpoint_id * devices_per_endpoint + offset),
+                )
+                for offset, device_id in enumerate(physical_ids)
+            ]
 
         device_infos = []
         for j in range(devices_per_endpoint):
@@ -1189,7 +1119,6 @@ class InstanceAssembler(ThreadSafeSingleton):
                 instance_id=metadata.instance.id,
                 endpoints=list(endpoints.values()),
                 master_dp_ip=master_dp_ip,
-                ranktable=metadata.ranktable,
                 d2d_peer_ips=d2d_peer_ips,
                 node_rank=node_rank,
             )
@@ -1450,33 +1379,8 @@ class InstanceAssembler(ThreadSafeSingleton):
             if not self._is_node_manager_alive(node_mgr, instance):
                 instance.del_endpoints(node_mgr.pod_ip)
                 instance.del_node_mgr(node_mgr.pod_ip, node_mgr.port)
-                self._drop_ranktable_server(metadata, node_mgr.pod_ip)
 
         logger.info("Endpoint filtering completed for instance %s(id:%d)", instance.job_name, instance.id)
-
-    @staticmethod
-    def _drop_ranktable_server(metadata: AssembleInstanceMetadata, pod_ip: str) -> None:
-        """Drop a filtered pod's entries from the aggregated instance ranktable.
-
-        ``metadata.ranktable`` is appended on every registration but was never pruned,
-        so a rescheduled pod's old IP stayed in the HCCL ranktable sent by StartCmd
-        (and ``server_count`` only grew).
-        """
-        ranktable = metadata.ranktable
-        if not isinstance(ranktable, Ranktable):
-            return
-        kept = [server for server in ranktable.server_list if pod_ip not in (server.server_id, server.container_ip)]
-        if len(kept) == len(ranktable.server_list):
-            return
-        ranktable.server_list = kept
-        ranktable.server_count = str(len(kept))
-        logger.info(
-            "Removed filtered pod %s from ranktable of instance %s(id:%d), %d server(s) left",
-            pod_ip,
-            metadata.instance.job_name,
-            metadata.instance.id,
-            len(kept),
-        )
 
     def _is_node_manager_alive(self, node_mgr, instance: Instance) -> bool:
         """Check if a node manager is alive for instance"""

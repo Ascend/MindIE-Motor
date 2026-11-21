@@ -12,9 +12,9 @@ import hashlib
 import pytest
 from unittest.mock import MagicMock, patch
 
-from motor.common.resources import Instance, InsStatus, ParallelConfig, Endpoint, ReadOnlyInstance
+from motor.common.resources import DeviceInfo, Instance, InsStatus, ParallelConfig, Endpoint, ReadOnlyInstance
 from motor.common.resources.instance import FtCapabilitySnapshot
-from motor.common.resources.http_msg_spec import RegisterMsg, ReregisterMsg, Ranktable, ServerInfo, DeviceInfo
+from motor.common.resources.http_msg_spec import RegisterMsg, ReregisterMsg
 from motor.controller.core.instance_assembler import (
     InstanceAssembler,
     AssembleInstanceMetadata,
@@ -24,39 +24,6 @@ from motor.common.etcd.persistent_state import PersistentState
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.controller.core import InstanceManager
 from motor.config.controller import ControllerConfig
-
-
-def build_pod_ranktable(
-    pod_ip: str,
-    pod_device_num: int,
-    rank_offset: int = 0,
-    is_supperpod: bool = True,
-) -> Ranktable:
-    """
-    Build pod level ranktable, it only have on server, so server_list size is 1.
-    This function is mainly for test case to build ranktable.
-    """
-    ranktable = Ranktable(
-        version="1.2",
-        status="completed",
-        server_count="1",
-        server_list=[
-            ServerInfo(
-                server_id=pod_ip,
-                container_ip=pod_ip,
-                device=[
-                    DeviceInfo(
-                        device_ip=pod_ip,
-                        device_id=str(i),
-                        rank_id=str(rank_offset + i),
-                        super_device_id="0" if is_supperpod else None,
-                    )
-                    for i in range(pod_device_num)
-                ],
-            )
-        ],
-    )
-    return ranktable
 
 
 @pytest.fixture
@@ -218,20 +185,13 @@ def test_build_endpoints_preserves_bootstrap_port(instance_assembler, test_confi
         assert endpoint.bootstrap_port == 9100
 
 
-def test_build_multi_endpoints_slices_ranktable_devices_per_dp(instance_assembler, test_config):
-    """Each DP endpoint owns only its TP/PP device slice, not the whole pod ranktable."""
-    ranktable = build_pod_ranktable(
-        pod_ip=test_config["pod_ip1"],
-        pod_device_num=4,
-        rank_offset=8,
-    )
-    for device, physical_id in zip(ranktable.server_list[0].device, (14, 15, 6, 7), strict=True):
-        device.device_id = str(physical_id)
+def test_build_multi_endpoints_slices_physical_device_ids_per_dp(instance_assembler, test_config):
+    """Each DP endpoint owns only its TP/PP device slice from physical_device_ids."""
     msg = create_register_msg(
         "decode",
         test_config["pod_ip1"],
         test_config,
-        ranktable=ranktable,
+        physical_device_ids=["14", "15", "6", "7"],
     )
 
     endpoints = instance_assembler._build_multi_endpoints(msg, [0, 1])
@@ -262,14 +222,8 @@ def register_instance_with_pods(assembler: InstanceAssembler, job_name: str, con
     """Register pods for an instance and return whether assembly is complete"""
     pod_ips = [f"127.0.0.{i + 1}" for i in range(pod_count)]
 
-    for i, pod_ip in enumerate(pod_ips):
-        rank_offset = i * 2 * config['tp']
-        msg = create_register_msg(
-            job_name,
-            pod_ip,
-            config,
-            ranktable=build_pod_ranktable(pod_ip=pod_ip, pod_device_num=2 * config['tp'], rank_offset=rank_offset),
-        )
+    for pod_ip in pod_ips:
+        msg = create_register_msg(job_name, pod_ip, config)
         result = assembler.register(msg)
         assert result == 0
 
@@ -361,14 +315,7 @@ def test_register_existing_instance(instance_assembler, test_config):
     assert len(instance_assembler.instances) == 1
 
     # Second registration to same instance
-    msg2 = create_register_msg(
-        job_name,
-        test_config['pod_ip2'],
-        test_config,
-        ranktable=build_pod_ranktable(
-            pod_ip=test_config['pod_ip2'], pod_device_num=2 * test_config['tp'], rank_offset=2 * test_config['tp']
-        ),
-    )
+    msg2 = create_register_msg(job_name, test_config['pod_ip2'], test_config)
     result2 = instance_assembler.register(msg2)
     assert result2 == 0
 
@@ -790,8 +737,8 @@ def test_recovery_roster_survives_controller_restart(instance_assembler, test_co
     assert roster_of(restored) == expected
 
 
-def test_replacement_start_command_sends_instance_ranktable(instance_assembler, test_config):
-    """A3 joiners on another server need survivors plus their own HCCL servers."""
+def test_replacement_start_command_uses_registered_device_ids(instance_assembler, test_config):
+    """A cross-server joiner starts with its own physical device ids."""
     from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient
 
     _enable_scale_up(instance_assembler)
@@ -799,37 +746,20 @@ def test_replacement_start_command_sends_instance_ranktable(instance_assembler, 
     instance = _seed_scaled_down_instance(test_config, capability)
     survivor = instance.endpoints[test_config["pod_ip1"]][0]
     survivor.device_infos = [
-        DeviceInfo(device_ip="10.0.0.1", device_id="0", rank_id="0", super_device_id="0"),
-        DeviceInfo(device_ip="10.0.0.1", device_id="1", rank_id="1", super_device_id="0"),
+        DeviceInfo(device_id="0", rank_id="0"),
+        DeviceInfo(device_id="1", rank_id="1"),
     ]
     instance.endpoints[test_config["pod_ip1"]][1].device_infos = [
-        DeviceInfo(device_ip="10.0.0.1", device_id="2", rank_id="2", super_device_id="0"),
-        DeviceInfo(device_ip="10.0.0.1", device_id="3", rank_id="3", super_device_id="0"),
+        DeviceInfo(device_id="2", rank_id="2"),
+        DeviceInfo(device_id="3", rank_id="3"),
     ]
     joiner_ip = "10.0.0.9"
-    joiner_ranktable = Ranktable(
-        version="1.2",
-        status="completed",
-        server_count="1",
-        server_list=[
-            ServerInfo(
-                server_id="192.168.1.9",
-                container_ip=joiner_ip,
-                device=[
-                    DeviceInfo(device_ip="192.168.1.91", device_id="0", rank_id="0", super_device_id="0"),
-                    DeviceInfo(device_ip="192.168.1.91", device_id="1", rank_id="1", super_device_id="0"),
-                    DeviceInfo(device_ip="192.168.1.91", device_id="2", rank_id="2", super_device_id="0"),
-                    DeviceInfo(device_ip="192.168.1.91", device_id="3", rank_id="3", super_device_id="0"),
-                ],
-            )
-        ],
-    )
     msg = create_register_msg(
         "test_job",
         joiner_ip,
         test_config,
         ft_capability=capability.model_copy(),
-        ranktable=joiner_ranktable,
+        physical_device_ids=["4", "5", "6", "7"],
         nm_port="9000",
     )
     captured = {}
@@ -841,39 +771,15 @@ def test_replacement_start_command_sends_instance_ranktable(instance_assembler, 
     with patch.object(NodeManagerApiClient, "send_start_command", side_effect=capture):
         assert instance_assembler.register(msg) == 0
 
-    ranktable = captured["cmd"].ranktable
-    assert ranktable is not None
-    assert ranktable.server_count == "2"
-    assert ranktable.server_list[0].container_ip == test_config["pod_ip1"]
-    assert [device.rank_id for device in ranktable.server_list[0].device] == ["0", "1", "2", "3"]
-    assert ranktable.server_list[1].server_id == "192.168.1.9"
-    assert ranktable.server_list[1].container_ip == joiner_ip
-    assert captured["cmd"].extra_env == {"VLLM_ELASTIC_EP_SCALE_UP_LAUNCH": "1"}
-
-
-def test_replacement_start_command_skips_ranktable_when_a5_has_none(instance_assembler, test_config):
-    from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient
-
-    _enable_scale_up(instance_assembler)
-    capability = FtCapabilitySnapshot(enabled=True, scale_down_supported=True, external_lb=True)
-    _seed_scaled_down_instance(test_config, capability)
-    msg = create_register_msg(
-        "test_job",
-        test_config["pod_ip2"],
-        test_config,
-        ft_capability=capability.model_copy(),
-        ranktable=None,
-    )
-    captured = {}
-
-    def capture(_node_mgr, start_cmd):
-        captured["cmd"] = start_cmd
-        return True
-
-    with patch.object(NodeManagerApiClient, "send_start_command", side_effect=capture):
-        assert instance_assembler.register(msg) == 0
-
-    assert captured["cmd"].ranktable is None
+    cmd = captured["cmd"]
+    assert not hasattr(cmd, "ranktable")
+    assert [device.device_id for endpoint in cmd.endpoints for device in endpoint.device_infos] == [
+        "4",
+        "5",
+        "6",
+        "7",
+    ]
+    assert cmd.extra_env == {"VLLM_ELASTIC_EP_SCALE_UP_LAUNCH": "1"}
 
 
 def test_register_already_assembled_instance(instance_assembler, test_config):
@@ -948,14 +854,7 @@ def test_reregister_already_assembled_instance(instance_assembler, test_config):
     assert result == 0
 
     # Register second pod to complete assembly
-    reg_msg2 = create_register_msg(
-        job_name,
-        test_config['pod_ip2'],
-        test_config,
-        ranktable=build_pod_ranktable(
-            pod_ip=test_config['pod_ip2'], pod_device_num=2 * test_config['tp'], rank_offset=2 * test_config['tp']
-        ),
-    )
+    reg_msg2 = create_register_msg(job_name, test_config['pod_ip2'], test_config)
     endpoints2 = instance_assembler._build_multi_endpoints(reg_msg2, [2, 3])
     msg2 = create_reregister_msg(
         job_name, test_config['pod_ip2'], instance_id=0, config=test_config, endpoints=endpoints2
@@ -1042,14 +941,7 @@ def test_assembly_complete_instance_reregistration(instance_assembler, test_conf
 
     # Build endpoints for reregistration (multi-endpoint mode: 2 pods × 2 endpoints = 4 endpoints)
     reg_msg1 = create_register_msg(job_name, test_config['pod_ip1'], test_config)
-    reg_msg2 = create_register_msg(
-        job_name,
-        test_config['pod_ip2'],
-        test_config,
-        ranktable=build_pod_ranktable(
-            pod_ip=test_config['pod_ip2'], pod_device_num=2 * test_config['tp'], rank_offset=2 * test_config['tp']
-        ),
-    )
+    reg_msg2 = create_register_msg(job_name, test_config['pod_ip2'], test_config)
 
     endpoints1 = instance_assembler._build_multi_endpoints(reg_msg1, [0, 1])
     endpoints2 = instance_assembler._build_multi_endpoints(reg_msg2, [2, 3])
@@ -2097,52 +1989,6 @@ def test_filter_abnormal_endpoints_mixed_scenarios(instance_assembler, test_conf
         assert "127.0.0.1" in instance.endpoints  # Reachable node manager's endpoints remain
         assert "127.0.0.2" not in instance.endpoints  # Unreachable node manager's endpoints removed
         assert len(instance.node_managers) == 1  # Only unreachable node manager removed
-
-
-def test_filter_removes_dead_pod_from_ranktable(instance_assembler, test_config):
-    """A filtered pod is dropped from the aggregated ranktable sent by StartCmd."""
-    job_name = "ranktable_filter"
-    dead_ip, peer_ip = "127.0.0.1", "127.0.0.2"
-
-    assert (
-        instance_assembler.register(
-            create_register_msg(
-                job_name,
-                dead_ip,
-                test_config,
-                ranktable=build_pod_ranktable(pod_ip=dead_ip, pod_device_num=2 * test_config['tp']),
-            )
-        )
-        == 0
-    )
-    assert (
-        instance_assembler.register(
-            create_register_msg(
-                job_name,
-                peer_ip,
-                test_config,
-                ranktable=build_pod_ranktable(
-                    pod_ip=peer_ip, pod_device_num=2 * test_config['tp'], rank_offset=2 * test_config['tp']
-                ),
-            )
-        )
-        == 0
-    )
-    metadata = instance_assembler.instances[job_name]
-    assert [server.container_ip for server in metadata.ranktable.server_list] == [dead_ip, peer_ip]
-    assert metadata.ranktable.server_count == "2"
-
-    def query_status(node_mgr):
-        if node_mgr.pod_ip == dead_ip:
-            raise RuntimeError("connection refused")
-        return {"status": "ok"}
-
-    with patch('motor.controller.core.instance_assembler.NodeManagerApiClient.query_status', side_effect=query_status):
-        instance_assembler._assemble_instance(metadata)
-
-    assert metadata.register_status != RegisterStatus.ASSEMBLED
-    assert [server.container_ip for server in metadata.ranktable.server_list] == [peer_ip]
-    assert metadata.ranktable.server_count == "1"
 
 
 def test_filter_abnormal_endpoints_no_node_managers(instance_assembler, test_config, caplog):
@@ -3276,14 +3122,7 @@ def test_register_rejected_when_reregister_assembling(instance_assembler, test_c
     assert instance_assembler.instances[job_name].is_reregister is True
 
     # Now try to register a second pod — should be rejected
-    msg = create_register_msg(
-        job_name,
-        test_config['pod_ip2'],
-        test_config,
-        ranktable=build_pod_ranktable(
-            pod_ip=test_config['pod_ip2'], pod_device_num=2 * test_config['tp'], rank_offset=2 * test_config['tp']
-        ),
-    )
+    msg = create_register_msg(job_name, test_config['pod_ip2'], test_config)
     result = instance_assembler.register(msg)
     assert result == -1
 
@@ -3312,14 +3151,7 @@ def test_reregister_rejected_when_register_assembling(instance_assembler, test_c
     assert instance_assembler.instances[job_name].is_reregister is False
 
     # Now try to reregister a second pod — should be rejected
-    reg_msg2 = create_register_msg(
-        job_name,
-        test_config['pod_ip2'],
-        test_config,
-        ranktable=build_pod_ranktable(
-            pod_ip=test_config['pod_ip2'], pod_device_num=2 * test_config['tp'], rank_offset=2 * test_config['tp']
-        ),
-    )
+    reg_msg2 = create_register_msg(job_name, test_config['pod_ip2'], test_config)
     endpoints = instance_assembler._build_multi_endpoints(reg_msg2, [2, 3])
     rereg_msg = create_reregister_msg(
         job_name, test_config['pod_ip2'], instance_id=0, config=test_config, endpoints=endpoints
@@ -3477,16 +3309,7 @@ def test_reregister_succeeds_after_controller_restart(instance_assembler, test_c
             assert result1 == 0
 
             # Step 4: Pod 2 calls reregister → instance gets enough endpoints → assembly completes
-            reg_msg2 = create_register_msg(
-                job_name,
-                test_config['pod_ip2'],
-                test_config,
-                ranktable=build_pod_ranktable(
-                    pod_ip=test_config['pod_ip2'],
-                    pod_device_num=2 * test_config['tp'],
-                    rank_offset=2 * test_config['tp'],
-                ),
-            )
+            reg_msg2 = create_register_msg(job_name, test_config['pod_ip2'], test_config)
             endpoints2 = new_assembler._build_multi_endpoints(reg_msg2, [2, 3])
             rereg_msg2 = create_reregister_msg(
                 job_name,
@@ -3626,8 +3449,8 @@ def test_send_start_command_fails_when_cross_node_partial_endpoints(instance_ass
 
 
 @pytest.mark.parametrize("physical_ids", [["4", "5", "6", "7"], ["14", "15", "6", "7"]])
-def test_ranktable_free_registration_preserves_physical_ownership(instance_assembler, test_config, physical_ids):
-    """A5 hardware faults must match the actual DP devices, also after re-registration."""
+def test_registration_preserves_physical_ownership(instance_assembler, test_config, physical_ids):
+    """Hardware faults must match the actual DP devices, also after re-registration."""
     from motor.controller.fault_tolerance.dp_scale_down import FaultNormalizer
     from motor.controller.fault_tolerance.fault_types import FaultInfo
 

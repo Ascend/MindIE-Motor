@@ -104,7 +104,7 @@ Docker 部署的两点差异：
 - **故障判定**：没有硬件故障码，无法识别 1801 和灵衢码，也无法按 L4 及以上硬件故障阻断；真实硬件故障只能表现为引擎 UNHEALTHY，会进入无故障码快恢。
 - **失败回退**：没有 Pod 重建机制，快恢失败后原地重启引擎进程；引擎重拉起失败或关闭 `enable_engine_relaunch` 时转实例重配置，容器需要用户或 Docker 重启策略拉起；非 K8s 环境 NodeManager 不会因引擎持续异常而自杀（`container_restart_managed` 自动检测）。
 
-Kubernetes 无 ranktable 的部署（如单容器）：NodeManager 通过部署模板注入的 `ASCEND_ALLOCATED_DEVICES`（Pod 注解 `huawei.com/Ascend910`）获取实际分配卡号，保证硬件故障归属和 HBM 清码检查落到正确设备。
+NodeManager 通过部署模板注入的 `ASCEND_ALLOCATED_DEVICES`（Pod 注解 `huawei.com/Ascend910`）或 `/dev/davinci*` 获取实际分配卡号，保证硬件故障归属和 HBM 清码检查落到正确设备。
 
 ## 配置项
 

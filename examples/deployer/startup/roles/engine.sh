@@ -14,9 +14,6 @@ if [ "$ROLE" != "encode" ] && [ "$ROLE" != "prefill" ] && [ "$ROLE" != "decode" 
     exit 1
 fi
 
-# only A2 and A3 need it, A5 does not need it.
-gen_ranktable_config
-
 # set up kv store backend
 case "${KV_STORE_BACKEND:-}" in
     mooncake) gen_kv_store_config ;;

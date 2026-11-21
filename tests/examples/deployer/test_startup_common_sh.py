@@ -27,9 +27,9 @@ _COMMON_SH = Path(__file__).resolve().parents[3] / "examples" / "deployer" / "st
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required to exercise the shell function")
 
 
-def _function_text() -> str:
+def _function_text(name: str) -> str:
     lines = _COMMON_SH.read_text(encoding="utf-8").splitlines(keepends=True)
-    start = next(i for i, line in enumerate(lines) if line.startswith("gen_kv_store_config()"))
+    start = next(i for i, line in enumerate(lines) if line.startswith(f"{name}()"))
     end = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == "}")
     return "".join(lines[start : end + 1])
 
@@ -50,7 +50,7 @@ def test_gen_kv_store_config_master_env(tmp_path, master_env, external, expected
     script = tmp_path / "run.sh"
     script.write_text(
         "set -e\n"
-        f"{_function_text()}\n"
+        f"{_function_text('gen_kv_store_config')}\n"
         "export ROLE=SINGLE_CONTAINER POD_IP=10.0.0.1 LD_LIBRARY_PATH=''\n"
         f'export KVS_MASTER_SERVICE="{master_env}" KV_STORE_EXTERNAL={external}\n'
         f'export CONFIG_PATH="{tmp_path}" CONFIGMAP_PATH="{tmp_path}" USER_CONFIG_PATH="{tmp_path}/user_config.json"\n'

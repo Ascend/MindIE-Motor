@@ -21,8 +21,6 @@ CONTROLLER_DEFAULT = "mindie-motor-controller-service.mindie-motor.svc.cluster.l
 PROPERTIES = [
     ("job_name", "JOB_NAME", None),
     ("config_path", "CONFIG_PATH", None),
-    ("hccl_path", "HCCL_PATH", None),
-    ("ranktable_path", "RANKTABLE_PATH", None),
     ("user_config_path", "USER_CONFIG_PATH", None),
     ("role", "ROLE", None),
     ("index", "INDEX", None),

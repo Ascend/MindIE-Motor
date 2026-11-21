@@ -16,8 +16,6 @@ __all__ = [
     # From http_msg_spec
     "RegisterMsg",
     "StartCmdMsg",
-    "Ranktable",
-    "ServerInfo",
     "ReregisterMsg",
     "HeartbeatMsg",
     "TerminateInstanceMsg",
@@ -42,8 +40,6 @@ __all__ = [
 from .http_msg_spec import (
     RegisterMsg,
     StartCmdMsg,
-    Ranktable,
-    ServerInfo,
     ReregisterMsg,
     HeartbeatMsg,
     TerminateInstanceMsg,

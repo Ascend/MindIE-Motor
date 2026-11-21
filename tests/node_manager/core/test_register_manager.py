@@ -756,19 +756,25 @@ class TestEngineRelaunchParams:
         assert [ep.id for ep in params["endpoints"]] == [0, 1]
 
 
-def test_ranktable_free_registration_reports_launch_device_ids(register_manager):
+def _prepare_physical_device_config(register_manager, device_num: int = 4) -> None:
+    register_manager._config.basic_config.job_name = "a5-decode"
+    register_manager._config.basic_config.model_name = "test_model"
+    register_manager._config.basic_config.role = PDRole.ROLE_U
+    register_manager._config.basic_config.device_num = device_num
+    register_manager._config.api_config.pod_ip = "192.168.1.100"
+    register_manager._config.endpoint_config.service_ports = ["8080", "8082"]
+    register_manager._config.api_config.node_manager_port = 8080
+    register_manager._config.basic_config.parallel_config = ParallelConfig(tp_size=2, pp_size=1)
+    register_manager._config.single_container_config.single_container_flag = False
+
+
+def test_registration_reports_launch_device_ids(register_manager):
     from motor.node_manager.core.services.native_engine.ascend_device_ids import calc_endpoint_visible_device_ids
 
-    register_manager._config.basic_config.job_name = "a5-decode"
-    register_manager._config.basic_config.device_num = 4
-    register_manager._config.single_container_config.single_container_flag = False
-    with (
-        patch.object(register_manager, "_get_ranktable", return_value=None),
-        patch("motor.node_manager.core.register_manager.list_runtime_device_ids", return_value=["4", "5", "6", "7"]),
-    ):
+    _prepare_physical_device_config(register_manager)
+    with patch("motor.node_manager.core.register_manager.list_pod_device_ids", return_value=["4", "5", "6", "7"]):
         msg = register_manager._gen_register_msg()
     assert msg.physical_device_ids == ["4", "5", "6", "7"]
-    assert msg.ranktable is None
     for dp_rank in range(2):
         launch_ids = calc_endpoint_visible_device_ids(
             dp_rank,
@@ -779,3 +785,24 @@ def test_ranktable_free_registration_reports_launch_device_ids(register_manager)
             device_offset=0,
         )
         assert launch_ids.split(",") == msg.physical_device_ids[dp_rank * 2 : dp_rank * 2 + 2]
+
+
+@pytest.mark.parametrize("device_ids", [["4", "5"], ["4", "5", "6", "6"], ["4", "5", "6", "x"]])
+def test_registration_omits_invalid_physical_ids(register_manager, device_ids):
+    _prepare_physical_device_config(register_manager)
+    with patch("motor.node_manager.core.register_manager.list_pod_device_ids", return_value=device_ids):
+        msg = register_manager._gen_register_msg()
+
+    assert msg is not None
+    assert msg.physical_device_ids == []
+
+
+def test_registration_single_container_reports_offset_device_ids(register_manager):
+    _prepare_physical_device_config(register_manager)
+    register_manager._config.single_container_config.single_container_flag = True
+    register_manager._config.single_container_config.device_offset = 8
+    with patch("motor.node_manager.core.register_manager.list_pod_device_ids") as mock_pod_ids:
+        msg = register_manager._gen_register_msg()
+
+    assert msg.physical_device_ids == ["8", "9", "10", "11"]
+    mock_pod_ids.assert_not_called()

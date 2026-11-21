@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -24,7 +23,6 @@ from motor.common.alarm.enums import (
 
 class ClusterConnectionReason(enum.IntEnum):
     REGISTER_FAILED = 1
-    RANKTABLE_SUBSCRIBE_FAILED = 2
     FAULT_SUBSCRIBE_FAILED = 3
     CONNECTION_INTERRUPTED = 4
 
@@ -38,10 +36,7 @@ class ClusterConnectionAlarm(Alarm):
     severity: Severity = Field(default=Severity.CRITICAL)
     probable_cause: str = Field(
         default=(
-            "1: Cluster service connection failed; "
-            "2: Subscription to RankTable failed; "
-            "3: Subscription to fault messages failed; "
-            "4: Connection interrupted"
+            "1: Cluster service connection failed; 3: Subscription to fault messages failed; 4: Connection interrupted"
         )
     )
     service_affected_type: ServiceAffectedType = Field(default=ServiceAffectedType.YES)

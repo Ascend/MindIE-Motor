@@ -21,14 +21,6 @@ class _Environment:
         return os.getenv("CONFIG_PATH", None)
 
     @property
-    def hccl_path(self):
-        return os.getenv("HCCL_PATH", None)
-
-    @property
-    def ranktable_path(self):
-        return os.getenv("RANKTABLE_PATH", None)
-
-    @property
     def user_config_path(self):
         return os.getenv("USER_CONFIG_PATH", None)
 

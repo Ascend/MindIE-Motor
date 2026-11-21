@@ -589,7 +589,7 @@ Prefill 和 Decode 两类角色均重新具备可用实例时自动生成 `categ
 
 **告警解释**
 
-用于描述 Controller 与集群服务之间注册、RankTable 订阅、故障消息订阅或连接中断等异常。MindIE Motor 当前保留该告警的数据模型和接收解析能力，主流程没有主动上报点。
+用于描述 Controller 与集群服务之间注册、故障消息订阅或连接中断等异常。MindIE Motor 当前保留该告警的数据模型和接收解析能力，主流程没有主动上报点。
 
 **告警属性**
 
@@ -606,7 +606,6 @@ Prefill 和 Decode 两类角色均重新具备可用实例时自动生成 `categ
 | 定位信息、MOI、附加信息 | cluster ip | 环境变量 `MINDX_SERVER_IP`；未配置时不输出。 |
 | 附加信息 | pod id | 环境变量 `SERVICE_ID`。 |
 | 原因 | reasonId=1 | 集群服务注册失败。 |
-| 原因 | reasonId=2 | RankTable 订阅失败。 |
 | 原因 | reasonId=3 | 故障消息订阅失败。 |
 | 原因 | reasonId=4 | 连接中断。 |
 
@@ -618,7 +617,7 @@ Prefill 和 Decode 两类角色均重新具备可用实例时自动生成 `categ
 
 1. 集群服务地址配置错误或服务不可用。
 2. Controller 与集群服务之间网络异常。
-3. 注册、RankTable 订阅或故障消息订阅失败。
+3. 注册或故障消息订阅失败。
 
 **处理步骤**
 

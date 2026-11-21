@@ -377,7 +377,7 @@ Controller 有两种注册形态：
 
 2. **启动命令发送线程** (_start_command_sender)
    - 对 `ASSEMBLED` 状态的实例发送 `StartCmdMsg`
-   - StartCmdMsg：包含job_name、role、instance_id、endpoints、master_dp_ip、ranktable、d2d_peer_ips（如果需要）。
+   - StartCmdMsg：包含job_name、role、instance_id、endpoints、master_dp_ip、d2d_peer_ips（如果需要）。
    - 支持重试机制（send_cmd_retry_times），超时后放弃。
 
 组装超时保护：`instance_assemble_timeout`（默认 600 秒），超时后自动清理未完成的组装。

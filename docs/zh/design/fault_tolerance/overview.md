@@ -88,7 +88,7 @@ InstanceAssembler._instances_assembler_loop 轮询
         │
         ▼
 InstanceAssembler._start_command_sender 发送 StartCmdMsg
-  - 携带 job_name, role, instance_id, endpoints, master_dp_ip, ranktable
+  - 携带 job_name, role, instance_id, endpoints, master_dp_ip
         │
         ▼
 NodeManager 接收 StartCmdMsg
@@ -105,8 +105,8 @@ InstanceManager 收到心跳 → 状态机: INITIAL → ACTIVE
 
 **NodeManager 侧（[register_manager.py](https://gitcode.com/Ascend/MindIE-Motor/blob/master/motor/node_manager/core/register_manager.py)）**：
 
-- `_register()`：NodeManager 启动后自动向 Controller 发送 `RegisterMsg`（含 job_name、role、pod_ip、parallel_config、device_num、ranktable 等），失败后指数退避持续重试直至成功。
-- `parse_start_cmd()`：接收 Controller 的 `StartCmdMsg`，校验参数后存储 `instance_id` 和 `endpoints`，并将 ranktable 写入本地文件供引擎使用。
+- `_register()`：NodeManager 启动后自动向 Controller 发送 `RegisterMsg`（含 job_name、role、pod_ip、parallel_config、device_num、physical_device_ids 等），失败后指数退避持续重试直至成功。
+- `parse_start_cmd()`：接收 Controller 的 `StartCmdMsg`，校验参数后存储 `instance_id` 和 `endpoints`。
 
 **Controller 侧（[instance_assembler.py](https://gitcode.com/Ascend/MindIE-Motor/blob/master/motor/controller/core/instance_assembler.py)）**：
 

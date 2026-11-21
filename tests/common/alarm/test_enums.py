@@ -81,7 +81,6 @@ REASON_VALUE_CONTRACTS = (
         ClusterConnectionReason,
         {
             "REGISTER_FAILED": 1,
-            "RANKTABLE_SUBSCRIBE_FAILED": 2,
             "FAULT_SUBSCRIBE_FAILED": 3,
             "CONNECTION_INTERRUPTED": 4,
         },

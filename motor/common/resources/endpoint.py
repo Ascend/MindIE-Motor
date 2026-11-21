@@ -43,10 +43,8 @@ class WorkloadAction(Enum):
 
 
 class DeviceInfo(BaseModel):
-    device_ip: str | None = Field(default=None, description="IP address of the device, A5 will be None")
-    device_id: str = Field(..., description="Local rank id")
+    device_id: str = Field(..., description="NPU device id visible in the container")
     rank_id: str = Field(..., description="Global rank id")
-    super_device_id: str | None = Field(default=None, description="Super device id, A5 will be None")
 
 
 class EndpointStatus(str, Enum):

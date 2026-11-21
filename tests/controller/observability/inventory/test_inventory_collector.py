@@ -200,9 +200,7 @@ def test_collect_inventory_hybrid_unhealth_case(
 def mock_device_list(device_num: int):
     device_num_list = []
     for i in range(device_num):
-        device_num_list.append(
-            DeviceInfo(device_id=str(i), device_ip='10.0.245.1' + str(i), super_device_id='167772000', rank_id=str(i))
-        )
+        device_num_list.append(DeviceInfo(device_id=str(i), rank_id=str(i)))
     return device_num_list
 
 

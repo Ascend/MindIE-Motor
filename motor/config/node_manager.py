@@ -76,7 +76,6 @@ UCM_CONNECTOR = "UCMConnector"
 SERVER_LIST = "server_list"
 DEVICE = "device"
 HARDWARE_TYPE_KEY = "hardware_type"
-SKIP_GENERATE_RANKTABLE_KEY = "skip_generate_ranktable"
 MODEL_NAME_KEY = "model_name"
 ENGINE_TYPE_KEY = "engine_type"
 DISPATCH_CAPABILITIES_KEY = "dispatch_capabilities"
@@ -190,7 +189,6 @@ class BasicConfig:
     dispatch_capabilities: list[str] = field(default_factory=list)
     ft_capability: FtCapabilitySnapshot = field(default_factory=FtCapabilitySnapshot)
     hardware_type: HardwareType = HardwareType.TYPE_800I_A3
-    skip_generate_ranktable: bool = False
 
     # Heartbeat sending configuration
     heartbeat_interval_seconds: int = 3
@@ -674,9 +672,6 @@ class NodeManagerConfig:
         config_data[BASIC_CONFIG_KEY][DISPATCH_CAPABILITIES_KEY] = cls._infer_dispatch_capabilities(engine_config)
         config_data[BASIC_CONFIG_KEY]["ft_capability"] = cls._infer_ft_capability(engine_config).model_dump()
         config_data[BASIC_CONFIG_KEY][HARDWARE_TYPE_KEY] = user_cfg["motor_deploy_config"][HARDWARE_TYPE_KEY]
-        config_data[BASIC_CONFIG_KEY][SKIP_GENERATE_RANKTABLE_KEY] = str(
-            user_cfg.get("motor_deploy_config", {}).get(SKIP_GENERATE_RANKTABLE_KEY, False)
-        ).strip().lower() in ("true", "1")
 
         # Read nnodes from engine_config for cross-node PCP support
         engine_cfg = engine_config.get(ENGINE_CONFIG_KEY, {})

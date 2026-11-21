@@ -28,7 +28,7 @@ NodeManager (Application)
 │
 ├── RegisterManager (ThreadSafeSingleton)
 │     Registration protocol: POST /controller/register (with retry)
-│     Ranktable file writing: saves ranktable JSON for engine RPC
+│     Physical device ids: reports the pod's launch-order NPU ids
 │     Persists master_dp_ip/role/endpoints for engine relaunch (get_restart_params)
 │
 ├── Daemon (ThreadSafeSingleton)
@@ -213,8 +213,8 @@ Lifecycle:
    placement and does not infer a removable-DP budget from the redundant-expert count; Controller rejects
    inconsistent snapshots from Pods belonging to the same instance.
      → 200: registration accepted, break
-     → non-200: retry with exponential backoff (2, 4, 8, 16, 32s, max 5 retries)
-     → max retries exceeded: os.kill(SIGTERM) — pod restart by k8s
+     → failure: retry indefinitely with exponential backoff (2, 4, 8, 16, 32s cap)
+     (registration failure never terminates NodeManager)
 
 4. Main loop (Application.run()) blocks until stop_event
    - SIGTERM/SIGINT → cleanup and exit
@@ -232,6 +232,22 @@ event, posts `/controller/register`, and retries indefinitely with exponential b
 2 seconds and capped at 32 seconds. Registration failure does not terminate NodeManager; normal
 shutdown and heartbeat-triggered recovery remain controlled by the application lifecycle.
 
+#### Device ownership
+
+`RegisterMsg.physical_device_ids` reports the pod's NPU ids in the exact order native engine launch
+uses and feeds Controller's endpoint `DeviceInfo` list, which hardware-fault isolation matches
+against `Ascend910-N` / `npu-N`. Ranktable has been removed; device ownership never depends on
+HCCL data.
+
+- Source order: `MOTOR_START_DEVICES` (host `--start --devices`, user order) →
+  `ASCEND_ALLOCATED_DEVICES` → `/dev/davinci*` / `ASCEND[_RT]_VISIBLE_DEVICES`
+  (`core/services/native_engine/ascend_device_ids.py`).
+- Single-container mode ignores discovered nodes and reports `device_offset + 0..device_num-1`.
+- The id count must equal the **configured** `device_num` and be distinct; otherwise the field is
+  omitted (warning only) and registration proceeds — never block registration on device discovery.
+- `NativeEngineService` slices the same list per endpoint for `ASCEND_RT_VISIBLE_DEVICES`, so the
+  Controller's ownership and the engine's actual cards cannot drift.
+
 ### Phase 2: Start Command and Native Launch
 
 Controller sends `POST /node-manager/start` with `StartCmdMsg`:
@@ -240,7 +256,7 @@ Controller sends `POST /node-manager/start` with `StartCmdMsg`:
 {
   instance_id, job_name, role,
   endpoints: [{id, ip, business_port, bootstrap_port, dp_rank, headless, ...}],
-  master_dp_ip, node_rank, d2d_peer_ips, ranktable
+  master_dp_ip, node_rank, d2d_peer_ips
 }
 ```
 
@@ -470,7 +486,8 @@ barriers heartbeat until the container checkpoint is done. During container snap
 | `motor/node_manager/core/services/mooncake/` | Mooncake standalone store service (`store_mode="standalone"`: prepare phase writes the store config; the official `mooncake_store_service` subprocess is launched after engines and restarted in place on death). `kv_cache_store_config.master_server_address`, when set, is written verbatim (supports `etcd://h1:2379;h2:2379` HA forms) and takes precedence over `service` + `port` |
 | `motor/node_manager/core/heartbeat_manager.py` | Native state polling, status mapping, heartbeat and suicide threshold |
 | `motor/node_manager/core/engine_ft_manager.py` | Engine FT polling/reporting, active-endpoint validation and NodeManager-owned vLLM FT proxy |
-| `motor/node_manager/core/register_manager.py` | Controller registration, StartCmdMsg validation, ranktable and snapshot metadata/restore helpers |
+| `motor/node_manager/core/register_manager.py` | Controller registration, StartCmdMsg validation, physical device ids and snapshot metadata/restore helpers |
+| `motor/node_manager/core/services/native_engine/ascend_device_ids.py` | Device id discovery (`MOTOR_START_DEVICES`/allocation/`/dev/davinci*`) and per-endpoint `ASCEND_RT_VISIBLE_DEVICES` slicing |
 | `motor/node_manager/api_client/controller_api_client.py` | Controller register, reregister and heartbeat HTTP client |
 | `motor/config/node_manager.py` | NodeManager schema, endpoint derivation, ports and vLLM-only snapshot validation |
 

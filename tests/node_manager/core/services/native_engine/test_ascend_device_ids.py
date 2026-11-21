@@ -11,6 +11,7 @@
 from motor.node_manager.core.services.native_engine.ascend_device_ids import (
     calc_endpoint_visible_device_ids,
     is_contiguous_logical_ids,
+    list_pod_device_ids,
     list_pod_physical_device_ids,
 )
 
@@ -87,3 +88,15 @@ def test_parse_allocated_device_ids_from_plugin_annotation():
         )
         == "10,11"
     )
+
+
+def test_list_pod_device_ids_preserves_start_device_order():
+    env = {"MOTOR_START_DEVICES": "11,8,10,9", "ASCEND_VISIBLE_DEVICES": "8,9,10,11"}
+
+    assert list_pod_device_ids(env, device_num=4) == ["11", "8", "10", "9"]
+
+
+def test_list_pod_device_ids_falls_back_to_scheduler_allocation():
+    env = {"ASCEND_ALLOCATED_DEVICES": "Ascend910-8,Ascend910-9,Ascend910-10,Ascend910-11"}
+
+    assert list_pod_device_ids(env, device_num=4) == ["8", "9", "10", "11"]

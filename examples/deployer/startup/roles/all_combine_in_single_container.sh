@@ -20,9 +20,6 @@ export MOTOR_DISABLE_LOG_LOGO=1
 export CONTROLLER_SERVICE="$POD_IP"
 export COORDINATOR_SERVICE="$POD_IP"
 
-# only A2 and A3 need it, A5 does not need it.
-gen_ranktable_config
-
 set_cann_env
 
 if is_a5_hardware; then
@@ -80,9 +77,9 @@ if grep -q '"motor_engine_union_config"' "$USER_CONFIG_PATH"; then
 
     set_union_env
     for i in $(seq 0 $((hybrid_instances_num - 1))); do
-        ROLE=union INDEX=$i JOB_NAME=u$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_u${i}.json python3 -m motor.node_manager.main &
+        ROLE=union INDEX=$i JOB_NAME=u$i python3 -m motor.node_manager.main &
         motor_track_child $!
-        echo "pull up instance: ROLE=union INDEX=$i JOB_NAME=u$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_u${i}.json python3 -m motor.node_manager.main &"
+        echo "pull up instance: ROLE=union INDEX=$i JOB_NAME=u$i python3 -m motor.node_manager.main &"
     done
 else
     p_instances_num=$(grep '"p_instances_num"' "$USER_CONFIG_PATH" | sed 's/.*:[[:space:]]*\([0-9.]*\).*/\1/')
@@ -90,16 +87,16 @@ else
 
     set_prefill_env
     for i in $(seq 0 $((p_instances_num - 1))); do
-        ROLE=prefill INDEX=$i JOB_NAME=p$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_p${i}.json python3 -m motor.node_manager.main &
+        ROLE=prefill INDEX=$i JOB_NAME=p$i python3 -m motor.node_manager.main &
         motor_track_child $!
-        echo "pull up instance: ROLE=prefill INDEX=$i JOB_NAME=p$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_p${i}.json python3 -m motor.node_manager.main &"
+        echo "pull up instance: ROLE=prefill INDEX=$i JOB_NAME=p$i python3 -m motor.node_manager.main &"
     done
 
     set_decode_env
     for i in $(seq 0 $((d_instances_num - 1))); do
-        ROLE=decode INDEX=$i JOB_NAME=d$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_d${i}.json python3 -m motor.node_manager.main &
+        ROLE=decode INDEX=$i JOB_NAME=d$i python3 -m motor.node_manager.main &
         motor_track_child $!
-        echo "pull up instance: ROLE=decode INDEX=$i JOB_NAME=d$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_d${i}.json python3 -m motor.node_manager.main &"
+        echo "pull up instance: ROLE=decode INDEX=$i JOB_NAME=d$i python3 -m motor.node_manager.main &"
     done
 fi
 

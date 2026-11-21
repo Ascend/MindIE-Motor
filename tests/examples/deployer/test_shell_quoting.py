@@ -95,7 +95,7 @@ def test_controller_preserves_config_path(tmp_path, single_container):
     config.write_text('{"p_instances_num": 0, "d_instances_num": 0}', encoding="utf-8")
     setup = """
 set_controller_env() { :; }; setup_motor_log_path() { :; }
-gen_ranktable_config() { :; }; set_cann_env() { :; }; is_a5_hardware() { return 1; }
+set_cann_env() { :; }; is_a5_hardware() { return 1; }
 apply_patches() { :; }; set_coordinator_env() { :; }; motor_track_helper() { :; }
 motor_track_child() { :; }; set_prefill_env() { :; }; set_decode_env() { :; }
 motor_supervise_children() { wait; }

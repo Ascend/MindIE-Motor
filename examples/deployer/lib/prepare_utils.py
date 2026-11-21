@@ -21,7 +21,6 @@ _STATIC_ASSETS = (
     ("startup/boot.sh", "boot.sh"),
     ("startup/common.sh", "common.sh"),
     ("startup/instance_config.py", "instance_config.py"),
-    ("startup/hccl_tools.py", "hccl_tools.py"),
     ("probe/probe.sh", "probe.sh"),
     ("probe/probe.py", "probe.py"),
     ("prestop/prestop.sh", "prestop.sh"),

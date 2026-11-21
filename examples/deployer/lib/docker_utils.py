@@ -478,8 +478,8 @@ def in_place_config_path(container_name: str | None, job_name: str | None, *, is
     """Config directory for one --start.
 
     One container can run several --start commands. When --devices limits this
-    command to its own cards, keep hccl.json, ranktable.json and the config
-    sync pid under a directory named by the container and instance.
+    command to its own cards, keep the config and sync pid under a directory
+    named by the container and instance.
     """
     if not isolate:
         return CONTAINER_CONFIG_PATH

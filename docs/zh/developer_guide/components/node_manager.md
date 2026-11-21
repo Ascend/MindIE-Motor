@@ -22,7 +22,7 @@ Node Manager 是部署在推理节点上的管理进程，负责连接 Controlle
 | NativeEngineService | motor/node_manager/core/services/native_engine/service.py` | 原生引擎子进程生命周期管理：构造 `LaunchContext`、拉起/追踪/停止 vLLM/SGLang 进程组、重拉编排（`restart`）、`/health` 就绪等待（`wait_ready`） |
 | 启动加速适配 | motor/node_manager/core/services/native_engine/startup_acceleration.py | 将 Motor 配置映射为 vLLM StartPlan/图复用环境变量与引擎覆盖项，并在拉起前完成 StartPlan 候选文件的 DFX 预检查 |
 | LocalService | motor/node_manager/core/services/memcache/lifecycle.py | memcache 后端生命周期管理：配置准备、子进程拉起（通过 `memcache/worker.py`）、健康检查与重启 |
-| RegisterManager | motor/node_manager/core/register_manager.py | 注册/重注册、校验启动命令、处理 ranktable、快照元数据、持久化引擎重拉参数 |
+| RegisterManager | motor/node_manager/core/register_manager.py | 注册/重注册、校验启动命令、上报物理设备 ID、快照元数据、持久化引擎重拉参数 |
 | HeartbeatManager | motor/node_manager/core/heartbeat_manager.py | 轮询 endpoint 状态、上报心跳、维护暂停/恢复状态；仅报告状态事实，自杀裁决在 Daemon |
 | EngineFtManager | motor/node_manager/core/engine_ft_manager.py | 轮询引擎 FT 状态接口并上报软件故障给 Controller；由 Daemon 持有，重拉期间暂停/恢复 |
 | ControllerApiClient | motor/node_manager/api_client/controller_api_client.py | 调用 Controller 的注册、重注册、心跳和故障上报接口 |
@@ -53,7 +53,7 @@ Controller 调用 `POST /node-manager/start` 后，处理流程为：
 
 1. 将请求体解析为 `StartCmdMsg`。
 2. 校验 `job_name`、endpoint 数量以及每个 endpoint 的 IP 是否与本节点配置一致。
-3. 保存 `instance_id`、endpoints、`node_rank` 和 D2D peer 信息；如配置了 `RANKTABLE_PATH`，将实例 ranktable 写入该文件。
+3. 保存 `instance_id`、endpoints、`node_rank` 和 D2D peer 信息。
 4. 准备快照运行目录和元数据。
 5. `Daemon.pull_engine()` 为每个 endpoint 拉起一个原生引擎进程组（`vllm serve` / SGLang），并启动 `Daemon` 持有的 `EngineFtManager`（仅在故障容忍功能开启时生效）。
 6. 更新 `HeartbeatManager` 中的 endpoint，并启动状态轮询和心跳线程。
@@ -100,7 +100,6 @@ Node Manager API 默认监听 `api_config.pod_ip:api_config.node_manager_port`�
 | instance_id | int | 是 | Controller 分配的实例 ID。 |
 | endpoints | array | 是 | 本节点管理的 endpoint；元素包含 `id`、`ip`、`business_port`，SGLang PD endpoint 还可包含 `bootstrap_port`。原生引擎健康探测使用 `business_port`。 |
 | master_dp_ip | string | 是 | 数据并行主节点 IP。 |
-| ranktable | object/null | 否 | 实例级 ranktable，默认 `null`。 |
 | d2d_peer_ips | array/null | 否 | D2D 权重传输对端，Controller 使用 `<endpoint_id>:<peer_ip>` 编码，默认 `null`。 |
 | node_rank | int | 否 | Controller 按注册顺序分配的节点序号，默认 `0`。 |
 
@@ -118,10 +117,16 @@ Node Manager API 默认监听 `api_config.pod_ip:api_config.node_manager_port`�
 
 | 方向 | Controller 接口 | 行为 |
 |------|-----------------|------|
-| Node Manager → Controller | POST /controller/register | 上报角色、模型、端口、并行配置、ranktable、`nnodes` 和快照主节点标记。 |
+| Node Manager → Controller | POST /controller/register | 上报角色、模型、端口、并行配置、`physical_device_ids`、`nnodes` 和快照主节点标记。 |
 | Node Manager → Controller | POST /controller/reregister | Controller 重启并对心跳返回 `503` 时，携带实例与 endpoint 信息重新注册。 |
 | Node Manager → Controller | POST /controller/heartbeat | 按 `heartbeat_interval_seconds` 上报各 endpoint 状态。 |
 | Node Manager → Controller | POST /controller/report_software_fault | 转发引擎已有的软件故障信号。 |
+
+注册消息携带 `physical_device_ids`：本 Pod 拥有的 NPU 设备号，顺序与原生引擎
+`ASCEND_RT_VISIBLE_DEVICES` 的切片一致（依次来自 `MOTOR_START_DEVICES`、调度分配注解、
+`/dev/davinci*`；单容器模式叠加 `device_offset`）。Controller 使用该字段构建设备归属。
+设备数量仍以配置的 `device_num` 为准；无法取得与 `device_num` 等长且去重的设备列表时，
+NM 不上报该字段并继续注册，不阻塞实例组装。
 
 心跳使用长连接客户端，单次超时为 5 秒；TCP 请求失败时重建连接，并按 1 秒、2 秒退避重试两次。
 

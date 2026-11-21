@@ -84,7 +84,7 @@ def _get_instance_info_from_instance(instance: Instance, instance_status: Instan
         pod_associated_info_list = []
         for _, endpoint_info in pod_info.items():
             for device_info in endpoint_info.device_infos:
-                new_pod_info = {NPU_ID: device_info.device_id, NPU_IP: device_info.device_ip}
+                new_pod_info = {NPU_ID: device_info.device_id, NPU_IP: ""}
                 pod_associated_info_list.append(new_pod_info)
 
         new_pod_info = {POD_ASSOCIATED_INFO_LIST: pod_associated_info_list, POD_ID: pod_ip, POD_NAME: ""}
@@ -176,7 +176,7 @@ class InventoryCollector(ThreadSafeSingleton):
                     # every endpoint_info equals to one dp
                     npu_info_list = []
                     for device_info in endpoint_info.device_infos:
-                        npu_info = {NPU_ID: device_info.device_id, NPU_IP: device_info.device_ip}
+                        npu_info = {NPU_ID: device_info.device_id, NPU_IP: ""}
                         npu_info_list.append(npu_info)
                     pod_npu_info_list.extend(npu_info_list)
                     server_info = {

@@ -206,6 +206,7 @@ and does not submit the same reconfiguration again.
 
 - On Atlas `800I_A2`, these codes stay L6 (not downgraded to L2 while business is active). Add a code only when it needs all three: keep L6, NPU attribution, Decode NmSuicide.
 - Node ConfigMap faults are still stored per **node**, but instance isolation uses `pre_separate_fault_affects_instance()` (`fault_types.py`): the named NPU (`Ascend910-N` / `npu-N`) must intersect the instance endpoint `device_id` list. Prefill and Decode sharing a node therefore do not both take L6 when only one role's cards are down. Unknown `npu_name` fails open (still isolate). An instance with an empty `device_id` list fails closed (not treated as owner) so a colocated INITIAL instance is not isolated.
+- Endpoint `device_id` provenance in `InstanceAssembler._build_device_infos`: `RegisterMsg.physical_device_ids` (launch order) → synthesized `0..device_num-1` when the field is omitted. Ranktable has been removed; hardware-fault matching uses the physical ids reported by NodeManager and never depends on HCCL data.
 - L6 Prefill / Decode isolation-set codes / multi-pod union on Atlas `800I_A2` → `NmSuicideStrategy` (`strategy/nm_suicide.py`): POST `/node-manager/stop` on every NodeManager of **that** instance. Timeout / connection refused is treated as already exiting. HTTP 5xx and other dispatch errors `mark_failed` so the strategy center can escalate to EngineRelaunch when enabled. A superseded instance id (newer id for the same `job_name`) is skipped so stop is not sent to a replacement Pod IP. Other Prefill L6 (non-isolation codes / non-A2) stays a no-op at the strategy layer.
 - Single-pod union keeps the PreSeparateNPU L6→L2 downgrade. Other Decode L6 (not in the isolation set, or not A2) still uses ScaleP2D.
 
@@ -268,8 +269,7 @@ and does not submit the same reconfiguration again.
 - **Never derive role/master from registration order**: `_send_start_command` sets `master_dp_ip` to the pod owning the
   lowest non-headless endpoint id (DP rank 0), and for `nnodes == 1` sets `node_rank` to the pod's lowest endpoint id.
   Registration order can diverge from rank order after a dead pod is filtered and a later replacement takes the freed
-  rank. `_filter_abnormal_endpoints` also prunes the filtered pod's `ServerInfo` from the aggregated `metadata.ranktable`;
-  keep that pruning in sync whenever node managers/endpoints are removed.
+  rank.
 
 ## Ascend Device Plugin ConfigMap Reference
 

@@ -24,6 +24,7 @@ import re
 from collections.abc import Mapping
 
 _ALLOCATED_ENV = "ASCEND_ALLOCATED_DEVICES"
+_START_DEVICES_ENV = "MOTOR_START_DEVICES"
 _VISIBLE_ENV_KEYS = ("ASCEND_VISIBLE_DEVICES", "ASCEND_RT_VISIBLE_DEVICES")
 _CHIP_SUFFIX = re.compile(r"(\d+)$")
 _DAVINCI_NODE = re.compile(r"^/dev/davinci(\d+)$")
@@ -102,6 +103,30 @@ def list_runtime_device_ids(
     if visible and not _looks_like_full_host(visible):
         return visible
     return []
+
+
+def parse_device_id_list(raw: str | None) -> list[str]:
+    """Parse a comma separated device id list, preserving the caller's order."""
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def list_pod_device_ids(
+    env: Mapping[str, str] | None = None,
+    device_num: int = 0,
+) -> list[str]:
+    """Pod device ids in the order native engine launch uses them.
+
+    ``MOTOR_START_DEVICES`` comes from host ``--start --devices`` and must win:
+    ``NativeEngineService`` slices exactly that list. Otherwise fall back to the
+    scheduler allocation / device nodes.
+    """
+    source = env if env is not None else os.environ
+    start_ids = parse_device_id_list(source.get(_START_DEVICES_ENV))
+    if start_ids:
+        return start_ids
+    return list_runtime_device_ids(source, device_num=device_num)
 
 
 def _logical_slice_indices(index: int, device_size: int, local_world_size: int) -> list[int]:
