@@ -55,7 +55,7 @@ class RuntimeGuardPipeline:
 
     async def ingest(self, instance_id: int, model: str, scrapes: list[tuple[int, str, str | None]]) -> None:
         missing = sum(1 for _, _, text in scrapes if not text)
-        logger.info(
+        logger.debug(
             "[PrecisionDetection] ingest instance=%s model=%s endpoints=%d missing=%d",
             instance_id,
             model,
@@ -99,7 +99,7 @@ class RuntimeGuardPipeline:
                 continue
             state.successes += 1
             if state.successes < self._interval:
-                logger.info(
+                logger.debug(
                     "[PrecisionDetection] collecting instance=%s endpoint=%s port=%s progress=%d/%d",
                     instance_id,
                     endpoint_id,
@@ -115,7 +115,7 @@ class RuntimeGuardPipeline:
                 state.normal_ready = False
                 state.values = {}
                 state.generation = generation
-                logger.info(
+                logger.debug(
                     "[PrecisionDetection] window instance=%s endpoint=%s port=%s no runtime guard series",
                     instance_id,
                     endpoint_id,
@@ -144,7 +144,7 @@ class RuntimeGuardPipeline:
                 if value >= old:
                     delta += value - old
             evaluated.append((state, samples, generation))
-            logger.info(
+            (logger.info if delta > 0 else logger.debug)(
                 "[PrecisionDetection] window instance=%s endpoint=%s port=%s delta=%s samples=%s generation_reset=%s",
                 instance_id,
                 endpoint_id,
@@ -169,7 +169,7 @@ class RuntimeGuardPipeline:
             for state, samples, generation in evaluated:
                 state.values = samples
                 state.generation = generation
-            logger.info(
+            logger.debug(
                 "[PrecisionDetection] instance=%s hold evaluated=%d disappeared=%s",
                 instance_id,
                 len(evaluated),
@@ -182,7 +182,7 @@ class RuntimeGuardPipeline:
             return
         config = self._config_provider().precision_detection_config
         key = (None, instance_id)
-        logger.info(
+        logger.debug(
             "[PrecisionDetection] instance=%s record has_issue=%s changes=%d clear_threshold=%s",
             instance_id,
             bool(changes),
@@ -193,7 +193,7 @@ class RuntimeGuardPipeline:
             key, bool(changes), 1, clear_threshold=config.precision_clear_threshold, check_valid=True
         )
         if streak is None or streak.skip:
-            logger.info(
+            logger.debug(
                 "[PrecisionDetection] instance=%s scheduler result skipped empty=%s skip=%s",
                 instance_id,
                 streak is None,
@@ -201,7 +201,7 @@ class RuntimeGuardPipeline:
             )
             return
         action = "raise" if streak.threshold_hit else "clear" if streak.clear_threshold_hit else ""
-        logger.info(
+        (logger.info if action else logger.debug)(
             "[PrecisionDetection] instance=%s streak action=%s consecutive=%s threshold_hit=%s clear_hit=%s",
             instance_id,
             action or "none",

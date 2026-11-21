@@ -1382,7 +1382,7 @@ class MetricsCollector(ThreadSafeSingleton):
             }
 
         if ins_info.role == PDRole.ROLE_D and self._runtime_guard_pipeline is not None and self._loop is not None:
-            logger.info(
+            logger.debug(
                 "[PrecisionDetection] schedule instance=%s endpoints=%d missing=%d",
                 ins_info.id,
                 len(runtime_guard_scrapes),

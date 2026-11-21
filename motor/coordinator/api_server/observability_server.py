@@ -143,13 +143,17 @@ class ObservabilityServer(BaseCoordinatorServer):
                     return None
                 return InternalRouterProbe(self.coordinator_config, scheduler, self._runtime_guard_request_manager)
 
-            MetricsCollector().set_runtime_guard_pipeline(
-                RuntimeGuardPipeline(
-                    parser=parse_metric_text,
-                    scheduler_provider=self._scheduler_connection.get_client,
-                    probe_provider=runtime_guard_probe,
-                    config_provider=lambda: self.coordinator_config,
+            if self.coordinator_config.runtime_guard_enabled:
+                MetricsCollector().set_runtime_guard_pipeline(
+                    RuntimeGuardPipeline(
+                        parser=parse_metric_text,
+                        scheduler_provider=self._scheduler_connection.get_client,
+                        probe_provider=runtime_guard_probe,
+                        config_provider=lambda: self.coordinator_config,
+                    )
                 )
+            logger.info(
+                "[PrecisionDetection] runtime guard metrics enabled=%s", self.coordinator_config.runtime_guard_enabled
             )
             # 复用 MetricsCollector 已抓取的指标：把 kv_cache_usage_perc 发布到共享内存，
             # 供 SchedulerServer/worker 读取，避免调度侧再单独查询引擎 /metrics。

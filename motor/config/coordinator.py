@@ -78,6 +78,25 @@ def _require_engine_config(engine_section: dict[str, Any], *, source: str) -> di
     return normalize_keys(engine_section[ENGINE_CONFIG])
 
 
+def _decode_runtime_guard_enabled(raw: dict[str, Any]) -> bool:
+    """Derive the observer switch from Decode's configured detectors."""
+    decode = raw.get(ConfigKey.MOTOR_ENGINE_DECODE.value, {})
+    engine = decode.get(ENGINE_CONFIG, {}) if isinstance(decode, dict) else {}
+    if not isinstance(engine, dict):
+        return False
+    additional = engine.get("additional_config", engine.get("additional-config", {}))
+    if isinstance(additional, str):
+        try:
+            additional = json.loads(additional)
+        except (ValueError, TypeError):
+            return False
+    runtime = additional.get("runtime_config", {}) if isinstance(additional, dict) else {}
+    detectors = runtime.get("detector", {}) if isinstance(runtime, dict) else {}
+    return isinstance(detectors, dict) and any(
+        isinstance(detector, dict) and detector.get("enabled") is True for detector in detectors.values()
+    )
+
+
 def _require_max_model_len(engine_cfg: dict[str, Any], *, source: str) -> Any:
     if MAX_MODEL_LEN not in engine_cfg:
         raise KeyError(
@@ -1051,6 +1070,7 @@ class CoordinatorConfig:
     config_path: str | None = field(default=None, init=False)
     last_modified: float | None = field(default=None, init=False)
     engine_model_paths: list[str] = field(default_factory=list, init=False)
+    runtime_guard_enabled: bool = field(default=False, init=False)
     _errors: list[str] = field(default_factory=list, init=False)
     worker_index: int | None = field(default=None, repr=False)
     worker_metaserver_port: int | None = field(default=None, repr=False)
@@ -1095,6 +1115,8 @@ class CoordinatorConfig:
 
         try:
             config = cls()
+            if isinstance(user_config_data, dict):
+                config.runtime_guard_enabled = _decode_runtime_guard_enabled(user_config_data)
 
             def update_config_from_dict(config_obj, config_dict, special_handlers=None):
                 """Update configuration object fields from dictionary, only for existing keys.
@@ -1697,7 +1719,7 @@ class CoordinatorConfig:
         return reload_dataclass_config_from_json(
             self,
             self.from_json,
-            skip=frozenset({"worker_index", "worker_metaserver_port"}),
+            skip=frozenset({"worker_index", "worker_metaserver_port", "runtime_guard_enabled"}),
             skip_private=True,
         )
 
@@ -1712,6 +1734,7 @@ class CoordinatorConfig:
         config_dict.pop("last_modified", None)
         # Derived from the engine sections on load; never part of the public configuration surface
         config_dict.pop("engine_model_paths", None)
+        config_dict.pop("runtime_guard_enabled", None)
 
         # Convert enums to their string values for JSON serialization
         if "scheduler_config" in config_dict:

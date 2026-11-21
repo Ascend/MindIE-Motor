@@ -19,6 +19,57 @@ from motor.config.coordinator import CoordinatorConfig, SchedulerConfig, Schedul
 from motor.config.config_utils import resolve_render_enabled
 
 
+@pytest.mark.parametrize(
+    ("detectors", "expected"),
+    [
+        ({}, False),
+        ({"token_repeat": {"enabled": False}}, False),
+        ({"token_repeat": {"enabled": True}}, True),
+        ({"future_detector": {"enabled": True}}, True),
+    ],
+)
+def test_runtime_guard_is_derived_from_decode_config(tmp_path, detectors, expected):
+    config_path = tmp_path / "user_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "motor_coordinator_config": {},
+                "motor_engine_prefill_config": {
+                    "engine_config": {
+                        "additional_config": {"runtime_config": {"detector": {"token_repeat": {"enabled": True}}}}
+                    }
+                },
+                "motor_engine_decode_config": {
+                    "engine_config": {"additional_config": {"runtime_config": {"detector": detectors}}}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = CoordinatorConfig.from_json(str(config_path))
+    assert config.runtime_guard_enabled is expected
+    assert "runtime_guard_enabled" not in config.to_dict()
+
+
+def test_runtime_guard_accepts_json_encoded_additional_config_and_requires_restart(tmp_path):
+    config_path = tmp_path / "user_config.json"
+    additional = {"runtime_config": {"detector": {"logits_finite": {"enabled": True}}}}
+    data = {
+        "motor_coordinator_config": {},
+        "motor_engine_decode_config": {"engine_config": {"additional-config": json.dumps(additional)}},
+    }
+    config_path.write_text(json.dumps(data), encoding="utf-8")
+    config = CoordinatorConfig.from_json(str(config_path))
+    assert config.runtime_guard_enabled is True
+    additional["runtime_config"]["detector"]["logits_finite"]["enabled"] = False
+    data["motor_engine_decode_config"]["engine_config"]["additional-config"] = json.dumps(additional)
+    config_path.write_text(json.dumps(data), encoding="utf-8")
+    config.last_modified = 0
+    assert config.reload()
+    assert config.runtime_guard_enabled is True
+    assert CoordinatorConfig.from_json(str(config_path)).runtime_guard_enabled is False
+
+
 def test_standalone_coordinator_config_needs_no_engine_or_controller_sections(tmp_path):
     """A single-model standalone file loads without control-plane sections."""
     config_path = tmp_path / "standalone.json"

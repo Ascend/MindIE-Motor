@@ -4,7 +4,7 @@
 
 精度检测用于发现 Decode 推理过程中的运行时异常，并把结果上报为精度异常告警。检测由 vLLM-Ascend Runtime Guard 完成。Motor 不实现检测算法，也不修改用户请求。Coordinator 读取 Decode endpoint 的 `/metrics`，计数增加后透传上报 `Precision Anomaly Alarm`，告警 ID 为 `0xFC001009`。
 
-本特性没有单独的总开关。三种检测器默认都是关闭的，需要在 Decode 引擎配置里按名称打开。检测器全部关闭，或 `/metrics` 上没有对应计数时，Motor 不上报告警。
+本特性没有单独的总开关。三种检测器默认都是关闭的，需要在 Decode 引擎配置里按名称打开。Coordinator 启动时读取同一份配置，至少一个 Decode 检测器开启时才处理 Runtime Guard 指标；全部关闭或未配置时不处理。普通指标采集不受影响。
 
 ### 工作原理
 
@@ -23,10 +23,10 @@ Prefill 可以带同一份检测器配置。本特性只消费 Decode 的计数�
 |----------|------|
 | 硬件 | <ul><li>Atlas 800I A2 推理服务器</li><li>Atlas 800I A3 超节点服务器</li><li>Ascend 950 PR 系列产品</li></ul> |
 | 部署场景 | 经过 Coordinator 管理的 Decode 实例。直连引擎不经过本特性。 |
-| 引擎 | vLLM，且已安装带 Runtime Guard 的 vLLM-Ascend。检测器配置写在 `motor_engine_decode_config.engine_config.additional_config`，修改后重启 Decode 生效。 |
+| 引擎 | vLLM，且已安装带 Runtime Guard 的 vLLM-Ascend。检测器配置写在 `motor_engine_decode_config.engine_config.additional_config`，修改后重启 Decode 和 Coordinator 生效。 |
 | 告警粒度 | Decode 实例。端口只写在附加信息里，用于定位 endpoint。 |
 | 恢复 | 自动恢复只终止告警中的 Decode 实例，不终止 Prefill，不缩单个 DP，也不走软件故障入口。 |
-| 其他限制 | <ul><li>抓取失败、文本无法解析、计数非法时，该次不计入 10 次窗口，已有基线保留。</li><li>整页没有 Runtime Guard 计数时，不能当作正常，基线会被清掉。</li><li>以前见过、本轮消失的 endpoint 会挡住清除。</li><li>修改检测器配置后需要重启对应 Decode。修改 `precision_clear_threshold` 或 `probe_timeout_seconds` 后需要重启 Coordinator。</li></ul> |
+| 其他限制 | <ul><li>抓取失败、文本无法解析、计数非法时，该次不计入 10 次窗口，已有基线保留。</li><li>整页没有 Runtime Guard 计数时，不能当作正常，基线会被清掉。</li><li>以前见过、本轮消失的 endpoint 会挡住清除。</li><li>修改检测器配置后需要重启对应 Decode 和 Coordinator。修改 `precision_clear_threshold` 或 `probe_timeout_seconds` 后需要重启 Coordinator。</li></ul> |
 
 ## 特性使用
 
@@ -43,12 +43,12 @@ Prefill 可以带同一份检测器配置。本特性只消费 Decode 的计数�
 ### 环境准备
 
 - 推理服务由 Motor 部署，Decode 使用 vLLM，镜像或环境中的 vLLM-Ascend 包含 Runtime Guard。
-- Coordinator 可观测进程已启动，并能够访问 Decode endpoint 的 `/metrics`。
+- Coordinator 使用包含 Decode 检测器配置的同一份配置文件，可观测进程已启动并能够访问 Decode endpoint 的 `/metrics`。
 - 需要告警后自动终止实例时，Controller 可连通，并准备打开 `precision_auto_recovery_enabled`。
 
 ### 使用样例
 
-检测器写在 Decode 的引擎配置中，不写在 `precision_detection_config`。三种检测器互相独立，未写出的检测器保持关闭。修改后按现有方式重启 Decode。
+检测器写在 Decode 的引擎配置中，不写在 `precision_detection_config`。三种检测器互相独立，未写出的检测器保持关闭。修改后重启 Decode 和 Coordinator。
 
 ```json
 {
