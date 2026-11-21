@@ -136,22 +136,24 @@ def resolve_render_model(user_config: dict[str, Any]) -> tuple[str, list[str]]:
     return _resolve_render_model(_resolve_render_engine_sections(user_config))
 
 
-def _ensure_ascend_driver_mount(pod_spec: dict[str, Any], container: dict[str, Any]) -> None:
+def _ensure_readonly_host_mount(
+    pod_spec: dict[str, Any], container: dict[str, Any], volume_name: str, path: str
+) -> None:
     volumes = pod_spec.setdefault(C.VOLUMES, [])
-    if not any(volume.get(C.NAME) == ASCEND_DRIVER_VOLUME_NAME for volume in volumes):
+    if not any(volume.get(C.NAME) == volume_name for volume in volumes):
         volumes.append(
             {
-                C.NAME: ASCEND_DRIVER_VOLUME_NAME,
-                C.HOST_PATH: {C.PATH: ASCEND_DRIVER_PATH, "type": "Directory"},
+                C.NAME: volume_name,
+                C.HOST_PATH: {C.PATH: path, "type": "Directory"},
             }
         )
 
     mounts = container.setdefault(C.VOLUME_MOUNTS, [])
-    if not any(mount.get(C.NAME) == ASCEND_DRIVER_VOLUME_NAME for mount in mounts):
+    if not any(mount.get(C.NAME) == volume_name for mount in mounts):
         mounts.append(
             {
-                C.NAME: ASCEND_DRIVER_VOLUME_NAME,
-                C.MOUNT_PATH: ASCEND_DRIVER_PATH,
+                C.NAME: volume_name,
+                C.MOUNT_PATH: path,
                 "readOnly": True,
             }
         )
@@ -579,6 +581,7 @@ def build_docker_render_run_argv(container_name: str, user_config: dict[str, Any
 
     add_bind("/root/ascend/log:/root/ascend/log")
     add_bind("/root/.cache:/root/.cache")
+    add_bind("/mnt:/mnt:ro")
     if weight_mount_path:
         add_bind(f"{weight_mount_path}:{weight_mount_path}:ro")
     if not spec.use_cpu_image:
@@ -625,7 +628,9 @@ def configure_render_sidecar(pod_spec: dict[str, Any], user_config: dict[str, An
     )
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     weight_mount_path = deploy_config.get(C.WEIGHT_MOUNT_PATH, C.DEFAULT_WEIGHT_MOUNT_PATH)
-    set_weight_mount(pod_spec, container, weight_mount_path)
+    _ensure_readonly_host_mount(pod_spec, container, "mnt", "/mnt")
+    if weight_mount_path.rstrip("/") != "/mnt":
+        set_weight_mount(pod_spec, container, weight_mount_path)
     if not spec.use_cpu_image:
-        _ensure_ascend_driver_mount(pod_spec, container)
+        _ensure_readonly_host_mount(pod_spec, container, ASCEND_DRIVER_VOLUME_NAME, ASCEND_DRIVER_PATH)
     containers.append(container)

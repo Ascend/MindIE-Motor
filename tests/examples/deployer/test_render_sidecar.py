@@ -147,6 +147,8 @@ def test_cpu_render_uses_dedicated_image_without_ascend_runtime():
     assert container[C.PORTS][0]["containerPort"] == 8110
     assert _render_arg(container, "--renderer-num-workers") == "4"
     assert json.loads(_render_arg(container, "--hf-overrides")) == {"quantization_config": None}
+    assert {"name": "mnt", "mountPath": "/mnt", "readOnly": True} in container[C.VOLUME_MOUNTS]
+    assert {"name": "mnt", "hostPath": {"path": "/mnt", "type": "Directory"}} in pod_spec[C.VOLUMES]
     assert C.ASCEND_910_NPU_NUM not in container[C.RESOURCES][C.REQUESTS]
     assert container["command"] == ["vllm"]
     env = {item[C.NAME]: item[C.VALUE] for item in container[C.ENV]}
@@ -312,6 +314,7 @@ def test_docker_render_run_argv_uses_launch_args():
     assert argv[argv.index("--renderer-num-workers") + 1] == "3"
     assert "--enable-auto-tool-choice" in argv
     assert "VLLM_MLA_DISABLE=1" in argv
+    assert "/mnt:/mnt:ro" in argv
     domains_index = argv.index("--allowed-media-domains")
     assert argv[domains_index + 1 : domains_index + 3] == ["images.example.com", "media.example.com"]
     assert "--host" in argv
