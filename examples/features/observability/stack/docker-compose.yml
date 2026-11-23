@@ -6,11 +6,10 @@
 #
 # Profiles:
 #   - default(no profile flag) : core stack
-#   - npu : enable Ascend npu-exporter (requires Ascend drivers on host)
+#   - full : enable node-exporter
 #
 # Usage:
 #   docker compose up -d
-#   docker compose --profile npu up -d
 
 name: pymotor-observability
 
@@ -151,40 +150,3 @@ services:
       - /:/host:ro,rslave
     ports:
       - "${NODE_EXPORTER_PORT:-9100}:9100"
-
-  cadvisor:
-    image: ${REGISTRY_PREFIX:-}gcr.io/cadvisor/cadvisor:${CADVISOR_VERSION:-v0.49.1}
-    container_name: pymotor-cadvisor
-    restart: unless-stopped
-    profiles: [full]
-    networks: [obs]
-    privileged: true
-    devices:
-      - /dev/kmsg
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-    ports:
-      - "${CADVISOR_PORT:-8088}:8080"
-  # ---------------------------------------------------------------
-  # Ascend NPU exporter (profile: npu) — requires host drivers
-  # ---------------------------------------------------------------
-  ascend-npu-exporter:
-    image: ${NPU_EXPORTER_IMAGE:-swr.cn-south-1.myhuaweicloud.com/ascendhub/npu-exporter:v6.0.0}
-    container_name: pymotor-npu-exporter
-    restart: unless-stopped
-    profiles: [npu]
-    # NPU exporter needs host network + privileged + DCMI / driver mounts.
-    network_mode: host
-    privileged: true
-    command:
-      - --listen=0.0.0.0:${NPU_EXPORTER_PORT:-8082}
-      - --updateTime=5
-    volumes:
-      - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
-      - /usr/local/dcmi:/usr/local/dcmi:ro
-      - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro
-      - /var/log/Ascend:/var/log/Ascend
-      - /etc/localtime:/etc/localtime:ro

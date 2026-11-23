@@ -26,7 +26,7 @@ Options:
   --node-ip <node-ip>         Node IP used for NodePort access
   --user-config <path>        Motor user_config.json path
   --minimal                   Start core stack with Loki (default)
-  --full                      Add node-exporter/cAdvisor infra exporters
+  --full                      Add node-exporter infra exporter
   --discover-only             Only run discovery, do not start stack
   --dry-run                   Run discovery and print generated Prometheus config
   --native                    Skip Docker Compose and run native runtime

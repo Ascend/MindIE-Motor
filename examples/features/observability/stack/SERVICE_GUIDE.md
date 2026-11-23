@@ -158,7 +158,7 @@ docker compose up -d --pull missing --no-build
 | `grafana/loki:3.3.0` | 日志存储 |
 | `otel/opentelemetry-collector-contrib:0.115.1` | OTLP 接入 |
 
-**full** 模式在 minimal 基础上额外拉起（对应 Compose `--profile full`）：`prom/node-exporter`、`gcr.io/cadvisor/cadvisor`；可选 `--profile npu` 使用 Ascend `npu-exporter` 镜像。
+**full** 模式在 minimal 基础上额外拉起（对应 Compose `--profile full`）：`prom/node-exporter`。
 
 ### 2.2 代理分工（需区分阶段）
 
@@ -294,7 +294,7 @@ cd examples/features/observability/stack
 # 最常用：指定 namespace，minimal 栈（联调推荐）
 MOTOR_NAMESPACE=<namespace> ./launch.sh --minimal
 
-# 完整栈（minimal 基础上额外含 node-exporter、cAdvisor）
+# 完整栈（minimal 基础上额外含 node-exporter）
 MOTOR_NAMESPACE=<namespace> ./launch.sh --full
 
 # 指定 NodePort 访问 IP（可选）
@@ -318,7 +318,7 @@ MOTOR_NAMESPACE=<namespace> ./launch.sh --native
 | `--node-ip <ip>` | NodePort 访问使用的节点 IP，等同 `MOTOR_NODE_IP` |
 | `--user-config <path>` | MindIE Motor `user_config.json` 路径，等同 `MOTOR_USER_CONFIG` |
 | `--minimal` | 启动 minimal Docker 栈（Prometheus / Grafana / Tempo / OTel / Loki，默认） |
-| `--full` | 启动 full Docker 栈（在 minimal 基础上额外含 node-exporter / cAdvisor） |
+| `--full` | 启动 full Docker 栈（在 minimal 基础上额外含 node-exporter） |
 | `--discover-only` | 只运行目标发现，写出 `generated/*`，不启动栈 |
 | `--dry-run` | 发现并打印生成的 `generated/prometheus.yml`（前 240 行），不启动栈 |
 | `--native` | 跳过 Docker Compose，直接运行原生二进制 runtime |
@@ -342,7 +342,7 @@ export PROXY_SH=/path/to/pymotor-proxy.env  # native runtime 下载二进制（d
 | 模式 | 命令 / 参数 | 行为 |
 |------|-------------|------|
 | **默认 Docker · minimal** | `./launch.sh` 或 `./launch.sh --minimal` | 发现 → `start.sh --minimal` 启动核心栈（含 Loki） |
-| **Docker · full** | `./launch.sh --full` | 发现 → `start.sh --full`；额外启动 node-exporter / cAdvisor |
+| **Docker · full** | `./launch.sh --full` | 发现 → `start.sh --full`；额外启动 node-exporter |
 | **仅发现** | `./launch.sh --discover-only` | 只运行 `discover-targets.py`，写出 `generated/*`，不启动栈 |
 | **发现 + 预览配置** | `./launch.sh --dry-run` | 发现并打印 `generated/prometheus.yml`，不启动栈 |
 | **强制 native** | `./launch.sh --native` | 跳过 Docker，直接 `scripts/start-native.sh`（运行 Prometheus / Grafana / Tempo / OTel，不含 Loki 与 infra exporters） |
@@ -428,7 +428,7 @@ cd examples/features/observability/stack
 `stop.sh` 行为：
 
 1. 先执行 `scripts/stop-k8s-port-forwards-host.sh` 清理主机侧 port-forward。
-2. 若 `docker compose` 可用，按 `OBS_STACK_MODE`、`OBS_WITH_MOCK`、`OBS_COMPOSE_PROFILES` 组合 profile，并追加 `--profile npu` 后执行 `docker compose ... down`（带 `--purge` 时追加 `-v` 删除数据卷），确保 full / mock / 自定义 profile 也能被清理。
+2. 若 `docker compose` 可用，按 `OBS_STACK_MODE`、`OBS_WITH_MOCK`、`OBS_COMPOSE_PROFILES` 组合 profile 后执行 `docker compose ... down`（带 `--purge` 时追加 `-v` 删除数据卷），确保 full / mock / 自定义 profile 也能被清理。
 3. 停止 native runtime 进程（Grafana / Prometheus / OTel / Tempo 的 pid），`--purge` 时删除 `.native-runtime/{data,logs,run}`。
 
 ## 6. 常见问题总结

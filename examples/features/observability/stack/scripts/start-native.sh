@@ -227,7 +227,6 @@ from pathlib import Path
 runtime_file = Path(".native-runtime/prometheus.yml")
 text = runtime_file.read_text(encoding="utf-8")
 text = text.replace("node-exporter:9100", "localhost:9100")
-text = text.replace("cadvisor:8080", "localhost:8088")
 runtime_file.write_text(text, encoding="utf-8")
 PY
 

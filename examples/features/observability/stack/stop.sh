@@ -38,7 +38,6 @@ if "${DOCKER_BIN}" compose version >/dev/null 2>&1; then
       PROFILE_ARGS+=(--profile "${p}")
     done
   fi
-  PROFILE_ARGS+=(--profile npu)
 
   ARGS=(compose "${PROFILE_ARGS[@]}" down)
   if [[ "${PURGE}" -eq 1 ]]; then

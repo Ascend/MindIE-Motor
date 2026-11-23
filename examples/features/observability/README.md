@@ -4,7 +4,7 @@
 
 | 能力 | 说明 | 目录 |
 |------|------|------|
-| **一键观测栈** | Prometheus + Grafana + Tempo + OTel Collector（minimal 默认含 Loki；`--full` 额外含 node-exporter / cAdvisor），自动发现 Motor 指标端点并生成抓取配置 | [`stack/`](stack/README.md) |
+| **一键观测栈** | Prometheus + Grafana + Tempo + OTel Collector（minimal 默认含 Loki；`--full` 额外含 node-exporter），自动发现 Motor 指标端点并生成抓取配置 | [`stack/`](stack/README.md) |
 | **CCAE Reporter** | 采集 Motor 运行信息（告警、日志、实例信息、metrics）上报华为 CCAE（Cluster Computing Autonomous Engine） | [`ccae_reporter/`](ccae_reporter/) |
 | **K8s 采集与 HPA 对接** | Prometheus Operator（ServiceMonitor）/ 裸 Prometheus / External Metrics Adaptor 示例 | [`k8s/README.md`](k8s/README.md) |
 
@@ -128,7 +128,7 @@ CCAE Reporter 独立打包：在本目录执行 `bash build.sh` 生成 wheel（�
 ### 1.5 镜像准备
 
 minimal 模式需 Prometheus / Grafana / Tempo / OTel Collector / Loki；full 模式额外需要
-node-exporter / cAdvisor（NPU 场景可选 npu-exporter）。镜像版本在
+node-exporter。镜像版本在
 [`stack/.env.example`](stack/.env.example) 中集中配置。拉取方式、代理分工（拉镜像用 shell 代理，
 发现阶段关闭代理）与推荐流程见
 [`stack/SERVICE_GUIDE.md` §2](stack/SERVICE_GUIDE.md#2-准备镜像联网拉取)。
@@ -150,7 +150,7 @@ MOTOR_NAMESPACE=<namespace> ./launch.sh --minimal
 
 | 命令 | 场景 |
 |------|------|
-| `MOTOR_NAMESPACE=<ns> ./launch.sh --full` | 完整栈（在 minimal 基础上额外含 node-exporter / cAdvisor） |
+| `MOTOR_NAMESPACE=<ns> ./launch.sh --full` | 完整栈（在 minimal 基础上额外含 node-exporter） |
 | `MOTOR_NAMESPACE=<ns> ./launch.sh --minimal --node-ip <ip>` | 指定 NodePort 访问 IP |
 | `MOTOR_NAMESPACE=<ns> ./launch.sh --discover-only` | 只做发现，写出 `generated/*`，不启动栈 |
 | `MOTOR_NAMESPACE=<ns> ./launch.sh --dry-run` | 发现并打印生成的 Prometheus 配置 |
@@ -214,7 +214,7 @@ curl -s http://localhost:9090/api/v1/targets \
   | python3 -c "import json,sys; [print(t['labels'].get('job'), t['health']) for t in json.load(sys.stdin)['data']['activeTargets']]"
 ```
 
-预期输出节选（Coordinator 各视图与 Engine 目标应为 `up`；未启用的 full / NPU exporter 允许为 `down`）：
+预期输出节选（Coordinator 各视图与 Engine 目标应为 `up`；未启用的 full exporter 允许为 `down`）：
 
 ```text
 prometheus up

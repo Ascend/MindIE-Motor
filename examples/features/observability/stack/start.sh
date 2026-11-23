@@ -39,10 +39,10 @@ while [[ $# -gt 0 ]]; do
       cat <<EOF
 Usage: $0 [options]
   --minimal          start core stack with Loki (default)
-  --full             add node-exporter/cAdvisor infra exporters
+  --full             add node-exporter infra exporter
   --with-mock        enable mock profile when present
   --profile <list>   comma-separated profiles (default: none)
-                     known: npu, full
+                     known: full
   -h, --help         show this help
 
 Loki image:

@@ -861,11 +861,7 @@ def _build_prometheus_config(result: DiscoveryResult) -> str:
         )
     )
     lines.append("")
-    lines.extend(_render_job("ascend-npu-exporter", [{"target": "host.docker.internal:8082"}]))
-    lines.append("")
     lines.extend(_render_job("node-exporter", [{"target": "node-exporter:9100"}]))
-    lines.append("")
-    lines.extend(_render_job("cadvisor", [{"target": "cadvisor:8080"}]))
     return "\n".join(lines) + "\n"
 
 
