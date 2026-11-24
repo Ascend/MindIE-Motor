@@ -77,25 +77,7 @@
 2. 在默认 K8s + MindCluster 部署模式下，确认集群使用 containerd，并已安装支持容器快照的 MindCluster 组件及相关 CRD。MindCluster 侧的环境要求、组件部署和使用流程请参见[容器快照部署及使用](https://gitcode.com/Ascend/mind-cluster/blob/release_v26.2.0/docs/zh/scheduling/04_usage/10_infer_operator_best_practice/06_container_snapshot_usage.md)。
 3. 准备保存容器 Host 快照镜像和运行时模型权重所需的宿主机存储目录。需要跨节点恢复时，请确保目标节点能够访问这些目录。
 4. 使用其他部署模式时，需由部署平台或用户准备 Host 侧 CRIU 工具，例如 GRUS，并准备快照元数据文件及相应的容器挂载。
-5. 当前容器快照功能仅支持 vLLM-Ascend 0.30.0，使用前需应用 Motor deployer 中提供的容器快照补丁。请在 `deployer/startup/boot.sh` 中找到原有的 `source "$SCRIPT_DIR/engine.sh"` 命令，并在该命令之前插入以下补丁命令和通信环境变量配置。补丁命令需在已安装 vLLM 和 vLLM-Ascend 的 Python 环境中执行。
-
-   ```bash
-   # 应用容器快照补丁
-   bash /path/to/deployer/patch/0.30.0/apply_patches.sh \
-       /path/to/deployer/patch/0.30.0/container_snapshot/vllm_v0.30.0_container_snapshot.patch \
-       /path/to/deployer/patch/0.30.0/container_snapshot/vllm_ascend_v0.30.0_container_snapshot.patch
-
-   # 配置通信地址和网卡
-   export HCCL_IF_IP="${POD_IP:-}"
-   export GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-eth0}"
-   export TP_SOCKET_IFNAME="${TP_SOCKET_IFNAME:-eth0}"
-   export HCCL_SOCKET_IFNAME="${HCCL_SOCKET_IFNAME:-eth0}"
-
-   ```
-
-   将 `/path/to/deployer` 替换为容器内 deployer 的实际路径，并确保补丁脚本和两个补丁文件均可访问。示例使用 `POD_IP` 设置通信 IP，通信网卡默认使用 `eth0`；请确保 `POD_IP` 已设置，并根据实际网络环境调整网卡配置。
-
-   补丁脚本默认通过 `python3` 定位已安装的包。如需使用其他 Python 解释器，可在 `bash` 命令前添加 `PYTHON=/path/to/python3`。若同时使用容错补丁，请先应用容错补丁，再应用容器快照补丁。
+5. 当前容器快照功能仅支持 vLLM 0.30.0 与 vLLM-Ascend 0.30.0 的配套组合。Motor 镜像在 `/tmp/motor/examples/deployer/patch/0.30.0/container_snapshot` 中预置所需补丁；配置 `enable_snapshot=true` 后，容器启动脚本会自动配置通信地址与网卡环境变量，并在启动 NodeManager 前应用两个补丁。补丁缺失、版本不兼容或应用冲突时，容器将停止启动并输出错误日志。自定义镜像需保留 `/tmp/motor/examples/deployer/patch` 目录及 Motor 启动脚本。
 
 ### 使用场景
 

@@ -332,8 +332,10 @@ class HeartbeatManager(ThreadSafeSingleton):
         for item in endpoints_snapshot:
             original_status = item.status
 
-            if is_restored_from_host_side_snapshot() and item.ip != self._config.api_config.pod_ip:
-                # If snapshot restored and continued from stale endpoints_snapshot query loop, keep original status
+            if is_restored_from_host_side_snapshot() and (
+                not self.is_started_after_restore() or item.ip != self._config.api_config.pod_ip
+            ):
+                # Both IPs can still be stale and equal before registration preparation.
                 logger.debug(
                     "[snapshot] Node manager is restored and continued from stale endpoints_snapshot query loop, "
                     "keeping stale status: %s, old endpoint ip=%s, new endpoint ip=%s",
@@ -361,8 +363,10 @@ class HeartbeatManager(ThreadSafeSingleton):
                 RuntimeState.STOPPED: EndpointStatus.ABNORMAL,
             }.get(runtime_state)
 
-            if is_restored_from_host_side_snapshot() and item.ip != self._config.api_config.pod_ip:
-                # If snapshot restored and continued from stale endpoints_snapshot query loop, keep original status
+            if is_restored_from_host_side_snapshot() and (
+                not self.is_started_after_restore() or item.ip != self._config.api_config.pod_ip
+            ):
+                # A probe can span restore; reject its result before restore start completes.
                 logger.info(
                     "[snapshot] Node manager is restored from host side snapshot and not started after restore, "
                     "ignore stale status: %s, old endpoint ip=%s, new endpoint ip=%s",

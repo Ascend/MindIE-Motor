@@ -393,6 +393,9 @@ spec:
               - name: npu-smi
                 mountPath: /usr/local/bin/npu-smi
                 readOnly: true
+              - name: ascend-install-info
+                mountPath: /etc/ascend_install.info
+                readOnly: true
               - name: hccn-tool
                 mountPath: /usr/bin/hccn_tool
                 readOnly: true
@@ -441,6 +444,10 @@ spec:
             - name: npu-smi
               hostPath:
                 path: /usr/local/bin/npu-smi
+                type: File
+            - name: ascend-install-info
+              hostPath:
+                path: /etc/ascend_install.info
                 type: File
             - name: hccn-tool
               hostPath:
@@ -539,6 +546,9 @@ spec:
               - name: npu-smi
                 mountPath: /usr/local/bin/npu-smi
                 readOnly: true
+              - name: ascend-install-info
+                mountPath: /etc/ascend_install.info
+                readOnly: true
               - name: hccn-tool
                 mountPath: /usr/bin/hccn_tool
                 readOnly: true
@@ -587,6 +597,10 @@ spec:
             - name: npu-smi
               hostPath:
                 path: /usr/local/bin/npu-smi
+                type: File
+            - name: ascend-install-info
+              hostPath:
+                path: /etc/ascend_install.info
                 type: File
             - name: hccn-tool
               hostPath:
@@ -685,6 +699,9 @@ spec:
               - name: npu-smi
                 mountPath: /usr/local/bin/npu-smi
                 readOnly: true
+              - name: ascend-install-info
+                mountPath: /etc/ascend_install.info
+                readOnly: true
               - name: hccn-tool
                 mountPath: /usr/bin/hccn_tool
                 readOnly: true
@@ -733,6 +750,10 @@ spec:
             - name: npu-smi
               hostPath:
                 path: /usr/local/bin/npu-smi
+                type: File
+            - name: ascend-install-info
+              hostPath:
+                path: /etc/ascend_install.info
                 type: File
             - name: hccn-tool
               hostPath:
@@ -831,6 +852,9 @@ spec:
               - name: npu-smi
                 mountPath: /usr/local/bin/npu-smi
                 readOnly: true
+              - name: ascend-install-info
+                mountPath: /etc/ascend_install.info
+                readOnly: true
               - name: hccn-tool
                 mountPath: /usr/bin/hccn_tool
                 readOnly: true
@@ -879,6 +903,10 @@ spec:
             - name: npu-smi
               hostPath:
                 path: /usr/local/bin/npu-smi
+                type: File
+            - name: ascend-install-info
+              hostPath:
+                path: /etc/ascend_install.info
                 type: File
             - name: hccn-tool
               hostPath:
