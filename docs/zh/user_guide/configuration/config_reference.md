@@ -110,8 +110,8 @@ motor_controller_config字段配置样例如下所示：
   },
   "instance_config": {
     "instance_assemble_timeout": 600,
-    "instance_assembler_check_interval": 1,
-    "instance_assembler_cmd_send_interval": 1,
+    "instance_assembler_check_interval": 30,
+    "instance_assembler_cmd_send_interval": 30,
     "instance_manager_check_interval": 1,
     "instance_heartbeat_timeout": 10,
     "instance_expired_timeout": 1200,
@@ -195,8 +195,8 @@ motor_controller_config字段配置样例如下所示：
 | observability_api_port | int | Controller可观测性API端口，默认值：1027。|
 | **instance_config字段** |-|-|
 | instance_assemble_timeout | int | 等待实例就绪的最长等待时间，单位：秒，默认值：600。 |
-| instance_assembler_check_interval | int | 轮询实例组装状态的间隔，单位：秒，默认值：1。 |
-| instance_assembler_cmd_send_interval | int | 向实例下发组装命令的间隔，单位：秒，默认值：1。 |
+| instance_assembler_check_interval | int | 轮询实例组装状态的间隔，单位：秒，默认值：30。 |
+| instance_assembler_cmd_send_interval | int | 向实例下发组装命令的间隔，单位：秒，默认值：30。 |
 | instance_manager_check_interval | int | 实例状态巡检间隔，单位：秒，默认值：1。 |
 | instance_heartbeat_timeout | int | 超过该时长未收到实例心跳则判定异常，单位：秒，默认值：10。 |
 | instance_expired_timeout | int | 实例空闲超过该时长则被清理，单位：秒，默认值：1200。 |
