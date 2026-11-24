@@ -7,19 +7,30 @@ description: MindIE Motor development guidelines. Use when modifying motor/ or t
 
 ## Continuous Learning (可持续学习)
 
-This skill is **self-improving**. Every debugging session adds a case to the bug-fix history —
-the "why did I write this bug" lesson plus the test that intercepts it — so future development
-benefits from past mistakes.
+This skill is **self-improving**. Every fix of a **pre-existing defect** adds a case to the
+bug-fix history — the "why did this bug slip in" lesson plus the test that intercepts it — so
+future development benefits from past mistakes.
 
 - **Always check `bug-fix-history/INDEX.md` FIRST** when debugging, fixing, or writing tests —
   it is a lightweight one-line-per-case index. Match by keyword/module, then read only the
   matching case file under `bug-fix-history/<module>/` (progressive disclosure — do not load the
   whole history).
-- **Always record** after a bug-fix loop completes (tests green, verified): create a case file
-  under `bug-fix-history/<module>/` following the template in `INDEX.md`, then add one row to
+- **Record only fixes of pre-existing defects** — defects already present in merged code (or
+  introduced by an earlier commit/PR). Judge by where the defect lives, not by the delivery
+  form: a separate `[fix]` / `[bugfix]` change is preferred, but a pre-existing defect fixed
+  inside the current feature PR is still recorded. After the
+  fix loop completes (tests green, verified): create a case file under
+  `bug-fix-history/<module>/` following the template in `INDEX.md`, then add one row to
   `INDEX.md` (dedup by keyword, max 10 cases per module).
+- **Never record self-introduced feature bugs** — a bug in the feature's own new code, found and
+  fixed on the same feature branch before its PR merges, is part of normal feature iteration:
+  no case file, no INDEX row, no ISSUE. Keep its intercepting test in the feature PR; do not
+  carry a history case into it. A pre-existing defect discovered along the way is still
+  recorded — preferably delivered as a separate `[fix]` change.
 - Record only **verified** conclusions — never guesses. Skip typos/environment-only issues.
-- The same rules apply to user-provided logs: diagnose → confirm → fix + test interception → record.
+- User-provided logs are only a detection channel, not proof of ownership: classify the defect
+  by which commit it exists in first, then record only pre-existing defects —
+  diagnose → confirm → fix + test interception → record.
 
 ## Hard Constraints
 
@@ -27,7 +38,7 @@ benefits from past mistakes.
 - Always use `bash tests/run_tests.sh` — never `python -m pytest` directly.
 - Never use f-strings in logger calls — use `%s`, `%d` for deferred formatting.
 - Every Python file must start with the Mulan PSL v2 license header (see `references/code-style.md`).
-- After any completed bug fix (including log-diagnosed issues), **record the case in `bug-fix-history/`** (case file + INDEX.md row) — this is mandatory, not optional (see Continuous Learning).
+- After a completed fix of a **pre-existing defect** (including defects located from user-provided logs, once ownership is confirmed), **record the case in `bug-fix-history/`** (case file + INDEX.md row) — mandatory, not optional. Self-introduced bugs fixed within the feature's own development are excluded (see Continuous Learning).
 - **Skill sync (docs never drift)**: whenever you read component source code while developing, actively cross-check it against the corresponding `references/<module>.md`. If reality differs from the doc (path/line counts/constants/state machine/protocol/flow), **update the reference immediately** and carry it in the same PR as the code change. Never leave a known mismatch in place.
 - **References are development knowledge, not verification reports**: `references/<module>.md` records only what later development needs to know (architecture, mechanisms, wire protocols, constants, test/benchmark entry points and how to run them). **Never write one-off verification results — benchmark performance numbers, single-run tuning conclusions, measured gains — into skill references**; they go stale as hardware/code evolve and belong in PR/ISSUE bodies or user-facing docs. Keep the mechanism, drop the numbers.
 
@@ -39,8 +50,8 @@ Follow this loop whenever debugging or fixing bugs — it closes the learning cy
 2. **Reproduce / diagnose** — for user-provided logs: read the log, trace the code path, confirm the root cause before touching code.
 3. **Fix + write the intercepting test** — the test must fail on the old code and pass on the new code (regression guard).
 4. **Verify** — run the targeted test, then the module tests, via `bash tests/run_tests.sh`.
-5. **Record** — create `bug-fix-history/<module>/<short-name>.md` using the template (Symptom / Root cause / Why / Fix / Test interception / Scenario / Keywords) and add one row to `bug-fix-history/INDEX.md`. Dedup by keyword; skip typos and environment-only issues.
-6. **Offer to file an ISSUE (+PR)** — after recording the case, ask the user whether to file a bug report against the Motor repo (gitcode.com/Ascend/MindIE-Motor, `bug-report` template). Do **not** load `references/issue-reporting.md` unless the user agrees — it is only read on demand (progressive disclosure). If they agree, follow that reference. **顺序硬性要求：先提 ISSUE，拿到编号后再提 PR，PR 正文直接写 ISSUE 链接**；提交方式：token-based API 提交 vs. markdown 草稿 vs. skip。
+5. **Record (pre-existing defects only)** — create `bug-fix-history/<module>/<short-name>.md` using the template (Symptom / Root cause / Why / Fix / Test interception / Scenario / Keywords) and add one row to `bug-fix-history/INDEX.md`. Dedup by keyword; skip typos, environment-only issues, and self-introduced feature bugs fixed before the feature PR merges (their intercepting tests stay in the feature PR).
+6. **Offer to file an ISSUE (+PR)** — after recording a pre-existing defect case, ask the user whether to file a bug report against the Motor repo (gitcode.com/Ascend/MindIE-Motor, `bug-report` template). Do **not** load `references/issue-reporting.md` unless the user agrees — it is only read on demand (progressive disclosure). If they agree, follow that reference. **顺序硬性要求：先提 ISSUE，拿到编号后再提 PR，PR 正文直接写 ISSUE 链接**；提交方式：token-based API 提交 vs. markdown 草稿 vs. skip。
 
 ## Testing (Core Principles)
 
