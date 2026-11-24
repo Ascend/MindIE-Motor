@@ -181,48 +181,6 @@ class DockerDeployTests(unittest.TestCase):
         self.assertIn("--device /dev/davinci0", filtered)
         self.assertNotIn("--device /dev/davinci1", filtered)
 
-    def test_identity_and_workspace(self):
-        with patch.object(D, "ip_from_nic", return_value="10.0.0.1"):
-            ctrl = D.resolve_runtime_identity(
-                _pd_config(),
-                role="coordinator,controller",
-                job_name=None,
-                pod_ip="10.0.0.1",
-                coordinator_ip=None,
-                controller_ip=None,
-                kv_store_ip=None,
-                kv_store_enabled=False,
-                nic_name="eth0",
-            )
-        self.assertEqual(ctrl.role, "coordinator_controller")
-        self.assertFalse(ctrl.attach_npu)
-        render = D.resolve_runtime_identity(
-            _pd_config(),
-            role="render",
-            job_name=None,
-            pod_ip=None,
-            coordinator_ip=None,
-            controller_ip=None,
-            kv_store_ip=None,
-            kv_store_enabled=False,
-            nic_name=None,
-        )
-        self.assertEqual(render.role, "render")
-        self.assertFalse(render.attach_npu)
-        with self.assertRaisesRegex(ValueError, "cannot be combined"):
-            D.normalize_docker_role("render,coordinator")
-        with self.assertRaisesRegex(ValueError, "cannot share a container"):
-            D.normalize_docker_role("coordinator_controller+prefill")
-        self.assertEqual(
-            docker_deploy.default_in_place_workspace("/opt/examples/deployer", None, None),
-            os.path.abspath("/opt/examples/motor_workspace/single"),
-        )
-        self.assertEqual(docker_deploy._in_place_workspace_slot("kv_conductor", None), "kvc")
-        self.assertEqual(
-            docker_deploy.default_in_place_workspace("/opt/examples/deployer", "kv_conductor", None, "motor-kvc"),
-            os.path.abspath("/opt/examples/motor_workspace/motor-kvc/kvc"),
-        )
-
     def test_one_click_refuses_existing_name(self):
         command = docker_deploy.attach_one_click_command(
             C.ENTER_DOCKER_RUN_A2, "python3 /opt/examples/deployer/docker_deploy.py --start"

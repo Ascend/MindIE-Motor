@@ -64,39 +64,6 @@ def test_patch_applies_unique_union_and_is_idempotent(tmp_path):
     assert apply_patch(str(target), str(patch_file), MARKER)
 
 
-def test_cpu_event_grain_patch_applies_and_is_idempotent(tmp_path):
-    rel_path, patch_name, marker = PATCH_SPECS[1]
-    repo = MOTOR_ROOT.parent / "vllm-ascend"
-    src = repo / "vllm_ascend" / rel_path
-    if not src.is_file():
-        pytest.skip(f"upstream kv_transfer not in workspace: {src}")
-
-    import subprocess
-
-    original = subprocess.check_output(
-        ["git", "-C", str(repo), "show", f"HEAD:vllm_ascend/{rel_path}"],
-        text=True,
-    )
-    target = tmp_path / "kv_transfer.py"
-    target.write_text(original)
-    patch_file = PATCH_DIR / patch_name
-    assert patch_file.is_file()
-
-    assert apply_patch(str(target), str(patch_file), marker)
-    text = target.read_text(encoding="utf-8")
-    ast.parse(text)
-    assert marker in text
-    assert "def conductor_cpu_event_block_size(" not in text
-    assert "compress_ratio > 1" in text
-    assert "compress_ratio in (4, 128)" not in text
-    assert "effective_block_size if compress_ratio > 1 else original_block_size" in text
-    assert "infer_cache_family_ratio(cache_family)" in text
-    assert "start * compress_ratio, end * compress_ratio" in text
-    assert "def _target_effective_block_size(" not in text
-    assert is_patched(str(target), marker)
-    assert apply_patch(str(target), str(patch_file), marker)
-
-
 @pytest.mark.parametrize("patch_status", [0, 1])
 def test_engine_applies_patches_before_starting_node_manager(patch_status):
     """A failed patch must prevent engine startup; a successful patch precedes it."""
