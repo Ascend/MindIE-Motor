@@ -12,6 +12,7 @@ import lib.constant as C
 from lib.utils import (
     apply_controller_observability_node_port,
     apply_node_selector_override,
+    apply_template_spec,
     generate_unique_id,
     is_observability_service_name,
     load_yaml,
@@ -42,6 +43,8 @@ def modify_controller_replicas(data, user_config):
 def modify_controller_deployment(deployment_data, user_config):
     if not deployment_data:
         return
+
+    apply_template_spec(deployment_data, user_config.get(C.MOTOR_CONTROLLER_CONFIG, {}))
 
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     namespace = deploy_config[C.CONFIG_JOB_ID]

@@ -11,6 +11,7 @@
 # pylint: disable=cyclic-import
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -322,6 +323,84 @@ def resolve_workload_image(user_config, component_config=None):
         if override:
             return override
     return user_config[C.MOTOR_DEPLOY_CONFIG][C.IMAGE_NAME]
+
+
+def _all_dict_items(items):
+    return isinstance(items, list) and bool(items) and all(isinstance(item, dict) for item in items)
+
+
+def _merge_dict_list_by_index(target_list, override_list):
+    """Merge dict-element lists element-wise by index, e.g. ``containers``.
+
+    Keeps template fields of the element at the same index that the override
+    fragment does not mention; extra override elements are appended.
+    """
+    for index, item in enumerate(override_list):
+        if index < len(target_list):
+            deep_merge_template_spec(target_list[index], item)
+        else:
+            target_list.append(copy.deepcopy(item))
+
+
+def deep_merge_template_spec(target, overrides):
+    """Recursively merge ``overrides`` into ``target``.
+
+    Dicts merge recursively. Lists whose elements are all dicts (e.g.
+    ``containers``) merge element-wise by index so a partial element override
+    keeps untouched template fields; any other value type (including lists
+    of scalars or mixed lists) replaces the value in ``target`` wholesale.
+
+    Override values are deep-copied before landing in ``target``: the merged
+    document must not share mutable objects with the user-config
+    ``template_spec`` fragment, otherwise later in-place modifications
+    (env appends, volume mounts, ...) would pollute the user config and leak
+    across engine instances that reuse the same ``user_config``.
+    """
+    for key, value in overrides.items():
+        target_value = target.get(key)
+        if isinstance(value, dict) and isinstance(target_value, dict):
+            deep_merge_template_spec(target_value, value)
+        elif _all_dict_items(value) and _all_dict_items(target_value):
+            _merge_dict_list_by_index(target_value, value)
+        else:
+            target[key] = copy.deepcopy(value)
+    return target
+
+
+def get_template_spec(role_config):
+    """Return the role-level template-spec override fragment.
+
+    Both snake_case ``template_spec`` (preferred, consistent with user_config
+    naming convention) and camelCase ``templateSpec`` (compatible alias) are
+    accepted.
+    """
+    if not isinstance(role_config, dict):
+        return None
+    template_spec = role_config.get(C.TEMPLATE_SPEC_SNAKE)
+    if template_spec is None:
+        template_spec = role_config.get(C.TEMPLATE_SPEC)
+    if template_spec is None:
+        return None
+    if not isinstance(template_spec, dict):
+        raise ValueError(
+            f"{C.TEMPLATE_SPEC_SNAKE}/{C.TEMPLATE_SPEC} must be a JSON object, got {type(template_spec).__name__}"
+        )
+    return template_spec
+
+
+def apply_template_spec(workload_data, role_config):
+    """Apply the role-level template-spec overrides onto the workload document.
+
+    Priority from low to high: default yaml template < role template-spec <
+    scattered user-config fields, which are applied afterwards by the
+    per-role modify functions and therefore win over template-spec.
+    """
+    if not workload_data:
+        return
+    template_spec = get_template_spec(role_config)
+    if template_spec is None:
+        return
+    deep_merge_template_spec(workload_data, template_spec)
 
 
 def get_pd_heterogeneous_chip_name(user_config, node_type):

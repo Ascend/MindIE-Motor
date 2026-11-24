@@ -13,6 +13,7 @@ from lib.utils import (
     apply_coordinator_infer_node_port,
     apply_coordinator_obs_node_port,
     apply_node_selector_override,
+    apply_template_spec,
     generate_unique_id,
     get_coordinator_service_name,
     is_observability_service_name,
@@ -45,6 +46,7 @@ def modify_coordinator_replicas(data, user_config):
 def modify_coordinator_deployment(deployment_data, user_config):
     if not deployment_data:
         return
+    apply_template_spec(deployment_data, user_config.get(C.MOTOR_COORDINATOR_CONFIG, {}))
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     namespace = deploy_config[C.CONFIG_JOB_ID]
     deployment_data[C.METADATA][C.NAMESPACE] = namespace

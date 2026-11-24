@@ -80,6 +80,53 @@ motor_deploy_config字段为部署与资源相关配置，由deploy.py读取并�
 >
 >`app` 是部署器保留标签，不能通过 `additional_labels` 配置，部署主流程会在生成资源前拒绝此类配置。请勿覆盖其他由部署器生成的组件标识、工作负载选择器等系统Labels；本功能不会同步修改 `spec.selector`，覆盖此类Labels可能导致工作负载无法创建或无法匹配Pod。
 
+## 组件级模板覆盖（templateSpec）<a id="template-spec"></a>
+
+以下组件配置支持在顶层通过 `template_spec`（兼容 `templateSpec` 写法，`template_spec` 优先）对该角色默认工作负载做任意覆盖：
+
+| 组件配置 | 生效组件 | multi_deployment 模式 | infer_service_set 模式 |
+|----------|----------|----------------------|------------------------|
+| motor_controller_config | Controller | Deployment | InferServiceSet controller 角色 |
+| motor_coordinator_config | Coordinator | Deployment | InferServiceSet coordinator 角色 |
+| motor_engine_prefill_config | Prefill Engine | Deployment | InferServiceSet prefill 角色 |
+| motor_engine_decode_config | Decode Engine | Deployment | InferServiceSet decode 角色 |
+| motor_engine_encode_config | Encode Engine | Deployment | InferServiceSet encode 角色 |
+| motor_engine_union_config | Union Engine | Deployment | InferServiceSet union 角色 |
+| kv_cache_store_config | KV Cache Store | Deployment | InferServiceSet kv-cache-store 角色 |
+| kv_conductor_config | KV Conductor | Deployment | InferServiceSet kv-conductor 角色 |
+| mf_store_config | MF Store | Deployment | 不适用 |
+
+配置示例如下所示：
+
+```json
+"motor_engine_prefill_config": {
+  "template_spec": {
+    "metadata": {
+      "labels": {
+        "custom-label": "prefill"
+      }
+    },
+    "spec": {
+      "template": {
+        "spec": {
+          "terminationGracePeriodSeconds": 120
+        }
+      }
+    }
+  }
+}
+```
+
+| 配置项 | 类型 | 说明 |
+|--------|------|------|
+| template_spec | object | 可选；角色工作负载的覆盖片段。`multi_deployment` 模式下与 Deployment 结构相同，从顶层字段（`metadata`、`spec` 等）开始；`infer_service_set` 模式下与 InferServiceSet 角色对象结构相同，从角色顶层字段（`spec`、`services` 等）开始。字段无需全部定义，合并规则：字典字段递归合并覆盖模板值；元素全为对象的列表（如 `containers`、`tolerations`）按索引递归合并，覆盖元素中未提到的字段保留模板值，覆盖列表更长时多余元素追加；其余类型（标量列表、混合列表、空列表等）整体替换；未定义的字段保持模板原值。兼容 `templateSpec` 写法，两者同时存在时以 `template_spec` 为准。 |
+
+字段生效优先级从高到低为：1）零散定义的组件字段（如 `image_name`、`additional_labels` 等）；2）`template_spec`；3）默认模板。即部署器生成的镜像、环境变量、调度约束等字段始终以零散字段为准，`template_spec` 不会覆盖它们。
+
+>[!NOTE]说明
+>
+>`multi_deployment` 模式下 `template_spec` 仅作用于角色的工作负载（Deployment）文档，不修改模板中已有的 Service、RBAC 等其他资源；`infer_service_set` 模式下作用于 InferServiceSet 中的对应角色对象，不要覆盖角色的 `name`。`single_container` 部署模式下暂不支持该字段。
+
 ## motor_controller_config
 
 motor_controller_config字段配置样例如下所示：

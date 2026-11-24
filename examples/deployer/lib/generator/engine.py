@@ -23,6 +23,7 @@ from lib.utils import (
     obtain_engine_e_instance_total,
     apply_volcano_queue_annotations,
     get_config_key,
+    apply_template_spec,
     resolve_workload_image,
     read_json,
 )
@@ -439,6 +440,7 @@ def set_engine_weight_mount(deployment_data, container, deploy_config):
 
 def modify_engine_yaml(deployment_data, user_config, index, node_type):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
+    apply_template_spec(deployment_data, user_config.get(get_config_key(node_type), {}))
     container = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC][C.CONTAINERS][0]
 
     if k8s_utils.g_engine_type == C.ENGINE_TYPE_SGLANG:

@@ -13,7 +13,7 @@ from __future__ import annotations
 import lib.constant as C
 from lib.generator import k8s_utils
 from lib.service_identity import infer_set_name
-from lib.utils import apply_node_selector_override, load_yaml, logger, write_yaml
+from lib.utils import apply_node_selector_override, apply_template_spec, load_yaml, logger, write_yaml
 from lib.yuanrong_config import validate_yuanrong_config
 
 
@@ -274,6 +274,7 @@ def generate_yaml_kv_store(input_yaml, output_file, user_config, kv_store_config
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     data = load_yaml(input_yaml, False)
     deployment_data = data[0]
+    apply_template_spec(deployment_data, user_config.get(C.KV_CACHE_STORE_CONFIG, {}))
     deployment_data[C.METADATA][C.NAMESPACE] = deploy_config[C.CONFIG_JOB_ID]
 
     container = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC][C.CONTAINERS][0]

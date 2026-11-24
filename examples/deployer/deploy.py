@@ -67,6 +67,7 @@ from lib.config_validator import (
     validate_pd_hybrid_infer_service_template,
     validate_node_selectors,
     validate_reserved_labels,
+    validate_template_spec,
 )
 from lib.container_snapshot import resolve_infer_service_template, validate_container_snapshot_config
 
@@ -663,6 +664,7 @@ def main():
     os.makedirs(output_root(), exist_ok=True)
     validate_reserved_labels(user_config)
     validate_kv_cache_store_config(user_config)
+    validate_template_spec(user_config)
     validate_container_snapshot_config(user_config)
     if C.HYBRID_INSTANCES_NUM in user_config.get(C.MOTOR_DEPLOY_CONFIG, {}):
         validate_pd_hybrid_config(user_config)

@@ -62,6 +62,24 @@ def validate_reserved_labels(user_config: dict) -> None:
         raise ValueError(f"User-defined labels contain reserved labels: {'; '.join(conflicts)}")
 
 
+def validate_template_spec(user_config: dict) -> None:
+    """Ensure every role-level templateSpec is a JSON object."""
+    if not isinstance(user_config, dict):
+        return
+    invalid = []
+    for config_name, component_config in user_config.items():
+        if not isinstance(component_config, dict):
+            continue
+        for spec_key in (C.TEMPLATE_SPEC_SNAKE, C.TEMPLATE_SPEC):
+            template_spec = component_config.get(spec_key)
+            if template_spec is None:
+                continue
+            if not isinstance(template_spec, dict):
+                invalid.append(f"{config_name}.{spec_key}")
+    if invalid:
+        raise ValueError(f"{C.TEMPLATE_SPEC_SNAKE}/{C.TEMPLATE_SPEC} must be a JSON object: {', '.join(invalid)}")
+
+
 def resolve_config_paths(config_dir, user_config_path, env_config_path):
     if not config_dir and not user_config_path and not env_config_path:
         logger.error("No configuration provided. Please use one of the following options:")

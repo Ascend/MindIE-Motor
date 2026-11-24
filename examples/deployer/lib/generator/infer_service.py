@@ -15,6 +15,7 @@ from lib.utils import (
     apply_coordinator_obs_node_port,
     apply_controller_observability_node_port,
     apply_node_selector_override,
+    apply_template_spec,
     generate_unique_id,
     get_coordinator_service_name,
     is_observability_service_name,
@@ -97,6 +98,7 @@ def _configure_control_role(infer_doc, user_config, role_name, config_key):
     role = get_infer_role(infer_doc, role_name)
     if not role:
         return None
+    apply_template_spec(role, user_config.get(config_key, {}))
     role[C.REPLICAS] = 1
     cfg = user_config.get(config_key, {})
     standby_cfg = cfg.get(C.STANDBY_CONFIG, {})
@@ -321,6 +323,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     role = get_infer_role(infer_doc, role_name)
     if not role:
         return
+    apply_template_spec(role, user_config.get(get_config_key(role_name), {}))
     prefix = None
     if role_name == C.ROLE_UNION:
         instances_key = C.HYBRID_INSTANCES_NUM
@@ -390,6 +393,7 @@ def _configure_kv_store_role(infer_doc, user_config):
     role = get_infer_role(infer_doc, C.ROLE_KV_STORE)
     if not role:
         return
+    apply_template_spec(role, user_config.get(C.KV_CACHE_STORE_CONFIG, {}))
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     workload_spec = role.setdefault(C.SPEC, {})
     template = workload_spec.setdefault(C.TEMPLATE, {})
@@ -440,6 +444,7 @@ def _configure_kv_conductor_role(infer_doc, user_config):
     role = get_infer_role(infer_doc, C.ROLE_KV_CONDUCTOR)
     if not role:
         return
+    apply_template_spec(role, user_config.get(C.KV_CONDUCTOR_CONFIG, {}))
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     workload_spec = role.setdefault(C.SPEC, {})
     template = workload_spec.setdefault(C.TEMPLATE, {})

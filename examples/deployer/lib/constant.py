@@ -379,6 +379,8 @@ SERVICES = "services"
 KIND_KEY = "kind"
 ADDITIONAL_ANNOTATIONS = "additional_annotations"
 ADDITIONAL_LABELS = "additional_labels"
+TEMPLATE_SPEC = "templateSpec"
+TEMPLATE_SPEC_SNAKE = "template_spec"
 
 # ---------------------------------------------------------------------------
 # TUI ANSI style constants
