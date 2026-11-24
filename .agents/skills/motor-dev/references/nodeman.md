@@ -457,6 +457,8 @@ Suspend / resume lifecycle stays inside vLLM. NodeManager still owns the Motor-s
    probes use the new id block.
 4. Gate cold-start heartbeat until checkpoint is done, and gate restore readiness until
    `start_cmd` has completed (`started_after_restore`).
+   Native status probing checks this flag before and after each probe, so missing restore
+   metadata cannot cause probes against an old endpoint while both IPs still match.
 5. Start suicide arbitration only after `HeartbeatManager` is bound.
 
 The vLLM sentinel continues to use the engine-only `/health` route internally. During cold start,

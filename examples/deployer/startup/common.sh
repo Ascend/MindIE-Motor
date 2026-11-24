@@ -136,7 +136,7 @@ apply_patches() {
         return 0
     fi
     if ! python3 "$patch_script"; then
-        echo "ERROR: patch application failed (see log above); KV events may be silently dropped"
+        echo "ERROR: required runtime patch application failed; see the log above"
         return 1
     fi
 }
@@ -415,6 +415,33 @@ set_a5_engine_env() {
     fi
 }
 
+set_container_snapshot_engine_env() {
+    local snapshot_check_status=0
+    local snapshot_check_script="$MOTOR_PATCH_ROOT/patch_apply_container_snapshot.py"
+    if [ ! -f "$snapshot_check_script" ]; then
+        echo "Warning: container snapshot patch checker not found: $snapshot_check_script; skip snapshot environment setup"
+        return 0
+    fi
+    python3 "$snapshot_check_script" --check-enabled || snapshot_check_status=$?
+    case "$snapshot_check_status" in
+        0)
+            if [ -z "${POD_IP:-}" ]; then
+                echo "Error: POD_IP is required when container snapshot is enabled" >&2
+                return 1
+            fi
+            export HCCL_IF_IP="$POD_IP"
+            export GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-eth0}"
+            export TP_SOCKET_IFNAME="${TP_SOCKET_IFNAME:-eth0}"
+            export HCCL_SOCKET_IFNAME="${HCCL_SOCKET_IFNAME:-eth0}"
+            echo "Container snapshot network environment configured"
+            ;;
+        1) ;;
+        *)
+            echo "Error: failed to check whether container snapshot is enabled" >&2
+            return 1
+            ;;
+    esac
+}
 gen_kv_store_config() {
     # The engine-side config must be generated for both addressing modes: the legacy
     # KVS_MASTER_SERVICE env, and an explicit kv_cache_store_config.master_server_address

@@ -649,8 +649,9 @@ class TestHeartBeatManager:
 
     @patch("motor.node_manager.core.heartbeat_manager.is_restored_from_host_side_snapshot", return_value=True)
     @patch('motor.node_manager.core.daemon.Daemon')
+    @pytest.mark.parametrize("pod_ip_refreshed", [False, True])
     def test_refresh_native_engine_status_keeps_status_before_start_after_restore(
-        self, mock_daemon, _mock_restored, heart_beat_manager, sample_endpoints
+        self, mock_daemon, _mock_restored, heart_beat_manager, sample_endpoints, pod_ip_refreshed
     ):
         from motor.node_manager.core.services.native_engine.models import RuntimeState
 
@@ -658,12 +659,54 @@ class TestHeartBeatManager:
 
         with heart_beat_manager._endpoint_lock:
             heart_beat_manager._endpoints = sample_endpoints.copy()
+        if not pod_ip_refreshed:
+            # Missing job_name delays registration preparation: both IPs remain stale.
+            heart_beat_manager._config.api_config.pod_ip = sample_endpoints[0].ip
 
         heart_beat_manager._refresh_native_engine_status()
 
         assert heart_beat_manager._endpoints[0].status == EndpointStatus.NORMAL
         assert heart_beat_manager._endpoints[1].status == EndpointStatus.NORMAL
         assert mock_daemon.return_value.get_engine_runtime_state.call_count == 0
+
+    @patch("motor.node_manager.core.heartbeat_manager.is_restored_from_host_side_snapshot", return_value=False)
+    @patch('motor.node_manager.core.daemon.Daemon')
+    def test_refresh_native_engine_status_ignores_probe_crossing_restore(
+        self, mock_daemon, mock_restored, heart_beat_manager, sample_endpoints
+    ):
+        from motor.node_manager.core.services.native_engine.models import RuntimeState
+
+        endpoint = sample_endpoints[0]
+        heart_beat_manager._endpoints = [endpoint]
+        heart_beat_manager._config.api_config.pod_ip = endpoint.ip
+
+        def restore_during_probe(*_args):
+            mock_restored.return_value = True
+            return RuntimeState.UNHEALTHY
+
+        mock_daemon.return_value.get_engine_runtime_state.side_effect = restore_during_probe
+        heart_beat_manager._refresh_native_engine_status()
+
+        assert endpoint.status == EndpointStatus.NORMAL
+        mock_daemon.return_value.get_engine_runtime_state.assert_called_once()
+
+    @patch("motor.node_manager.core.heartbeat_manager.is_restored_from_host_side_snapshot", return_value=True)
+    @patch('motor.node_manager.core.daemon.Daemon')
+    def test_refresh_native_engine_status_detects_fault_after_restore_start(
+        self, mock_daemon, _mock_restored, heart_beat_manager, sample_endpoints
+    ):
+        from motor.node_manager.core.services.native_engine.models import RuntimeState
+
+        endpoint = sample_endpoints[0]
+        heart_beat_manager._endpoints = [endpoint]
+        heart_beat_manager._config.api_config.pod_ip = endpoint.ip
+        heart_beat_manager.set_started_after_restore(True)
+        mock_daemon.return_value.get_engine_runtime_state.return_value = RuntimeState.UNHEALTHY
+
+        heart_beat_manager._refresh_native_engine_status()
+
+        assert endpoint.status == EndpointStatus.ABNORMAL
+        mock_daemon.return_value.get_engine_runtime_state.assert_called_once()
 
     @patch("motor.node_manager.core.heartbeat_manager.is_restored_from_host_side_snapshot", return_value=False)
     @patch("motor.node_manager.core.heartbeat_manager.time.sleep")

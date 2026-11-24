@@ -153,6 +153,10 @@ def test_common_template_renders_snapshot_deltas_and_a3_device(tmp_path, dshm_si
         for removed_name in ("data", "coredump", "plog-path", "cache-path"):
             assert removed_name not in mounts
             assert removed_name not in volumes
+        assert "ascend-install-info" not in mounts
+        assert "ascend-install-info" not in volumes
+        assert all(item[C.MOUNT_PATH] != "/etc/ascend_install.info" for item in mounts.values())
+        assert all(item.get(C.HOST_PATH, {}).get(C.PATH) != "/etc/ascend_install.info" for item in volumes.values())
 
 
 def test_common_template_does_not_mount_a3_device_on_a2(tmp_path):
@@ -184,6 +188,8 @@ def test_common_template_keeps_standard_storage_when_snapshot_is_disabled(tmp_pa
     container = role[C.SPEC][C.TEMPLATE][C.SPEC][C.CONTAINERS][0]
     assert "readinessProbe" not in container
     _, mounts, volumes = _role_snapshot_values(infer_doc, C.ROLE_PREFILL)
-    for standard_name in ("data", "dshm", "coredump", "plog-path", "cache-path"):
+    for standard_name in ("data", "dshm", "coredump", "plog-path", "cache-path", "ascend-install-info"):
         assert standard_name in mounts
         assert standard_name in volumes
+    assert mounts["ascend-install-info"][C.MOUNT_PATH] == "/etc/ascend_install.info"
+    assert volumes["ascend-install-info"][C.HOST_PATH][C.PATH] == "/etc/ascend_install.info"

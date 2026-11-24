@@ -62,6 +62,8 @@ fi
 
 apply_instance_port_env || exit 1
 
+set_container_snapshot_engine_env || exit 1
+
 # Only when inter-node HCCS is disabled: assign per-node logic SuperPod ID
 # so cross-node traffic (esp. multi-node decode) is forced onto RoCE.
 # When HCCS remains available, skip so pods can stay in one SuperPod.
