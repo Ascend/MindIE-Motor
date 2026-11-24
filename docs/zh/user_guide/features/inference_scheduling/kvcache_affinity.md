@@ -145,6 +145,38 @@ KV Cache 亲和性调度结合缓存前缀命中和当前负载，为请求选�
     | 对接仅支持 JSON 的旧 KV Conductor | 将 `kv_conductor_config.query_encoding` 设为 `json`，见[查询异常排查](#coordinator无法查询kv-conductor)。 |
 
     完整参数定义见[配置参考](../../configuration/config_reference.md#motor_coordinator_config)，自动推导及旧配置迁移见[自动推导与兼容](../../configuration/config_reference.md#kv_conductor_config-自动推导与兼容)。
+
+    <a id="model-block-size"></a>
+    **表 4** 常见模型的 `kv_conductor_config.block_size` 参考
+
+    >[!NOTE] 说明
+    >Conductor 只对齐**主注意力组**（`mla_attention` / `full_attention`）的 `BlockStored.block_size`。表中值为 Motor 典配（`model_configs/vllm/models/`）在对应 vLLM-Ascend 版本下的推导结果；升级引擎、修改 DCP、开启 `--kv-cache-dtype mxfp8` 或切换混合 KV 对齐方式后，必须按表下规则重新核对。
+
+    | 模型 / 部署形态 | 引擎 `--block-size` | 推荐 `block_size` | 说明 |
+    |------|------|------|------|
+    | DeepSeek-V3.1 | 128（未显式配置时） | 128 | 标准 MLA，主注意力组即 128。 |
+    | DeepSeek-V4-Flash（A2/A3/A5 典配） | 32 | 128 | 主注意力组为 C4：`4 × 32 = 128`；C128 组事件粒度为 `128 × 32`，与注册值不一致会被丢弃，属预期。 |
+    | DeepSeek-V4-Pro A3 | 128 | 512 | 主注意力组为 C4：`4 × 128 = 512`。 |
+    | DeepSeek-V4-Pro A5 | 32 | 128 | 同 V4-Flash。 |
+    | DeepSeek-V4-Pro A2 | 未固定（典配 Prefill 未显式配置，按镜像 vLLM 默认） | 先固定引擎值，再按 `4 ×` 配置 | 按当前 vLLM 默认 64 推得 256；不同镜像默认值可能不同，建议先在引擎显式固定 `--block-size`。 |
+    | DeepSeek-V4.1-Flash（A2/A3/A5） | 128 | 128 | spec 直接使用 `cache_config.block_size`，`tokens_per_state` 不参与放大。 |
+    | GLM-5 / 5.1 / 5.2 / 5.3 | 128（未显式配置时） | 128 | 标准 MLA。 |
+    | GLM-5.3-Flash（GLM-Next 混合稀疏+线性） | 由 hybrid 对齐决定 | 按引擎实际事件粒度 | 混合 attention 会把 block size 抬高，不能沿用 128；以引擎日志 `Setting attention block size to N tokens` 和 trace 为准。 |
+    | Qwen3.8-Flash-Next（GDN+QSA 混合） | 由 hybrid 对齐决定 | 按引擎实际事件粒度 | 典配启用 `mamba-cache-mode=align`；官方说明 block size 会被放大，不能沿用 128。 |
+    | Qwen3-235B | 128（未显式配置时） | 128 | 标准 GQA。 |
+    | 其他混合 KV / 新模型 | 按引擎 | 按 trace 或引擎日志确认 | 规则见下。 |
+
+    **换算与核对规则**
+
+    - Conductor 对齐的是事件字段，不是 `hash_block_size`：`hash_block_size` 取 `prefix_match_unit` 或「prefix-cacheable group 的 gcd」；`BlockStored.block_size` 取「主注意力组 block size × DCP」。常规配置下两者相等，配置 `prefix_match_unit` 或存在更细粒度 group 时可能不同，此时以事件字段为准。
+    - DeepSeek-V4（非 V4.1）主组为 C4，`block_size = 4 × 引擎 --block-size`；C128 组事件为 `128 × 引擎 --block-size`（主组的 32 倍），会因 `block_size_mismatch` 被丢弃，不影响主组索引。
+    - DeepSeek-V4.1 的 `tokens_per_state` 只改变物理页压缩，不改变事件 token 粒度。
+    - 仅 DCP（`--decode-context-parallel-size N`）放大：所有介质与事件粒度按 `N` 倍放大；PCP（`--prefill-context-parallel-size`）不参与。
+    - A5 开启 `--kv-cache-dtype mxfp8` 时，`refresh_block_size` 会把块大小对齐到 512 的倍数（未配置时默认 512），Conductor 同步配置。
+    - 混合 attention + linear/Mamba 模型（GLM-5.3-Flash、Qwen3.8-Flash-Next 等）的有效块大小由 hybrid cache manager 对 mamba 页对齐后决定，可能远大于 `--block-size`；不要直接沿用 128。
+    - 未配置 `kv_conductor_config.block_size` 时，Motor 从引擎 `block-size` 推导（缺省 128），对混合模型可能不正确，建议显式配置。
+
+    **确认方法**：在引擎日志中检索 `Setting attention block size to`、`kv cache group sizes`、`kv lcm block sizes`；在 Conductor 侧短时设置 `RUST_LOG=info,kv_conductor=trace`，确认 `event_parsed` 中主注意力组的 `block_size` 与 `spec_kind`，并确认没有持续的 `block_size_mismatch`。
 3. 部署服务。
 
     ```bash
@@ -263,8 +295,8 @@ curl --fail "$CONDUCTOR_URL/workers"
 
 **解决步骤**
 
-1. 短时启用 KV Conductor 的 `RUST_LOG=trace`，查看 `event_parsed` 日志中的 `block_size` 和 `spec_kind`。
-2. 以主注意力组（如 `mla_attention`）的事件粒度为准，确认实际 `block_size`；它不一定等于引擎 `--block-size`。
+1. 先查[表 4](#model-block-size)中是否已有对应模型的推荐值；表中未覆盖时，短时启用 KV Conductor 的 `RUST_LOG=info,kv_conductor=trace`，查看 `event_parsed` 日志中的 `block_size` 和 `spec_kind`。
+2. 以主注意力组（如 `mla_attention` / `full_attention`）的事件粒度为准，确认实际 `block_size`；它不一定等于引擎 `--block-size`。混合 attention + linear/Mamba 模型还会被 hybrid cache manager 对齐放大，不能只按 `--block-size` 推算。
 3. 按实际主组事件粒度修改配置。例如实际粒度为 512 时，在已有配置中合并以下增量；512 不是所有部署的固定值。
 
     ```json
@@ -276,7 +308,7 @@ curl --fail "$CONDUCTOR_URL/workers"
     ```
 
 4. 按[使用样例](#使用样例)应用配置后，按[验证特性](#验证特性)检查事件接收和亲和命中。
-5. DCP 配置或引擎版本变化后，重新核对事件粒度，不能只依据引擎页大小自动推导。
+5. DCP、PCP、`--kv-cache-dtype mxfp8` 或引擎版本变化后，重新核对事件粒度：DCP 与 mxfp8 会改变主组粒度，PCP 不改变；不能只依据引擎页大小自动推导。
 
 ### 服务正常但始终没有亲和命中
 

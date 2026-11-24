@@ -651,7 +651,7 @@ motor_coordinator_config字段配置样例如下所示：
 | conductor_service |string|conductor服务IP或域名，默认为空。|
 | http_server_port |int|KV Conductor的HTTP服务端口，默认值：13333，取值范围：[1024,65535]。|
 | query_encoding |string|Conductor `/query` 请求编码，默认 `msgpack`，合法值为 `msgpack` / `json`。响应按服务器 Content-Type 解码，请求不自动降级。先升级 conductor 再升级 Coordinator；新 Coordinator 对接仅支持 JSON 的旧 conductor 时显式设为 `json`。不要写在旧 `prefill_kv_event_config` 下，该字段不在旧配置迁移列表中。|
-| block_size |int|正整数，默认 `128`。必须对齐主注意力组 KV 事件的粒度；DeepSeek V4 / 混合 KV 不一定等于引擎 `--block-size`，也不固定为 512，见[混合 KV 配置](../features/inference_scheduling/kvcache_affinity.md#deepseek-v4)。|
+| block_size |int|正整数，默认 `128`。必须对齐主注意力组 KV 事件的粒度；DeepSeek V4 / 混合 KV 不一定等于引擎 `--block-size`，也不固定为 512。各模型参考值见[常见模型的 block_size 参考](../features/inference_scheduling/kvcache_affinity.md#model-block-size)，排查步骤见[混合 KV 配置](../features/inference_scheduling/kvcache_affinity.md#deepseek-v4)。|
 | endpoint |string|HBM 事件端口的回退模式，默认为空；从 Prefill 或 Union 的 `kv-events-config.endpoint` 推导。格式 `tcp://*:<port>`，注册 HBM 时替换 IP 并加 DP 秩。|
 | replay_endpoint |string|引擎回放端口模式，默认为空；从 Prefill 或 Union 事件配置推导。格式 `tcp://*:<port>`，注册 HBM 时替换 IP 并加 DP 秩。回放受历史缓冲及首次实例注册限制，不保证每个 DP 自动恢复。|
 | engine_type |string|引擎类型，默认值：vLLM。|
