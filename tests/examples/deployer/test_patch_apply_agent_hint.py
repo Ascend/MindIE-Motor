@@ -82,10 +82,102 @@ def test_normalize_strips_setup_py_hunk():
 
 
 def test_should_apply_patch_version_gate(monkeypatch):
+    monkeypatch.setattr(applier, "vllm", types.SimpleNamespace(__path__=["/opt/vllm"]))
     monkeypatch.setattr(applier.md, "version", lambda _name: "0.26.0")
+    assert applier.should_apply_patch() is True
+    monkeypatch.setattr(applier.md, "version", lambda _name: "0.30.0")
     assert applier.should_apply_patch() is True
     monkeypatch.setattr(applier.md, "version", lambda _name: "0.25.0")
     assert applier.should_apply_patch() is False
+    monkeypatch.setattr(applier.md, "version", lambda _name: "0.31.0")
+    assert applier.should_apply_patch() is False
+
+
+def test_should_apply_patch_skips_when_vllm_missing(monkeypatch):
+    """vllm 未安装时应优雅跳过，而不是抛 PackageNotFoundError。"""
+    monkeypatch.setattr(applier, "vllm", None)
+    assert applier.should_apply_patch() is False
+
+
+def test_main_returns_early_when_no_patch_target(monkeypatch):
+    """resolve_target 返回空串时 main 应提前返回，避免 PATCH_TARGETS 下标 KeyError。"""
+    monkeypatch.setattr(applier, "should_apply_patch", lambda: True)
+    monkeypatch.setattr(applier, "ascend_patch_supported", lambda: True)
+    monkeypatch.setattr(applier, "resolve_target", lambda: "")
+    monkeypatch.setattr(applier, "vllm", types.SimpleNamespace(__path__=["/opt/vllm"]))
+    monkeypatch.setattr(applier, "vllm_ascend", types.SimpleNamespace(__path__=["/opt/vllm_ascend"]))
+    calls = _fake_apply_patch(monkeypatch, True)
+    assert applier.main() == 0
+    assert calls == []
+
+
+def test_resolve_target_maps_only_registered_releases(monkeypatch):
+    """Unregistered releases must resolve to "" so both gates stay closed."""
+    cases = (
+        ("0.26.0", "0.26.0"),
+        ("0.26.0+git.abc123", "0.26.0"),
+        ("0.30.0", "0.30.0"),
+        ("0.31.0", ""),
+    )
+    for version, expected in cases:
+        monkeypatch.setattr(applier.md, "version", lambda _name, v=version: v)
+        assert applier.resolve_target() == expected, version
+
+
+def test_ascend_markers_are_release_specific():
+    """0.30 moved the Ascend-side hook out of patch_kv_delivery_preemption.py."""
+    old = dict(applier.VLLM_ASCEND_MARKERS["0.26.0"])
+    new = dict(applier.VLLM_ASCEND_MARKERS["0.30.0"])
+    assert "vllm_ascend/patch/platform/patch_kv_delivery_preemption.py" in old
+    assert "vllm_ascend/patch/platform/patch_kv_delivery_preemption.py" not in new
+    assert new["vllm_ascend/core/agent_hint/manager.py"] == "class AscendAgentHintManager"
+    assert applier.VLLM_ASCEND_MARKERS["0.26.0"] != applier.VLLM_ASCEND_MARKERS["0.30.0"]
+
+
+def _record_apply_calls(monkeypatch) -> dict:
+    seen: dict = {}
+
+    def fake_apply(pkg_name, root, patch_path, markers, **kwargs):
+        seen[pkg_name] = (patch_path, markers)
+        return True
+
+    monkeypatch.setattr(applier, "apply_patch", fake_apply)
+    return seen
+
+
+def test_main_selects_030_patch_dir_and_markers(monkeypatch):
+    """A 0.30 environment must load patch/0.30.0 and the 0.30 Ascend markers."""
+    versions = {"vllm": "0.30.0", "vllm_ascend": "0.30.0rc1"}
+    monkeypatch.setattr(applier.md, "version", lambda name: versions[name])
+    monkeypatch.setattr(applier, "vllm", types.SimpleNamespace(__path__=["/opt/vllm"]))
+    monkeypatch.setattr(applier, "vllm_ascend", types.SimpleNamespace(__path__=["/opt/vllm_ascend"]))
+    monkeypatch.setattr(applier, "register_entry_point", lambda: True)
+    seen = _record_apply_calls(monkeypatch)
+
+    assert applier.main() == 0
+    vllm_patch, vllm_markers = seen["vllm"]
+    ascend_patch, ascend_markers = seen["vllm_ascend"]
+    assert Path(vllm_patch).parent.name == "0.30.0"
+    assert Path(vllm_patch).name == "vllm_agent_hint.patch"
+    assert Path(ascend_patch).parent.name == "0.30.0"
+    assert Path(ascend_patch).name == "vllm_ascend_agent_hint.patch"
+    assert vllm_markers is applier.VLLM_MARKERS
+    assert ascend_markers is applier.VLLM_ASCEND_MARKERS["0.30.0"]
+
+
+def test_main_keeps_026_patch_dir_and_markers(monkeypatch):
+    """Regression guard: the 0.26.0 pairing must not drift while adding 0.30."""
+    versions = {"vllm": "0.26.0", "vllm_ascend": "0.26.0rc1"}
+    monkeypatch.setattr(applier.md, "version", lambda name: versions[name])
+    monkeypatch.setattr(applier, "vllm", types.SimpleNamespace(__path__=["/opt/vllm"]))
+    monkeypatch.setattr(applier, "vllm_ascend", types.SimpleNamespace(__path__=["/opt/vllm_ascend"]))
+    monkeypatch.setattr(applier, "register_entry_point", lambda: True)
+    seen = _record_apply_calls(monkeypatch)
+
+    assert applier.main() == 0
+    assert Path(seen["vllm"][0]).parent.name == "0.26.0"
+    assert Path(seen["vllm_ascend"][0]).parent.name == "0.26.0"
+    assert seen["vllm_ascend"][1] is applier.VLLM_ASCEND_MARKERS["0.26.0"]
 
 
 def _fake_apply_patch(monkeypatch, result: bool) -> list[str]:

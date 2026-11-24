@@ -53,15 +53,20 @@ try:
 except ImportError:  # noqa: PERF203
     vllm_ascend = None
 
-# Both patches live in the versioned directory and target a single release.
-VLLM_TARGET_VERSION = "0.26.0"
-VLLM_ASCEND_TARGET_PREFIX = "0.26.0rc1"
+# Each supported vLLM base release maps to one patch directory (patch/<dir>/)
+# plus the matching vllm-ascend release prefix. Register a new release here;
+# anything not listed is skipped.
+PATCH_TARGETS = {
+    "0.26.0": {"dir": "0.26.0", "ascend_prefix": "0.26.0rc1"},
+    "0.30.0": {"dir": "0.30.0", "ascend_prefix": "0.30.0rc1"},
+}
 
 # Files that must carry their hook once the patch is applied. The new
 # agent_hint_manager.py module alone is not enough: ``patch`` stops at the
 # first malformed hunk, so an interrupted run leaves that module in place while
 # the scheduler that consumes it stays unpatched, and the runtime then fails
 # with "'AsyncScheduler' object has no attribute 'agent_hint_manager'".
+# Both releases touch the same vLLM files, so one marker set covers them.
 VLLM_MARKERS = (
     ("vllm/v1/core/agent_hint_manager.py", "create_agent_hint_manager"),
     ("vllm/v1/core/sched/scheduler.py", "self.agent_hint_manager = create_agent_hint_manager"),
@@ -69,10 +74,17 @@ VLLM_MARKERS = (
     ("vllm/v1/request.py", "self.agent_hint = agent_hint"),
 )
 
-VLLM_ASCEND_MARKERS = (
-    ("vllm_ascend/core/agent_hint/backend.py", "ASCEND_AGENT_HINT_BACKEND"),
-    ("vllm_ascend/patch/platform/patch_kv_delivery_preemption.py", "self.agent_hint_manager.on_step"),
-)
+# The two releases place the Ascend-side hooks in different files.
+VLLM_ASCEND_MARKERS = {
+    "0.26.0": (
+        ("vllm_ascend/core/agent_hint/backend.py", "ASCEND_AGENT_HINT_BACKEND"),
+        ("vllm_ascend/patch/platform/patch_kv_delivery_preemption.py", "self.agent_hint_manager.on_step"),
+    ),
+    "0.30.0": (
+        ("vllm_ascend/core/agent_hint/backend.py", "ASCEND_AGENT_HINT_BACKEND"),
+        ("vllm_ascend/core/agent_hint/manager.py", "class AscendAgentHintManager"),
+    ),
+}
 
 ENTRY_POINT_SECTION = "[vllm.general_plugins]"
 ENTRY_POINT_LINE = "ascend_agent_hint = vllm_ascend:register_agent_hint"
@@ -83,11 +95,24 @@ def _base_version(version: str) -> str:
     return version.split("+")[0].split("-")[0]
 
 
+def resolve_target() -> str:
+    """Return the vLLM base release we have patches for, or "" when unsupported."""
+    try:
+        version = md.version("vllm")
+    except md.PackageNotFoundError:
+        return ""
+    base = _base_version(version)
+    return base if base in PATCH_TARGETS else ""
+
+
 def should_apply_patch() -> bool:
-    """Return True only for the vLLM base release these patches target."""
+    """Return True only for a vLLM base release these patches target."""
+    if vllm is None:
+        logger.info("Skip agent-hint patch: vllm is not installed")
+        return False
     version = md.version("vllm")
-    if _base_version(version) != VLLM_TARGET_VERSION:
-        logger.info("Skip agent-hint patch: vLLM %s is not %s", version, VLLM_TARGET_VERSION)
+    if _base_version(version) not in PATCH_TARGETS:
+        logger.info("Skip agent-hint patch: vLLM %s is not one of %s", version, sorted(PATCH_TARGETS))
         return False
     return True
 
@@ -103,12 +128,17 @@ def ascend_patch_supported() -> bool:
     if vllm_ascend is None:
         logger.info("Skip agent-hint patch: vllm_ascend is not installed")
         return False
+    target = resolve_target()
+    if not target:
+        logger.info("Skip agent-hint patch: no vLLM-ascend pairing for this vLLM release")
+        return False
     try:
         ascend_version = md.version("vllm_ascend")
     except md.PackageNotFoundError:
         ascend_version = ""
-    if not _base_version(ascend_version).startswith(VLLM_ASCEND_TARGET_PREFIX):
-        logger.info("Skip agent-hint patch: vllm-ascend %s is not %s", ascend_version, VLLM_ASCEND_TARGET_PREFIX)
+    prefix = PATCH_TARGETS[target]["ascend_prefix"]
+    if not _base_version(ascend_version).startswith(prefix):
+        logger.info("Skip agent-hint patch: vllm-ascend %s is not %s", ascend_version, prefix)
         return False
     return True
 
@@ -272,7 +302,12 @@ def main() -> int:
         return 0
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    patch_dir = os.path.join(script_dir, VLLM_TARGET_VERSION)
+    target = resolve_target()
+    if not target:
+        logger.info("Skip agent-hint patch: no patch set for the installed vLLM release")
+        return 0
+    patch_dir = os.path.join(script_dir, PATCH_TARGETS[target]["dir"])
+    ascend_markers = VLLM_ASCEND_MARKERS[target]
 
     if vllm is None:
         logger.info("Skip vllm agent-hint patch: vllm is not installed")
@@ -296,7 +331,7 @@ def main() -> int:
         "vllm_ascend",
         ascend_root,
         os.path.join(patch_dir, "vllm_ascend_agent_hint.patch"),
-        VLLM_ASCEND_MARKERS,
+        ascend_markers,
         strip_setup_py=True,
     )
     if not applied or not register_entry_point():

@@ -1,0 +1,957 @@
+diff --git a/vllm/entrypoints/openai/chat_completion/protocol.py b/vllm/entrypoints/openai/chat_completion/protocol.py
+index badd5a0..6902724 100644
+--- a/vllm/entrypoints/openai/chat_completion/protocol.py
++++ b/vllm/entrypoints/openai/chat_completion/protocol.py
+@@ -147,6 +147,7 @@ class ChatCompletionResponse(OpenAIBaseModel):
+         default=None, description="ECTransfer parameters."
+     )
+     metrics: PerRequestMetrics | None = None
++    agent_hint_response : dict[str, Any] | None = None
+ 
+ 
+ class ChatCompletionResponseStreamChoice(OpenAIBaseModel):
+@@ -262,6 +263,11 @@ class ChatCompletionRequest(OpenAIBaseModel):
+     # NOTE this will be ignored by vLLM
+     user: str | None = None
+ 
++    # 通过 OpenAI SDK 的 extra_body 机制传入，所有字段收纳在 agent_hint 下。
++    # 这里不再做强类型校验，整个 payload 以 opaque dict 透传给引擎核心，
++    # 由激活的硬件后端（如 vllm-ascend）负责解析 schema。
++    agent_hint: dict | None = Field(default=None)
++
+     # --8<-- [start:chat-completion-sampling-params]
+     use_beam_search: bool = False
+     top_k: int | None = None
+@@ -1055,6 +1061,23 @@ class ChatCompletionRequest(OpenAIBaseModel):
+ 
+         return data
+ 
++    @model_validator(mode="after")
++    def _validate_agent_hint(self) -> "ChatCompletionRequest":
++        if self.agent_hint is None:
++            return self
++        else:
++            if not self.agent_hint.get("session_id"):
++                logger.warning('session_id is empty, set agent_hint None.')
++                self.agent_hint = None
++                return self
++
++            cm = self.agent_hint.get("context_management")
++            if cm and not cm.get("manage_request") and not cm.get("edits"):
++                # 复制后再补默认值，避免修改调用方传入的 dict
++                self.agent_hint = {**self.agent_hint, "context_management": {**cm, "edits": []}}
++
++        return self
++
+ 
+ class BatchChatCompletionRequest(OpenAIBaseModel):
+     """Request model for the /v1/chat/completions/batch endpoint.
+diff --git a/vllm/entrypoints/openai/chat_completion/serving.py b/vllm/entrypoints/openai/chat_completion/serving.py
+index 06e7315..6423682 100644
+--- a/vllm/entrypoints/openai/chat_completion/serving.py
++++ b/vllm/entrypoints/openai/chat_completion/serving.py
+@@ -1175,6 +1175,7 @@ class OpenAIServingChat(GenerateBaseServing):
+             kv_transfer_params=final_res.kv_transfer_params,
+             ec_transfer_params=final_res.ec_transfer_params,
+             metrics=per_request_metrics,
++            agent_hint_response=final_res.agent_hint_response if final_res.agent_hint_response else None
+         )
+ 
+         # Log complete response if output logging is enabled
+diff --git a/vllm/outputs.py b/vllm/outputs.py
+index 84b9fcc..509fdac 100644
+--- a/vllm/outputs.py
++++ b/vllm/outputs.py
+@@ -14,6 +14,7 @@ from vllm.logger import init_logger
+ from vllm.logprobs import PromptLogprobs, SampleLogprobs
+ from vllm.lora.request import LoRARequest
+ from vllm.v1.metrics.stats import RequestSpecDecodeMetrics, RequestStateStats
++from vllm.v1.engine import EngineCoreOutput
+ 
+ logger = init_logger(__name__)
+ 
+@@ -144,6 +145,7 @@ class RequestOutput:
+         encoder_prompt_token_ids: list[int] | None = None,
+         num_cached_tokens: int | None = None,
+         num_cache_creation_tokens: int | None = None,
++        agent_hint_response: dict[str, Any] | None = None,
+         *,
+         kv_transfer_params: dict[str, Any] | None = None,
+         ec_transfer_params: dict[str, Any] | None = None,
+@@ -169,6 +171,7 @@ class RequestOutput:
+         self.num_cache_creation_tokens = num_cache_creation_tokens
+         self.kv_transfer_params = kv_transfer_params
+         self.ec_transfer_params = ec_transfer_params
++        self.agent_hint_response = agent_hint_response
+ 
+     def add(self, next_output: "RequestOutput", aggregate: bool) -> None:
+         """Merge subsequent RequestOutput into this one"""
+diff --git a/vllm/renderers/online_renderer.py b/vllm/renderers/online_renderer.py
+index 2ab5725..d13f469 100644
+--- a/vllm/renderers/online_renderer.py
++++ b/vllm/renderers/online_renderer.py
+@@ -743,4 +743,7 @@ class OnlineRenderer:
+                     request=request,
+                 )
+ 
++        if request.agent_hint is not None:
++            engine_input['agent_hint'] = request.agent_hint
++
+         return conversation, [engine_input]
+diff --git a/vllm/v1/core/agent_hint_manager.py b/vllm/v1/core/agent_hint_manager.py
+new file mode 100644
+index 0000000..2cce488
+--- /dev/null
++++ b/vllm/v1/core/agent_hint_manager.py
+@@ -0,0 +1,113 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""Extension point for agent-provided KV-cache lifecycle hints."""
++
++from __future__ import annotations
++
++from collections.abc import Callable
++from dataclasses import dataclass
++from typing import TYPE_CHECKING, Protocol
++
++if TYPE_CHECKING:
++    from vllm.config import VllmConfig
++    from vllm.distributed.kv_transfer.kv_connector.v1.base import (
++        KVConnectorBase_V1,
++    )
++    from vllm.v1.core.kv_cache_manager import KVCacheManager
++    from vllm.v1.core.kv_cache_utils import FreeKVCacheBlockQueue, KVCacheBlock
++    from vllm.v1.request import Request
++
++
++@dataclass(frozen=True)
++class AgentHintManagerContext:
++    """Dependencies exposed to an out-of-tree agent-hint implementation."""
++
++    vllm_config: VllmConfig
++    kv_cache_manager: KVCacheManager
++    connector: KVConnectorBase_V1 | None
++    add_request: Callable[[Request], None]
++    block_size: int
++    hash_block_size: int
++
++
++class AgentHintManager:
++    """No-op base class for scheduler-side agent-hint implementations.
++
++    Hardware plugins may subclass this interface and provide it through an
++    `AgentHintBackend`. vLLM owns request transport and calls
++    these lifecycle hooks, while plugins own all session and cache policy.
++    """
++
++    def is_kvc_management_request(self, request: Request) -> bool:
++        return False
++
++    def register_kvc_management_request(
++        self, request: Request
++    ) -> dict | None:
++        return None
++
++    def on_request_added(self, request: Request) -> None:
++        pass
++
++    def on_request_scheduled(self, request: Request) -> None:
++        pass
++
++    def on_step(self, num_unfinished_requests: int) -> None:
++        pass
++
++    def on_request_finished(self, request: Request) -> None:
++        pass
++
++    def has_pending_work(self) -> bool:
++        return False
++
++    def shutdown(self) -> None:
++        pass
++
++
++class AgentHintBackend(Protocol):
++    """Plugin backend providing all Agent Hint runtime components."""
++
++    def is_supported(self) -> bool: ...
++
++    def create_agent_hint_manager(
++        self, context: AgentHintManagerContext
++    ) -> AgentHintManager: ...
++
++    def create_kv_cache_block(self, block_id: int) -> KVCacheBlock: ...
++
++    def create_free_kv_cache_block_queue(
++        self,
++        blocks: list[KVCacheBlock],
++    ) -> FreeKVCacheBlockQueue: ...
++
++
++_BACKENDS: dict[str, AgentHintBackend] = {}
++
++
++def register_agent_hint_backend(name: str, backend: AgentHintBackend) -> None:
++    """Register an out-of-tree Agent Hint backend."""
++    existing = _BACKENDS.get(name)
++    if existing is not None and existing is not backend:
++        raise ValueError(f"Agent Hint backend {name!r} is already registered")
++    _BACKENDS[name] = backend
++
++
++def get_agent_hint_backend() -> AgentHintBackend | None:
++    """Return the single backend supporting the active platform."""
++    backends = [backend for backend in _BACKENDS.values() if backend.is_supported()]
++    if not backends:
++        return None
++    if len(backends) > 1:
++        raise RuntimeError("Multiple Agent Hint backends support the active platform")
++    return backends[0]
++
++
++def create_agent_hint_manager(
++    context: AgentHintManagerContext,
++) -> AgentHintManager:
++    """Create the Agent Hint manager for the active backend."""
++    backend = get_agent_hint_backend()
++    if backend is None:
++        return AgentHintManager()
++    return backend.create_agent_hint_manager(context)
+diff --git a/vllm/v1/core/block_pool.py b/vllm/v1/core/block_pool.py
+index e2a06e7..39ef05d 100644
+--- a/vllm/v1/core/block_pool.py
++++ b/vllm/v1/core/block_pool.py
+@@ -176,12 +176,12 @@ class BlockPool:
+         self.hash_block_size = hash_block_size
+         # All kv-cache blocks.
+         self.blocks: list[KVCacheBlock] = [
+-            KVCacheBlock(idx, pool=self) for idx in range(num_gpu_blocks)
++            create_kv_cache_block(idx, pool=self) for idx in range(num_gpu_blocks)
+         ]
+         # Free block queue that constructs and manipulates a doubly linked
+         # list of free blocks (including eviction candidates when caching is
+         # enabled).
+-        self.free_block_queue = FreeKVCacheBlockQueue(self.blocks)
++        self.free_block_queue = create_free_kv_cache_block_queue(self.blocks)
+ 
+         # Cache for block lookup
+         self.cached_block_hash_to_block: BlockHashToBlockMap = BlockHashToBlockMap()
+@@ -890,3 +890,25 @@ class BlockPool:
+         events = self.kv_event_queue
+         self.kv_event_queue = []
+         return events
++
++
++def create_kv_cache_block(block_id: int, **kwargs) -> KVCacheBlock:
++    """Create a KV-cache block from the active Agent Hint backend."""
++    from vllm.v1.core.agent_hint_manager import get_agent_hint_backend
++
++    backend = get_agent_hint_backend()
++    if backend is None:
++        return KVCacheBlock(block_id, **kwargs)
++    return backend.create_kv_cache_block(block_id)
++
++
++def create_free_kv_cache_block_queue(
++    blocks: list[KVCacheBlock],
++) -> FreeKVCacheBlockQueue:
++    """Create the free-block queue for the active Agent Hint backend."""
++    from vllm.v1.core.agent_hint_manager import get_agent_hint_backend
++
++    backend = get_agent_hint_backend()
++    if backend is None:
++        return FreeKVCacheBlockQueue(blocks)
++    return backend.create_free_kv_cache_block_queue(blocks)
+diff --git a/vllm/v1/core/kv_cache_coordinator.py b/vllm/v1/core/kv_cache_coordinator.py
+index afb03ac..f8adf50 100644
+--- a/vllm/v1/core/kv_cache_coordinator.py
++++ b/vllm/v1/core/kv_cache_coordinator.py
+@@ -332,7 +332,10 @@ class KVCacheCoordinator(ABC):
+         extension = request.num_prompt_tokens // block * block
+         return tuple(sorted({max(resend - block, 0), max(extension - block, 0)}))
+ 
+-    def cache_blocks(self, request: Request, num_computed_tokens: int) -> None:
++    def cache_blocks(
++        self, request: Request,
++        num_computed_tokens: int
++    ) -> tuple[tuple[list[KVCacheBlock], ...], tuple[int, ...]]:
+         """
+         Cache the blocks for the request.
+ 
+@@ -343,20 +346,43 @@ class KVCacheCoordinator(ABC):
+                 (including tokens that are already cached).
+         """
+         boundaries = self.get_replay_boundaries(request)
++        results = []
+         for manager in self.single_type_managers:
+             if not manager.enable_caching:
+                 continue
+-            # Only cache tokens with finalized KV. The last num_reprefillable_tokens
+-            # tokens can be re-prefilled during multi-module MTP.
+-            num_tokens_to_cache = max(
+-                0, num_computed_tokens - self.num_reprefillable_tokens
+-            )
+-            manager.cache_blocks(
++            result = manager.cache_blocks(
+                 request,
+-                num_tokens_to_cache,
++                max(0, num_computed_tokens - self.num_reprefillable_tokens),
+                 retention_interval=self.retention_interval,
+                 replay_boundaries=boundaries,
+             )
++            results.append(self._normalize_cache_blocks_result(manager, result))
++        newly_cached_blocks = tuple(result[0] for result in results)
++        cached_blocks_start = tuple(result[1] for result in results)
++        return newly_cached_blocks, cached_blocks_start
++
++    def _normalize_cache_blocks_result(self, manager, result):
++        """Normalize a per-manager ``cache_blocks`` return value.
++
++        vLLM 0.30 added manager types (HiSparse host / auxiliary groups for DSA
++        sparse attention) whose ``cache_blocks()`` still returns ``None``
++        because they never publish device-side blocks. The agent-hint refactor
++        made the coordinator assume every manager returns
++        ``(newly_cached_blocks, cached_blocks_start)``, which raised
++        ``TypeError: 'NoneType' object is not subscriptable`` on the very first
++        request. Treat ``None`` as "nothing newly cached in this group".
++        """
++        if result is None:
++            if not getattr(self, "_warned_none_cache_blocks", False):
++                logger.warning(
++                    "cache_blocks() of %s returned None; treating it as no "
++                    "newly cached blocks for that group (vLLM 0.30 HiSparse "
++                    "managers do not publish device-side blocks).",
++                    type(manager).__name__,
++                )
++                self._warned_none_cache_blocks = True
++            return [], 0
++        return result
+ 
+     def emit_cached_block_events(
+         self, request: Request, computed_blocks: tuple[list[KVCacheBlock], ...]
+@@ -804,9 +830,14 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
+             return num_tokens
+         return round_down(num_tokens, self.scheduler_block_size)
+ 
+-    def cache_blocks(self, request: Request, num_computed_tokens: int) -> None:
++    def cache_blocks(
++        self,
++        request: Request,
++        num_computed_tokens: int
++    ) -> tuple[tuple[list[KVCacheBlock], ...], tuple[int, ...]]:
+         cached_num_computed_tokens = self._align_cacheable(num_computed_tokens)
+         boundaries = self.get_replay_boundaries(request)
++        results = []
+         for manager in self.single_type_managers:
+             if not manager.enable_caching:
+                 continue
+@@ -831,12 +862,19 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
+             # (``scheduler_block_size``); retention is passed separately so it
+             # can keep both the coarse segment tails and the fine replay
+             # boundary (which needs the fine value).
+-            manager.cache_blocks(
+-                request,
+-                num_tokens_to_cache,
+-                retention_interval=self.retention_interval,
+-                replay_boundaries=boundaries,
+-            )
++            results.append(self._normalize_cache_blocks_result(
++                manager,
++                manager.cache_blocks(
++                    request,
++                    num_tokens_to_cache,
++                    retention_interval=self.retention_interval,
++                    replay_boundaries=boundaries,
++                ),
++            ))
++
++        newly_cached_blocks = tuple(result[0] for result in results)
++        cached_blocks_start = tuple(result[1] for result in results)
++        return newly_cached_blocks, cached_blocks_start
+ 
+     def find_longest_cache_hit(
+         self,
+diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
+index 226da3a..d86da02 100644
+--- a/vllm/v1/core/kv_cache_manager.py
++++ b/vllm/v1/core/kv_cache_manager.py
+@@ -226,6 +226,9 @@ class KVCacheManager:
+             tuple(() for _ in range(self.num_kv_cache_groups))
+         )
+ 
++        self._on_blocks_allocated = None
++        self._on_block_cache_hit = None
++
+     @property
+     def usage(self) -> float:
+         """Get the KV cache usage.
+@@ -575,6 +578,13 @@ class KVCacheManager:
+                 num_external_computed_tokens=num_external_computed_tokens,
+             )
+ 
++            if (
++                num_new_computed_tokens > 0
++                and new_computed_blocks is not None
++                and self._on_block_cache_hit is not None
++            ):
++                self._on_block_cache_hit(request, new_computed_blocks)
++
+         new_blocks = self.coordinator.allocate_new_blocks(
+             request.request_id,
+             num_tokens_need_slot,
+@@ -582,10 +592,12 @@ class KVCacheManager:
+             num_encoder_tokens,
+         )
+ 
++        new_kv_cache_blocks = self.create_kv_cache_blocks(new_blocks)
++
+         # P/D: delay caching blocks if we have to recv from
+         # remote. Update state for locally cached blocks.
+         if delay_cache_blocks:
+-            return self.create_kv_cache_blocks(new_blocks)
++            return new_kv_cache_blocks
+ 
+         # NOTE(woosuk): We want to commit (cache) up to num_local_computed_tokens
+         # + num_external_computed_tokens + num_new_tokens, but must exclude
+@@ -596,9 +608,19 @@ class KVCacheManager:
+             total_computed_tokens + num_new_tokens,
+             request.num_tokens,
+         )
+-        self.coordinator.cache_blocks(request, num_tokens_to_cache)
+ 
+-        return self.create_kv_cache_blocks(new_blocks)
++        newly_cached_blocks, cached_blocks_len_before = self.coordinator.cache_blocks(
++            request, num_tokens_to_cache
++        )
++
++        if self._on_blocks_allocated is not None and any(newly_cached_blocks):
++            self._on_blocks_allocated(
++                request,
++                self.create_kv_cache_blocks(newly_cached_blocks),
++                cached_blocks_len_before,
++            )
++
++        return new_kv_cache_blocks
+ 
+     def free(self, request: Request) -> None:
+         """Free the blocks allocated for the request.
+@@ -939,3 +961,11 @@ class KVCacheManager:
+     def new_step_starts(self) -> None:
+         """Notify the coordinator that a new step is starting."""
+         self.coordinator.new_step_starts()
++
++    def register_session_event_callbacks(
++        self,
++        on_blocks_allocated=None,
++        on_block_cache_hit=None,
++    ) -> None:
++        self._on_blocks_allocated = on_blocks_allocated
++        self._on_block_cache_hit = on_block_cache_hit
+diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
+index 28478b6..a99d994 100644
+--- a/vllm/v1/core/kv_cache_utils.py
++++ b/vllm/v1/core/kv_cache_utils.py
+@@ -488,6 +488,10 @@ class FreeKVCacheBlockQueue:
+             yield curr_block
+             curr_block = curr_block.next_free_block
+ 
++    def on_block_meta_changed(self, block: KVCacheBlock) -> None:
++        """Notify the queue after optional block metadata changes."""
++        pass
++
+ 
+ def _gen_mm_extra_hash_keys(
+     request: Request, start_token_idx: int, end_token_idx: int, start_mm_idx: int
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index daf2b31..1ab5d4d 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ import itertools
++import logging
+ import time
+ from collections import defaultdict, deque
+ from collections.abc import Iterable
+@@ -31,6 +32,10 @@ from vllm.model_executor.layers.fused_moe.routed_experts_capturer import (
+ from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
+ from vllm.multimodal.encoder_budget import MultiModalBudget
+ from vllm.multimodal.utils import get_mm_features_in_window
++from vllm.v1.core.agent_hint_manager import (
++    AgentHintManagerContext,
++    create_agent_hint_manager,
++)
+ from vllm.v1.core.encoder_cache_manager import (
+     EncoderCacheManager,
+     EncoderDecoderCacheManager,
+@@ -409,6 +414,16 @@ class Scheduler(SchedulerInterface):
+         # In-flight requests still prefilling (prefill chunks + in-progress
+         # async KV loads). Their remaining-block reservation gates async loads.
+         self._inflight_prefills: set[Request] = set()
++        self.agent_hint_manager = create_agent_hint_manager(
++            AgentHintManagerContext(
++                vllm_config=self.vllm_config,
++                kv_cache_manager=self.kv_cache_manager,
++                connector=self.connector,
++                add_request=self.add_request,
++                block_size=self.block_size,
++                hash_block_size=hash_block_size,
++            )
++        )
+ 
+     def _mamba_block_aligned_split(
+         self,
+@@ -558,6 +573,15 @@ class Scheduler(SchedulerInterface):
+             num_new_tokens -= self.num_prefill_lookahead - remaining
+         return max(num_new_tokens, 0)
+ 
++    def is_agent_hint_management_request(self, request: Request) -> bool:
++        return self.agent_hint_manager.is_kvc_management_request(request)
++
++    def register_agent_hint_management_request(self, request: Request):
++        return self.agent_hint_manager.register_kvc_management_request(request)
++
++    def has_prefetch_req(self):
++        return self.agent_hint_manager.has_pending_work()
++
+     def schedule(self, throttle_prefills: bool = False) -> SchedulerOutput:
+         self.current_step += 1
+         # NOTE(woosuk) on the scheduling algorithm:
+@@ -609,8 +633,11 @@ class Scheduler(SchedulerInterface):
+ 
+         # First, schedule the RUNNING requests.
+         req_index = 0
++        self.agent_hint_manager.on_step(self.get_num_unfinished_requests())
++
+         while req_index < len(self.running) and token_budget > 0:
+             request = self.running[req_index]
++            self.agent_hint_manager.on_request_scheduled(request)
+             if input_budget <= draft_slots:
+                 break
+ 
+@@ -870,6 +897,8 @@ class Scheduler(SchedulerInterface):
+                 request = request_queue.peek_request()
+                 request_id = request.request_id
+ 
++                self.agent_hint_manager.on_request_scheduled(request)
++
+                 # try to promote blocked statuses while traversing skipped queue.
+                 if self._is_blocked_waiting_status(
+                     request.status
+@@ -1178,7 +1207,12 @@ class Scheduler(SchedulerInterface):
+                     if request.has_encoder_inputs:
+                         self.encoder_cache_manager.free(request)
+                     break
+-
++                if logger.isEnabledFor(logging.DEBUG):
++                    logger.debug(
++                        "Prefill block allocated: req id=%s block ids=%s",
++                        request.request_id,
++                        new_blocks.get_block_ids(),
++                    )
+                 # KVTransfer: the connector uses this info to determine
+                 # if a load is needed. Note that
+                 # This information is used to determine if a load is
+@@ -2494,6 +2528,7 @@ class Scheduler(SchedulerInterface):
+                 self.connector.on_new_request(request)
+             if self.log_stats:
+                 request.record_event(EngineCoreEventType.QUEUED)
++            self.agent_hint_manager.on_request_added(request)
+ 
+     def finish_requests(
+         self, request_ids: str | Iterable[str] | None, finished_status: RequestStatus
+@@ -2590,6 +2625,7 @@ class Scheduler(SchedulerInterface):
+     def _free_blocks(self, request: Request):
+         assert request.is_finished()
+         self._free_request_blocks(request)
++        self.agent_hint_manager.on_request_finished(request)
+         del self.requests[request.request_id]
+ 
+     @property
+@@ -2818,6 +2854,7 @@ class Scheduler(SchedulerInterface):
+         logger.debug_once("[shutdown] Scheduler: start")
+         if self.kv_event_publisher:
+             self.kv_event_publisher.shutdown()
++        self.agent_hint_manager.shutdown()
+         if self.connector is not None:
+             self.connector.shutdown()
+ 
+diff --git a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
+index 40027e7..1eede4f 100644
+--- a/vllm/v1/core/single_type_kv_cache_manager.py
++++ b/vllm/v1/core/single_type_kv_cache_manager.py
+@@ -474,7 +474,7 @@ class SingleTypeKVCacheManager(ABC):
+         retention_interval: int | None = None,
+         *,
+         replay_boundaries: Sequence[int],
+-    ) -> None:
++    ) -> tuple[list[KVCacheBlock], int]:
+         """
+         Cache the blocks for the request.
+ 
+@@ -493,7 +493,7 @@ class SingleTypeKVCacheManager(ABC):
+         num_full_blocks = num_tokens // self.block_size
+ 
+         if num_cached_blocks >= num_full_blocks:
+-            return
++            return [], num_cached_blocks
+ 
+         # Token boundaries whose reachable tail must be retained under sparse
+         # retention: every position a replaying sibling can resume at (see
+@@ -523,6 +523,10 @@ class SingleTypeKVCacheManager(ABC):
+         )
+ 
+         self.num_cached_block[request.request_id] = num_full_blocks
++        newly_cached_blocks = self.req_to_blocks[request.request_id][
++            num_cached_blocks:num_full_blocks
++        ]
++        return newly_cached_blocks, num_cached_blocks
+ 
+     @classmethod
+     def reachable_block_mask(
+@@ -842,8 +846,8 @@ class FullAttentionManager(SingleTypeKVCacheManager):
+         retention_interval: int | None = None,
+         *,
+         replay_boundaries: Sequence[int],
+-    ) -> None:
+-        super().cache_blocks(
++    ) -> tuple[list[KVCacheBlock], int]:
++        newly_cached_blocks, num_cached_blocks = super().cache_blocks(
+             request,
+             num_tokens,
+             retention_interval=retention_interval,
+@@ -851,8 +855,9 @@ class FullAttentionManager(SingleTypeKVCacheManager):
+         )
+         hash_block_size = self.block_pool.hash_block_size
+         if self.block_size == hash_block_size:
+-            return
++            return newly_cached_blocks, num_cached_blocks
+         self._cache_partial_tail_block(request, num_tokens)
++        return newly_cached_blocks, num_cached_blocks
+ 
+     def _cache_partial_tail_block(
+         self,
+@@ -1993,9 +1998,9 @@ class MambaManager(SingleTypeKVCacheManager):
+         retention_interval: int | None = None,
+         *,
+         replay_boundaries: Sequence[int],
+-    ) -> None:
++    ) -> tuple[list[KVCacheBlock], int]:
+         num_cached_blocks_before = self.num_cached_block.get(request.request_id, 0)
+-        super().cache_blocks(
++        newly_cached_blocks, num_cached_blocks = super().cache_blocks(
+             request,
+             num_tokens,
+             retention_interval=retention_interval,
+@@ -2032,6 +2037,7 @@ class MambaManager(SingleTypeKVCacheManager):
+                             block.block_hash_num_tokens,
+                         )
+                     )
++        return newly_cached_blocks, num_cached_blocks
+ 
+     def new_step_starts(self) -> None:
+         self.cached_blocks_this_step.clear()
+diff --git a/vllm/v1/engine/__init__.py b/vllm/v1/engine/__init__.py
+index 5ae9ee0..023156a 100644
+--- a/vllm/v1/engine/__init__.py
++++ b/vllm/v1/engine/__init__.py
+@@ -154,6 +154,7 @@ class EngineCoreRequest(
+     # request_finished hook. Used to free P-side prefill blocks when a
+     # KV-transfer request is rejected on the D node before engine admission.
+     abort_immediately: bool = False
++    agent_hint: dict | None = None
+ 
+     session_id: str | None = None
+ 
+@@ -221,6 +222,8 @@ class EngineCoreOutput(
+     # The number of NaNs in logits.
+     # A value greater than 0 indicates that the output is corrupted.
+     num_nans_in_logits: int = 0
++
++    agent_hint_response: dict[str, Any] | None = None
+     # Multi-modal hashes missing from the P1 receiver cache (P0/P1 drift; see
+     # `MultiModalCacheMissError`). Non-empty => retryable: the frontend drops these
+     # from its sender cache and the request is resent with the data. Appended last
+@@ -280,6 +283,15 @@ class EngineCoreOutputs(
+         if self.timestamp == 0.0:
+             self.timestamp = time.monotonic()
+ 
++    def have_agent_hint_outputs(self):
++        """check whether EngineCoreOutputs have manage request output """
++        have_manage_outputs = False
++        for output in self.outputs:
++            if output.agent_hint_response:
++                have_manage_outputs = True
++                break
++        return have_manage_outputs
++
+ 
+ class EngineCoreRequestType(enum.Enum):
+     """
+diff --git a/vllm/v1/engine/async_llm.py b/vllm/v1/engine/async_llm.py
+index bf3f5f4..851897b 100644
+--- a/vllm/v1/engine/async_llm.py
++++ b/vllm/v1/engine/async_llm.py
+@@ -832,6 +832,9 @@ class AsyncLLM(EngineClient):
+                     # 4) Logging.
+                     # TODO(rob): make into a coroutine and launch it in
+                     # background thread once Prometheus overhead is non-trivial.
++                    if num_outputs > 0 and outputs.have_agent_hint_outputs():
++                        continue
++
+                     if logger_ref[0]:
+                         logger_ref[0].record(
+                             engine_idx=outputs.engine_index,
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+index ffc9a5d..98a4be7 100644
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ import gc
++import logging
+ import os
+ import queue
+ import signal
+@@ -487,6 +488,13 @@ class EngineCore:
+             # to free any pre-admission KV-transfer resources.
+             self.abort_requests([request.request_id])
+ 
++        if logger.isEnabledFor(logging.DEBUG):
++            logger.debug(
++                "add request, request_id=%s, num_prompt_tokens=%d",
++                request.request_id,
++                request.num_prompt_tokens,
++            )
++
+     def abort_requests(self, request_ids: list[str]):
+         """Abort requests from the scheduler."""
+ 
+@@ -595,7 +603,7 @@ class EngineCore:
+ 
+         # Check for any requests remaining in the scheduler - unfinished,
+         # or finished and not yet removed from the batch.
+-        if not self.scheduler.has_requests():
++        if (not self.scheduler.has_requests()) and (not self.scheduler.has_prefetch_req()):
+             return {}, False
+         scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
+         future = self.model_executor.execute_model(scheduler_output, non_block=True)
+@@ -654,7 +662,7 @@ class EngineCore:
+ 
+         model_executed = False
+         deferred_scheduler_output = None
+-        if self.scheduler.has_requests():
++        if self.scheduler.has_requests() or self.scheduler.has_prefetch_req():
+             scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
+             with self.log_error_detail(scheduler_output):
+                 exec_future = self.model_executor.execute_model(
+@@ -1393,6 +1401,7 @@ class EngineCoreProc(EngineCore):
+             self.engines_running
+             or self.scheduler.has_requests()
+             or bool(self.batch_queue)
++            or self.scheduler.has_prefetch_req()
+         )
+ 
+     def is_running(self) -> bool:
+@@ -1426,6 +1435,36 @@ class EngineCoreProc(EngineCore):
+             )
+             self.output_queue.put_nowait((-1, EngineCoreOutputs(scheduler_stats=stats)))
+ 
++    def _is_agent_hint_management_request(
++        self,
++        request_type: EngineCoreRequestType,
++        request: Any,
++    ) -> bool:
++        if request_type != EngineCoreRequestType.ADD:
++            return False
++        req, request_wave = request
++        return bool(req and self.scheduler.is_agent_hint_management_request(req))
++
++    def _process_agent_hint_management_request(
++        self,
++        request_type: EngineCoreRequestType,
++        request: Any,
++    ) -> None:
++        if request_type != EngineCoreRequestType.ADD:
++            return
++        req, request_wave = request
++        agent_hint_response = self.scheduler.register_agent_hint_management_request(req)
++        output_list = [
++            EngineCoreOutput(
++                req.request_id,
++                [1],
++                finish_reason=FinishReason.LENGTH,
++                agent_hint_response=agent_hint_response,
++            )
++        ]
++        outputs = EngineCoreOutputs(engine_index=req.client_index, outputs=output_list)
++        self.output_queue.put_nowait((req.client_index, outputs))
++
+     def _process_input_queue(self):
+         """Exits when an engine step needs to be performed."""
+ 
+@@ -1443,7 +1482,10 @@ class EngineCoreProc(EngineCore):
+             block = self.process_input_queue_block
+             try:
+                 req = self.input_queue.get(block=block)
+-                self._handle_client_request(*req)
++                if self._is_agent_hint_management_request(*req):
++                    self._process_agent_hint_management_request(*req)
++                else:
++                    self._handle_client_request(*req)
+             except queue.Empty:
+                 break
+             if not block:
+@@ -1455,7 +1497,10 @@ class EngineCoreProc(EngineCore):
+         # Handle any more client requests.
+         while not self.input_queue.empty():
+             req = self.input_queue.get_nowait()
+-            self._handle_client_request(*req)
++            if self._is_agent_hint_management_request(*req):
++                self._process_agent_hint_management_request(*req)
++            else:
++                self._handle_client_request(*req)
+ 
+     def _process_engine_step(self) -> bool:
+         """Called only when there are unfinished local requests."""
+diff --git a/vllm/v1/engine/input_processor.py b/vllm/v1/engine/input_processor.py
+index 3f86f3c..f7a058f 100644
+--- a/vllm/v1/engine/input_processor.py
++++ b/vllm/v1/engine/input_processor.py
+@@ -419,6 +419,27 @@ class InputProcessor:
+                     )
+                 )
+ 
++
++        # agent_hint: forward the OpenAI-protocol payload as an opaque dict
++        # so the active hardware backend can interpret it. Pydantic models
++        # and plain mappings are both supported.
++        raw_agent_hint = prompt.get("agent_hint")
++        if raw_agent_hint is None:
++            agent_hint = None
++        elif hasattr(raw_agent_hint, "model_dump"):
++            agent_hint = raw_agent_hint.model_dump()
++        elif isinstance(raw_agent_hint, Mapping):
++            agent_hint = dict(raw_agent_hint)
++        else:
++            logger.warning(
++                "Ignoring invalid agent_hint: expected a mapping or pydantic "
++                "model, got %s. agent_hint will be treated as None.",
++                type(raw_agent_hint).__name__,
++            )
++            agent_hint = None
++
++
++
+         return EngineCoreRequest(
+             request_id=request_id,
+             prompt_token_ids=prompt_token_ids,
+@@ -435,6 +456,7 @@ class InputProcessor:
+             trace_headers=trace_headers,
+             resumable=resumable,
+             session_id=session_id,
++            agent_hint=agent_hint,
+         )
+ 
+     def _validate_prompt_len(
+diff --git a/vllm/v1/engine/output_processor.py b/vllm/v1/engine/output_processor.py
+index 2572872..1f186e9 100644
+--- a/vllm/v1/engine/output_processor.py
++++ b/vllm/v1/engine/output_processor.py
+@@ -291,6 +291,7 @@ class RequestState:
+         stop_reason: int | str | None,
+         kv_transfer_params: dict[str, Any] | None = None,
+         ec_transfer_params: dict[str, Any] | None = None,
++        engineCoreOutput: EngineCoreOutput | None = None,
+     ) -> RequestOutput | PoolingRequestOutput | None:
+         finished = finish_reason is not None
+         final_only = self.output_kind == RequestOutputKind.FINAL_ONLY
+@@ -329,6 +330,7 @@ class RequestState:
+                 external_req_id,
+                 [self._new_pooling_output(pooling_output)],
+                 finished,
++                engineCoreOutput=engineCoreOutput,
+             )
+ 
+         output = self._new_completion_output(new_token_ids, finish_reason, stop_reason)
+@@ -347,6 +349,7 @@ class RequestState:
+             finished,
+             kv_transfer_params,
+             ec_transfer_params,
++            engineCoreOutput=engineCoreOutput,
+         )
+ 
+     def _new_request_output(
+@@ -356,6 +359,7 @@ class RequestState:
+         finished: bool,
+         kv_transfer_params: dict[str, Any] | None = None,
+         ec_transfer_params: dict[str, Any] | None = None,
++        engineCoreOutput: EngineCoreOutput | None = None,
+     ) -> RequestOutput | PoolingRequestOutput:
+         # If prompt embeds were used, put placeholder prompt token ids
+         prompt_token_ids = self.prompt_token_ids
+@@ -393,6 +397,7 @@ class RequestState:
+             num_cached_tokens=self.num_cached_tokens,
+             num_cache_creation_tokens=self.num_cache_creation_tokens,
+             metrics=self.stats,
++            agent_hint_response=engineCoreOutput.agent_hint_response if engineCoreOutput else None
+         )
+ 
+     def _new_completion_output(
+@@ -719,6 +724,7 @@ class OutputProcessor:
+                 stop_reason,
+                 kv_transfer_params,
+                 ec_transfer_params,
++                engineCoreOutput=engine_core_output,
+             ):
+                 if req_state.streaming_input:
+                     request_output.finished = False
+diff --git a/vllm/v1/request.py b/vllm/v1/request.py
+index 8b453a0..761e001 100644
+--- a/vllm/v1/request.py
++++ b/vllm/v1/request.py
+@@ -78,6 +78,8 @@ class Request:
+         reasoning_ended: bool | None = None,
+         reasoning_parser_kwargs: dict[str, Any] | None = None,
+         abort_immediately: bool = False,
++        agent_hint: dict | None = None,
++        is_prefetch_req: bool = False
+     ) -> None:
+         self.request_id = request_id
+         self.client_index = client_index
+@@ -103,6 +105,7 @@ class Request:
+         self.kv_transfer_params: dict[str, Any] | None = None
+         # E/P/D: Connector-specific encoder-cache transfer parameters.
+         self.ec_transfer_params: dict[str, Any] | None = None
++        self.is_prefetch_req = is_prefetch_req
+ 
+         if pooling_params is not None:
+             # Pooling models.
+@@ -140,7 +143,7 @@ class Request:
+         self._prompt_embeds_per_block_hashes: dict[tuple[int, int], bytes] = {}
+         self.num_prompt_tokens = length_from_prompt_token_ids_or_embeds(
+             prompt_token_ids, prompt_embeds
+-        )
++        ) if not self.is_prefetch_req else len(self.prompt_token_ids)
+         self._output_token_ids: list[int] = []
+         if self.prompt_token_ids is None:
+             self._all_token_ids: list[int] = [0] * self.num_prompt_tokens
+@@ -233,6 +236,8 @@ class Request:
+         # If True, request should be aborted immediately after being added to
+         # the scheduler so the connector's request_finished hook runs.
+         self.abort_immediately = abort_immediately
++        # agent_hint
++        self.agent_hint = agent_hint
+ 
+     @classmethod
+     def from_engine_core_request(
+@@ -260,6 +265,7 @@ class Request:
+             reasoning_ended=request.reasoning_ended,
+             reasoning_parser_kwargs=request.reasoning_parser_kwargs,
+             abort_immediately=request.abort_immediately,
++            agent_hint=request.agent_hint
+         )
+ 
+     def append_output_token_ids(
