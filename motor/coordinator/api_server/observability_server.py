@@ -55,6 +55,13 @@ from motor.coordinator.scheduler.runtime.scheduler_metrics import (
     SchedulerMetricsShmReader,
     sched_metrics_snapshot_to_motor_metrics,
 )
+from motor.coordinator.metrics.request_lifecycle_metrics import (
+    DEFAULT_REQ_LIFECYCLE_SHM_NAME,
+    RequestLifecycleMetricsShmReader,
+    RequestLifecycleRateTracker,
+    merge_request_lifecycle_snapshots,
+    request_lifecycle_slots_to_motor_metrics,
+)
 from motor.common.resources.instance import Instance
 
 logger = get_logger(__name__)
@@ -124,6 +131,8 @@ class ObservabilityServer(BaseCoordinatorServer):
         )
         self._sched_metrics_reader = None
         self._kvc_metrics_readers: dict[int, KvcMetricsShmReader] = {}
+        self._req_lifecycle_readers: dict[int, RequestLifecycleMetricsShmReader] = {}
+        self._req_lifecycle_rate_tracker = RequestLifecycleRateTracker()
         self._app_builder = AppBuilder(config)
         self.observability_app = self._app_builder.create_observability_app(lifespan=self._lifespan)
         self._register_routes()
@@ -159,7 +168,7 @@ class ObservabilityServer(BaseCoordinatorServer):
             # 供 SchedulerServer/worker 读取，避免调度侧再单独查询引擎 /metrics。
             MetricsCollector().set_kv_usage_publisher(KvUsageShmPublisher(self._get_kv_usage_shm_name).publish)
             # 读取 SchedulerServer 发布的调度指标（cnt/fresh_load/a_tokens）并输出为 motor: 指标。
-            MetricsCollector().set_sched_metrics_provider(self._provide_sched_metrics)
+            MetricsCollector().set_sched_metrics_provider(self._provide_exported_metrics)
             MetricsCollector().start()
         except Exception as e:
             logger.warning("Ignored error setting up metrics collector: %s", e)
@@ -189,6 +198,13 @@ class ObservabilityServer(BaseCoordinatorServer):
                     logger.warning("Ignored error detaching kvc metrics reader: %s", e)
             if hasattr(self, "_kvc_metrics_readers"):
                 self._kvc_metrics_readers.clear()
+            for reader in list(getattr(self, "_req_lifecycle_readers", {}).values()):
+                try:
+                    reader.detach()
+                except Exception as e:
+                    logger.warning("Ignored error detaching req lifecycle metrics reader: %s", e)
+            if hasattr(self, "_req_lifecycle_readers"):
+                self._req_lifecycle_readers.clear()
             if self._central_lifecycle is not None:
                 await self._central_lifecycle.aclose()
             await self._scheduler_connection.disconnect()
@@ -197,8 +213,8 @@ class ObservabilityServer(BaseCoordinatorServer):
         """Return the SchedulerServer's scheduling metrics as ``motor:*`` Metric objects.
 
         Attaches lazily to the scheduling-metrics shm (name received via the scheduler
-        client), and returns [] until the shm is available. Called by MetricsCollector
-        when /metrics is generated.
+        client), and returns [] until the shm is available. KVC counters stay on this
+        path when the shm is missing. Request-lifecycle metrics are added separately.
         """
         shm_name = self._get_sched_metrics_shm_name()
         if not shm_name:
@@ -223,6 +239,50 @@ class ObservabilityServer(BaseCoordinatorServer):
         metrics = sched_metrics_snapshot_to_motor_metrics(reader.read_snapshot())
         metrics.extend(self._provide_kvc_metrics())
         return metrics
+
+    def _provide_exported_metrics(self) -> list:
+        """MetricsCollector callback: scheduler/KVC metrics plus request lifecycle."""
+        metrics = list(self._provide_sched_metrics() or [])
+        try:
+            metrics.extend(self._provide_req_lifecycle_metrics())
+        except Exception as e:
+            logger.warning("request lifecycle metrics unavailable: %s", e)
+        return metrics
+
+    def _provide_req_lifecycle_metrics(self) -> list:
+        """Read and aggregate per-worker Coordinator request lifecycle metrics."""
+        config = getattr(self, "coordinator_config", None)
+        workers_cfg = getattr(config, "inference_workers_config", None)
+        workers = max(1, int(getattr(workers_cfg, "num_workers", 1) or 1))
+        readers = getattr(self, "_req_lifecycle_readers", None)
+        if readers is None:
+            readers = {}
+            self._req_lifecycle_readers = readers
+        rate_tracker = getattr(self, "_req_lifecycle_rate_tracker", None)
+        if rate_tracker is None:
+            rate_tracker = RequestLifecycleRateTracker()
+            self._req_lifecycle_rate_tracker = rate_tracker
+        snapshots: list[tuple[int, ...]] = []
+        for worker_index in range(workers):
+            shm_name = f"{DEFAULT_REQ_LIFECYCLE_SHM_NAME}_{worker_index}"
+            reader = readers.get(worker_index)
+            if reader is None or reader.shm_name != shm_name:
+                if reader is not None:
+                    reader.detach()
+                reader = RequestLifecycleMetricsShmReader(shm_name)
+                if not reader.attach():
+                    readers.pop(worker_index, None)
+                    continue
+                readers[worker_index] = reader
+            snap = reader.read()
+            if snap is not None:
+                snapshots.append(snap)
+        if not snapshots:
+            return []
+        return request_lifecycle_slots_to_motor_metrics(
+            merge_request_lifecycle_snapshots(snapshots),
+            rate_tracker=rate_tracker,
+        )
 
     def _provide_kvc_metrics(self) -> list:
         """Append KVC counters from the single central owner or per-worker shm."""

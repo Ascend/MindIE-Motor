@@ -115,6 +115,8 @@ class RequestInfo(BaseModel):
     # Set once dispatch translated the hint's message indices into block
     # coordinates, so the scheduling policy skips a duplicate tokenize/offset pass.
     _hint_block_offsets_attached: bool = PrivateAttr(default=False)
+    # Request lifecycle tracker attached by RequestLifecycleMiddleware for reconciliation.
+    _lifecycle_tracker: object | None = PrivateAttr(default=None)
     prompt_tokens_details: dict = Field(default={}, description="prefill prompt_tokens_details")
     prompt_token_ids: list = Field(default=[], description="prefill prompt_token_ids")
     cached_token_ids: list = Field(default=[], description="Cached token_ids")

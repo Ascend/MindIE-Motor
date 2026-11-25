@@ -72,6 +72,9 @@ from motor.coordinator.router.rescheduler.rescheduler import (
     RetryRequestPlan,
 )
 from motor.coordinator.router.workload import WorkloadActionHandler
+from motor.coordinator.metrics.request_lifecycle_metrics import (
+    get_request_lifecycle_metrics,
+)
 from motor.coordinator.router.adapters.completion_to_chat import (
     adapt_completion_nonstream_to_chat,
     is_completion_like_body,
@@ -564,7 +567,9 @@ class UnifiedPDRouter(BaseRouter):
             session = PDDispatchSession(self.req_info.req_id)
 
             async with self._manage_request_context():
+                retry_started_at: float | None = None
                 for attempt_index in range(max_retry):
+                    get_request_lifecycle_metrics().record_attempt("unified_pd")
                     attempt: AttemptContext | None = None
                     cleanup_reason = AttemptStopReason.OTHER
                     render_session = self._get_streaming_render_session()
@@ -574,6 +579,8 @@ class UnifiedPDRouter(BaseRouter):
                     try:
                         self._active_retry_plan = None
                         if attempt_index > 0:
+                            if retry_started_at is None:
+                                retry_started_at = time.perf_counter()
                             self.rescheduler.is_rescheduling = True
                             self.rescheduler.retry_count = attempt_index
                             self._active_retry_plan = self.rescheduler.build_retry_plan(self.req_info.req_data)
@@ -607,12 +614,19 @@ class UnifiedPDRouter(BaseRouter):
                                 attempt.attempt_seq,
                             )
                         attempt.transition(AttemptState.DONE)
+                        if retry_started_at is not None:
+                            get_request_lifecycle_metrics().record_retry_recovered(
+                                "unified_pd", time.perf_counter() - retry_started_at
+                            )
                         if render_session is not None:
                             render_session.finish_attempt(True)
                         self.logger.info(trace_obj.set_end_and_ttft_tpot())
                         return
                     except GeneratorExit:
                         cleanup_reason = AttemptStopReason.CLIENT_DISCONNECT
+                        tracker = getattr(self.req_info, "_lifecycle_tracker", None)
+                        if tracker is not None:
+                            tracker.set_terminal_hint("client_disconnect")
                         if render_session is not None:
                             render_session.finish_attempt(render_attempt_visible)
                         raise
@@ -626,22 +640,48 @@ class UnifiedPDRouter(BaseRouter):
                             allow_retry=self._stream_retry_allowed(),
                         )
                         if await self._should_use_hybrid_fallback_stream_restart():
+                            fb_start = retry_started_at or time.perf_counter()
+                            get_request_lifecycle_metrics().record_retry("unified_pd", "hybrid_fallback")
                             async with aclosing(
                                 self._run_hybrid_fallback_stream_restart(attempt, attempt_index)
                             ) as fallback_stream:
                                 async for chunk in fallback_stream:
                                     yield chunk
+                            get_request_lifecycle_metrics().record_retry_recovered(
+                                "unified_pd", time.perf_counter() - fb_start
+                            )
                             return
                         if await self._should_use_hybrid_fallback_stream_resume():
+                            fb_start = retry_started_at or time.perf_counter()
+                            get_request_lifecycle_metrics().record_retry("unified_pd", "hybrid_fallback")
                             async with aclosing(
                                 self._run_hybrid_fallback_stream_resume(attempt, attempt_index)
                             ) as fallback_stream:
                                 async for chunk in fallback_stream:
                                     yield chunk
+                            get_request_lifecycle_metrics().record_retry_recovered(
+                                "unified_pd", time.perf_counter() - fb_start
+                            )
                             self.logger.info(trace_obj.set_end_and_ttft_tpot())
                             return
                         if not retry:
+                            if retry_started_at is not None:
+                                get_request_lifecycle_metrics().record_retry_duration(
+                                    "unified_pd", time.perf_counter() - retry_started_at
+                                )
                             raise error
+                        if retry_started_at is None:
+                            retry_started_at = time.perf_counter()
+                        retry_reason = (
+                            "cancelled"
+                            if isinstance(e, asyncio.CancelledError)
+                            else "timeout"
+                            if isinstance(e, (TimeoutError, httpx.TimeoutException))
+                            else "upstream_error"
+                            if isinstance(e, (UpstreamHTTPError, httpx.RequestError))
+                            else "other"
+                        )
+                        get_request_lifecycle_metrics().record_retry("unified_pd", retry_reason)
                     finally:
                         if attempt is not None:
                             attempt.unregister_canceller()
@@ -658,13 +698,17 @@ class UnifiedPDRouter(BaseRouter):
             session = PDDispatchSession(self.req_info.req_id)
 
             async with self._manage_request_context():
+                retry_started_at: float | None = None
                 for attempt_index in range(max_retry):
+                    get_request_lifecycle_metrics().record_attempt("unified_pd")
                     attempt: AttemptContext | None = None
                     try:
                         attempt = await self._create_attempt(session)
                         attempt.register_canceller()
                         coordination_mode = self._select_coordination_mode(attempt)
                         if attempt_index > 0:
+                            if retry_started_at is None:
+                                retry_started_at = time.perf_counter()
                             self.rescheduler.retry_count = attempt_index
                             self.logger.warning(
                                 "Rescheduling %d/%d: P=[%s], D=[%s]",
@@ -677,6 +721,10 @@ class UnifiedPDRouter(BaseRouter):
                         body = await self._run_nonstream_attempt(attempt, coordination_mode)
                         attempt.unregister_canceller()
                         attempt.transition(AttemptState.DONE)
+                        if retry_started_at is not None:
+                            get_request_lifecycle_metrics().record_retry_recovered(
+                                "unified_pd", time.perf_counter() - retry_started_at
+                            )
                         self._merge_prompt_tokens_details(body)
                         if "chat" in self.req_info.effective_entry_api() and is_completion_like_body(body):
                             adapt_completion_nonstream_to_chat(body, req_id=self.req_info.req_id)
@@ -689,9 +737,31 @@ class UnifiedPDRouter(BaseRouter):
                     except (asyncio.CancelledError, Exception) as e:
                         error, retry = await self._process_response_error(attempt, attempt_index, e)
                         if await self._should_use_hybrid_fallback_nonstream():
-                            return await self._run_hybrid_fallback_nonstream()
+                            fb_start = retry_started_at or time.perf_counter()
+                            get_request_lifecycle_metrics().record_retry("unified_pd", "hybrid_fallback")
+                            resp = await self._run_hybrid_fallback_nonstream()
+                            get_request_lifecycle_metrics().record_retry_recovered(
+                                "unified_pd", time.perf_counter() - fb_start
+                            )
+                            return resp
                         if not retry:
+                            if retry_started_at is not None:
+                                get_request_lifecycle_metrics().record_retry_duration(
+                                    "unified_pd", time.perf_counter() - retry_started_at
+                                )
                             raise error
+                        if retry_started_at is None:
+                            retry_started_at = time.perf_counter()
+                        retry_reason = (
+                            "cancelled"
+                            if isinstance(e, asyncio.CancelledError)
+                            else "timeout"
+                            if isinstance(e, (TimeoutError, httpx.TimeoutException))
+                            else "upstream_error"
+                            if isinstance(e, (UpstreamHTTPError, httpx.RequestError))
+                            else "other"
+                        )
+                        get_request_lifecycle_metrics().record_retry("unified_pd", retry_reason)
 
         error_message = "Unified PD request ended without response"
         trace_obj.set_trace_prompt(self.req_info.req_data)
@@ -3028,10 +3098,18 @@ class UnifiedPDRouter(BaseRouter):
     async def _send_release_work_item(self, item: ReleaseWorkItem) -> bool:
         start = time.perf_counter()
         attempts = self._RELEASE_RPC_ATTEMPTS
+        last_timeout = False
+        retries_done = 0
         for retry in range(attempts):
+            if retry > 0:
+                retries_done += 1
             try:
                 ok = await self._scheduler.update_workload(item.params)
+                last_timeout = False
             except asyncio.CancelledError:
+                get_request_lifecycle_metrics().record_resource_release(
+                    item.role, "failed", time.perf_counter() - start, retries=retries_done
+                )
                 self.logger.warning(
                     "Release workload task cancelled stage=%s req_id=%s role=%s action=%s retry=%d",
                     item.stage,
@@ -3041,8 +3119,21 @@ class UnifiedPDRouter(BaseRouter):
                     retry,
                 )
                 raise
+            except TimeoutError as exc:
+                ok = False
+                last_timeout = True
+                self.logger.warning(
+                    "Release workload RPC timed out stage=%s req_id=%s role=%s action=%s retry=%d error=%s",
+                    item.stage,
+                    item.params.req_id,
+                    item.role.value,
+                    item.action.value,
+                    retry,
+                    exc,
+                )
             except Exception as exc:
                 ok = False
+                last_timeout = isinstance(exc, (TimeoutError, httpx.TimeoutException))
                 self.logger.warning(
                     "Release workload RPC raised stage=%s req_id=%s role=%s action=%s retry=%d error=%s",
                     item.stage,
@@ -3056,7 +3147,11 @@ class UnifiedPDRouter(BaseRouter):
                 # NOTE: the release is NOT marked here. The mark happens in the caller only after
                 # finalize_release removed the local ledger record, so a finalize failure leaves
                 # the release unmarked and a later re-enqueue can recompute and finalize it.
-                elapsed_ms = (time.perf_counter() - start) * 1000
+                elapsed_s = time.perf_counter() - start
+                elapsed_ms = elapsed_s * 1000
+                get_request_lifecycle_metrics().record_resource_release(
+                    item.role, "success", elapsed_s, retries=retries_done
+                )
                 self.logger.info(
                     "Release workload succeeded stage=%s elapsed_ms=%.2f instance_id=%s endpoint_id=%s role=%s action=%s retry=%d",
                     item.stage,
@@ -3070,7 +3165,14 @@ class UnifiedPDRouter(BaseRouter):
                 return True
             if retry < attempts - 1:
                 await asyncio.sleep(self._RELEASE_RPC_BACKOFF_BASE_S * (retry + 1))
-        elapsed_ms = (time.perf_counter() - start) * 1000
+        elapsed_s = time.perf_counter() - start
+        elapsed_ms = elapsed_s * 1000
+        get_request_lifecycle_metrics().record_resource_release(
+            item.role,
+            "timeout" if last_timeout else "failed",
+            elapsed_s,
+            retries=retries_done,
+        )
         self.logger.error(
             "Release workload failed stage=%s elapsed_ms=%.2f instance_id=%s endpoint_id=%s role=%s action=%s req_id=%s",
             item.stage,

@@ -63,6 +63,9 @@ from motor.coordinator.domain.scheduling import (
     get_decode_colocation_candidate_ids,
     has_decode_colocation_candidate,
 )
+from motor.coordinator.metrics.request_lifecycle_metrics import (
+    get_request_lifecycle_metrics,
+)
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.router.upstream_error import (
     UpstreamHTTPError,
@@ -466,7 +469,9 @@ class PDHybridRouter(BaseRouter):
             reschedule_enabled = self.config.exception_config.reschedule_enabled
             api = self.req_info.api
 
+            retry_started_at: float | None = None
             for attempt in range(max_retry):
+                get_request_lifecycle_metrics().record_attempt("pd_hybrid")
                 stream_adapter_state: dict[str, Any] = {}
                 sampling_state = self._init_hybrid_sampling_state()
                 attempt_req = req_data.copy()
@@ -481,6 +486,8 @@ class PDHybridRouter(BaseRouter):
                 try:
                     self._active_retry_plan = None
                     if attempt > 0:
+                        if retry_started_at is None:
+                            retry_started_at = time.perf_counter()
                         self.rescheduler.is_rescheduling = True
                         self.rescheduler.retry_count = attempt
                         if reschedule_enabled:
@@ -508,6 +515,10 @@ class PDHybridRouter(BaseRouter):
                             render_attempt_visible = True
                             yield chunk
                     render_attempt_succeeded = True
+                    if retry_started_at is not None:
+                        get_request_lifecycle_metrics().record_retry_recovered(
+                            "pd_hybrid", time.perf_counter() - retry_started_at
+                        )
                     await self._report_cb("success")
                     return
                 except asyncio.CancelledError as e:
@@ -526,6 +537,10 @@ class PDHybridRouter(BaseRouter):
                         retry,
                     )
                     if not retry:
+                        if retry_started_at is not None:
+                            get_request_lifecycle_metrics().record_retry_duration(
+                                "pd_hybrid", time.perf_counter() - retry_started_at
+                            )
                         if not cancel_retryable:
                             # Client disconnect or dispatch abort: propagate cancellation;
                             # the engine aborts via upstream connection closure.
@@ -542,6 +557,9 @@ class PDHybridRouter(BaseRouter):
                         self.req_info.update_state(ReqState.EXCEPTION)
                         await self._report_cb("failure")
                         raise error
+                    if retry_started_at is None:
+                        retry_started_at = time.perf_counter()
+                    get_request_lifecycle_metrics().record_retry("pd_hybrid", "cancelled")
                     self._uncancel_current_task()
                     await self._report_cb("failure")
                 except httpx.TimeoutException as e:
@@ -560,13 +578,27 @@ class PDHybridRouter(BaseRouter):
                         str(e),
                     )
                     if self.first_chunk_sent or self._stream_commit_controller.ready_to_commit:
+                        tracker = getattr(self.req_info, "_lifecycle_tracker", None)
+                        if tracker is not None:
+                            tracker.set_terminal_hint("timeout")
+                        if retry_started_at is not None:
+                            get_request_lifecycle_metrics().record_retry_duration(
+                                "pd_hybrid", time.perf_counter() - retry_started_at
+                            )
                         yield self._generate_streaming_error_chunk(e)
                         return
                     if attempt < max_retry - 1:
+                        if retry_started_at is None:
+                            retry_started_at = time.perf_counter()
+                        get_request_lifecycle_metrics().record_retry("pd_hybrid", "timeout")
                         wait_time = self.config.exception_config.retry_delay * (2**attempt)
                         self.logger.info("Retrying streaming request in %.2f seconds...", wait_time)
                         await asyncio.sleep(wait_time)
                         continue
+                    if retry_started_at is not None:
+                        get_request_lifecycle_metrics().record_retry_duration(
+                            "pd_hybrid", time.perf_counter() - retry_started_at
+                        )
                     raise
                 except Exception as e:
                     if isinstance(e, HTTPException):
@@ -584,6 +616,10 @@ class PDHybridRouter(BaseRouter):
                         "Error in streaming (attempt %d/%d): %s", attempt + 1, max_retry, str(e), exc_info=True
                     )
                     if not retry:
+                        if retry_started_at is not None:
+                            get_request_lifecycle_metrics().record_retry_duration(
+                                "pd_hybrid", time.perf_counter() - retry_started_at
+                            )
                         trace_obj.set_trace_error_message(f"Streaming request failed: {e}")
                         trace_obj.set_trace_error_message(f"Streaming request failed: {e}", is_meta=True)
                         trace_obj.set_trace_prompt(req_data)
@@ -594,6 +630,12 @@ class PDHybridRouter(BaseRouter):
                             await self._report_cb("failure")
                         raise
 
+                    if retry_started_at is None:
+                        retry_started_at = time.perf_counter()
+                    retry_reason = (
+                        "upstream_error" if isinstance(e, (UpstreamHTTPError, httpx.RequestError)) else "other"
+                    )
+                    get_request_lifecycle_metrics().record_retry("pd_hybrid", retry_reason)
                     if is_cb_reportable_failure(e):
                         await self._report_cb("failure")
                 finally:
@@ -695,7 +737,11 @@ class PDHybridRouter(BaseRouter):
             self.logger.debug("Handling hybrid non-streaming request")
             max_retries = max(self.config.exception_config.transport_retry_limit, 1)
 
+            retry_started_at: float | None = None
             for attempt in range(max_retries):
+                get_request_lifecycle_metrics().record_attempt("pd_hybrid")
+                if attempt > 0 and retry_started_at is None:
+                    retry_started_at = time.perf_counter()
                 sampling_state = self._init_hybrid_sampling_state()
                 attempt_req = req_data.copy()
                 try:
@@ -793,6 +839,10 @@ class PDHybridRouter(BaseRouter):
                             body, client_return_token_ids=self.req_info.client_expects_token_ids
                         )
                         await self._report_cb("success")
+                        if retry_started_at is not None:
+                            get_request_lifecycle_metrics().record_retry_recovered(
+                                "pd_hybrid", time.perf_counter() - retry_started_at
+                            )
                         return JSONResponse(content=body)
 
                 except asyncio.CancelledError as e:
@@ -807,6 +857,10 @@ class PDHybridRouter(BaseRouter):
                         retry,
                     )
                     if not retry:
+                        if retry_started_at is not None:
+                            get_request_lifecycle_metrics().record_retry_duration(
+                                "pd_hybrid", time.perf_counter() - retry_started_at
+                            )
                         if not retryable:
                             # Client disconnect or dispatch abort: propagate cancellation;
                             # the engine aborts via upstream connection closure.
@@ -816,6 +870,9 @@ class PDHybridRouter(BaseRouter):
                         self.req_info.update_state(ReqState.EXCEPTION)
                         await self._report_cb("failure")
                         raise e
+                    if retry_started_at is None:
+                        retry_started_at = time.perf_counter()
+                    get_request_lifecycle_metrics().record_retry("pd_hybrid", "cancelled")
                     self._uncancel_current_task()
                     await self._report_cb("failure")
                 except httpx.TimeoutException as e:
@@ -834,10 +891,17 @@ class PDHybridRouter(BaseRouter):
                         str(e),
                     )
                     if attempt < max_retries - 1:
+                        if retry_started_at is None:
+                            retry_started_at = time.perf_counter()
+                        get_request_lifecycle_metrics().record_retry("pd_hybrid", "timeout")
                         wait_time = self.config.exception_config.retry_delay * (2**attempt)
                         self.logger.info("Retrying non-streaming request in %.2f seconds...", wait_time)
                         await asyncio.sleep(wait_time)
                         continue
+                    if retry_started_at is not None:
+                        get_request_lifecycle_metrics().record_retry_duration(
+                            "pd_hybrid", time.perf_counter() - retry_started_at
+                        )
                     self.logger.error("All retries failed for non-streaming decode request (timeout).")
                     self.req_info.update_state(ReqState.TIMEOUT)
                     raise e
@@ -855,18 +919,36 @@ class PDHybridRouter(BaseRouter):
                     trace_obj.set_trace_error_message(f"Non-streaming request failed: {e}", is_meta=True)
                     trace_obj.set_trace_prompt(req_data)
                     if isinstance(e, HTTPException):
+                        if retry_started_at is not None:
+                            get_request_lifecycle_metrics().record_retry_duration(
+                                "pd_hybrid", time.perf_counter() - retry_started_at
+                            )
                         self.req_info.update_state(ReqState.EXCEPTION)
                         raise
                     if isinstance(e, (UpstreamHTTPError, httpx.RequestError)) and not is_retryable_upstream_error(e):
+                        if retry_started_at is not None:
+                            get_request_lifecycle_metrics().record_retry_duration(
+                                "pd_hybrid", time.perf_counter() - retry_started_at
+                            )
                         self.req_info.update_state(ReqState.EXCEPTION)
                         raise
                     if attempt >= max_retries - 1:
+                        if retry_started_at is not None:
+                            get_request_lifecycle_metrics().record_retry_duration(
+                                "pd_hybrid", time.perf_counter() - retry_started_at
+                            )
                         self.logger.error("All retries failed for non-streaming decode request.")
                         self.req_info.update_state(ReqState.EXCEPTION)
                         if is_cb_reportable_failure(e):
                             await self._report_cb("failure")
                         raise e
 
+                    if retry_started_at is None:
+                        retry_started_at = time.perf_counter()
+                    retry_reason = (
+                        "upstream_error" if isinstance(e, (UpstreamHTTPError, httpx.RequestError)) else "other"
+                    )
+                    get_request_lifecycle_metrics().record_retry("pd_hybrid", retry_reason)
                     if is_cb_reportable_failure(e):
                         await self._report_cb("failure")
                 wait_time = self.config.exception_config.retry_delay * (2**attempt)

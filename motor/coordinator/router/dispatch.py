@@ -72,6 +72,9 @@ from motor.common.http.security_utils import (
 from motor.common.logger import get_logger
 import motor.common.utils.error as cancel_error
 from motor.common.utils.error import RequestCancelledError
+from motor.coordinator.metrics.request_lifecycle_metrics import (
+    get_tracker_from_request,
+)
 
 logger = get_logger(__name__)
 
@@ -164,6 +167,9 @@ def with_cancellation(handler_func):
                 await _cancel_tasks_and_wait(*pending)
                 return handler_task.result()
             else:
+                tracker = get_tracker_from_request(request)
+                if tracker is not None:
+                    tracker.set_terminal_hint("client_disconnect")
                 await _cancel_tasks_and_wait(*pending, reason=cancel_error.CLIENT_DISCONNECT)
                 logger.info("Client disconnected; cancelling in-flight request with HTTP 499")
                 raise HTTPException(
@@ -370,7 +376,14 @@ async def handle_request(
         HTTPException: If request body is empty or request fail
     """
 
+    tracker = get_tracker_from_request(raw_request)
+    if tracker is not None:
+        tracker.mark_admitted()
+        tracker.enter_queue()
+
     req_info = await __create_request_info(raw_request, request_manager, request_json=request_json, config=config)
+    if tracker is not None:
+        req_info._lifecycle_tracker = tracker
 
     if TracerManager().contains_trace_headers(raw_request.headers):
         req_info.trace_obj.parent_context = TracerManager().extract_trace_context(raw_request.headers)
@@ -435,6 +448,8 @@ async def handle_request(
     try:
         return await router_impl.handle_request()
     except UpstreamHTTPError as e:
+        if tracker is not None:
+            tracker.set_terminal_hint("timeout" if e.status_code in (408, 504) else "failed")
         req_info.trace_obj.set_trace_error_message(f"Proxy endpoint {req_info.api} failed: {e}")
         logger.warning(
             "Upstream inference request failed api=%s status_code=%s phase=%s",
@@ -444,10 +459,19 @@ async def handle_request(
         )
         return render_upstream_error(e)
     except httpx.RequestError as e:
+        if tracker is not None:
+            tracker.set_terminal_hint("timeout" if isinstance(e, httpx.TimeoutException) else "failed")
         req_info.trace_obj.set_trace_error_message(f"Proxy endpoint {req_info.api} failed: {e}")
         logger.warning("Upstream inference transport failed api=%s error=%s", req_info.api, e)
         return render_transport_error(e)
     except RequestCancelledError as e:
+        if tracker is not None:
+            if e.reason == cancel_error.CLIENT_DISCONNECT:
+                tracker.set_terminal_hint("client_disconnect")
+            elif e.reason == cancel_error.INFER_TIMEOUT:
+                tracker.set_terminal_hint("timeout")
+            else:
+                tracker.set_terminal_hint("cancelled")
         req_info.trace_obj.set_trace_error_message(str(e))
         logger.debug(
             "Request cancelled api=%s req_id=%s reason=%s",
@@ -460,14 +484,28 @@ async def handle_request(
         if e.reason == cancel_error.CLIENT_DISCONNECT:
             raise HTTPException(status_code=499, detail=safe_error_msg) from e
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=safe_error_msg) from e
-    except Exception as e:
+    except HTTPException as e:
+        if tracker is not None:
+            if e.status_code == 499:
+                tracker.set_terminal_hint("client_disconnect")
+            elif e.status_code in (408, 504):
+                tracker.set_terminal_hint("timeout")
+            else:
+                tracker.set_terminal_hint("failed")
         req_info.trace_obj.set_trace_error_message(f"Proxy endpoint {req_info.api} failed: {e}")
         logger.error(
             f"Error occurred in proxy server endpoint: {req_info.api}, error: {str(e)}",
             exc_info=True,
         )
-        if isinstance(e, HTTPException):
-            raise e
+        raise
+    except Exception as e:
+        if tracker is not None:
+            tracker.set_terminal_hint("timeout" if isinstance(e, TimeoutError) else "failed")
+        req_info.trace_obj.set_trace_error_message(f"Proxy endpoint {req_info.api} failed: {e}")
+        logger.error(
+            f"Error occurred in proxy server endpoint: {req_info.api}, error: {str(e)}",
+            exc_info=True,
+        )
         safe_error_msg = sanitize_error_message(str(e))
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=safe_error_msg) from e
 

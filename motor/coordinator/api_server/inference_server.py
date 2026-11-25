@@ -70,6 +70,11 @@ from motor.coordinator.scheduler.policy.kv_cache_affinity import TokenizerManage
 from motor.coordinator.scheduler.runtime import SchedulerConnectionManager
 from motor.coordinator.scheduler.runtime.agent_hint_lifecycle import AgentHintLifecycleManager
 from motor.coordinator.scheduler.runtime.agent_hint_metrics import KvcMetricsShmWriter
+from motor.coordinator.metrics.request_lifecycle_metrics import (
+    DEFAULT_REQ_LIFECYCLE_SHM_NAME,
+    RequestLifecycleMiddleware,
+    get_request_lifecycle_metrics,
+)
 from motor.coordinator.tracer.tracing import TracerManager
 
 logger = get_logger(__name__)
@@ -378,15 +383,17 @@ class InferenceServer(BaseCoordinatorServer):
             else None
         )
         self._kvc_metrics_writer = None
+        worker_index = int(getattr(self.coordinator_config, "worker_index", None) or 0)
         if self._kvc_lifecycle is not None and kvc_cfg.metrics_shm_name:
             try:
-                worker_index = getattr(self.coordinator_config, "worker_index", None) or 0
-                shm_name = f"{kvc_cfg.metrics_shm_name}_{int(worker_index)}"
+                shm_name = f"{kvc_cfg.metrics_shm_name}_{worker_index}"
                 self._kvc_metrics_writer = KvcMetricsShmWriter(shm_name)
                 self._kvc_lifecycle.set_stats_listener(self._kvc_metrics_writer.update)
             except Exception as e:  # noqa: BLE001 — metrics export must not block startup
                 logger.warning("kvc metrics shm unavailable; counters stay local: %s", e)
                 self._kvc_metrics_writer = None
+        get_request_lifecycle_metrics().attach_shm_writer(f"{DEFAULT_REQ_LIFECYCLE_SHM_NAME}_{worker_index}")
+        self._inference_app.add_middleware(RequestLifecycleMiddleware)
         self._register_routes()
 
     @property
@@ -543,6 +550,7 @@ class InferenceServer(BaseCoordinatorServer):
                 except Exception as e:
                     logger.warning("KVC metrics shm close failed: %s", e)
                 self._kvc_metrics_writer = None
+            get_request_lifecycle_metrics().detach_shm_writer()
             await self._scheduler_connection.disconnect()
 
     def verify_api_key(self, request: Request) -> None:
@@ -589,6 +597,19 @@ class InferenceServer(BaseCoordinatorServer):
                 self.build_simple_rate_limit(rate_limit_config)
         else:
             self.build_simple_rate_limit(rate_limit_config)
+        self._ensure_request_lifecycle_middleware_outermost()
+
+    def _ensure_request_lifecycle_middleware_outermost(self) -> None:
+        """Keep RequestLifecycleMiddleware outermost so rate-limited requests are accounted."""
+        middlewares = getattr(self._inference_app, "user_middleware", None)
+        if not isinstance(middlewares, list):
+            return
+        for idx, mw in enumerate(middlewares):
+            if getattr(mw, "cls", None) is RequestLifecycleMiddleware:
+                if idx > 0:
+                    middlewares.insert(0, middlewares.pop(idx))
+                self._inference_app.middleware_stack = None
+                return
 
     def build_simple_rate_limit(self, rate_limit_config: RateLimitConfig | None = None) -> None:
         try:

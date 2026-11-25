@@ -266,6 +266,69 @@ _VLLM_METRIC_REGISTRY: dict[str, MetricSemanticConfig] = {
     "motor:pd_ratio_suggested": MetricSemanticConfig(
         semantic=MetricSemantic.METADATA_GAUGE,
     ),
+    "motor:coordinator_requests_received_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:coordinator_requests_admitted_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:coordinator_requests_rejected_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:coordinator_requests_completed_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:coordinator_requests_in_flight": MetricSemanticConfig(
+        semantic=MetricSemantic.STATE_GAUGE,
+    ),
+    "motor:coordinator_requests_queued": MetricSemanticConfig(
+        semantic=MetricSemantic.QUEUE_GAUGE,
+    ),
+    "motor:coordinator_requests_executing": MetricSemanticConfig(
+        semantic=MetricSemantic.STATE_GAUGE,
+    ),
+    "motor:coordinator_requests_terminal_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:coordinator_request_receive_rate": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:coordinator_request_admit_rate": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:coordinator_request_reject_rate": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:coordinator_request_complete_rate": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:coordinator_request_queue_duration_seconds": MetricSemanticConfig(
+        semantic=MetricSemantic.HISTOGRAM_LATENCY,
+    ),
+    "motor:coordinator_request_duration_seconds": MetricSemanticConfig(
+        semantic=MetricSemantic.HISTOGRAM_LATENCY,
+    ),
+    "motor:coordinator_request_attempts_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:coordinator_request_retries_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:coordinator_request_retry_recovered_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:coordinator_request_retry_duration_seconds": MetricSemanticConfig(
+        semantic=MetricSemantic.HISTOGRAM_LATENCY,
+    ),
+    "motor:coordinator_resource_release_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:coordinator_resource_release_retries_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:coordinator_resource_release_duration_seconds": MetricSemanticConfig(
+        semantic=MetricSemantic.HISTOGRAM_LATENCY,
+    ),
 }
 
 # Ratio pairs: derived during post-processing

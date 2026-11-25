@@ -29,6 +29,9 @@ from motor.coordinator.router.upstream_error import (
     render_transport_error,
     render_upstream_error,
 )
+from motor.coordinator.metrics.request_lifecycle_metrics import (
+    get_tracker_from_scope,
+)
 
 
 @dataclass
@@ -144,6 +147,9 @@ class CommitAwareStreamingResponse(Response):
                 await stream_task
             else:
                 await disconnect_task
+                tracker = get_tracker_from_scope(scope)
+                if tracker is not None:
+                    tracker.set_terminal_hint("client_disconnect")
                 stream_task.cancel(msg=cancel_error.CLIENT_DISCONNECT)
                 await asyncio.gather(stream_task, return_exceptions=True)
         finally:
@@ -154,7 +160,8 @@ class CommitAwareStreamingResponse(Response):
 
     async def _stream_response(self, scope: Scope, receive: Receive, send: Send) -> None:
         terminal: asyncio.Future[Exception | None] = asyncio.get_running_loop().create_future()
-        pump_task = asyncio.create_task(self._pump_stream(send, terminal))
+        tracker = get_tracker_from_scope(scope)
+        pump_task = asyncio.create_task(self._pump_stream(send, terminal, tracker=tracker))
         ready_task = asyncio.create_task(self.controller.wait_ready())
         cancel_reason = None
         timeout_handle = None
@@ -195,12 +202,21 @@ class CommitAwareStreamingResponse(Response):
             self.controller.mark_committed()
             await pump_task
         except OSError as error:  # pylint: disable=try-except-raise
+            tracker = get_tracker_from_scope(scope)
+            if tracker is not None:
+                tracker.set_terminal_hint("client_disconnect")
             raise ClientDisconnect() from error
         except ClientDisconnect:  # pylint: disable=try-except-raise
+            tracker = get_tracker_from_scope(scope)
+            if tracker is not None:
+                tracker.set_terminal_hint("client_disconnect")
             raise
         except asyncio.CancelledError as error:
             cancel_reason = error.args[0] if error.args else None
+            tracker = get_tracker_from_scope(scope)
             if cancel_reason == cancel_error.INFER_TIMEOUT:
+                if tracker is not None:
+                    tracker.set_terminal_hint("timeout")
                 # Overall streaming timeout (infer_timeout) exceeded: stop the upstream
                 # legs first, then surface 504 (JSON pre-commit / SSE post-commit).
                 await self._cancel_and_wait(pump_task, ready_task, reason=cancel_reason)
@@ -210,8 +226,19 @@ class CommitAwareStreamingResponse(Response):
                 else:
                     await self._send_precommit_error(scope, receive, send, timeout_error)
             else:
+                if tracker is not None:
+                    if cancel_reason == cancel_error.CLIENT_DISCONNECT:
+                        tracker.set_terminal_hint("client_disconnect")
+                    else:
+                        tracker.set_terminal_hint("cancelled")
                 raise
         except Exception as error:
+            tracker = get_tracker_from_scope(scope)
+            if tracker is not None:
+                if isinstance(error, (TimeoutError, httpx.TimeoutException)):
+                    tracker.set_terminal_hint("timeout")
+                else:
+                    tracker.set_terminal_hint("failed")
             if self.controller.committed:
                 await self._send_committed_error(send, error)
             else:
@@ -225,6 +252,8 @@ class CommitAwareStreamingResponse(Response):
         self,
         send: Send,
         terminal: asyncio.Future[Exception | None],
+        *,
+        tracker=None,
     ) -> None:
         try:
             async for item in self._raw_iterator:
@@ -234,9 +263,16 @@ class CommitAwareStreamingResponse(Response):
         except asyncio.CancelledError:  # pylint: disable=try-except-raise
             raise
         except OSError as error:
+            if tracker is not None:
+                tracker.set_terminal_hint("client_disconnect")
             raise ClientDisconnect() from error
         except Exception as error:
             if self.controller.commit_sealed:
+                if tracker is not None:
+                    if isinstance(error, (TimeoutError, httpx.TimeoutException)):
+                        tracker.set_terminal_hint("timeout")
+                    else:
+                        tracker.set_terminal_hint("failed")
                 await self.controller.wait_committed()
                 await self._send_committed_error(send, error)
             elif not terminal.done():

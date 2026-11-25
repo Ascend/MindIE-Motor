@@ -59,6 +59,9 @@ from motor.coordinator.router.workload import WorkloadActionHandler
 from motor.coordinator.router.upstream_error import UpstreamHTTPError, read_bounded_response_body
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.scheduling import InstanceReadiness
+from motor.coordinator.metrics.request_lifecycle_metrics import (
+    get_request_lifecycle_metrics,
+)
 
 logger = get_logger(__name__)
 
@@ -304,9 +307,25 @@ class BaseRouter(ABC):
                 workload_action=WorkloadAction.RELEASE_TOKENS,
                 workload_change=Workload(active_tokens=-workload.active_tokens),
             )
+            t_rel = time.perf_counter()
             try:
                 ok = await self._scheduler.update_workload(params)
+            except TimeoutError as e:
+                get_request_lifecycle_metrics().record_resource_release(
+                    key[-1], "timeout", time.perf_counter() - t_rel, retries=1
+                )
+                self.logger.error(
+                    "Reclaim release RPC timed out req_id=%s instance_id=%s endpoint_id=%s error=%r",
+                    self.req_info.req_id,
+                    instance_id,
+                    endpoint_id,
+                    e,
+                )
+                continue
             except Exception as e:
+                get_request_lifecycle_metrics().record_resource_release(
+                    key[-1], "failed", time.perf_counter() - t_rel, retries=1
+                )
                 self.logger.error(
                     "Reclaim release RPC raised req_id=%s instance_id=%s endpoint_id=%s error=%r",
                     self.req_info.req_id,
@@ -315,6 +334,12 @@ class BaseRouter(ABC):
                     e,
                 )
                 continue
+            get_request_lifecycle_metrics().record_resource_release(
+                key[-1],
+                "success" if ok else "failed",
+                time.perf_counter() - t_rel,
+                retries=1,
+            )
             if not ok:
                 self.logger.error(
                     "Reclaim release rejected by scheduler req_id=%s instance_id=%s endpoint_id=%s",
@@ -572,6 +597,9 @@ class BaseRouter(ABC):
         )
 
         self.first_chunk_sent = False
+        tracker = getattr(self.req_info, "_lifecycle_tracker", None)
+        if tracker is not None:
+            tracker.enter_executing()
         trace_obj.add_trace_event(f"Begin to stream: {client.base_url}/{api}, {client.timeout}", is_meta=self.is_meta)
         self._log_sched_to_p_if_needed()
         t0_forward = time.perf_counter()
@@ -652,6 +680,9 @@ class BaseRouter(ABC):
             The response from the endpoint
         """
         trace_obj = self.req_info.trace_obj
+        tracker = getattr(self.req_info, "_lifecycle_tracker", None)
+        if tracker is not None:
+            tracker.enter_executing()
         headers = {'Content-Type': 'application/json', 'X-Request-Id': self._forward_request_id(req_data)}
         trace_obj.set_trace_attribute("server.path", api, self.is_meta)
         headers.update(trace_obj.get_trace_headers_dict(self.is_meta))
@@ -868,8 +899,24 @@ class BaseRouter(ABC):
         )
         # Shield covers finalize_release too: it is the only gate against re-sending this release,
         # so it must not be interrupted by the same cancellation that shields update_workload.
+        t_rel = time.perf_counter()
         with CancelScope(shield=True):
-            ok = await self._scheduler.update_workload(params)
+            try:
+                ok = await self._scheduler.update_workload(params)
+            except TimeoutError:
+                if action == WorkloadAction.RELEASE_TOKENS:
+                    get_request_lifecycle_metrics().record_resource_release(
+                        role, "timeout", time.perf_counter() - t_rel
+                    )
+                raise
+            except Exception:
+                if action == WorkloadAction.RELEASE_TOKENS:
+                    get_request_lifecycle_metrics().record_resource_release(role, "failed", time.perf_counter() - t_rel)
+                raise
+            if action == WorkloadAction.RELEASE_TOKENS:
+                get_request_lifecycle_metrics().record_resource_release(
+                    role, "success" if ok else "failed", time.perf_counter() - t_rel
+                )
             if ok and action == WorkloadAction.RELEASE_TOKENS:
                 try:
                     await self._workload_action_handler.finalize_release(self.req_info.req_id, role)
