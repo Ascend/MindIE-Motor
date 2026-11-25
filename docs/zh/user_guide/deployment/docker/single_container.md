@@ -1,7 +1,5 @@
 # 基于Docker的单容器服务部署
 
-本文档指导用户基于Docker在单机上完成推理服务的部署，在1台服务器、1个容器内完成整个PD分离的部署，适用于小模型（权重小于100GB）场景，该部署方式不依赖K8s。大模型或多机部署可参见[基于Docker的多容器PD分离服务部署](host/pd_disaggregation_deployment.md)。KV池化需要单独的kv_store容器，请使用宿主机部署并参考[开启KV池化（可选）](./host/pd_disaggregation_deployment.md#开启kv池化可选)。
-
 >[!NOTE] 说明
 >单容器部署中，Prefill与Decode在同1个容器、同1台机器上，不支持Ascend 950PR系列产品与Ascend 950DT系列产品混合组网。混合组网请使用[基于Docker的多容器PD分离服务部署](./host/pd_disaggregation_deployment.md#启动服务)，Prefill命令放到Ascend 950PR系列产品上，Decode命令放到Ascend 950DT系列产品上。
 
@@ -57,15 +55,21 @@
      IMAGE="<镜像名或镜像ID>"
      # 创建一个未启动的临时容器，并记录容器ID
      cid=$(docker create "$IMAGE")
-     # 把容器中/tmp/motor/examples目录复制到宿主机的当前目录
-     docker cp "$cid:/tmp/motor/examples" ./examples
+     # 把容器中/tmp/motor/examples目录复制到/home/examples
+     docker cp "$cid:/tmp/motor/examples" /home/examples
      # 删除以上创建的临时容器$cid，清理资源，避免残留无用容器
      docker rm "$cid"
      ```
 
 - 方式二：在已有镜像中安装MindIE Motor
 
-     git clone代码仓后，部署脚本位于`MindIE-Motor/examples`目录。
+     git clone代码仓后，部署脚本位于`MindIE-Motor/examples`。请将该目录移动或软链接到`/home/examples`：
+
+     ```bash
+     mv MindIE-Motor/examples /home/examples
+     # 或软链接
+     ln -s "$(pwd)/MindIE-Motor/examples" /home/examples
+     ```
 
 ## 配置服务化参数
 
@@ -108,18 +112,32 @@
    }
    ```
 
-   deploy_mode：必须为single_container。
+   **注意**：deploy_mode：必须为single_container。
+
+   **说明**：如果需要开启render、kv亲和、池化等功能，直接参照对应文档修改配置文件即可，部署单容器服务时功能将自动生效。
+
+   - render：[开启Render功能](./container/pd_disaggregation_deployment.md#准备服务启动脚本)
+   - kv亲和：[KV Cache 亲和性调度](../../features/inference_scheduling/kvcache_affinity.md)
+   - 池化：[KV池化能力](../../features/inference_scheduling/kv_cache_store/README.md)
 
 3. 同步部署脚本配置。
 
-    将准备好的配置文件（user_config.json、env.json）存放至部署脚本的model_configs/vllm目录下。
+   进入examples目录，将所选模型目录下的 user_config.json、env.json 粘贴到./config目录，再修改后保存：
+
+   ```bash
+   cd /home/examples
+   mkdir -p ./config
+   # 将所选模型目录下的 user_config.json、env.json 粘贴到./config目录下
+   vim ./config/user_config.json
+   vim ./config/env.json
+   ```
 
 ## 启动服务
 
-在部署服务器的`examples/deployer`目录下执行以下命令启动服务：
+在部署服务器的`/home/examples/deployer`目录下执行以下命令启动服务：
 
 ```bash
-python3 docker_deploy.py --config_dir ../../model_configs/vllm \
+python3 docker_deploy.py --config_dir /home/examples/config \
   --container-name motor-single --devices 0,1 \
   --pod-ip <本机IP地址> --nic-name <本机主网卡名称>
 ```
@@ -130,7 +148,7 @@ python3 docker_deploy.py --config_dir ../../model_configs/vllm \
 
 | 参数 | 说明 |
 | :--- | :--- |
-| --config_dir | user_config.json和env.json配置文件所在目录。 |
+| --config_dir | user_config.json和env.json配置文件所在目录，即`/home/examples/config`。 |
 | --container-name | 容器名，可自定义。 |
 | --devices | 本容器挂载的NPU卡号，如`0,1`。如不填写，默认挂载服务器所有卡。 |
 | --pod-ip | 当前服务器的IP地址。<br>可执行`ip -4 route get <IP>`命令查看，`src`字段后面是`--pod-ip`值。 |
@@ -163,7 +181,7 @@ curl -X POST http://127.0.0.1:1025/v1/chat/completions \
 
 ```output
 容器内服务已终止，可执行以下命令重新部署服务。
-python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --start --container-name motor-single --pod-ip <本机 IP地址> --nic-name <本机主网卡名称>
+python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/config --start --container-name motor-single --pod-ip <本机 IP地址> --nic-name <本机主网卡名称>
 运行日志:examples/motor_workspace/motor-single/single/log/docker-single-<时间戳>.log
 ```
 
