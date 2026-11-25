@@ -115,3 +115,83 @@ def test_main_updates_scaling_policy_without_deploy_config(monkeypatch):
     deploy_module.main()
 
     assert updated == ["policy.json"]
+
+
+@pytest.mark.parametrize("mode", ["rbg", "infer_service_set", "multi_deployment"])
+def test_hybrid_main_resolves_infer_template_only_for_infer_mode(tmp_path, monkeypatch, mode):
+    config = {
+        "motor_deploy_config": {"deploy_mode": mode, "hybrid_instances_num": 1},
+        "motor_engine_union_config": {},
+    }
+    (tmp_path / "user_config.json").write_text(json.dumps(config), encoding="utf-8")
+    (tmp_path / "env.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        deploy_module.sys, "argv", ["deploy.py", "--config_dir", str(tmp_path), "--skip-check", "--dry-run"]
+    )
+    monkeypatch.setattr(deploy_module.C, "OUTPUT_ROOT_PATH", str(tmp_path / "output"))
+    for name in (
+        "validate_reserved_labels",
+        "validate_kv_cache_store_config",
+        "validate_container_snapshot_config",
+        "validate_instance_nums",
+    ):
+        monkeypatch.setattr(deploy_module, name, lambda *_: None)
+    checked = []
+    monkeypatch.setattr(deploy_module, "validate_pd_hybrid_config", lambda *_: checked.append("config"))
+
+    def resolve(*_):
+        assert mode == "infer_service_set", "Non-Infer deployment must not resolve the Infer template"
+        return "infer.yaml"
+
+    monkeypatch.setattr(deploy_module, "resolve_infer_service_template", resolve)
+    monkeypatch.setattr(
+        deploy_module, "validate_pd_hybrid_infer_service_template", lambda _, path: checked.append(path)
+    )
+    monkeypatch.setattr(deploy_module, "deploy_services", lambda *a, **kw: checked.append("deploy"))
+    deploy_module.main()
+    assert checked == (["config", "infer.yaml", "deploy"] if mode == "infer_service_set" else ["config", "deploy"])
+
+
+@pytest.mark.parametrize("mode", ["infer_service_set", "multi_deployment", "single_container", "rbg"])
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--update_config", "--update_instance_num"],
+        ["--dry-run", "--update_config"],
+        ["--dry-run", "--update_instance_num"],
+    ],
+)
+def test_update_argument_checks_are_rbg_only(monkeypatch, tmp_path, mode, flags):
+    config = {"motor_deploy_config": {"deploy_mode": mode, "job_id": "demo"}}
+    (tmp_path / "user_config.json").write_text(json.dumps(config), encoding="utf-8")
+    (tmp_path / "env.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(deploy_module.sys, "argv", ["deploy.py", "--config_dir", str(tmp_path), "--skip-check", *flags])
+    for name in (
+        "validate_service_identity",
+        "validate_reserved_labels",
+        "validate_kv_cache_store_config",
+        "validate_container_snapshot_config",
+        "validate_instance_nums",
+        "sync_decode_first_token_timeout_from_env",
+    ):
+        monkeypatch.setattr(deploy_module, name, lambda *a, **kw: None)
+    monkeypatch.setattr(deploy_module, "output_root", lambda: str(tmp_path / "output"))
+    calls = []
+    monkeypatch.setattr(deploy_module, "handle_update_config", lambda *a: calls.append("config"))
+    monkeypatch.setattr(deploy_module, "handle_update_instance_num", lambda *a: calls.append("scale"))
+    if mode == "rbg":
+        with pytest.raises(ValueError, match="RBG"):
+            deploy_module.main()
+        assert not calls
+    else:
+        deploy_module.main()
+        assert calls == (["config"] if "--update_config" in flags else ["scale"])
+
+
+@pytest.mark.parametrize("other", ["--update_config", "--update_instance_num", "--dry-run"])
+def test_policy_flags_are_forwarded_after_parsing(monkeypatch, other):
+    calls = []
+    monkeypatch.setattr(deploy_module.sys, "argv", ["deploy.py", "--update_scaling_policy", "policy.json", other])
+    monkeypatch.setattr(deploy_module, "update_scaling_policy", lambda path, **options: calls.append((path, options)))
+    deploy_module.main()
+    assert calls == [("policy.json", {"dry_run": other == "--dry-run", "other_update": other != "--dry-run"})]
