@@ -699,3 +699,75 @@ def resolve_and_rewrite_nodeports(
 
     _log_final_port_summary(planned, remapping)
     return remapping
+
+
+def check_rbg_nodeports(services: list[dict], *, current: dict[str, dict]) -> None:
+    """Validate the RBG resource plan's NodePorts without allocating or changing them.
+
+    Current objects must already have passed the caller's deployment/owner checks.
+    Their UID is also checked against the cluster-wide occupancy response.
+    """
+    requested = {}
+    targets = set()
+    for service in services:
+        meta = service["metadata"]
+        target = (meta["namespace"], meta["name"])
+        if target in targets:
+            raise ValueError(f"Duplicate Service in NodePort plan: {target}")
+        targets.add(target)
+        for port in service["spec"].get("ports", []):
+            value = port.get("nodePort")
+            if value is None:
+                continue
+            if (not isinstance(value, int) or isinstance(value, bool)) or not 1 <= value <= 65535:
+                raise ValueError(f"Invalid nodePort for Service/{target}: {value!r}")
+            # Kubernetes allows sharing a nodePort across protocols in one Service.
+            key = (value, port.get("protocol", "TCP"))
+            if key in requested:
+                raise ValueError(f"Duplicate planned NodePort {key}: {requested[key]} and {target}")
+            if any(v == value and owner != target for (v, _), owner in requested.items()):
+                raise ValueError(f"NodePort {value} is shared by different planned Services")
+            requested[key] = target
+    if not requested:
+        return
+    try:
+        result = subprocess.run(
+            [_KUBECTL, f"--request-timeout={C.RBG_KUBECTL_REQUEST_TIMEOUT}", "get", "services", "-A", "-o", "json"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"RBG NodePort query failed: {exc}") from exc
+    if result.returncode:
+        raise RuntimeError(f"RBG NodePort query failed: {result.stderr or result.stdout}")
+    try:
+        items = json.loads(result.stdout)["items"]
+        if not isinstance(items, list):
+            raise TypeError("items must be a list")
+        for obj in items:
+            meta = obj["metadata"]
+            target = (meta["namespace"], meta["name"])
+            for port in obj["spec"].get("ports", []):
+                value = port.get("nodePort")
+                if value is None:
+                    continue
+                if not isinstance(value, int) or isinstance(value, bool):
+                    raise ValueError("Invalid online nodePort")
+                if not any(v == value for v, _ in requested):
+                    continue
+                same_service = all(
+                    owner == target for (requested_port, _), owner in requested.items() if requested_port == value
+                )
+                own = current.get(meta["name"]) if same_service else None
+                if (
+                    not own
+                    or not meta.get("uid")
+                    or own["metadata"].get("uid") != meta["uid"]
+                    or own["metadata"].get("resourceVersion") != meta.get("resourceVersion")
+                    or own["metadata"].get("namespace") != meta["namespace"]
+                ):
+                    raise ValueError(f"NodePort {value} occupied by unverified Service/{target}")
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError(f"RBG NodePort check failed: {exc}") from exc

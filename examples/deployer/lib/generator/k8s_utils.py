@@ -17,13 +17,18 @@ import subprocess
 
 import lib.constant as C
 from lib.prepare_utils import kubectl_from_file_args
-from lib.service_identity import configmap_name, output_root, retarget_service_accounts, scope_rbac
+from lib.service_identity import (
+    configmap_name,
+    output_root,
+    retarget_service_accounts,
+    scope_rbac,
+)
 from lib.utils import (
     get_coordinator_service_name,
-    logger,
-    safe_exec_cmd,
     load_yaml,
+    logger,
     pipe_kubectl,
+    safe_exec_cmd,
 )
 
 g_controller_service = "mindie-motor-controller-service"
@@ -428,6 +433,122 @@ def get_baseline_config_from_configmap(job_id):
         return json.loads(data[C.DATA]["user_config.json"])
     except (RuntimeError, json.JSONDecodeError, KeyError):
         return None
+
+
+def get_rbg_scaling_current(rbg: dict) -> dict:
+    """Read and verify the live RBG's Policy/HPA resources (not an atomic snapshot).
+
+    Returns exactly policy (native object or None) and hpas (role -> native HPA).
+    Missing resources differ from API/identity errors, which always propagate.
+    Callers must refresh and revalidate before writes; this function never writes.
+    """
+
+    metadata = rbg["metadata"]
+    namespace, name, uid = metadata["namespace"], metadata["name"], metadata["uid"]
+    roles = {role["name"] for role in rbg["spec"]["roles"]}
+
+    def validate(obj: dict, kind: str, api: str) -> None:
+        meta = obj["metadata"]
+        invalid_identity = (
+            (obj.get("kind") != kind)
+            or (obj.get("apiVersion") != api)
+            or (meta.get("namespace") != namespace)
+            or (not meta.get("name"))
+        )
+        if (
+            invalid_identity
+            or (not meta.get("uid"))
+            or (not meta.get("resourceVersion"))
+            or (meta.get("deletionTimestamp"))
+        ):
+            raise ValueError(f"Invalid live {kind} in RBG scaling snapshot")
+
+    validate(rbg, C.RBG_KIND, C.RBG_API_VERSION)
+    if metadata.get("labels", {}).get(C.RBG_MANAGED_LABEL) != C.RBG_MANAGED_VALUE or (
+        metadata.get("labels", {}).get(C.RBG_GROUP_LABEL) != name
+    ):
+        raise ValueError("RBG scaling snapshot requires a managed RBG")
+
+    def query(resource: str, object_name: str | None = None) -> dict | list[dict] | None:
+        args = ["kubectl", f"--request-timeout={C.RBG_KUBECTL_REQUEST_TIMEOUT}", "get", resource]
+        if object_name:
+            args.extend([object_name, "--ignore-not-found=true"])
+        output = run_cmd_get_output([*args, "-n", namespace, "-o", "json"])
+        if object_name and not output:
+            return None
+        value = json.loads(output)
+        if object_name:
+            if value["metadata"]["name"] != object_name:
+                raise ValueError("Scaling snapshot query returned a different object")
+            return value
+        if not isinstance(value.get("items"), list):
+            raise TypeError("Invalid scaling snapshot list response")
+        return value["items"]
+
+    def managed_attachment(obj: dict) -> None:
+        meta = obj["metadata"]
+        labels = meta.get("labels", {})
+        owners = meta.get("ownerReferences", [])
+        if (
+            labels.get(C.RBG_MANAGED_LABEL) != C.RBG_MANAGED_VALUE
+            or labels.get(C.RBG_GROUP_LABEL) != name
+            or (
+                len(owners) != 1
+                or any(
+                    owners[0].get(key) != expected
+                    for key, expected in {
+                        "apiVersion": C.RBG_API_VERSION,
+                        "kind": C.RBG_KIND,
+                        "name": name,
+                        "uid": uid,
+                    }.items()
+                )
+            )
+        ):
+            raise ValueError("Unverified Policy/HPA ownership in scaling snapshot")
+
+    policy = query(C.RBG_POLICY_RESOURCE, name)
+    if policy is not None:
+        validate(policy, C.RBG_POLICY_KIND, C.RBG_API_VERSION)
+        managed_attachment(policy)
+    adapters = query(C.RBG_ADAPTER_RESOURCE)
+    by_name = {obj["metadata"]["name"]: obj for obj in adapters}
+    hpas = {}
+    for hpa in query(C.RBG_HPA_RESOURCE):
+        target = hpa.get("spec", {}).get("scaleTargetRef", {})
+        claims_group = hpa["metadata"].get("labels", {}).get(C.RBG_GROUP_LABEL) == name
+        if target.get("kind") != C.RBG_SCALING_ADAPTER_KIND:
+            if claims_group:
+                raise ValueError("Managed HPA does not target a ScalingAdapter")
+            continue
+        adapter = by_name.get(target.get("name"))
+        if adapter is None:
+            raise ValueError("HPA targets a missing ScalingAdapter; ownership is ambiguous")
+        reference = adapter.get("spec", {}).get("scaleTargetRef", {})
+        if reference.get("name") != name:
+            if claims_group:
+                raise ValueError("Managed HPA targets a different RBG")
+            continue
+        validate(adapter, C.RBG_SCALING_ADAPTER_KIND, C.RBG_API_VERSION)
+        if not any(
+            owner.get("apiVersion") == C.RBG_API_VERSION
+            and owner.get("kind") == C.RBG_KIND
+            and owner.get("name") == name
+            and owner.get("uid") == uid
+            for owner in adapter["metadata"].get("ownerReferences", [])
+        ):
+            raise ValueError("ScalingAdapter does not belong to the current RBG UID")
+        validate(hpa, C.RBG_HPA_KIND, C.RBG_HPA_API_VERSION)
+        managed_attachment(hpa)
+        if target.get("apiVersion") != C.RBG_API_VERSION:
+            raise ValueError("HPA target API version mismatch")
+        role = reference.get("role")
+        if role not in roles or role in hpas:
+            raise ValueError("Unknown or duplicate HPA role in scaling snapshot")
+        if target.get("name") != f"{name}-{role}":
+            raise ValueError("ScalingAdapter name must be <rbg-name>-<role-name>")
+        hpas[role] = hpa
+    return {"policy": policy, "hpas": hpas}
 
 
 def apply_configmap(create_cmd):

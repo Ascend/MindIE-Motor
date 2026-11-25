@@ -7,7 +7,10 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
+
 import os
+import re
+from pathlib import Path
 
 GREEN = '\033[32m'
 RESET = '\033[0m'
@@ -192,10 +195,16 @@ DEPLOY_YAML_ROOT_PATH = "./yaml_template"
 OUTPUT_ROOT_PATH = "./output_yamls"
 SELECTOR = "selector"
 DEPLOY_MODE_INFER_SERVICE_SET = "infer_service_set"
+DEPLOY_MODE_RBG = "rbg"
 DEPLOY_MODE_MULTI_DEPLOYMENT_YAML = "multi_deployment"
 DEPLOY_MODE_SINGLE_CONTAINER = "single_container"
 DEPLOY_MODE_CONFIG_KEY = "deploy_mode"
-VALID_DEPLOY_MODES = (DEPLOY_MODE_INFER_SERVICE_SET, DEPLOY_MODE_MULTI_DEPLOYMENT_YAML, DEPLOY_MODE_SINGLE_CONTAINER)
+VALID_DEPLOY_MODES = (
+    DEPLOY_MODE_RBG,
+    DEPLOY_MODE_INFER_SERVICE_SET,
+    DEPLOY_MODE_MULTI_DEPLOYMENT_YAML,
+    DEPLOY_MODE_SINGLE_CONTAINER,
+)
 MATCHLABELS = "matchLabels"
 LOGGING_CONFIG = "logging_config"
 HOST_PATH = "hostPath"
@@ -456,6 +465,9 @@ MIN_BOX_WIDTH = 88
 MAX_BOX_WIDTH = 140
 SCHEDULING_QUEUE = "scheduling_queue"
 COORDINATOR_SERVICE_NAME = "coordinator_service_name"
+COORDINATOR_INFER_SERVICE_PORT = 1025
+COORDINATOR_MANAGEMENT_SERVICE_PORT = 1026
+COORDINATOR_OBSERVABILITY_SERVICE_PORT = 1027
 COORDINATOR_INFER_NODE_PORT = "coordinator_infer_node_port"
 COORDINATOR_OBS_NODE_PORT = "coordinator_obs_node_port"
 CONTROLLER_OBSERVABILITY_NODE_PORT = "controller_observability_node_port"
@@ -672,3 +684,109 @@ ENTER_DOCKER_RUN_KVS = """docker run -it --name "$NAME" -u root \\
 """
 
 ENTER_DOCKER_RUN_IMAGE_BASH = '"$IMAGE" bash'
+
+
+# RoleBasedGroup deployment contracts shared by rendering, scaling and lifecycle.
+RBG_API_GROUP = "workloads.x-k8s.io"
+RBG_API_VERSION_NAME = "v1alpha2"
+RBG_API_VERSION = f"{RBG_API_GROUP}/{RBG_API_VERSION_NAME}"
+RBG_PREFIX = f"rbg.{RBG_API_GROUP}/"
+RBG_GROUP_LABEL = RBG_PREFIX + "group-name"
+RBG_ROLE_LABEL = RBG_PREFIX + "role-name"
+RBG_INDEX_LABEL = RBG_PREFIX + "role-instance-index"
+RBG_GANG_ANNOTATION = RBG_PREFIX + "group-gang-scheduling"
+RBG_VOLCANO_QUEUE_ANNOTATION = RBG_PREFIX + "group-gang-scheduling-volcano-queue"
+ENV_KV_CONDUCTOR_PORT = "KV_CONDUCTOR_PORT"
+ENV_MOTOR_INSTANCE_PORTS_ENABLE = "MOTOR_INSTANCE_PORTS_ENABLE"
+RBG_SERVICE_ID_ANNOTATION = "motor-deployer/service-id"
+RBG_MANAGED_LABEL = "app.kubernetes.io/managed-by"
+RBG_MANAGED_VALUE = "motor-deployer"
+RBG_METRIC_LABEL = "infer.huawei.com/inferservice-name"
+RBG_RECREATE = "RecreateRoleInstanceOnPodRestart"
+RBG_ENGINE_PREFIXES = {ROLE_PREFILL: "p", ROLE_DECODE: "d", ROLE_ENCODE: "e", ROLE_UNION: "hybrid"}
+RBG_ROLE_CONFIGS = {
+    CONTROLLER: MOTOR_CONTROLLER_CONFIG,
+    COORDINATOR: MOTOR_COORDINATOR_CONFIG,
+    **{name: f"motor_engine_{name}_config" for name in RBG_ENGINE_PREFIXES},
+    ROLE_KV_STORE: KV_CACHE_STORE_CONFIG,
+    ROLE_KV_CONDUCTOR: KV_CONDUCTOR_CONFIG,
+    "mf-store": MF_STORE_CONFIG,
+}
+
+RBG_DEPLOYER_ROOT = Path(__file__).resolve().parents[1]
+RBG_TEMPLATE_ROOT = RBG_DEPLOYER_ROOT / "yaml_template"
+RBG_IO_KEYS = {
+    FAULT_SCHEDULING_LABEL,
+    "fault-retry-times",
+    POD_RESCHEDULING_LABEL,
+    "inferserviceid",
+}
+
+RBG_PROTECTED_ENV = {
+    ENV_ROLE,
+    ENV_JOB_NAME,
+    "INFER_SERVICE_INDEX",
+    "INFER_SERVICE_NAME",
+    "INSTANCE_INDEX",
+    "INSTANCE_ROLE",
+    "MOTOR_DEPLOY_MODE",
+    ENV_CONTROLLER_SERVICE,
+    ENV_COORDINATOR_SERVICE,
+    ENV_COORDINATOR_INFER_SERVICE,
+    ENV_COORDINATOR_OBS_SERVICE,
+    ENV_KVS_MASTER_SERVICE,
+    ENV_KV_CONDUCTOR_SERVICE,
+    ENV_ASCEND_MF_STORE_URL,
+    ENV_ENGINE_TYPE,
+    ENV_MODEL_NAME,
+    ENV_NORTH_PLATFORM,
+    ENV_SERVICE_ID,
+    ENV_KV_CONDUCTOR_PORT,
+}
+
+RBG_FUNCTIONS = {
+    "common.sh": [(MOTOR_COMMON_ENV, "set_common_env")],
+    "controller.sh": [("motor_controller_env", "set_controller_env")],
+    "coordinator.sh": [("motor_coordinator_env", "set_coordinator_env")],
+    "engine.sh": [
+        (f"motor_engine_{role}_env", f"set_{role}_env") for role in (ROLE_ENCODE, ROLE_PREFILL, ROLE_DECODE, ROLE_UNION)
+    ],
+    "kv_cache_store.sh": [("motor_kv_cache_store_env", "set_kv_store_env")],
+    "kv_conductor.sh": [("motor_kv_conductor_env", "set_kv_conductor_env")],
+    "mf_store.sh": [("motor_mf_store_env", "set_mf_store_env")],
+    "coordinator_controller.sh": [
+        ("motor_controller_env", "set_controller_env"),
+        ("motor_coordinator_env", "set_coordinator_env"),
+    ],
+}
+
+RBG_HPA_API_VERSION = "autoscaling/v2"
+RBG_HPA_KIND = "HorizontalPodAutoscaler"
+RBG_SCALING_ADAPTER_KIND = "RoleBasedGroupScalingAdapter"
+RBG_ENGINE_ROLES = frozenset(RBG_ENGINE_PREFIXES)
+RBG_PERCENTAGE_PATTERN = re.compile(r"[0-9]+%")
+RBG_KUBECTL_REQUEST_TIMEOUT = "30s"
+RBG_INSTANCE_KEYS_BY_ROLE = {
+    ROLE_ENCODE: E_INSTANCES_NUM,
+    ROLE_PREFILL: P_INSTANCES_NUM,
+    ROLE_DECODE: D_INSTANCES_NUM,
+    ROLE_UNION: HYBRID_INSTANCES_NUM,
+}
+
+RBG_RESOURCE = f"rolebasedgroups.{RBG_API_GROUP}"
+RBG_HPA_RESOURCE = "horizontalpodautoscalers.autoscaling"
+MOONCAKE_ABORT_TIMEOUT_ENV = "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT"
+MOTOR_ENGINE_PREFILL_ENV = "motor_engine_prefill_env"
+EXCEPTION_CONFIG = "exception_config"
+DECODE_STREAM_TIMEOUT_FIELD = "decode_first_token_timeout"
+RBG_KIND = "RoleBasedGroup"
+RBG_POLICY_KIND = "CoordinatedPolicy"
+RBG_ADAPTER_RESOURCE = f"rolebasedgroupscalingadapters.{RBG_API_GROUP}"
+RBG_POLICY_RESOURCE = f"coordinatedpolicies.{RBG_API_GROUP}"
+
+RBG_ROLE_INSTANCE_RESOURCE = f"roleinstances.{RBG_API_GROUP}"
+RBG_ROLE_INSTANCE_SET_RESOURCE = f"roleinstancesets.{RBG_API_GROUP}"
+RBG_DESCENDANT_RESOURCES = ",".join((RBG_ROLE_INSTANCE_RESOURCE, RBG_ROLE_INSTANCE_SET_RESOURCE, RBG_ADAPTER_RESOURCE))
+RBG_COORDINATION_ANNOTATION = "motor-deployer/coordination-request"
+RBG_STARTUP_DIGEST_ANNOTATION = "motor-deployer/startup-digest"
+RBG_TEMPLATE_ROLE_LABEL = "motor-deployer/template-role"

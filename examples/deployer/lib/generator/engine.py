@@ -52,14 +52,16 @@ def _apply_a5_schedule_policy_annotation(template_metadata, hardware_type):
     )
 
 
-def _append_a5_host_path_volumes(pod_spec, container):
+def _append_a5_host_path_volumes(pod_spec, container, *, host_nic_overlay=None):
     """Mount A5 base hostPaths; optionally append host-nic extras when overlay is on."""
     existing_volume_names = {volume[C.NAME] for volume in pod_spec.get(C.VOLUMES, []) if C.NAME in volume}
     existing_mount_names = {mount[C.NAME] for mount in container.get(C.VOLUME_MOUNTS, []) if C.NAME in mount}
+    if host_nic_overlay is None:
+        host_nic_overlay = k8s_utils.g_a5_host_nic_overlay
     volume_defs = list(C.A5_HOST_PATH_VOLUMES)
     # Opt-in only: UBOE/UBG (AGRC protocol_desc). roce:device does not opt in.
     # UBOE/UB must not mount hixlep; that path builds endpoints for the wrong cards.
-    if k8s_utils.g_a5_host_nic_overlay:
+    if host_nic_overlay:
         volume_defs = [item for item in volume_defs if item.get(C.NAME) != "hixlep"]
         volume_defs.extend(C.A5_HOST_PATH_VOLUMES_HOST_NIC)
     for volume_def in volume_defs:
@@ -114,7 +116,7 @@ def apply_a5_dns_config(pod_spec, deploy_config):
     )
 
 
-def apply_a5_engine_pod_config(pod_spec, container, deploy_config):
+def apply_a5_engine_pod_config(pod_spec, container, deploy_config, *, host_nic_overlay=None, ubg_host_network=None):
     """Apply A5-specific pod network and hostPath settings to engine pods.
 
     Main path (default): base hostPath + dns ndots only — same as before.
@@ -127,13 +129,17 @@ def apply_a5_engine_pod_config(pod_spec, container, deploy_config):
     if hardware_type not in C.HARDWARE_TYPE_A5 and hardware_type not in C.HARDWARE_TYPE_A3:
         return
     if hardware_type in C.HARDWARE_TYPE_A5:
-        _append_a5_host_path_volumes(pod_spec, container)
-        if k8s_utils.g_a5_host_nic_overlay:
+        if host_nic_overlay is None:
+            host_nic_overlay = k8s_utils.g_a5_host_nic_overlay
+        if ubg_host_network is None:
+            ubg_host_network = k8s_utils.g_a5_ubg_host_network
+        _append_a5_host_path_volumes(pod_spec, container, host_nic_overlay=host_nic_overlay)
+        if host_nic_overlay:
             # Required for Ascend950 TsdOpen/set_device (same as verified Docker --privileged).
             sec = container.setdefault(C.SECURITY_CONTEXT, {})
             sec[C.PRIVILEGED] = True
             sec["allowPrivilegeEscalation"] = True
-            if k8s_utils.g_a5_ubg_host_network:
+            if ubg_host_network:
                 # ub_rtp:device looks up physical cards in the host netns.
                 pod_spec[C.HOST_NETWORK] = True
                 pod_spec[C.DNS_POLICY] = C.DNS_POLICY_CLUSTER_FIRST_WITH_HOST_NET

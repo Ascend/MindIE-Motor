@@ -197,29 +197,32 @@ def normalize_kv_cache_store_config(user_config):
     return kv_config
 
 
-def gen_kv_store_env(kv_store_config):
+def gen_kv_store_env(kv_store_config, *, service_name=None, external=None, external_port=None):
+    service_name = k8s_utils.g_kv_store_service if service_name is None else service_name
+    external = k8s_utils.g_kv_store_external if external is None else external
+    external_port = k8s_utils.g_kv_cache_store_port if external_port is None else external_port
     service_port = kv_store_config.get(C.KV_CACHE_STORE_PORT)
     backend = kv_store_config.get(C.KV_STORE_BACKEND, C.DEFAULT_KV_STORE_BACKEND)
 
-    if k8s_utils.g_kv_store_external:
+    if external:
         # The master is external: no local master/eviction flags are needed. The legacy
         # host/port globals keep the same contract as k8s_utils.build_kv_store_env_items():
         # a plain "host:port" address exposes one host, an HA connection string does not,
         # because no single host exists. Coordinator kv-store metrics and the kv-events pool
         # registration still read them, so only the eviction flags are dropped here.
         kv_store_env = []
-        if k8s_utils.g_kv_store_service:
-            kv_store_env.append({C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_store_service})
+        if service_name:
+            kv_store_env.append({C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: service_name})
             # The port only makes sense together with the single host. An HA connection string
             # has no host, so it must not expose a port derived from the module global.
-            kv_store_env.append({C.NAME: C.ENV_KV_CACHE_STORE_PORT, C.VALUE: str(k8s_utils.g_kv_cache_store_port)})
+            kv_store_env.append({C.NAME: C.ENV_KV_CACHE_STORE_PORT, C.VALUE: str(external_port)})
         kv_store_env.append({C.NAME: C.ENV_KV_STORE_BACKEND, C.VALUE: backend})
         kv_store_env.append({C.NAME: C.ENV_KV_STORE_EXTERNAL, C.VALUE: "1"})
         return kv_store_env
 
     kv_store_env = []
-    if k8s_utils.g_kv_store_service:
-        kv_store_env.append({C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_store_service})
+    if service_name:
+        kv_store_env.append({C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: service_name})
     kv_store_env.extend(
         [
             {C.NAME: C.ENV_KV_STORE_BACKEND, C.VALUE: backend},
