@@ -44,31 +44,15 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
 - 2026 Q3：[Issue链接](https://gitcode.com/Ascend/MindIE-Motor/issues/350) ✅（已完成）
 - 2026 Q4：[Issue链接](https://gitcode.com/Ascend/MindIE-Motor/issues/849) 🚧（开发中）
 
+<a id="service-deployment"></a>
+
 ## 🖥️ 服务部署
 
+推荐的部署方案如下表所示，如需了解全量部署方案（PD 混部、云平台、Slurm等场景）见 [全量部署方式说明](./docs/zh/user_guide/deployment/README.md)。
+
+<p style="font-size:0;line-height:0"><img alt="部署方案对比表" style="vertical-align:top" src="./docs/zh/imgs/deploy/deploy-label.svg" width="8.86%"><img alt="k8s集群部署" style="vertical-align:top" src="./docs/zh/imgs/deploy/deploy-k8s.svg" width="30.36%"><img alt="docker only部署，包含云平台场景" style="vertical-align:top" src="./docs/zh/imgs/deploy/deploy-docker.svg" width="30.36%"><img alt="coordinator only部署" style="vertical-align:top" src="./docs/zh/imgs/deploy/deploy-coordinator.svg" width="30.36%"><img alt="部署教程" style="vertical-align:top" src="./docs/zh/imgs/deploy/deploy-doc-label.svg" width="8.86%"><a href="./docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation"><img alt="查看 k8s集群部署教程" style="vertical-align:top" src="./docs/zh/imgs/deploy/deploy-doc-k8s.svg" width="30.36%"></a><a href="./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md"><img alt="查看 docker only 部署教程" style="vertical-align:top" src="./docs/zh/imgs/deploy/deploy-doc-docker.svg" width="30.36%"></a><a href="./docs/zh/user_guide/deployment/standalone.md"><img alt="查看 coordinator only 部署教程" style="vertical-align:top" src="./docs/zh/imgs/deploy/deploy-doc-coordinator.svg" width="30.36%"></a></p>
+
 <table>
-  <tr>
-    <td valign="top">
-      <table>
-        <tr><th style="font-size:18px" align="center" colspan="2">🎯 部署指导</th></tr>
-        <tr><th align="left" colspan="2">K8s 部署</th></tr>
-        <tr><td align="left" width="320" style="background:#F0EDFF">【推荐】PD 分离（vLLM）</td><td align="center" width="72" style="background:#F0EDFF"><a href="./docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation">链接</a></td></tr>
-        <tr><td align="left" width="320" style="background:#F0EDFF">【推荐】PD 分离（SGLang）</td><td align="center" width="72" style="background:#F0EDFF"><a href="./docs/zh/user_guide/deployment/README.md#k8s-pd-disaggregation-sglang">链接</a></td></tr>
-        <tr><td align="left" width="320">PD 混部</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md">链接</a></td></tr>
-        <tr><th align="left" colspan="2">docker 部署</th></tr>
-        <tr><td align="left" width="320" style="background:#F0EDFF">【推荐】PD分离部署</td><td align="center" width="72" style="background:#F0EDFF"><a href="./docs/zh/user_guide/deployment/docker/host/pd_disaggregation_deployment.md">链接</a></td></tr>
-        <tr><td align="left" width="320">PD混部部署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/host/pd_aggregation_deployment.md">链接</a></td></tr>
-        <tr><td align="left" width="320">云平台（例如：ModelArts）PD分离部署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_disaggregation_deployment.md">链接</a></td></tr>
-        <tr><td align="left" width="320">云平台（例如：ModelArts）PD混部部署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/docker/container/pd_aggregation_deployment.md">链接</a></td></tr>
-        <tr><th align="left" colspan="2">Slurm 部署</th></tr>
-        <tr><td align="left" width="320">Slurm</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/slurm/README.md">链接</a></td></tr>
-        <tr><th align="left" colspan="2">调度器独立部署</th></tr>
-        <tr><td align="left" width="320">Coordinator 独立部署</td><td align="center" width="72"><a href="./docs/zh/user_guide/deployment/standalone.md">链接</a></td></tr>
-      </table>
-    </td>
-    <td class="gap" width="24" style="border:none;padding:0;background:transparent"><img alt="" src="./docs/zh/imgs/gap.png" width="24" height="1"></td>
-    <td valign="top">
-      <table>
          <tr><th id="常用模型" style="font-size:18px" align="center" colspan="5">🤖 常用模型</th></tr>
         <tr>
           <th align="left">模型</th>
@@ -92,9 +76,6 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
        <tr><td>Qwen3-235B</td><td align="center"><a href="./model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="./model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td><td align="center">已完成</td></tr>
         <tr><td colspan="5">适配状态以本表中的 MindIE Motor 配置链接为准。</td></tr>
       </table>
-    </td>
-  </tr>
-</table>
 
 ## ⚙️ 功能介绍
 
