@@ -19,6 +19,9 @@ from motor.common.resources.endpoint import Endpoint, EndpointStatus
 from motor.controller.core.observer import ObserverEvent
 from motor.common.resources.http_msg_spec import EventType
 from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, FtRuntime, get_ft_runtime_store
+from motor.common.discovery.monitor import DiscoveryUnavailable, EndpointSnapshot
+from motor.config.service_discovery import ServiceDiscoveryConfig, ServiceEndpoint
+from motor.controller.api_client.coordinator_api_client import CoordinatorApiClient
 
 
 @pytest.fixture
@@ -828,3 +831,33 @@ def test_engine_abnormal_pause_keeps_roster_and_request_endpoint(event_pusher, c
     assert event_pusher.event_queue.get_nowait().event_type == EventType.DEL
     assert instance.job_name not in event_pusher.instances
     assert event_pusher._serving_snapshot()[0] == []
+
+
+@pytest.mark.parametrize("outcomes", [(True, False, False), (True, None, None)])
+def test_probe_cache_keeps_existing_heartbeat_recovery(event_pusher, monkeypatch, outcomes):
+    """Cached unready or unavailable targets drive the original one-SET recovery."""
+    endpoint = ServiceEndpoint("192.0.2.11", {"management": 1026})
+    monitor = MagicMock()
+    monitor.select.side_effect = [
+        EndpointSnapshot(endpoint, "management", ready=value)
+        if value is not None
+        else DiscoveryUnavailable("No available Coordinator")
+        for value in outcomes
+    ]
+    monkeypatch.setattr(CoordinatorApiClient, "_monitor", monitor)
+    monkeypatch.setattr(
+        CoordinatorApiClient,
+        "discovery_config",
+        ServiceDiscoveryConfig(endpoints={"coordinator": (endpoint,)}),
+    )
+    event_pusher._set_sync_interval = 0
+    with (
+        patch.object(event_pusher.work_condition, "wait", side_effect=[None, None, StopIteration]),
+        patch("motor.controller.api_client.coordinator_api_client.SafeHTTPSClient") as http,
+        pytest.raises(StopIteration),
+    ):
+        event_pusher._coordinator_heartbeat_detector()
+    http.assert_not_called()
+    assert event_pusher.event_queue.get_nowait().event_type == EventType.SET
+    assert event_pusher.event_queue.empty()
+    assert event_pusher._resync_after_hb_loss is (outcomes[-1] is None)

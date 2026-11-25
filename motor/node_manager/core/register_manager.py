@@ -141,6 +141,14 @@ class RegisterManager(ThreadSafeSingleton):
             return
 
         restored_job_name = load_snapshot_metadata(snapshot_metadata_path, "job_name")
+        if ControllerApiClient.uses_probe_discovery():
+            # Static peers come from this deployment's configuration, never from a checkpoint.
+            with self.config_lock:
+                self._config.basic_config.job_name = restored_job_name
+                self._config.api_config.pod_ip = get_pod_ip()
+            ControllerApiClient.reset_heartbeat_client()
+            return
+
         restored_namespace = None
         try:
             restored_namespace = load_snapshot_metadata(snapshot_metadata_path, "namespace")

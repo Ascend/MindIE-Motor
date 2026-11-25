@@ -24,6 +24,7 @@ import sys
 from lib import constant as C
 from lib.docker_utils import (
     DOCKER_KV_CONDUCTOR_NAME,
+    configured_probe_ips,
     kv_conductor_enabled,
     kv_store_enabled,
     npu_docker_card_count,
@@ -148,7 +149,7 @@ def _shared_template(title: str) -> str:
 
 
 def _optional_container_plans(
-    user_config: dict, main_name: str, *, kv_conductor: bool
+    user_config: dict, main_name: str, *, kv_conductor: bool, probe_services: set[str]
 ) -> list[tuple[int, str, str, str, list[str]]]:
     """Render 与 KV Conductor 跟管理面同机，只出现在容器内方案里。"""
     from lib.generator.render import docker_render_container_name, is_render_enabled
@@ -166,29 +167,19 @@ def _optional_container_plans(
             )
         )
     if kv_conductor:
-        plans.append(
-            (
-                1,
-                "KV Conductor",
-                DOCKER_KV_CONDUCTOR_NAME,
-                "ENTER_DOCKER_RUN_CTRL",
-                [
-                    "--start",
-                    "--container-name",
-                    DOCKER_KV_CONDUCTOR_NAME,
-                    "--role",
-                    "kv_conductor",
-                    "--pod-ip",
-                    _HOST_IP,
-                    "--nic-name",
-                    _NIC,
-                    "--coordinator-ip",
-                    _SERVER1_IP,
-                    "--controller-ip",
-                    _SERVER1_IP,
-                ],
-            )
-        )
+        argv = [
+            "--start",
+            "--container-name",
+            DOCKER_KV_CONDUCTOR_NAME,
+            "--role",
+            "kv_conductor",
+            "--pod-ip",
+            _HOST_IP,
+            "--nic-name",
+            _NIC,
+        ]
+        _append_direct_targets(argv, probe_services, _SERVER1_IP)
+        plans.append((1, "KV Conductor", DOCKER_KV_CONDUCTOR_NAME, "ENTER_DOCKER_RUN_CTRL", argv))
     return plans
 
 
@@ -260,11 +251,14 @@ def _in_container_plans(
     main_name: str,
     engine_template: str,
     kv_conductor: bool,
+    probe_services: set[str],
 ) -> list[tuple[int, str, str, str, list[str]]]:
     plans: list[tuple[int, str, str, str, list[str]]] = []
     for title, argv in shared:
         plans.append((1, title, _argv_value(argv, "--container-name"), _shared_template(title), argv))
-    plans.extend(_optional_container_plans(user_config, main_name, kv_conductor=kv_conductor))
+    plans.extend(
+        _optional_container_plans(user_config, main_name, kv_conductor=kv_conductor, probe_services=probe_services)
+    )
     for index, (title, argv) in enumerate(servers, start=1):
         plans.append((index, title, _argv_value(argv, "--container-name"), engine_template, argv))
     return plans
@@ -278,6 +272,7 @@ def _engine_entries(
     pod_num: int,
     in_container: bool,
     kv_enabled: bool,
+    probe_services: set[str],
     kv_conductor: bool = False,
 ) -> list[tuple[str, list[str]]]:
     role_label = {"prefill": "Prefill", "decode": "Decode", "union": "混部"}[role]
@@ -299,15 +294,12 @@ def _engine_entries(
                     _HOST_IP,
                     "--nic-name",
                     _NIC,
-                    "--coordinator-ip",
-                    _SERVER1_IP,
-                    "--controller-ip",
-                    _SERVER1_IP,
                 ]
             )
+            _append_direct_targets(argv, probe_services, _SERVER1_IP)
             if kv_enabled:
                 argv.extend(["--kv-store-ip", _SERVER1_IP])
-            if in_container and kv_conductor:
+            if kv_conductor and (in_container or "coordinator" in probe_services):
                 argv.extend(["--kv-conductor-ip", _KV_CONDUCTOR_IP])
             title = role_label + " " + instance_name
             if pod_num > 1:
@@ -330,9 +322,9 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
 
     try:
         validate_docker_kv_conductor(user_config)
-    except ValueError as exc:
+        probe_services = set(configured_probe_ips(user_config))
+    except (TypeError, ValueError) as exc:
         raise ConfigError(str(exc)) from exc
-
     kv_enabled = kv_store_enabled(user_config)
     kv_conductor = kv_conductor_enabled(user_config)
     engine_template = _engine_template_name(deploy.get("hardware_type"))
@@ -350,6 +342,7 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
             main_name="motor-single",
             engine_template=engine_template,
             kv_conductor=False,
+            probe_services=probe_services,
         )
         return _format_in_container(plans, deployer_py, config_dir, 1)
 
@@ -362,7 +355,7 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
 
     shared = [_management_entry(user_config, in_container, kv_enabled, kv_conductor)]
     if kv_enabled:
-        shared.append(_kv_store_entry(in_container, kv_conductor=kv_conductor))
+        shared.append(_kv_store_entry(in_container, probe_services, kv_conductor=kv_conductor))
     if hybrid:
         servers = _engine_entries(
             role="union",
@@ -372,6 +365,7 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
             in_container=in_container,
             kv_enabled=kv_enabled,
             kv_conductor=kv_conductor,
+            probe_services=probe_services,
         )
         if in_container:
             plans = _in_container_plans(
@@ -381,6 +375,7 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
                 main_name=_MANAGEMENT_NAME,
                 engine_template=engine_template,
                 kv_conductor=kv_conductor,
+                probe_services=probe_services,
             )
             return _format_in_container(plans, deployer_py, config_dir, len(servers))
         return _format(servers, deployer_py, config_dir, shared)
@@ -393,6 +388,7 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
         in_container=in_container,
         kv_enabled=kv_enabled,
         kv_conductor=kv_conductor,
+        probe_services=probe_services,
     )
     servers.extend(
         _engine_entries(
@@ -403,6 +399,7 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
             in_container=in_container,
             kv_enabled=kv_enabled,
             kv_conductor=kv_conductor,
+            probe_services=probe_services,
         )
     )
     if in_container:
@@ -413,6 +410,7 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
             main_name=_MANAGEMENT_NAME,
             engine_template=engine_template,
             kv_conductor=kv_conductor,
+            probe_services=probe_services,
         )
         return _format_in_container(plans, deployer_py, config_dir, len(servers))
     return _format(servers, deployer_py, config_dir, shared)
@@ -450,7 +448,15 @@ def _management_entry(
     return title, argv
 
 
-def _kv_store_entry(in_container: bool, *, kv_conductor: bool = False) -> tuple[str, list[str]]:
+def _append_direct_targets(argv: list[str], probe_services: set[str], address: str) -> None:
+    for service in ("coordinator", "controller"):
+        if service not in probe_services:
+            argv.extend(["--" + service + "-ip", address])
+
+
+def _kv_store_entry(
+    in_container: bool, probe_services: set[str], *, kv_conductor: bool = False
+) -> tuple[str, list[str]]:
     argv = ["--start"] if in_container else []
     argv.extend(
         [
@@ -462,14 +468,11 @@ def _kv_store_entry(in_container: bool, *, kv_conductor: bool = False) -> tuple[
             _HOST_IP,
             "--nic-name",
             _NIC,
-            "--coordinator-ip",
-            _HOST_IP,
-            "--controller-ip",
-            _HOST_IP,
         ]
     )
-    if in_container and kv_conductor:
+    if kv_conductor and (in_container or "coordinator" in probe_services):
         argv.extend(["--kv-conductor-ip", _KV_CONDUCTOR_IP])
+    _append_direct_targets(argv, probe_services, _HOST_IP)
     return "kv_store", argv
 
 

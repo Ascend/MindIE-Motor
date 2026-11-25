@@ -11,12 +11,14 @@
 import threading
 import time
 
+from motor.common.discovery.monitor import EndpointMonitor
 from motor.common.resources import RegisterMsg, ReregisterMsg, HeartbeatMsg
 from motor.common.http.http_client import ConnectionMode, SafeHTTPSClient
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.config.controller import ControllerConfig
 from motor.config.node_manager import NodeManagerConfig
+from motor.config.service_discovery import ServiceDiscoveryConfig
 
 logger = get_logger(__name__)
 _rl = RateLimitedLogger(logger)
@@ -29,6 +31,7 @@ _rl = RateLimitedLogger(logger)
 # transients instead of letting a single TCP-level failure ripple into a
 # heartbeat timeout.
 _HEARTBEAT_CLIENT: SafeHTTPSClient | None = None
+_HEARTBEAT_ADDRESS: str | None = None
 _HEARTBEAT_CLIENT_LOCK = threading.Lock()  # protects client creation / reset
 _HEARTBEAT_REQUEST_LOCK = threading.Lock()  # serialises request+retry+reset on the shared client
 _HEARTBEAT_TIMEOUT = 5  # per-request TCP timeout (seconds)
@@ -36,20 +39,23 @@ _HEARTBEAT_RETRY_DELAYS = (1, 2)  # back-off between retries (seconds)
 
 
 def _get_heartbeat_client() -> SafeHTTPSClient:
-    """Return the shared long-lived heartbeat HTTP client, creating it on first use."""
-    global _HEARTBEAT_CLIENT
+    """Select one target per attempt and reuse its long-lived heartbeat client."""
+    global _HEARTBEAT_CLIENT, _HEARTBEAT_ADDRESS
+    client_args = ControllerApiClient._generate_client_args()
+    if client_args["address"] != _HEARTBEAT_ADDRESS:
+        _reset_heartbeat_client()
     if _HEARTBEAT_CLIENT is not None:
         return _HEARTBEAT_CLIENT
 
     with _HEARTBEAT_CLIENT_LOCK:
         if _HEARTBEAT_CLIENT is not None:
             return _HEARTBEAT_CLIENT
-        client_args = ControllerApiClient._generate_client_args()
         _HEARTBEAT_CLIENT = SafeHTTPSClient(
             mode=ConnectionMode.LONG,
             timeout=_HEARTBEAT_TIMEOUT,
             **client_args,
         )
+        _HEARTBEAT_ADDRESS = client_args["address"]
         logger.info(
             "Heartbeat HTTP client created (Keep-Alive, timeout=%ds) → %s",
             _HEARTBEAT_TIMEOUT,
@@ -60,7 +66,7 @@ def _get_heartbeat_client() -> SafeHTTPSClient:
 
 def _reset_heartbeat_client() -> None:
     """Close and discard the shared heartbeat client so the next call creates a fresh one."""
-    global _HEARTBEAT_CLIENT
+    global _HEARTBEAT_CLIENT, _HEARTBEAT_ADDRESS
     with _HEARTBEAT_CLIENT_LOCK:
         if _HEARTBEAT_CLIENT is not None:
             try:
@@ -68,11 +74,27 @@ def _reset_heartbeat_client() -> None:
             except Exception:  # nosec B110 — best-effort close on a client we are discarding
                 pass
             _HEARTBEAT_CLIENT = None
+        _HEARTBEAT_ADDRESS = None
 
 
 class ControllerApiClient:
     controller_config = ControllerConfig.from_json()
     nodemanager_config = NodeManagerConfig.from_json()
+    discovery_config = ServiceDiscoveryConfig.from_json()
+    _monitor: EndpointMonitor | None = None
+
+    @classmethod
+    def start_discovery(cls) -> None:
+        """Start process-owned probing before registration and heartbeat workers."""
+        if not cls.uses_probe_discovery():
+            return
+        if cls._monitor is None:
+            cls._monitor = EndpointMonitor("controller", cls.discovery_config, cls.nodemanager_config.mgmt_tls_config)
+        cls._monitor.start()
+
+    @classmethod
+    def uses_probe_discovery(cls) -> bool:
+        return cls.discovery_config.uses_probe("controller")
 
     @staticmethod
     def reset_heartbeat_client() -> None:
@@ -216,6 +238,8 @@ class ControllerApiClient:
     def _generate_client_args(cls) -> dict[str, str]:
         api_config = cls.controller_config.api_config
         tls_config = cls.nodemanager_config.mgmt_tls_config
+        if cls.uses_probe_discovery():
+            return {"address": cls._monitor.select("api").address, "tls_config": tls_config}
         address = f"{api_config.controller_api_dns}:{api_config.controller_api_port}"
         client_ars = {"address": f"{address}", "tls_config": tls_config}
         return client_ars

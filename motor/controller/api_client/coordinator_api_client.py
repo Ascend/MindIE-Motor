@@ -16,6 +16,8 @@ from typing import Any
 
 import requests
 
+from motor.common.discovery.errors import DiscoveryUnavailable
+from motor.common.discovery.monitor import EndpointMonitor
 from motor.common.resources import InsEventMsg
 from motor.common.http.http_client import ConnectionMode, SafeHTTPSClient
 from motor.common.logger import get_logger
@@ -23,6 +25,7 @@ from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.common.utils.net import format_address
 from motor.config.controller import ControllerConfig
 from motor.config.coordinator import CoordinatorConfig, MGMT_API_KEY_HEADER
+from motor.config.service_discovery import ServiceDiscoveryConfig
 
 logger = get_logger(__name__)
 _rl = RateLimitedLogger(logger)
@@ -143,6 +146,9 @@ def _list_coordinator_pod_ips() -> list[str]:
 
 def _instance_refresh_hosts() -> list[str | None]:
     """Targets for instance refresh: new-master override first, then every pod IP."""
+    monitor = CoordinatorApiClient._monitor
+    if CoordinatorApiClient.uses_probe_discovery():
+        return [endpoint.host for endpoint in monitor.members]
     ordered: list[str] = []
     override = _REFRESH_HOST_OVERRIDE
     if override:
@@ -158,6 +164,24 @@ def _instance_refresh_hosts() -> list[str | None]:
 class CoordinatorApiClient:
     controller_config = ControllerConfig.from_json()
     coordinator_config = CoordinatorConfig.from_json()
+    discovery_config = ServiceDiscoveryConfig.from_json()
+    _monitor: EndpointMonitor | None = None
+
+    @classmethod
+    def uses_probe_discovery(cls) -> bool:
+        return cls.discovery_config.uses_probe("coordinator")
+
+    @classmethod
+    def start_discovery(cls) -> None:
+        """Start this process's monitor before business modules begin sending."""
+        if not cls.uses_probe_discovery() or cls._monitor is not None:
+            return
+        if cls.controller_config.observability_config.observability_enable:
+            ports = cls.discovery_config.endpoints["coordinator"][0].ports
+            if "observability" not in ports:
+                raise ValueError("Coordinator endpoints require observability ports when observability is enabled")
+        cls._monitor = EndpointMonitor("coordinator", cls.discovery_config, cls.controller_config.mgmt_tls_config)
+        cls._monitor.start()
 
     @staticmethod
     def reset_refresh_client() -> None:
@@ -176,6 +200,8 @@ class CoordinatorApiClient:
         Pass None to go back to coordinator_api_dns. A non-IP string is ignored
         and does not clear an already-set pod IP.
         """
+        if CoordinatorApiClient.uses_probe_discovery():
+            return
         global _REFRESH_HOST_OVERRIDE
         if host is None:
             parsed: str | None = None
@@ -195,6 +221,8 @@ class CoordinatorApiClient:
 
     @staticmethod
     def get_refresh_host() -> str | None:
+        if CoordinatorApiClient.uses_probe_discovery():
+            return None
         return _REFRESH_HOST_OVERRIDE
 
     @staticmethod
@@ -265,7 +293,7 @@ class CoordinatorApiClient:
         if any_ok:
             return True
 
-        if None not in hosts:
+        if not CoordinatorApiClient.uses_probe_discovery() and None not in hosts:
             logger.warning("All Coordinator pod-IP refreshes failed; retrying via Service DNS")
             with _REFRESH_REQUEST_LOCK:
                 try:
@@ -296,7 +324,16 @@ class CoordinatorApiClient:
         d_instance_id: int,
     ) -> bool:
         """Ask Coordinator to drop precision alarm state for a PD group."""
-        client_args = CoordinatorApiClient._generate_client_args()
+        try:
+            client_args = CoordinatorApiClient._generate_client_args()
+        except DiscoveryUnavailable as e:
+            logger.warning(
+                "Coordinator precision alarm_cleared unavailable pd_group=(%s,%s): %s",
+                p_instance_id,
+                d_instance_id,
+                e,
+            )
+            return False
         payload = {
             "p_instance_id": p_instance_id,
             "d_instance_id": d_instance_id,
@@ -349,6 +386,9 @@ class CoordinatorApiClient:
 
     @staticmethod
     def query_status(params: dict[str, str] | None = None) -> dict[str, str]:
+        monitor = CoordinatorApiClient._monitor
+        if CoordinatorApiClient.uses_probe_discovery():
+            return {"ready": monitor.select("management").ready}
         client_ars = CoordinatorApiClient._generate_client_args(include_mgmt_api_key=False)
         address = client_ars.get("address", "unknown")
         try:
@@ -379,6 +419,7 @@ class CoordinatorApiClient:
         Returns Prometheus text, or None on failure.
         """
         client = None
+        address = "unknown"
         try:
             client_ars = CoordinatorApiClient._generate_obs_client_args()
             address = client_ars.get("address", "unknown")
@@ -414,7 +455,6 @@ class CoordinatorApiClient:
             )
             return None
         except Exception as e:
-            address = CoordinatorApiClient._generate_obs_client_args().get("address", "unknown")
             logger.error(
                 "Controller->Coordinator get_metrics failed. address=%s, "
                 "metrics_type=%s, role=%s, error=%s. "
@@ -438,12 +478,20 @@ class CoordinatorApiClient:
         host: str | None = None,
     ) -> dict[str, Any]:
         tls_config = cls.controller_config.mgmt_tls_config
-        api_config = cls.coordinator_config.api_config
-        target = host or _REFRESH_HOST_OVERRIDE
-        if target:
-            address = format_address(target, api_config.coordinator_api_mgmt_port)
+        monitor = cls._monitor
+        if cls.uses_probe_discovery():
+            if host is not None:
+                endpoint = next(item for item in monitor.members if item.host == host)
+                address = endpoint.address("management")
+            else:
+                address = monitor.select("management").address
         else:
-            address = f"{api_config.coordinator_api_dns}:{api_config.coordinator_api_mgmt_port}"
+            api_config = cls.coordinator_config.api_config
+            target = host or _REFRESH_HOST_OVERRIDE
+            if target:
+                address = format_address(target, api_config.coordinator_api_mgmt_port)
+            else:
+                address = f"{api_config.coordinator_api_dns}:{api_config.coordinator_api_mgmt_port}"
         client_args: dict[str, Any] = {"address": address, "tls_config": tls_config}
         mgmt_api_key_config = cls.coordinator_config.mgmt_api_key_config
         if include_mgmt_api_key and mgmt_api_key_config.enable_api_key:
@@ -452,6 +500,10 @@ class CoordinatorApiClient:
 
     @classmethod
     def _generate_obs_client_args(cls) -> dict[str, str]:
+        monitor = cls._monitor
+        if cls.uses_probe_discovery():
+            snapshot = monitor.select("observability")
+            return {"address": snapshot.address, "tls_config": cls.controller_config.mgmt_tls_config}
         tls_config = cls.controller_config.mgmt_tls_config
         api_config = cls.coordinator_config.api_config
         address = f"{api_config.coordinator_api_obs_dns}:{api_config.coordinator_obs_port}"

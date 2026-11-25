@@ -26,7 +26,7 @@ from motor.config.tls_config import TLSConfig
 from motor.common.etcd.proto import rpc_pb2, rpc_pb2_grpc
 from motor.common.etcd import locks
 from motor.common.logger import get_logger
-from motor.common.utils.net import format_address
+from motor.common.utils.net import format_address, normalize_ip_address
 
 
 T = TypeVar('T', bound=BaseModel)
@@ -42,10 +42,12 @@ class EtcdClient:
     """Etcd client with lease lock management and JSON data storage"""
 
     def __init__(self, etcd_config: EtcdConfig, tls_config: TLSConfig | None = None) -> None:
+        # Direct Python consumers also validate before any connection is opened.
+        etcd_config.validate_hosts(bool(tls_config and tls_config.enable_tls))
         self.tls_config = tls_config
 
         # Use etcd_config attributes as base configuration
-        self.host = etcd_config.etcd_host
+        self.hosts = tuple(etcd_config.etcd_hosts)
         self.port = etcd_config.etcd_port
         self.timeout = etcd_config.etcd_timeout
         self.channel = None
@@ -57,6 +59,7 @@ class EtcdClient:
         # etcd_timeout (5 s) so that a single slow renewal fails fast and leaves
         # room for retries before the lease TTL expires.
         self._lease_keepalive_timeout = 3
+        target = self._build_target(self.hosts, self.port)
 
         try:
             channel_options = [
@@ -70,6 +73,8 @@ class EtcdClient:
                 ),
             ]
             if self.tls_config and self.tls_config.enable_tls:
+                if etcd_config.etcd_tls_server_name:
+                    channel_options.append(('grpc.default_authority', etcd_config.etcd_tls_server_name))
                 with open(self.tls_config.ca_file, RB) as f:
                     root_cert = f.read()
                 with open(self.tls_config.key_file, RB) as f:
@@ -79,9 +84,9 @@ class EtcdClient:
                 creds = grpc.ssl_channel_credentials(
                     root_certificates=root_cert, private_key=private_key, certificate_chain=cert_chain
                 )
-                self.channel = grpc.secure_channel(format_address(self.host, self.port), creds, options=channel_options)
+                self.channel = grpc.secure_channel(target, creds, options=channel_options)
             else:
-                self.channel = grpc.insecure_channel(format_address(self.host, self.port), options=channel_options)
+                self.channel = grpc.insecure_channel(target, options=channel_options)
 
             self.kv_stub = rpc_pb2_grpc.KVStub(self.channel)
             self.lease_stub = rpc_pb2_grpc.LeaseStub(self.channel)
@@ -95,6 +100,14 @@ class EtcdClient:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
+    @staticmethod
+    def _build_target(hosts: tuple[str, ...], port: int) -> str:
+        """Format validated hosts, retaining the original single-host target."""
+        if len(hosts) == 1:
+            return format_address(hosts[0], port)
+        scheme = "ipv6" if ":" in hosts[0] else "ipv4"
+        return scheme + ":" + ",".join(format_address(normalize_ip_address(host), port) for host in hosts)
 
     @staticmethod
     def get_key_with_namespace_and_job_name(key: str) -> str:

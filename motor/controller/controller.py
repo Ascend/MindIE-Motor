@@ -17,6 +17,7 @@ from motor.common.standby.standby_manager import (
     StandbyManager,
 )
 from motor.config.controller import ControllerConfig
+from motor.controller.api_client.coordinator_api_client import CoordinatorApiClient
 from motor.controller.api_server import ControllerAPI
 from motor.controller.core import EventPusher, InstanceAssembler, InstanceManager
 
@@ -87,6 +88,7 @@ class Controller(Application):
     # ------------------------------------------------------------------
 
     def _start_modules(self) -> None:
+        CoordinatorApiClient.start_discovery()
         self._start_config_watcher()
 
         if self._standby_enabled:

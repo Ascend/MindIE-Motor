@@ -229,7 +229,7 @@
       <td>支持</td>
       <td>支持</td>
       <td>支持</td>
-      <td>—</td>
+      <td><a href="../deployment/docker/ha.md">支持</a></td>
     </tr>
     <tr>
       <td><a href="./fault_tolerance/sim_inference.md">虚推健康探测</a></td>

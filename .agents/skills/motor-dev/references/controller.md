@@ -38,6 +38,24 @@ Controller process
       served through the observability API routes in controller_api.py
 ```
 
+### Probe-based Coordinator discovery
+
+A non-empty `motor_deploy_config.service_discovery_config.probe_ips.coordinator` list enables
+Coordinator probing. `Controller._start_modules()` starts a process-owned `EndpointMonitor`;
+without this list, the existing addressing path remains.
+Candidates share ports from the caller's local `user_config.json`:
+`motor_coordinator_config.api_config.coordinator_api_mgmt_port` is required, and `coordinator_obs_port`
+is also required when Coordinator metrics proxying is enabled.
+`motor_coordinator_config.port_allocator_config.enable` must be `false`.
+Calls retain the existing management authentication and TLS.
+
+`CoordinatorApiClient` reads cached targets for notifications and metrics. `query_status()` reads
+cached readiness: HTTP 200 determines target eligibility, while the response's `ready` field feeds
+the existing topology recovery condition. Business requests do not initiate probes.
+
+Topology broadcasts use all configured Coordinator members, including standby members, and retain
+the existing at-least-one-success result contract.
+
 ### State Machine (5 states × 6 events = 19 transitions)
 
 **States:** `INITIAL` → `ACTIVE` → `INACTIVE` / `PAUSED` → `DELETED`

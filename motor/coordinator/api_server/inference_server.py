@@ -417,6 +417,10 @@ class InferenceServer(BaseCoordinatorServer):
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI):
         logger.info("Inference server is starting...")
+        from motor.coordinator.api_client.controller_api_client import (
+            ControllerApiClient,
+        )
+
         app.state.request_manager = self._request_manager
         # Precision check: inject logprobs + token-id sampling only when precision_check_enabled
         from motor.coordinator.fault_tolerance.precision import (
@@ -474,6 +478,7 @@ class InferenceServer(BaseCoordinatorServer):
         app.state.token_obfuscation_service = None
         app.state.image_obfuscation_service = None
         try:
+            ControllerApiClient.start_discovery()
             obfuscation_config = self.coordinator_config.token_obfuscation_config
             render_config = self.coordinator_config.render_config
             if render_config.enable:

@@ -1,0 +1,43 @@
+{
+  "motor_deploy_config": {
+    "service_discovery_config": {
+      "probe_interval_seconds": 2.0,
+      "probe_timeout_seconds": 1.0,
+      "max_staleness_seconds": 6.0,
+      "probe_ips": {
+        "controller": ["192.0.2.11", "192.0.2.12"],
+        "coordinator": ["192.0.2.11", "192.0.2.12"]
+      }
+    },
+    "tls_config": {
+      "etcd_tls_config": {
+        "enable_tls": true,
+        "ca_file": "/run/motor-etcd-tls/ca.crt",
+        "cert_file": "/run/motor-etcd-tls/client.crt",
+        "key_file": "/run/motor-etcd-tls/client.key"
+      }
+    }
+  },
+  "motor_controller_config": {
+    "api_config": {"controller_api_port": 2026, "observability_api_port": 2027},
+    "port_allocator_config": {"enable": false},
+    "standby_config": {"enable_master_standby": true},
+    "etcd_config": {
+      "etcd_hosts": ["192.0.2.21", "192.0.2.22", "192.0.2.23"],
+      "etcd_port": 32379,
+      "etcd_tls_server_name": "motor-etcd.internal",
+      "enable_etcd_persistence": true
+    }
+  },
+  "motor_coordinator_config": {
+    "api_config": {"coordinator_api_mgmt_port": 1026, "coordinator_obs_port": 1027},
+    "port_allocator_config": {"enable": false},
+    "standby_config": {"enable_master_standby": true},
+    "etcd_config": {
+      "etcd_hosts": ["192.0.2.21", "192.0.2.22", "192.0.2.23"],
+      "etcd_port": 32379,
+      "etcd_tls_server_name": "motor-etcd.internal",
+      "enable_etcd_persistence": true
+    }
+  }
+}

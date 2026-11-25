@@ -9,11 +9,13 @@
 # See the Mulan PSL v2 for more details.
 
 
+from motor.common.discovery.monitor import EndpointMonitor
 from motor.common.http.http_client import SafeHTTPSClient
 from motor.common.logger import get_logger
 from motor.config.config_utils import has_motor_controller_config
 from motor.config.controller import ControllerConfig
 from motor.config.coordinator import CoordinatorConfig
+from motor.config.service_discovery import ServiceDiscoveryConfig
 from motor.coordinator.domain.probe import is_master_from_role_shm
 
 logger = get_logger(__name__)
@@ -22,6 +24,22 @@ logger = get_logger(__name__)
 class ControllerApiClient:
     controller_config: ControllerConfig | None = None
     coordinator_config: CoordinatorConfig | None = None
+    discovery_config = ServiceDiscoveryConfig.from_json()
+    _monitor: EndpointMonitor | None = None
+
+    @classmethod
+    def start_discovery(cls) -> None:
+        """Start this consuming process's probe task, never from an alarm request."""
+        if not cls.uses_probe_discovery():
+            return
+        if cls._monitor is None:
+            tls_config = cls._get_coordinator_config().mgmt_tls_config
+            cls._monitor = EndpointMonitor("controller", cls.discovery_config, tls_config)
+        cls._monitor.start()
+
+    @classmethod
+    def uses_probe_discovery(cls) -> bool:
+        return cls.discovery_config.uses_probe("controller")
 
     @classmethod
     def _get_coordinator_config(cls) -> CoordinatorConfig:
@@ -119,8 +137,10 @@ class ControllerApiClient:
 
     @classmethod
     def _generate_client_args(cls) -> dict[str, str]:
-        api_config = cls._get_controller_config().api_config
         tls_config = cls._get_coordinator_config().mgmt_tls_config
+        if cls.uses_probe_discovery():
+            return {"address": cls._monitor.select("api").address, "tls_config": tls_config}
+        api_config = cls._get_controller_config().api_config
         address = f"{api_config.controller_api_dns}:{api_config.controller_api_port}"
         client_ars = {"address": f"{address}", "tls_config": tls_config}
         return client_ars

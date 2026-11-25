@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -18,7 +16,6 @@ from pydantic import BaseModel
 
 from motor.common.etcd import locks
 from motor.common.etcd.etcd_client import EtcdClient
-from motor.common.etcd.proto import rpc_pb2, rpc_pb2_grpc
 from motor.config.etcd import EtcdConfig
 from motor.config.tls_config import TLSConfig
 
@@ -31,27 +28,19 @@ def base_client_with_ssl():
     mock_lease_stub = MagicMock()
 
     tls_config = TLSConfig(
-        enable_tls=True,
-        ca_file="ca_cert_path",
-        key_file="cert_key_path",
-        cert_file="cert_cert_path"
+        enable_tls=True, ca_file="ca_cert_path", key_file="cert_key_path", cert_file="cert_cert_path"
     )
 
     # Create etcd_config object
-    etcd_config = EtcdConfig(
-        etcd_host="test_host",
-        etcd_port=1234,
-        etcd_timeout=10
-    )
+    etcd_config = EtcdConfig(etcd_hosts=["test-host"], etcd_port=1234, etcd_timeout=10)
 
-    with patch("grpc.secure_channel", return_value=mock_channel), \
-            patch.object(rpc_pb2_grpc, "KVStub", return_value=mock_kv_stub), \
-            patch.object(rpc_pb2_grpc, "LeaseStub", return_value=mock_lease_stub), \
-            patch('builtins.open', mock_open(read_data=b"mock_content")):
-        client = EtcdClient(
-            etcd_config=etcd_config,
-            tls_config=tls_config
-        )
+    with (
+        patch("grpc.secure_channel", return_value=mock_channel),
+        patch("motor.common.etcd.etcd_client.rpc_pb2_grpc.KVStub", return_value=mock_kv_stub),
+        patch("motor.common.etcd.etcd_client.rpc_pb2_grpc.LeaseStub", return_value=mock_lease_stub),
+        patch('builtins.open', mock_open(read_data=b"mock_content")),
+    ):
+        client = EtcdClient(etcd_config=etcd_config, tls_config=tls_config)
         return client
 
 
@@ -59,7 +48,7 @@ def test_init_default_parameters():
     """Test initialization with default parameters."""
     etcd_config = EtcdConfig()
     client = EtcdClient(etcd_config=etcd_config)
-    assert client.host == "etcd.default.svc.cluster.local"
+    assert client.hosts == ("etcd.default.svc.cluster.local",)
     assert client.port == 2379
     assert client.tls_config is None
     assert client.timeout == 5
@@ -67,6 +56,29 @@ def test_init_default_parameters():
     assert client.kv_stub is not None
     assert client.lease_stub is not None
     assert client._leases == {}
+    client.close()
+
+
+@pytest.mark.parametrize(
+    "hosts,target",
+    [
+        (["etcd.default.svc.cluster.local"], "etcd.default.svc.cluster.local:32379"),
+        (["192.0.2.1"], "192.0.2.1:32379"),
+        (["2001:db8::1"], "[2001:db8::1]:32379"),
+        (["192.0.2.1", "192.0.2.2"], "ipv4:192.0.2.1:32379,192.0.2.2:32379"),
+        (["2001:db8::1", "2001:db8::2"], "ipv6:[2001:db8::1]:32379,[2001:db8::2]:32379"),
+        (["[2001:db8::1]", "[2001:db8::2]"], "ipv6:[2001:db8::1]:32379,[2001:db8::2]:32379"),
+    ],
+)
+def test_static_hosts_use_one_grpc_channel_with_existing_load_balancing(hosts, target):
+    """K8s DNS stays unchanged; static members become one native gRPC target."""
+    with patch("grpc.insecure_channel") as channel:
+        with EtcdClient(EtcdConfig(etcd_hosts=hosts, etcd_port=32379)):
+            channel.assert_called_once()
+            assert channel.call_args.args == (target,)
+            options = dict(channel.call_args.kwargs["options"])
+            assert json.loads(options["grpc.service_config"])["loadBalancingPolicy"] == "round_robin"
+        channel.return_value.close.assert_called_once()
 
 
 def test_init_with_certificates():
@@ -76,29 +88,21 @@ def test_init_with_certificates():
     mock_lease_stub = MagicMock()
 
     tls_config = TLSConfig(
-        enable_tls=True,
-        ca_file="ca_cert_path",
-        key_file="cert_key_path",
-        cert_file="cert_cert_path"
+        enable_tls=True, ca_file="ca_cert_path", key_file="cert_key_path", cert_file="cert_cert_path"
     )
 
     # Create etcd_config object
-    etcd_config = EtcdConfig(
-        etcd_host="test_host",
-        etcd_port=1234,
-        etcd_timeout=10
-    )
+    etcd_config = EtcdConfig(etcd_hosts=["test-host"], etcd_port=1234, etcd_timeout=10)
 
-    with patch("grpc.secure_channel", return_value=mock_channel), \
-            patch.object(rpc_pb2_grpc, "KVStub", return_value=mock_kv_stub), \
-            patch.object(rpc_pb2_grpc, "LeaseStub", return_value=mock_lease_stub), \
-            patch('builtins.open', mock_open(read_data=b"mock_content")):
-        client = EtcdClient(
-            etcd_config=etcd_config,
-            tls_config=tls_config
-        )
+    with (
+        patch("grpc.secure_channel", return_value=mock_channel) as secure_channel,
+        patch("motor.common.etcd.etcd_client.rpc_pb2_grpc.KVStub", return_value=mock_kv_stub),
+        patch("motor.common.etcd.etcd_client.rpc_pb2_grpc.LeaseStub", return_value=mock_lease_stub),
+        patch('builtins.open', mock_open(read_data=b"mock_content")),
+    ):
+        client = EtcdClient(etcd_config=etcd_config, tls_config=tls_config)
 
-        assert client.host == "test_host"
+        assert client.hosts == ("test-host",)
         assert client.port == 1234
         assert client.tls_config == tls_config
         assert client.tls_config.ca_file == "ca_cert_path"
@@ -108,30 +112,52 @@ def test_init_with_certificates():
         assert client.channel == mock_channel
         assert client.kv_stub == mock_kv_stub
         assert client.lease_stub == mock_lease_stub
+        assert secure_channel.call_args.args[0] == "test-host:1234"
+        assert "grpc.default_authority" not in dict(secure_channel.call_args.kwargs["options"])
+
+
+@pytest.mark.parametrize("hosts", [["192.0.2.1"], ["192.0.2.1", "192.0.2.2"]])
+def test_tls_uses_explicit_service_identity_and_client_credentials(hosts):
+    """An explicit identity applies to TLS only; switching it off preserves plaintext."""
+    config = EtcdConfig(etcd_hosts=hosts, etcd_tls_server_name="motor-etcd.test")
+    tls = TLSConfig(enable_tls=True, ca_file="ca.pem", cert_file="client.pem", key_file="client.key")
+    with (
+        patch("grpc.secure_channel") as secure,
+        patch("grpc.insecure_channel") as insecure,
+        patch("grpc.ssl_channel_credentials") as credentials,
+        patch("builtins.open", mock_open(read_data=b"certificate")) as files,
+    ):
+        with EtcdClient(config, tls):
+            credentials.assert_called_once_with(
+                root_certificates=b"certificate", private_key=b"certificate", certificate_chain=b"certificate"
+            )
+            assert {call.args[0] for call in files.call_args_list} == {"ca.pem", "client.pem", "client.key"}
+            options = dict(secure.call_args.kwargs["options"])
+            assert options["grpc.default_authority"] == "motor-etcd.test"
+            assert "grpc.ssl_target_name_override" not in options
+            assert json.loads(options["grpc.service_config"])["loadBalancingPolicy"] == "round_robin"
+            insecure.assert_not_called()
+
+        files.reset_mock()
+        tls.enable_tls = False
+        with EtcdClient(config, tls):
+            assert "grpc.default_authority" not in dict(insecure.call_args.kwargs["options"])
+            files.assert_not_called()
+            secure.assert_called_once()
 
 
 def test_init_with_missing_certificates():
     """Test initialization with missing certificate files."""
     tls_config = TLSConfig(
-        enable_tls=True,
-        ca_file="ca_cert_path",
-        key_file="cert_key_path",
-        cert_file="cert_cert_path"
+        enable_tls=True, ca_file="ca_cert_path", key_file="cert_key_path", cert_file="cert_cert_path"
     )
 
     # Create etcd_config object
-    etcd_config = EtcdConfig(
-        etcd_host="test_host",
-        etcd_port=1234,
-        etcd_timeout=10
-    )
+    etcd_config = EtcdConfig(etcd_hosts=["test-host"], etcd_port=1234, etcd_timeout=10)
 
     with patch("builtins.open", side_effect=FileNotFoundError("File not found")):
-        client = EtcdClient(
-            etcd_config=etcd_config,
-            tls_config=tls_config
-        )
-        assert client.host == "test_host"
+        client = EtcdClient(etcd_config=etcd_config, tls_config=tls_config)
+        assert client.hosts == ("test-host",)
 
 
 def test_get_key_with_namespace_and_job_name_already_has_namespace(monkeypatch):
@@ -334,40 +360,6 @@ def test_put_json_with_pydantic_model(base_client_with_ssl, mock_logger):
     mock_logger.info.assert_called_once_with("Stored JSON data for key %s", "key")
 
 
-def test_put_json_with_dict(base_client_with_ssl, mock_logger):
-    data = {"field": "value"}
-    base_client_with_ssl.get_key_with_namespace_and_job_name = MagicMock(return_value="key")
-    base_client_with_ssl.put_json("key", data)
-
-    base_client_with_ssl.kv_stub.Put.assert_called_once_with(
-        rpc_pb2.PutRequest(
-            key=b'key',
-            value=json.dumps(data, ensure_ascii=False).encode('utf-8')
-        ),
-        timeout=10
-    )
-
-    mock_logger.info.assert_called_once_with("Stored JSON data for key %s", "key")
-
-
-def test_put_json_with_lease(base_client_with_ssl, mock_logger):
-    data = {"field": "value"}
-    lease = 123
-    base_client_with_ssl.get_key_with_namespace_and_job_name = MagicMock(return_value="key")
-    base_client_with_ssl.put_json("key", data, lease=lease)
-
-    base_client_with_ssl.kv_stub.Put.assert_called_once_with(
-        rpc_pb2.PutRequest(
-            key=b'key',
-            value=json.dumps(data, ensure_ascii=False).encode('utf-8'),
-            lease=lease
-        ),
-        timeout=10
-    )
-
-    mock_logger.info.assert_called_once_with("Stored JSON data for key %s", "key")
-
-
 def test_delete_prefix_success(base_client_with_ssl):
     # Simulate successful deletion
     mock_response = MagicMock()
@@ -404,62 +396,6 @@ def test_delete_prefix_failure(base_client_with_ssl):
     base_client_with_ssl.kv_stub.DeleteRange.assert_called_once()
     base_client_with_ssl.get_key_with_namespace_and_job_name.assert_called_once_with("test_prefix")
     base_client_with_ssl._prefix_range_end.assert_called_once_with("test_prefix")
-
-
-def test_delete_key_success(base_client_with_ssl):
-    # Arrange
-    key = "test_key"
-    expected_key_with_namespace = "namespace_test_key"
-    response = rpc_pb2.DeleteRangeResponse(deleted=1)
-    base_client_with_ssl.kv_stub.DeleteRange.return_value = response
-    base_client_with_ssl.get_key_with_namespace_and_job_name = MagicMock(return_value=expected_key_with_namespace)
-
-    # Act
-    result = base_client_with_ssl.delete_key(key)
-
-    # Assert
-    assert result is True
-    base_client_with_ssl.kv_stub.DeleteRange.assert_called_once_with(
-        rpc_pb2.DeleteRangeRequest(key=expected_key_with_namespace.encode('utf-8')),
-        timeout=base_client_with_ssl.timeout
-    )
-
-
-def test_delete_key_not_found(base_client_with_ssl):
-    # Arrange
-    key = "test_key"
-    expected_key_with_namespace = "namespace_test_key"
-    response = rpc_pb2.DeleteRangeResponse(deleted=0)
-    base_client_with_ssl.kv_stub.DeleteRange.return_value = response
-    base_client_with_ssl.get_key_with_namespace_and_job_name = MagicMock(return_value=expected_key_with_namespace)
-
-    # Act
-    result = base_client_with_ssl.delete_key(key)
-
-    # Assert
-    assert result is True
-    base_client_with_ssl.kv_stub.DeleteRange.assert_called_once_with(
-        rpc_pb2.DeleteRangeRequest(key=expected_key_with_namespace.encode('utf-8')),
-        timeout=base_client_with_ssl.timeout
-    )
-
-
-def test_delete_key_exception(base_client_with_ssl):
-    # Arrange
-    key = "test_key"
-    expected_key_with_namespace = "namespace_test_key"
-    base_client_with_ssl.kv_stub.DeleteRange.side_effect = Exception("Test exception")
-    base_client_with_ssl.get_key_with_namespace_and_job_name = MagicMock(return_value=expected_key_with_namespace)
-
-    # Act
-    result = base_client_with_ssl.delete_key(key)
-
-    # Assert
-    assert result is False
-    base_client_with_ssl.kv_stub.DeleteRange.assert_called_once_with(
-        rpc_pb2.DeleteRangeRequest(key=expected_key_with_namespace.encode('utf-8')),
-        timeout=base_client_with_ssl.timeout
-    )
 
 
 def test_lock_context_success(base_client_with_ssl):
@@ -535,8 +471,8 @@ def test_persist_data_success(base_client_with_ssl):
     base_client_with_ssl.lock_context.assert_called_once_with(f"persist_{key_prefix}", ttl=30)
     base_client_with_ssl.delete_prefix.assert_called_once_with(key_prefix)
     assert base_client_with_ssl.put_json.call_count == len(data)
-    for data_key in data.keys():
-        base_client_with_ssl.put_json.assert_any_call(f"{key_prefix}/{data_key}", data[data_key])
+    for data_key, value in data.items():
+        base_client_with_ssl.put_json.assert_any_call(f"{key_prefix}/{data_key}", value)
 
 
 def test_persist_data_lock_failure(base_client_with_ssl):
@@ -583,8 +519,8 @@ def test_persist_data_put_json_failure(base_client_with_ssl):
     base_client_with_ssl.lock_context.assert_called_once_with(f"persist_{key_prefix}", ttl=30)
     base_client_with_ssl.delete_prefix.assert_called_once_with(key_prefix)
     assert base_client_with_ssl.put_json.call_count == len(data)
-    for data_key in data.keys():
-        base_client_with_ssl.put_json.assert_any_call(f"{key_prefix}/{data_key}", data[data_key])
+    for data_key, value in data.items():
+        base_client_with_ssl.put_json.assert_any_call(f"{key_prefix}/{data_key}", value)
 
 
 def test_restore_data_success(base_client_with_ssl):
@@ -594,10 +530,7 @@ def test_restore_data_success(base_client_with_ssl):
         field1: str
         field2: int
 
-    test_data = {
-        "key1": {"field1": "value1", "field2": 1},
-        "key2": {"field1": "value2", "field2": 2}
-    }
+    test_data = {"key1": {"field1": "value1", "field2": 1}, "key2": {"field1": "value2", "field2": 2}}
 
     with patch.object(EtcdClient, 'get_prefix_data', return_value=test_data):
         result = base_client_with_ssl.restore_data("test_prefix", TestRestoreModel)

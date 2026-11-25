@@ -265,7 +265,8 @@ def _planned_or_auto(
 def _append_etcd(rows: list[PortRow], etcd) -> None:
     if not etcd.enable_etcd_persistence:
         return
-    rows.append(_row("etcd", etcd.etcd_host, etcd.etcd_port, "remote", "etcd persistence"))
+    for host in etcd.etcd_hosts:
+        rows.append(_row("etcd", host, etcd.etcd_port, "remote", "etcd persistence"))
 
 
 _ENGINE_SECTION_BY_ROLE = {

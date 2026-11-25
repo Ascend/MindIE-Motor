@@ -19,9 +19,11 @@ from motor.common.utils.port_allocator import (
     PortConflictError,
     _conductor_listens_locally,
     _parse_host_port,
+    apply_controller_ports,
     apply_coordinator_ports,
     apply_node_manager_ports,
 )
+from motor.config.etcd import EtcdConfig
 from motor.config.port_allocator_config import PortAllocatorConfig
 
 
@@ -198,3 +200,23 @@ class TestLocalKvConductorPort:
         for call in allocate_auto.call_args_list:
             skipped |= set(call.kwargs.get("skip_ports") or ())
         assert 13333 in skipped
+
+
+@pytest.mark.parametrize("persistence", [False, True])
+def test_fixed_controller_ports_report_all_etcd_members_without_probing(persistence):
+    config = SimpleNamespace(
+        port_allocator_config=PortAllocatorConfig(enable=False),
+        api_config=SimpleNamespace(controller_api_port=2026, observability_api_port=2027),
+        etcd_config=EtcdConfig(
+            etcd_hosts=["192.0.2.21", "192.0.2.22"],
+            etcd_port=32379,
+            enable_etcd_persistence=persistence,
+        ),
+    )
+    with patch.object(PortAllocator, "print_matrix") as matrix, patch.object(PortAllocator, "probe_tcp") as probe:
+        apply_controller_ports(config)
+    probe.assert_not_called()
+    assert (config.api_config.controller_api_port, config.api_config.observability_api_port) == (2026, 2027)
+    rows = matrix.call_args.args[0]
+    remote = [(row.bind_host, row.port) for row in rows if row.component == "etcd"]
+    assert remote == ([("192.0.2.21", 32379), ("192.0.2.22", 32379)] if persistence else [])

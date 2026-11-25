@@ -8,6 +8,8 @@
 
 import os
 import json
+import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -24,6 +26,7 @@ sys.path.insert(0, str(DEPLOYER_ROOT))
 import docker_deploy  # noqa: E402
 import lib.constant as C  # noqa: E402
 import lib.docker_utils as D  # noqa: E402
+from lib import docker_commands  # noqa: E402
 import lib.in_place_run as in_place_run  # noqa: E402
 from lib.container_ipc import host_ipc_enabled  # noqa: E402
 
@@ -56,6 +59,228 @@ def _pd_config():
 def _parse(*argv):
     with patch.object(sys, "argv", ["docker_deploy.py", *argv]):
         return docker_deploy.parse_arguments()
+
+
+def _probe_config(*services):
+    config = _pd_config()
+    config["motor_controller_config"] = {"api_config": {"controller_api_port": 2026}}
+    config["motor_coordinator_config"] = {
+        "api_config": {"coordinator_api_mgmt_port": 1026},
+        "port_allocator_config": {"enable": False},
+    }
+    config["motor_deploy_config"]["service_discovery_config"] = {
+        "probe_ips": {service: ["192.0.2.11"] for service in services},
+    }
+    return config
+
+
+@pytest.mark.parametrize("service", ["controller", "coordinator"])
+@pytest.mark.parametrize("value", ["192.0.2.11,192.0.2.12", ""])
+def test_show_commands_rejects_cli_candidates_without_printing_direct_commands(service, value, capsys):
+    with patch.object(sys, "argv", ["docker_deploy.py", "--show-commands", f"--{service}-probe-ips", value]):
+        with pytest.raises(SystemExit) as exc:
+            docker_deploy.main()
+    assert exc.value.code == 2
+    output = capsys.readouterr()
+    assert not output.out
+    assert "cannot be combined" in output.err
+    assert "service_discovery_config.probe_ips" in output.err
+
+
+@pytest.mark.parametrize("use_probe", [False, True])
+def test_show_commands_preserves_json_candidates_and_legacy_direct_targets(tmp_path, capsys, use_probe):
+    config = _probe_config("controller", "coordinator") if use_probe else _pd_config()
+    config["motor_deploy_config"]["deploy_mode"] = "infer_service_set"
+    path = tmp_path / "user_config.json"
+    original = json.dumps(config)
+    path.write_text(original, encoding="utf-8")
+    with patch.object(sys, "argv", ["docker_deploy.py", "--show-commands", "--config_dir", str(tmp_path)]):
+        with pytest.raises(SystemExit) as exc:
+            docker_deploy.main()
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    assert "--role" in output
+    assert ("--controller-ip" in output) is not use_probe
+    assert ("--coordinator-ip" in output) is not use_probe
+    assert path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("service", ["controller", "coordinator"])
+def test_cli_target_parameters_are_mutually_exclusive_even_for_create(service):
+    with pytest.raises(SystemExit):
+        _parse("--create", "--" + service + "-ip", "192.0.2.11", "--" + service + "-probe-ips", "192.0.2.11")
+
+
+@pytest.mark.parametrize("service", ["controller", "coordinator"])
+@pytest.mark.parametrize("sources", ["cli_both", "cli_direct_json_probe", "cli_probe_json_probe"])
+def test_probe_inputs_reject_multiple_sources_even_with_identical_addresses(service, sources):
+    config = _probe_config(service) if "json" in sources else _probe_config()
+    args = {}
+    if sources != "cli_probe_json_probe":
+        args[service + "_ip"] = "192.0.2.11"
+    if sources != "cli_direct_json_probe":
+        args[service + "_probe_ips"] = "192.0.2.11"
+    with pytest.raises(ValueError, match="cannot be combined|conflicts with JSON"):
+        D.resolve_probe_inputs(config, **args)
+
+
+@pytest.mark.parametrize("value", ["", ",", "192.0.2.11,"])
+def test_explicit_empty_cli_candidates_never_fall_back(value):
+    with pytest.raises(ValueError, match="nonempty"):
+        D.resolve_probe_inputs(_probe_config(), controller_probe_ips=value)
+
+
+def test_cli_candidates_reach_only_generated_config_and_forward_to_inner_command(tmp_path):
+    config = _probe_config()
+    original = json.dumps(config)
+    source = tmp_path / "user_config.json"
+    source.write_text(original, encoding="utf-8")
+    (tmp_path / "env.json").write_text("{}", encoding="utf-8")
+    args = _parse(
+        "--config_dir",
+        str(tmp_path),
+        "--controller-probe-ips",
+        "192.0.2.11,192.0.2.12",
+        "--coordinator-probe-ips",
+        "192.0.2.21",
+    )
+    resolved, probe_ips = docker_deploy._resolve_probe_inputs(args, config)
+    assert probe_ips == {"controller": ["192.0.2.11", "192.0.2.12"], "coordinator": ["192.0.2.21"]}
+    assert json.dumps(config) == original
+    inner = shlex.split(docker_deploy.build_in_place_inner_command(args, str(DEPLOYER_ROOT)))
+    assert inner[inner.index("--controller-probe-ips") + 1] == "192.0.2.11,192.0.2.12"
+    assert inner[inner.index("--coordinator-probe-ips") + 1] == "192.0.2.21"
+    destination = tmp_path / "configmap"
+
+    def copy_and_override(_deployer, directory, source_file, _env_file, *, before_render):
+        Path(directory).mkdir()
+        copied = Path(directory) / "user_config.json"
+        shutil.copyfile(source_file, copied)
+        before_render(copied)
+
+    with patch.object(D, "prepare_rendered_local_configmap", side_effect=copy_and_override):
+        D.prepare_configmap(
+            str(DEPLOYER_ROOT),
+            str(destination),
+            str(source),
+            "unused-env.json",
+            discovery_config=resolved["motor_deploy_config"]["service_discovery_config"],
+            render_host="192.0.2.30",
+        )
+    assert source.read_text(encoding="utf-8") == original
+    copied = json.loads((destination / "user_config.json").read_text(encoding="utf-8"))
+    assert copied["motor_coordinator_config"]["render_config"]["endpoint"]["host"] == "192.0.2.30"
+    assert D.configured_probe_ips(copied) == {
+        "controller": ["192.0.2.11", "192.0.2.12"],
+        "coordinator": ["192.0.2.21"],
+    }
+
+
+def test_start_entry_merges_cli_candidates_before_identity_and_configmap_render(tmp_path):
+    source = tmp_path / "user_config.json"
+    original = json.dumps(_probe_config())
+    source.write_text(original, encoding="utf-8")
+    (tmp_path / "env.json").write_text("{}", encoding="utf-8")
+    args = _parse(
+        "--start",
+        "--config_dir",
+        str(tmp_path),
+        "--role",
+        "coordinator,controller",
+        "--pod-ip",
+        "192.0.2.10",
+        "--nic-name",
+        "eth0",
+        "--controller-probe-ips",
+        "192.0.2.11",
+        "--coordinator-probe-ips",
+        "192.0.2.21",
+    )
+    with (
+        patch.object(docker_deploy, "default_in_place_workspace", return_value=str(tmp_path / "workspace")),
+        patch.object(docker_deploy, "preflight", return_value=True),
+        patch.object(D, "ip_from_nic", return_value="192.0.2.10"),
+        patch.object(D, "prepare_configmap") as render_config,
+        patch.object(D, "render_start_motor_sh", return_value="#!/bin/bash\n"),
+    ):
+        params, _workspace, identity = docker_deploy._prepare_and_render(args, str(DEPLOYER_ROOT))
+    assert identity.controller_ip == identity.coordinator_ip == ""
+    assert render_config.call_args.kwargs["discovery_config"]["probe_ips"] == params.probe_ips
+    assert params.probe_ips == {"controller": ["192.0.2.11"], "coordinator": ["192.0.2.21"]}
+    assert source.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("service", ["controller", "coordinator"])
+def test_generated_engine_and_kv_commands_do_not_conflict_with_json_candidates(service):
+    config = _probe_config(service)
+    config["motor_deploy_config"]["deploy_mode"] = "pd_separation"
+    config["kv_cache_store_config"] = {"enabled": True}
+    text = docker_commands.render(config, "/config", "/docker_deploy.py")
+    assert "motor-kvs" in text
+    assert "--" + service + "-ip" not in text
+    other = "coordinator" if service == "controller" else "controller"
+    assert "--" + other + "-ip" in text
+
+
+@pytest.mark.parametrize("in_container", [False, True])
+def test_probe_commands_preserve_conductor_address_without_fixed_control_targets(in_container):
+    config = _probe_config("controller", "coordinator")
+    config["motor_deploy_config"]["deploy_mode"] = "pd_separation"
+    config["kv_conductor_config"] = {"http_server_port": 13333}
+    config["motor_coordinator_config"]["scheduler_config"] = {"prefill_scheduler_type": "kv_cache_affinity"}
+    text = docker_commands.render(config, "/config", "/docker_deploy.py", in_container=in_container)
+    assert "--controller-ip" not in text
+    assert "--coordinator-ip" not in text
+    assert "--kv-conductor-ip" in text
+    assert ("--role kv_conductor" in text) is in_container
+
+
+@pytest.mark.parametrize("source", ["cli", "json", "direct"])
+def test_auto_conductor_sidecar_preserves_probe_sources_and_direct_defaults(tmp_path, source):
+    services = ("controller", "coordinator")
+    config = _probe_config(*services) if source == "json" else _probe_config()
+    config["motor_deploy_config"]["deploy_mode"] = "pd_separation"
+    config["kv_conductor_config"] = {"http_server_port": 13333}
+    original = json.dumps(config)
+    config_path = tmp_path / "user_config.json"
+    config_path.write_text(original, encoding="utf-8")
+    (tmp_path / "env.json").write_text("{}", encoding="utf-8")
+    flags = []
+    if source == "cli":
+        for service in services:
+            flags += [f"--{service}-probe-ips", "192.0.2.11"]
+    args = _parse(
+        "--config_dir",
+        str(tmp_path),
+        "--role",
+        "coordinator,controller",
+        "--container-name",
+        "motor-controls",
+        "--pod-ip",
+        "192.0.2.10",
+        "--nic-name",
+        "eth0",
+        *flags,
+    )
+
+    with patch.object(D, "ip_from_nic", return_value="192.0.2.10"):
+        argv = docker_deploy._build_kv_conductor_run_argv(args, str(DEPLOYER_ROOT))
+    inner = shlex.split(argv[-1])
+    sidecar = _parse(*inner[2:])
+    _, probe_ips = docker_deploy._resolve_probe_inputs(sidecar, config)
+
+    assert argv[argv.index("--name") + 1] == D.docker_kv_conductor_container_name()
+    assert sidecar.role == D.ROLE_KV_CONDUCTOR and sidecar.start
+    assert sidecar.pod_ip == "192.0.2.10"
+    for service in services:
+        if source == "direct":
+            assert getattr(sidecar, f"{service}_ip") == "192.0.2.10"
+            assert service not in probe_ips
+        else:
+            assert getattr(sidecar, f"{service}_ip") is None
+            assert probe_ips[service] == ["192.0.2.11"]
+        assert (f"--{service}-probe-ips" in inner) is (source == "cli")
+    assert config_path.read_text(encoding="utf-8") == original
 
 
 class DockerDeployTests(unittest.TestCase):
@@ -653,17 +878,16 @@ class DockerKvConductorTests(unittest.TestCase):
         self.assertTrue(docker_deploy._validate_topology(_affinity_pd_config()))
 
     def test_derive_params_reads_conductor_port(self):
-        params = D.derive_params(_affinity_pd_config())
+        params = D.derive_params(_affinity_pd_config(), probe_ips={})
         self.assertTrue(params.kv_conductor_enabled)
         self.assertEqual(params.kv_conductor_port, 13333)
-        disabled = D.derive_params(_pd_config())
+        disabled = D.derive_params(_pd_config(), probe_ips={})
         self.assertFalse(disabled.kv_conductor_enabled)
 
     def test_identity_defaults_conductor_ip_from_coordinator(self):
-        cfg = _affinity_pd_config()
         with patch.object(D, "ip_from_nic", return_value="10.0.0.2"):
             kvc = D.resolve_runtime_identity(
-                cfg,
+                {},
                 role="kv_conductor",
                 job_name=None,
                 pod_ip="10.0.0.2",
@@ -678,7 +902,7 @@ class DockerKvConductorTests(unittest.TestCase):
             self.assertEqual(kvc.kv_conductor_ip, "10.0.0.2")
             self.assertFalse(kvc.attach_npu)
             prefill = D.resolve_runtime_identity(
-                cfg,
+                {},
                 role="prefill",
                 job_name="p0",
                 pod_ip="10.0.0.2",
@@ -691,7 +915,7 @@ class DockerKvConductorTests(unittest.TestCase):
             )
             self.assertEqual(prefill.kv_conductor_ip, "10.0.0.1")
             explicit = D.resolve_runtime_identity(
-                cfg,
+                {},
                 role="prefill",
                 job_name="p0",
                 pod_ip="10.0.0.2",
@@ -706,7 +930,7 @@ class DockerKvConductorTests(unittest.TestCase):
             self.assertEqual(explicit.kv_conductor_ip, "10.0.0.9")
             with self.assertRaisesRegex(ValueError, "http_server_port is missing"):
                 D.resolve_runtime_identity(
-                    cfg,
+                    {},
                     role="prefill",
                     job_name="p0",
                     pod_ip="10.0.0.2",
@@ -720,7 +944,7 @@ class DockerKvConductorTests(unittest.TestCase):
                 )
 
     def test_start_script_exports_conductor_service(self):
-        params = D.derive_params(_affinity_pd_config())
+        params = D.derive_params(_affinity_pd_config(), probe_ips={})
         identity = D.DockerRuntimeIdentity(
             role="kv_conductor",
             job_name="",
@@ -758,7 +982,7 @@ class DockerKvConductorTests(unittest.TestCase):
         self.assertNotIn("KV_CONDUCTOR_PORT", prefill)
 
     def test_single_container_start_script_exports_conductor(self):
-        params = D.derive_params(_affinity_pd_config(single=True))
+        params = D.derive_params(_affinity_pd_config(single=True), probe_ips={})
         with patch.object(D, "ip_from_nic", return_value="10.0.0.8"):
             script = D.render_start_motor_sh(
                 params,
@@ -772,7 +996,7 @@ class DockerKvConductorTests(unittest.TestCase):
         self.assertIn('export POD_IP="10.0.0.8"', script)
 
     def test_single_container_start_script_points_pool_at_pod_ip(self):
-        params = D.derive_params(_affinity_pd_config(single=True, store=True))
+        params = D.derive_params(_affinity_pd_config(single=True, store=True), probe_ips={})
         with patch.object(D, "ip_from_nic", return_value="10.0.0.8"):
             script = D.render_start_motor_sh(
                 params,
@@ -796,7 +1020,7 @@ class DockerKvConductorTests(unittest.TestCase):
         coordinator_at = shell.index("motor.coordinator.main")
         self.assertLess(master_at, coordinator_at)
 
-        plain = D.derive_params(_pd_config())
+        plain = D.derive_params(_pd_config(), probe_ips={})
         with patch.object(D, "ip_from_nic", return_value="10.0.0.8"):
             bare = D.render_start_motor_sh(
                 plain,
@@ -809,7 +1033,7 @@ class DockerKvConductorTests(unittest.TestCase):
 
     def test_ports_include_conductor(self):
         cfg = _affinity_pd_config()
-        params = D.derive_params(cfg)
+        params = D.derive_params(cfg, probe_ips={})
         identity = D.DockerRuntimeIdentity(
             role="kv_conductor",
             job_name="",
@@ -826,18 +1050,20 @@ class DockerKvConductorTests(unittest.TestCase):
 
     def test_single_container_ports_include_conductor(self):
         cfg = _affinity_pd_config(single=True)
-        params = D.derive_params(cfg)
+        params = D.derive_params(cfg, probe_ips={})
         ports = dict(docker_deploy._ports_to_check(cfg, params, None, in_place=True))
         self.assertEqual(ports["kv-conductor"], 13333)
         self.assertEqual(ports["render"], 8100)
 
         bare_cfg = _pd_config()
-        bare_ports = dict(docker_deploy._ports_to_check(bare_cfg, D.derive_params(bare_cfg), None, in_place=True))
+        bare_ports = dict(
+            docker_deploy._ports_to_check(bare_cfg, D.derive_params(bare_cfg, probe_ips={}), None, in_place=True)
+        )
         self.assertNotIn("kv-conductor", bare_ports)
         self.assertNotIn("render", bare_ports)
 
     def test_single_container_start_script_exports_render(self):
-        params = D.derive_params(_affinity_pd_config(single=True))
+        params = D.derive_params(_affinity_pd_config(single=True), probe_ips={})
         self.assertTrue(params.render_enabled)
         self.assertEqual(params.render_port, 8100)
         with patch.object(D, "ip_from_nic", return_value="10.0.0.8"):
@@ -853,7 +1079,7 @@ class DockerKvConductorTests(unittest.TestCase):
 
         disabled = _affinity_pd_config(single=True)
         disabled["motor_coordinator_config"]["render_config"] = {"enable": False}
-        off = D.derive_params(disabled)
+        off = D.derive_params(disabled, probe_ips={})
         self.assertFalse(off.render_enabled)
         with patch.object(D, "ip_from_nic", return_value="10.0.0.8"):
             bare = D.render_start_motor_sh(

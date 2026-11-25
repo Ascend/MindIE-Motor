@@ -39,6 +39,51 @@ motor_deploy_config字段为部署与资源相关配置，由deploy.py读取并�
 | hardware_type | string | 硬件类型：<ul><li>Atlas 800I A2推理服务器：`800I_A2`</li><li>Atlas 800I A3超节点服务器：`800I_A3`</li><li>Ascend 950PR&950DT系列产品：`Ascend950`</li></ul> Atlas 800I A2推理服务器/Atlas 800I A3超节点服务器的 `nodeSelector` 含 `accelerator: huawei-Ascend910` 与 `accelerator-type`（Atlas 800I A2推理服务器、Atlas 800I A3超节点服务器的 accelerator 相同，须用 accelerator-type 区分产品形态）；Ascend 950PR&950DT系列产品为 `accelerator: huawei-npu`，不带 accelerator-type。<br>**主备/容错场景建议必填**：未配置时默认按未知硬件处理，linkdown（CardNetworkUnhealthy）故障会按 legacy 行为存储并可能压制 ENGINE_DEAD 故障、阻塞引擎重启；配置为非 Atlas 800I A2推理服务器（如：800I_A3）后，链路误报将作为噪声被忽略，不再影响容错决策。 |
 | weight_mount_path | string | 宿主机上模型权重挂载路径，容器内 `model` 路径需与此挂载路径一致，例如 `"/mnt/weight/"`。使用标准 deployer 时，该路径会同时挂载到 P/D（或 Union）引擎和 Coordinator；开启 `context_budget_mode: "on"` 后，Coordinator 也必须能够读取 `engine_config.model` 中的 tokenizer 文件。该字段使用 `hostPath`，因此 Coordinator 可能调度到的节点均需存在该路径，或通过 `coordinator_node_selector` 限制其调度范围。 |
 | tls_config | object | 可选；TLS相关配置，包含mgmt_tls_config、infer_tls_config、etcd_tls_config、grpc_tls_config和observability_tls_config五类。 |
+| service_discovery_config | object | 可选；Docker-only 调用方的静态候选与周期探针配置。默认不启用任何目标探测，详见下节。 |
+
+### 服务发现配置<a id="service-discovery-config"></a>
+
+配置路径为 `motor_deploy_config.service_discovery_config`，由 Docker-only 调用方在启动时加载，修改后需重启对应进程。省略整个对象或保留 `"probe_ips": {}` 时，各目标沿用原访问方式；填写某个目标的非空列表，只为该目标启用探测。此配置不创建副本、不自动开启组件主备，也不要求调用方连接 ETCD。
+
+| 配置项 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| probe_ips | object | `{}` | 只支持 `controller`、`coordinator` 两个目标。两目标独立配置，未填写的目标保持原访问方式。 |
+| probe_ips.controller | array[string] | 未配置 | Controller 候选 IP。填写时必须是非空、不重复的 IP 列表；一个 IP 也启用探测。 |
+| probe_ips.coordinator | array[string] | 未配置 | Coordinator 候选 IP；列表规则同上。候选包括主、备实例。 |
+| probe_interval_seconds | number | `2.0` | 同一成员一次探测完成后，到下一次探测的间隔，单位秒。 |
+| probe_timeout_seconds | number | `1.0` | HTTP 连接和读取等待超时，单位秒；不是整个响应的总时限。 |
+| max_staleness_seconds | number | `6.0` | 探测结果允许使用的最长时间，单位秒，从该次探测发起时计算；过期结果不参与选址。 |
+
+三个时间参数均须为有限正数。候选只接受 IP，不接受域名、URL、端口后缀、未指定地址或组播地址；IPv6 使用不带方括号的 IP 字面量。跨宿主机部署应填写调用方可达的宿主机 IP。没有可用候选时，调用方走原错误处理，不回退到固定地址或列表首项。
+
+候选成员共享对应组件的端口。以下字段均从**调用方本地的同一份 user_config.json**读取，不读取其他机器或对端容器的配置文件：
+
+| 启用的候选 | 必须显式配置的字段 | 约束 |
+| --- | --- | --- |
+| Controller | `motor_controller_config.api_config.controller_api_port` | 所有 Controller 候选使用同一端口，范围 `1–65535`。 |
+| Coordinator | `motor_coordinator_config.api_config.coordinator_api_mgmt_port` | 所有 Coordinator 候选使用同一管理端口，范围 `1–65535`；并显式设置 `motor_coordinator_config.port_allocator_config.enable=false`。 |
+| Coordinator，且 Controller 开启指标代理 | `motor_coordinator_config.api_config.coordinator_obs_port` | 当 `motor_controller_config.observability_config.observability_enable=true` 时必填；各候选使用同一观测端口。 |
+
+启用探测后，端口不能依赖代码默认值；部署者应保证监听端口、对外端口与调用方配置一致。Controller 与 Coordinator 可以使用不同端口。同节点部署时，监听端口冲突由部署者处理。推理端口仍按原配置管理，不由本配置为外部推理客户端选址。
+
+CLI 候选参数、输入互斥规则及部署步骤见 [Docker 主备部署指南](../deployment/docker/ha.md)。
+
+### ETCD 地址配置<a id="etcd-addresses"></a>
+
+以下规则同时适用于 `motor_controller_config.etcd_config` 和 `motor_coordinator_config.etcd_config`：
+
+- 新配置使用非空 `etcd_hosts` 数组。只有一个元素时，可填写域名或 IP；多个元素时必须是同一地址族的静态 IP。单地址和多地址均可使用明文或 TLS。
+- 兼容旧 `etcd_host` 字符串，加载时转换为单元素列表。同时填写两字段时，只允许 `etcd_hosts` 与 `[etcd_host]` 完全一致，否则报错；建议选择一个字段填写。
+- `etcd_port` 对所有地址共用。地址中不带协议和端口；IPv6 可使用带或不带方括号的 IP 字面量。不同 ETCD 地址必须属于同一 ETCD 集群。
+- 默认地址为 `["etcd.default.svc.cluster.local"]`，默认端口为 `2379`。静态列表在启动时加载，修改后需重启对应组件。
+
+TLS 开关位于 `motor_deploy_config.tls_config.etcd_tls_config.enable_tls`，与组件管理 API TLS、主备开关和候选探针配置独立。关闭时使用明文，不读取证书文件，也不使用 `etcd_tls_server_name`；开启主备仍按原规则自动启用 ETCD 持久化。
+
+开启 TLS 时，使用同一 `etcd_tls_config` 中的 `ca_file`、`cert_file`、`key_file` 指定 CA、客户端证书和匹配的无密码 PEM 私钥；这些都是容器内路径。ETCD 客户端不使用 `passwd_file` 解密私钥。文件由部署挂载，配置路径不会触发自动挂载。
+
+`etcd_tls_server_name` 位于各组件的 `etcd_config`，默认 `""`。多 IP 开启 TLS 时必须填写一个共同 DNS SAN 名称，例如 `motor-etcd.internal`；ETCD 每个成员的独立服务器证书都须包含该名称，并通过配置 CA 的校验。连接仍使用 IP，该名称只用于 TLS 身份校验，无需 DNS 解析或修改 ETCD `--name`。单地址未填此字段时保留原校验行为，K8s 旧配置无需修改。
+
+双向 TLS 还要求 ETCD 提供 HTTPS 客户端接口并验证 Motor 客户端证书；peer TLS 独立配置。完整示例和证书只读挂载步骤见 [Docker 主备部署指南](../deployment/docker/ha.md#etcd-mtls)。
 
 ## 组件级Kubernetes Labels和Annotations<a id="additional-labels-annotations"></a>
 
@@ -284,8 +329,10 @@ motor_controller_config字段配置样例如下所示：
 | master_lock_max_failures | int | 连续抢主失败超过此次数则放弃并切换，默认值：`3`。 |
 | master_lock_key | string | 主节点在 ETCD 中的锁路径；运行时会自动加前缀 `/controller/`，默认值：`/master_lock`（实际为 `/controller/master_lock`）。 |
 | **etcd_config字段** |-|-|
-| etcd_host | string | ETCD 服务地址（主机名或 IP），默认值：`etcd.default.svc.cluster.local`。 |
+| etcd_hosts | array[string] | ETCD 地址列表，默认值：`["etcd.default.svc.cluster.local"]`。单地址支持域名或 IP；多地址支持同地址族静态 IP。详见[ETCD 地址配置](#etcd-addresses)。 |
+| etcd_host | string | 兼容旧单地址输入，转换为单元素 `etcd_hosts`。两字段同时配置时，只允许相同单地址，否则报错。 |
 | etcd_port | int | ETCD 端口，默认值：`2379`。 |
+| etcd_tls_server_name | string | TLS 服务器身份，默认值：`""`。多 IP TLS 必填所有成员服务器证书共有的 DNS SAN 名称；单地址留空保留原校验方式。关闭 TLS 时不使用。 |
 | etcd_timeout | int | ETCD 操作超时时间（秒），默认值：`5`。|
 | etcd_lb_policy | string | ETCD负载均衡策略，默认值：round_robin。|
 | enable_etcd_persistence | bool | 是否启用 ETCD 持久化。可选：`true` / `false`，默认值：`false`。 |
@@ -666,8 +713,10 @@ motor_coordinator_config字段配置样例如下所示：
 | master_lock_max_failures | int | 连续抢主失败超过此次数则放弃并切换。默认值：`3`。 |
 | master_lock_key | string | 主节点在 ETCD 中的锁路径；运行时会自动加前缀 `/coordinator/`。默认值：`/master_lock`（实际为 `/coordinator/master_lock`）。 |
 | **etcd_config字段** |-|-|
-| etcd_host | string |ETCD 服务地址（主机名或 IP）。默认值：`etcd.default.svc.cluster.local`。 |
+| etcd_hosts | array[string] | ETCD 地址列表，默认值：`["etcd.default.svc.cluster.local"]`。地址和 TLS 限制与 Controller 相同，详见[ETCD 地址配置](#etcd-addresses)。 |
+| etcd_host | string | 兼容旧单地址输入，转换为单元素 `etcd_hosts`。两字段同时配置时，只允许相同单地址，否则报错。 |
 | etcd_port | int | ETCD 端口。默认值：2379。 |
+| etcd_tls_server_name | string | TLS 服务器身份，默认值：`""`。多 IP TLS 必填所有成员服务器证书共有的 DNS SAN 名称；单地址留空保留原校验方式。关闭 TLS 时不使用。 |
 | etcd_timeout | int | ETCD 操作超时时间（秒）。默认值：`5`。 |
 | etcd_lb_policy | string| ETCD负载均衡策略，默认值：round_robin。|
 | enable_etcd_persistence | bool | 是否启用 ETCD 持久化。可选：`true` / `false`。默认值：false。 |

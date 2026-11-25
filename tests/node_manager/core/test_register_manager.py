@@ -672,6 +672,27 @@ class TestSnapshotSupport:
 
         mock_reset.assert_not_called()
 
+    def test_static_restore_keeps_configured_peers_and_refreshes_local_identity(self, register_manager, tmp_path):
+        register_manager._config.snapshot_config.enable_snapshot = True
+        metadata_path = tmp_path / "snapshot_metadata.json"
+        metadata_path.write_text('{"job_name": "restored-job"}', encoding="utf-8")
+        # Use owned metadata instead of making the default ConfigMap path appear to exist.
+        register_manager._config.snapshot_config.snapshot_metadata_path = str(metadata_path)
+        with (
+            patch.object(ControllerApiClient, "uses_probe_discovery", return_value=True),
+            patch.object(ControllerApiClient, "controller_config", None),
+            patch.object(ControllerApiClient, "reset_heartbeat_client") as reset,
+            patch("motor.node_manager.core.register_manager.get_pod_ip", return_value="192.0.2.22"),
+            patch(
+                "motor.node_manager.core.register_manager.load_snapshot_metadata", return_value="restored-job"
+            ) as load,
+        ):
+            register_manager.register_prepare_after_restore()
+        assert register_manager._config.basic_config.job_name == "restored-job"
+        assert register_manager._config.api_config.pod_ip == "192.0.2.22"
+        load.assert_called_once_with(str(metadata_path), "job_name")
+        reset.assert_called_once_with()
+
     @patch("motor.node_manager.core.register_manager.update_snapshot_metadata")
     @patch("motor.node_manager.core.register_manager.load_snapshot_metadata")
     def test_engine_resume_prepare_updates_missing_fields(

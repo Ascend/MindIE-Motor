@@ -119,6 +119,14 @@ NPU resources. Optional `render_config.launch_args` entries are converted from s
 - **InferenceWorkers are prestarted on both master and standby** — Mgmt, Obs, and Inference are started before role election so a promoted standby can serve without starting workers during the handover. Standby readiness remains `0/1`; only the master is service-ready.
 - On role change: `on_become_master` retains/starts Inference workers; `on_become_standby` writes the standby role and stops Inference workers while keeping Mgmt and Obs alive.
 
+A non-empty `motor_deploy_config.service_discovery_config.probe_ips.controller` list enables
+Controller probing. Candidates share `motor_controller_config.api_config.controller_api_port`
+from the caller's local JSON; without this list, the existing addressing path remains.
+
+The HA Daemon starts its process-owned monitor before election callbacks; each Inference Worker
+starts its own monitor during lifespan initialization. Mgmt/Obs do not start Controller monitors.
+Alarm reporting reads the cached Controller API address and uses the caller's management TLS.
+
 ## IPC: ZMQ Protocol + Shared Memory
 
 ### ZMQ (Mgmt control plane ↔ Workers/Obs)

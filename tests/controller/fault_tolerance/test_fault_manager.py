@@ -282,7 +282,7 @@ def test_fault_manager_initialization(fault_manager):
 def test_fault_manager_initialization_with_custom_config():
     """Test FaultManager initialization with custom configuration"""
     config = ControllerConfig()
-    config.etcd_config.etcd_host = "custom-etcd-host"
+    config.etcd_config.etcd_hosts = ["custom-etcd-host"]
     config.etcd_config.etcd_port = 1234
 
     with patch("motor.controller.fault_tolerance.fault_manager.EtcdClient") as mock_etcd_class:
@@ -802,7 +802,7 @@ def test_update_config():
 
         # Create new config with different ETCD settings
         new_config = ControllerConfig()
-        new_config.etcd_config.etcd_host = "new-etcd-host"
+        new_config.etcd_config.etcd_hosts = ["new-etcd-host"]
         new_config.etcd_config.etcd_port = 2380
         new_config.etcd_config.etcd_timeout = 30.0
         new_config.etcd_config.enable_etcd_persistence = True
@@ -818,7 +818,7 @@ def test_update_config():
             store.clear()
 
         assert manager.config is new_config
-        assert manager.config.etcd_config.etcd_host == "new-etcd-host"
+        assert manager.config.etcd_config.etcd_hosts == ["new-etcd-host"]
         assert manager.config.etcd_config.etcd_port == 2380
         assert manager.config.etcd_config.etcd_timeout == 30.0
         mock_etcd_class.assert_called_once_with(etcd_config=new_config.etcd_config, tls_config=config.etcd_tls_config)
@@ -1145,7 +1145,7 @@ def test_refresh_instance_fault_level_with_device_faults(fault_manager_with_inst
                 1,
                 FaultLevel.L3.name,
                 FAULT_DEVICE_L3.fault_code,
-                FAULT_DEVICE_L3.fault_category.value,
+                FAULT_DEVICE_L3.fault_category.value,  # pylint: disable=no-member  # Pydantic enum field.
             )
 
 
@@ -1190,7 +1190,7 @@ def test_refresh_instance_fault_level_with_l2_faults(fault_manager_with_instance
                 1,
                 FaultLevel.L2.name,
                 FAULT_DEVICE_L2.fault_code,
-                FAULT_DEVICE_L2.fault_category.value,
+                FAULT_DEVICE_L2.fault_category.value,  # pylint: disable=no-member  # Pydantic enum field.
             )
 
 

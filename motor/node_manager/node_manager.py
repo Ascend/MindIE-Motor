@@ -14,6 +14,7 @@ from motor.common.app import Application
 from motor.common.logger import get_logger
 from motor.common.utils.env import Env
 from motor.config.node_manager import NodeManagerConfig
+from motor.node_manager.api_client.controller_api_client import ControllerApiClient
 from motor.node_manager.api_server.node_manager_api import NodeManagerAPI
 from motor.node_manager.core.daemon import Daemon
 from motor.node_manager.core.register_manager import RegisterManager
@@ -45,6 +46,8 @@ class NodeManager(Application):
     def init_modules(self) -> None:
         daemon = Daemon(self.config)
         self.add_module("Daemon", daemon)
+        if daemon.has_engine:
+            ControllerApiClient.start_discovery()
         self.add_module("NodeManagerAPI", NodeManagerAPI(config=self.config))
 
         if daemon.has_engine:

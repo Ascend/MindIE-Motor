@@ -1204,7 +1204,6 @@ class CoordinatorConfig:
                 ("kvc_lifecycle_config", config.kvc_lifecycle_config, kvc_lifecycle_handlers),
                 ("strict_priority_config", config.strict_priority_config, None),
                 ("standby_config", config.standby_config, None),
-                ("etcd_config", config.etcd_config, None),
                 ("infer_tls_config", config.infer_tls_config, None),
                 ("mgmt_tls_config", config.mgmt_tls_config, None),
                 ("etcd_tls_config", config.etcd_tls_config, None),
@@ -1231,6 +1230,9 @@ class CoordinatorConfig:
             render_enable_is_explicit = isinstance(render_config_data, dict) and "enable" in render_config_data
             if not render_enable_is_explicit:
                 config.render_config.enable = resolve_render_enabled(user_config_data or cfg)
+
+            if "etcd_config" in cfg:
+                config.etcd_config = EtcdConfig.from_dict(cfg["etcd_config"])
 
             if CONTEXT_BUDGET_MODE in cfg:
                 config.context_budget_mode = cfg[CONTEXT_BUDGET_MODE]
@@ -1285,6 +1287,7 @@ class CoordinatorConfig:
 
     def validate_config(self) -> None:
         """Validate the validity of configuration values"""
+        self.etcd_config.validate_hosts(self.etcd_tls_config.enable_tls)
         self._errors = []
 
         # agent_status auth posture: when the out-of-band channel must inherit
@@ -1659,7 +1662,6 @@ class CoordinatorConfig:
         # Validate ETCD configuration
         self._validate_port_range(self.etcd_config.etcd_port, "etcd_port")
         self._validate_positive_number(self.etcd_config.etcd_timeout, "etcd_timeout")
-        self._validate_ip_or_hostname(self.etcd_config.etcd_host, "etcd_host")
 
         # Validate precision_detection_config (fields always validated for positive values)
         self._validate_positive_number(
@@ -1766,7 +1768,7 @@ class CoordinatorConfig:
         """Get configuration summary information"""
         separator = "=" * 80
         title = " " * 20 + "Coordinator Configuration Summary"
-        etcd_host = self.etcd_config.etcd_host
+        etcd_hosts = ", ".join(self.etcd_config.etcd_hosts)
         etcd_port = self.etcd_config.etcd_port
         etcd_timeout = self.etcd_config.etcd_timeout
         master_standby_check_interval = self.standby_config.master_standby_check_interval
@@ -1833,7 +1835,7 @@ class CoordinatorConfig:
             "  High Availability:\n"
             f"    ├─ ETCD:\n"
             f"    │   ├─ Persistence:       {'Enabled' if self.etcd_config.enable_etcd_persistence else 'Disabled'}\n"
-            f"    │   ├─ Host:              {etcd_host}\n"
+            f"    │   ├─ Hosts:             {etcd_hosts}\n"
             f"    │   ├─ Port:              {etcd_port}\n"
             f"    │   └─ Timeout:           {etcd_timeout} seconds\n"
             f"    └─ Master/Standby:      {'Enabled' if self.standby_config.enable_master_standby else 'Disabled'}\n"

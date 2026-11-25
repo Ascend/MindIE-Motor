@@ -15,6 +15,7 @@ nav:
               - PD分离服务部署: user_guide/deployment/k8s/pd_disaggregation_deployment.md
               - PD混部服务部署: user_guide/deployment/k8s/pd_aggregation_deployment.md
           - Docker 部署:
+              - Controller / Coordinator 主备部署: user_guide/deployment/docker/ha.md
               - 单容器部署: user_guide/deployment/docker/single_container.md
               - 宿主机部署：PD分离: user_guide/deployment/docker/host/pd_disaggregation_deployment.md
               - 宿主机部署：PD混部: user_guide/deployment/docker/host/pd_aggregation_deployment.md

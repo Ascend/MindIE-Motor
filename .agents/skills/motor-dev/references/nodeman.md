@@ -7,6 +7,18 @@ Controller, starts one native vLLM or SGLang process per endpoint, supervises th
 process group, probes the native `/health` endpoint, and reports endpoint status through
 Controller heartbeats.
 
+A non-empty `motor_deploy_config.service_discovery_config.probe_ips.controller` list enables
+Controller probing. Candidates share `motor_controller_config.api_config.controller_api_port`
+from the local JSON; without this list, the existing addressing path remains.
+
+An engine-consuming NodeManager starts its process-owned monitor before NodeManagerAPI and
+RegisterManager; KV-only deployments do not start it. Business calls read cached targets and use
+the caller's management TLS. Heartbeat attempts resolve the target once and reuse the connection
+until the target changes or a request fails.
+
+Snapshot restoration restores local identity without replacing configured probe candidates
+with the checkpoint's Controller address.
+
 ``` text
 NodeManager (Application)
 │

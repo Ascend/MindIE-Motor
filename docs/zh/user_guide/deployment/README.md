@@ -12,7 +12,7 @@
 
 2. Docker Only部署
 
-    推荐**不具备 K8s 部署环境**的用户使用，该方案仅具备**基础可靠性能力**。
+    推荐**不具备 K8s 部署环境**的用户使用。需要 Controller、Coordinator 主备时，按[Docker-only 主备部署](docker/ha.md)配置 ETCD 与候选实例，并分别部署副本。
 
     [基于Docker的PD分离服务部署（vLLM）](#docker-pd-disaggregation)
 

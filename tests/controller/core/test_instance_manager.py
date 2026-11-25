@@ -1048,7 +1048,7 @@ def test_update_config():
 
         # Create new config with different ETCD settings
         new_config = ControllerConfig()
-        new_config.etcd_config.etcd_host = "new-etcd-host"
+        new_config.etcd_config.etcd_hosts = ["new-etcd-host"]
         new_config.etcd_config.etcd_port = 2380
         new_config.etcd_config.etcd_timeout = 30.0
         new_config.etcd_config.enable_etcd_persistence = True
@@ -1063,7 +1063,7 @@ def test_update_config():
 
         # Verify config was updated
         assert manager.etcd_config is new_config.etcd_config
-        assert manager.etcd_config.etcd_host == "new-etcd-host"
+        assert manager.etcd_config.etcd_hosts == ["new-etcd-host"]
         assert manager.etcd_config.etcd_port == 2380
         assert manager.etcd_config.etcd_timeout == 30.0
         assert manager.enable_dp_scale_down is True

@@ -306,7 +306,7 @@ class ControllerConfig:
                 update_config_from_dict(config.standby_config, cfg["standby_config"])
 
             if "etcd_config" in cfg:
-                update_config_from_dict(config.etcd_config, cfg["etcd_config"])
+                config.etcd_config = EtcdConfig.from_dict(cfg["etcd_config"])
 
             if "observability_config" in cfg:
                 update_config_from_dict(config.observability_config, cfg["observability_config"])
@@ -345,6 +345,8 @@ class ControllerConfig:
 
     def validate_config(self) -> None:
         """Validate the validity of configuration values"""
+        if self.etcd_config.enable_etcd_persistence:
+            self.etcd_config.validate_hosts(self.etcd_tls_config.enable_tls)
         errors = []
 
         # Validate logging configuration
@@ -529,7 +531,7 @@ class ControllerConfig:
             f"    │   └─ Hardware Type:    {self.hardware_type or 'unset'}\n"
             f"    ├─ ETCD:\n"
             f"    │   ├─ Persistence:      {'Enabled' if self.etcd_config.enable_etcd_persistence else 'Disabled'}\n"
-            f"    │   ├─ Host:             {self.etcd_config.etcd_host}\n"
+            f"    │   ├─ Hosts:            {', '.join(self.etcd_config.etcd_hosts)}\n"
             f"    │   ├─ Port:             {self.etcd_config.etcd_port}\n"
             f"    │   └─ Timeout:          {self.etcd_config.etcd_timeout} seconds\n"
             f"    └─ Master/Standby:       {'Enabled' if self.standby_config.enable_master_standby else 'Disabled'}\n"

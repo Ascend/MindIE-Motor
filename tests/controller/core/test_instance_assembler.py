@@ -1661,7 +1661,7 @@ def test_update_config(instance_assembler):
     """Test update_config method updates configuration and recreates ETCD client"""
     # Create new config with different ETCD settings
     new_config = ControllerConfig()
-    new_config.etcd_config.etcd_host = "new-etcd-host"
+    new_config.etcd_config.etcd_hosts = ["new-etcd-host"]
     new_config.etcd_config.etcd_port = 2380
     new_config.etcd_config.etcd_timeout = 30.0
     new_config.etcd_config.enable_etcd_persistence = True
@@ -1679,7 +1679,7 @@ def test_update_config(instance_assembler):
 
         # Verify config was updated
         assert instance_assembler.etcd_config is new_config.etcd_config
-        assert instance_assembler.etcd_config.etcd_host == "new-etcd-host"
+        assert instance_assembler.etcd_config.etcd_hosts == ["new-etcd-host"]
         assert instance_assembler.etcd_config.etcd_port == 2380
         assert instance_assembler.etcd_config.etcd_timeout == 30.0
         assert instance_assembler.enable_dp_scale_up is True

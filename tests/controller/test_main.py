@@ -191,6 +191,7 @@ def test_init_modules_with_observability():
 
 def test_start_modules_standalone():
     cfg = _make_config()
+    events = []
 
     with (
         patch("motor.controller.controller.InstanceAssembler"),
@@ -198,15 +199,19 @@ def test_start_modules_standalone():
         patch("motor.controller.controller.InstanceManager"),
         patch("motor.controller.controller.ControllerAPI"),
         patch("motor.controller.controller.Controller._start_config_watcher"),
+        patch("motor.controller.controller.CoordinatorApiClient.start_discovery") as start_discovery,
     ):
         ctrl = Controller(cfg)
         ctrl.init_modules()
 
+        start_discovery.side_effect = lambda: events.append("probe")
         # Give each module a mock start()
         for m in ctrl.modules.values():
-            m.start = MagicMock()
+            m.start = MagicMock(side_effect=lambda: events.append("module"))
 
         ctrl._start_modules()
+        assert events == ["probe"] + ["module"] * len(ctrl.modules)
+        start_discovery.assert_called_once_with()
 
         # All modules should be started
         for m in ctrl.modules.values():

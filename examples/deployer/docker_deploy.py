@@ -272,6 +272,16 @@ def preflight(
     return ok
 
 
+def _resolve_probe_inputs(args, user_config: dict) -> tuple[dict, dict[str, list[str]]]:
+    return D.resolve_probe_inputs(
+        user_config,
+        controller_ip=getattr(args, "controller_ip", None),
+        coordinator_ip=getattr(args, "coordinator_ip", None),
+        controller_probe_ips=getattr(args, "controller_probe_ips", None),
+        coordinator_probe_ips=getattr(args, "coordinator_probe_ips", None),
+    )
+
+
 def _prepare_and_render(args, deployer_dir: str):
     user_config_path, env_config_path = resolve_config_paths(
         args.config_dir, args.user_config_path, args.env_config_path
@@ -282,7 +292,8 @@ def _prepare_and_render(args, deployer_dir: str):
         sys.exit(1)
 
     try:
-        params = D.derive_params(user_config)
+        user_config, probe_ips = _resolve_probe_inputs(args, user_config)
+        params = D.derive_params(user_config, probe_ips=probe_ips)
     except (KeyError, TypeError, ValueError) as exc:
         logger.error("Failed to derive deploy params: %s", exc)
         sys.exit(1)
@@ -300,7 +311,7 @@ def _prepare_and_render(args, deployer_dir: str):
 
     try:
         identity = D.resolve_runtime_identity(
-            user_config,
+            probe_ips,
             role=args.role,
             job_name=args.job_name,
             pod_ip=args.pod_ip,
@@ -345,6 +356,7 @@ def _prepare_and_render(args, deployer_dir: str):
             role=identity.role if identity else None,
             engine_ports=engine_ports,
             render_host=render_host,
+            discovery_config=user_config[C.MOTOR_DEPLOY_CONFIG].get("service_discovery_config"),
         )
     except ValueError as exc:
         logger.error("%s", exc)
@@ -490,26 +502,29 @@ def _restart_docker_render_with_coordinator(args) -> tuple[int, str | None, str 
     return 0, since, render_name
 
 
-def _kv_conductor_sidecar_args(args):
+def _kv_conductor_sidecar_args(args, probe_ips: dict[str, list[str]]):
     sidecar = copy.copy(args)
     sidecar.role = D.ROLE_KV_CONDUCTOR
     sidecar.container_name = D.docker_kv_conductor_container_name()
     sidecar.job_name = None
     sidecar.devices = None
     sidecar.start = True
-    sidecar.coordinator_ip = getattr(args, "coordinator_ip", None) or getattr(args, "pod_ip", None)
-    sidecar.controller_ip = getattr(args, "controller_ip", None) or getattr(args, "pod_ip", None)
+    for service in ("coordinator", "controller"):
+        direct_ip = None if service in probe_ips else getattr(args, f"{service}_ip", None) or args.pod_ip
+        setattr(sidecar, f"{service}_ip", direct_ip)
     sidecar.kv_conductor_ip = None
     return sidecar
 
 
 def _build_kv_conductor_run_argv(args, deployer_dir: str) -> list[str]:
-    env = resolve_enter_env(_kv_conductor_sidecar_args(args), deployer_dir)
+    _, probe_ips = _resolve_probe_inputs(args, _user_config_for_host_create(args))
+    sidecar_args = _kv_conductor_sidecar_args(args, probe_ips)
+    env = resolve_enter_env(sidecar_args, deployer_dir)
     image = env["IMAGE"]
     examples = env["EXAMPLES"]
     weight = (env.get("WEIGHT") or "").strip()
-    extra = extra_create_bind_paths(_kv_conductor_sidecar_args(args), examples)
-    inner = build_in_place_inner_command(_kv_conductor_sidecar_args(args), deployer_dir)
+    extra = extra_create_bind_paths(sidecar_args, examples)
+    inner = build_in_place_inner_command(sidecar_args, deployer_dir)
     argv = [
         "docker",
         "run",
@@ -679,9 +694,12 @@ def _print_in_place_banner(
         return
     print(f"角色：{identity.role}", flush=True)
     print(f"本机 IP：{identity.pod_ip}", flush=True)
-    print(f"Coordinator：{identity.coordinator_ip}", flush=True)
-    print(f"Controller：{identity.controller_ip}", flush=True)
-    print(f"推理地址：{D.infer_endpoint(params, identity)}", flush=True)
+    for service, address in (("coordinator", identity.coordinator_ip), ("controller", identity.controller_ip)):
+        targets = params.probe_ips.get(service)
+        target_text = "后台探测候选 " + ", ".join(targets) if targets else address
+        print(f"{service.capitalize()}：{target_text}", flush=True)
+    endpoint = D.infer_endpoint(params, identity)
+    print(f"推理地址：{endpoint or '无固定入口，外部调用方需自行选择可用 Coordinator'}", flush=True)
     print("正在本环境拉起服务", flush=True)
 
 
@@ -1107,10 +1125,11 @@ def _append_host_sidecar_ips(args, argv: list[str]) -> None:
         getattr(args, "env_config_path", None),
     )
     user_config = read_json(user_config_path)
-    params = D.derive_params(user_config)
+    user_config, probe_ips = _resolve_probe_inputs(args, user_config)
+    params = D.derive_params(user_config, probe_ips=probe_ips)
     if params.kv_conductor_enabled and not (getattr(args, "kv_conductor_ip", None) or "").strip():
         identity = D.resolve_runtime_identity(
-            user_config,
+            probe_ips,
             role=getattr(args, "role", None),
             job_name=getattr(args, "job_name", None),
             pod_ip=getattr(args, "pod_ip", None),
@@ -1168,6 +1187,8 @@ def build_in_place_inner_command(args, deployer_dir: str) -> str:
             argv += [flag, str(value)]
     _append_host_sidecar_ips(args, argv)
     for flag, attr in (
+        ("--controller-probe-ips", "controller_probe_ips"),
+        ("--coordinator-probe-ips", "coordinator_probe_ips"),
         ("--node-manager-port", "node_manager_port"),
         ("--data-parallel-rpc-port", "data_parallel_rpc_port"),
         ("--kv-port", "kv_port"),
@@ -1216,9 +1237,10 @@ def _validate_one_click_identity(args, deployer_dir: str, *, check_ports: bool =
     user_config = read_json(user_config_path)
     if not _validate_topology(user_config):
         raise ValueError("Preflight checks failed.")
-    params = D.derive_params(user_config)
+    user_config, probe_ips = _resolve_probe_inputs(args, user_config)
+    params = D.derive_params(user_config, probe_ips=probe_ips)
     identity = D.resolve_runtime_identity(
-        user_config,
+        probe_ips,
         role=args.role,
         job_name=args.job_name,
         pod_ip=args.pod_ip,
@@ -1562,27 +1584,45 @@ def parse_arguments() -> argparse.Namespace:
         help="This engine instance, e.g. p0 / d0 / u0. One container is one instance. "
         "Required for --role prefill/decode/union. Forbidden for other roles.",
     )
-    parser.add_argument(
+    coordinator_targets = parser.add_mutually_exclusive_group()
+    controller_targets = parser.add_mutually_exclusive_group()
+    coordinator_targets.add_argument(
         "--coordinator-ip",
         type=str,
         default=None,
-        help="Coordinator IPv4. User-supplied. Required for prefill/decode/union/kv_store/kv_conductor "
-        "and for --role controller. --role coordinator / coordinator_controller default "
-        "to this container's --pod-ip.",
+        help="Direct-mode Coordinator access target IPv4, not its listen address. Required for "
+        "prefill/decode/union/kv_store/kv_conductor and --role controller; defaults to --pod-ip for "
+        "--role coordinator / coordinator_controller. With probe discovery, calls use "
+        "service_discovery_config.probe_ips.coordinator or --coordinator-probe-ips instead; "
+        "these inputs are mutually exclusive.",
     )
-    parser.add_argument(
+    controller_targets.add_argument(
         "--controller-ip",
         type=str,
         default=None,
-        help="Controller IPv4. User-supplied. Required for prefill/decode/union/kv_store/kv_conductor "
-        "and for --role coordinator. --role controller / coordinator_controller default "
-        "to this container's --pod-ip.",
+        help="Direct-mode Controller access target IPv4, not its listen address. Required for "
+        "prefill/decode/union/kv_store/kv_conductor and --role coordinator; defaults to --pod-ip for "
+        "--role controller / coordinator_controller. With probe discovery, calls use "
+        "service_discovery_config.probe_ips.controller or --controller-probe-ips instead; "
+        "these inputs are mutually exclusive.",
+    )
+    controller_targets.add_argument(
+        "--controller-probe-ips",
+        default=None,
+        help="Comma-separated Controller candidate IPs, probed by callers. Mutually exclusive with "
+        "--controller-ip and JSON service_discovery_config.probe_ips.controller.",
+    )
+    coordinator_targets.add_argument(
+        "--coordinator-probe-ips",
+        default=None,
+        help="Comma-separated Coordinator candidate IPs, probed by callers. Mutually exclusive with "
+        "--coordinator-ip and JSON service_discovery_config.probe_ips.coordinator.",
     )
     parser.add_argument(
         "--pod-ip",
         type=str,
         default=None,
-        help="This host's HCCL IPv4 (same as vllm-ascend local_ip). "
+        help="This host's HCCL IPv4 (same as vllm-ascend local_ip), also the default component listen address. "
         "Required for one-click and --start. Not required for --create. "
         "Loopback is rejected.",
     )
@@ -1729,6 +1769,13 @@ def main() -> None:
     args = parse_arguments()
     deployer_dir = os.path.dirname(os.path.abspath(__file__))
     if getattr(args, "show_commands", False):
+        if args.controller_probe_ips is not None or args.coordinator_probe_ips is not None:
+            print(
+                "--show-commands cannot be combined with --controller-probe-ips or --coordinator-probe-ips. "
+                "Set motor_deploy_config.service_discovery_config.probe_ips in user_config.json instead.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         sys.exit(
             emit_commands(
                 args.config_dir,

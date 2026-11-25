@@ -67,6 +67,12 @@ class CoordinatorDaemon:
 
     async def run(self) -> None:
         """Daemon main loop."""
+        if self.config.standby_config.enable_master_standby:
+            from motor.coordinator.api_client.controller_api_client import (
+                ControllerApiClient,
+            )
+
+            ControllerApiClient.start_discovery()
         self._initialize_process_managers()
 
         # Inject daemon PID into any process manager that supports spawn context (e.g. Mgmt for orphan detection).
@@ -187,7 +193,9 @@ class CoordinatorDaemon:
             MasterToSlaveEvent,
             MasterToSlaveReason,
         )
-        from motor.coordinator.api_client.controller_api_client import ControllerApiClient
+        from motor.coordinator.api_client.controller_api_client import (
+            ControllerApiClient,
+        )
 
         event = MasterToSlaveEvent(
             component=MasterToSlaveComponent.COORDINATOR,

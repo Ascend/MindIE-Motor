@@ -12,9 +12,12 @@
 
 from __future__ import annotations
 
+import copy
 import http.client
+import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import socket
@@ -404,6 +407,7 @@ class DockerDeployParams:
     kv_conductor_port: int = DEFAULT_KV_CONDUCTOR_PORT
     render_enabled: bool = False
     render_port: int = 8100
+    probe_ips: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _known_hardware_types() -> list[str]:
@@ -601,7 +605,7 @@ def _derive_dshm_size(deploy_config: dict) -> str | None:
     return dshm_size.strip()
 
 
-def derive_params(user_config: dict) -> DockerDeployParams:
+def derive_params(user_config: dict, *, probe_ips: dict[str, list[str]]) -> DockerDeployParams:
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
 
     image = deploy_config[C.IMAGE_NAME]
@@ -643,6 +647,7 @@ def derive_params(user_config: dict) -> DockerDeployParams:
         kv_conductor_port=conductor_port,
         render_enabled=render_on,
         render_port=render_port,
+        probe_ips=probe_ips,
     )
 
 
@@ -862,6 +867,98 @@ def _require_ip(value: str | None, flag: str) -> str:
     return text
 
 
+def _probe_config(user_config: dict) -> dict:
+    deploy = user_config.get(C.MOTOR_DEPLOY_CONFIG, {})
+    if not isinstance(deploy, dict):
+        raise TypeError("motor_deploy_config must be an object")
+    discovery = deploy.get("service_discovery_config", {})
+    if not isinstance(discovery, dict):
+        raise TypeError("service_discovery_config must be an object")
+    return discovery
+
+
+def configured_probe_ips(user_config: dict) -> dict[str, list[str]]:
+    """Check deployment address/port inputs without importing Motor runtime dependencies."""
+    discovery = _probe_config(user_config)
+    allowed = {"probe_ips", "probe_interval_seconds", "probe_timeout_seconds", "max_staleness_seconds"}
+    if set(discovery) - allowed:
+        raise ValueError("Unknown service_discovery_config fields: " + ", ".join(sorted(set(discovery) - allowed)))
+    for name in allowed - {"probe_ips"}:
+        if name in discovery:
+            value = discovery[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise ValueError(name + " must be a finite positive number")
+    candidates = discovery.get("probe_ips", {})
+    if not isinstance(candidates, dict):
+        raise TypeError("service_discovery_config.probe_ips must be an object")
+    normalized = {}
+    for service, values in candidates.items():
+        if service not in ("controller", "coordinator"):
+            raise ValueError("Unknown probe target: " + str(service))
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"probe_ips.{service} must be a nonempty IP list")
+        addresses = []
+        for value in values:
+            if not isinstance(value, str):
+                raise TypeError(f"probe_ips.{service} entries must be IP strings")
+            address = ipaddress.ip_address(value)
+            if address.is_unspecified or address.is_multicast:
+                raise ValueError(f"probe_ips.{service} requires unicast addresses")
+            addresses.append(str(address))
+        if len(set(addresses)) != len(addresses):
+            raise ValueError(f"probe_ips.{service} contains duplicate IP addresses")
+        component = user_config.get("motor_" + service + "_config", {})
+        api = component.get("api_config", {}) if isinstance(component, dict) else {}
+        port_name = "controller_api_port" if service == "controller" else "coordinator_api_mgmt_port"
+        ports = [port_name]
+        if isinstance(api, dict) and service == "coordinator" and "coordinator_obs_port" in api:
+            ports.append("coordinator_obs_port")
+        for name in ports:
+            port = api.get(name) if isinstance(api, dict) else None
+            if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+                raise ValueError(f"Probe target {service} requires an explicit valid api_config.{name}")
+        if service == "coordinator":
+            allocator = component.get("port_allocator_config", {})
+            if not isinstance(allocator, dict) or allocator.get("enable") is not False:
+                raise ValueError("Coordinator probe targets require port_allocator_config.enable=false")
+        normalized[service] = addresses
+    return normalized
+
+
+def resolve_probe_inputs(
+    user_config: dict,
+    *,
+    controller_ip: str | None = None,
+    coordinator_ip: str | None = None,
+    controller_probe_ips: str | None = None,
+    coordinator_probe_ips: str | None = None,
+) -> tuple[dict, dict[str, list[str]]]:
+    """Merge explicit CLI candidates into a copy, rejecting duplicate address sources."""
+    discovery = _probe_config(user_config)
+    candidates = discovery.get("probe_ips", {})
+    if not isinstance(candidates, dict):
+        raise TypeError("service_discovery_config.probe_ips must be an object")
+    additions = {}
+    for service, direct_ip, cli_ips in (
+        ("controller", controller_ip, controller_probe_ips),
+        ("coordinator", coordinator_ip, coordinator_probe_ips),
+    ):
+        if direct_ip is not None and (cli_ips is not None or service in candidates):
+            raise ValueError(f"--{service}-ip cannot be combined with probe IPs for {service}")
+        if cli_ips is not None:
+            if service in candidates:
+                raise ValueError(f"--{service}-probe-ips conflicts with JSON probe_ips.{service}")
+            values = [value.strip() for value in cli_ips.split(",")]
+            if not all(values):
+                raise ValueError(f"--{service}-probe-ips must be a nonempty comma-separated IP list")
+            additions[service] = values
+    resolved = copy.deepcopy(user_config)
+    if additions:
+        merged = resolved.setdefault(C.MOTOR_DEPLOY_CONFIG, {}).setdefault("service_discovery_config", {})
+        merged.setdefault("probe_ips", {}).update(additions)
+    return resolved, configured_probe_ips(resolved)
+
+
 def require_pod_ip_and_nic(pod_ip: str | None, nic_name: str | None) -> tuple[str, str]:
     missing = []
     ip = (pod_ip or "").strip()
@@ -885,7 +982,7 @@ def require_pod_ip_and_nic(pod_ip: str | None, nic_name: str | None) -> tuple[st
 
 
 def resolve_runtime_identity(
-    user_config: dict,
+    probe_ips: dict[str, list[str]],
     *,
     role: str | None,
     job_name: str | None,
@@ -947,17 +1044,20 @@ def resolve_runtime_identity(
         raise ValueError(f"--instance-name is not used for --role {role}.")
 
     if control == "coordinator":
-        resolved_coord = resolved_coord or resolved_pod_ip
-        resolved_ctrl = _require_ip(resolved_ctrl, "--controller-ip")
+        resolved_coord = resolved_coord or ("" if "coordinator" in probe_ips else resolved_pod_ip)
+        targets = {"controller": resolved_ctrl}
     elif control == "controller":
-        resolved_ctrl = resolved_ctrl or resolved_pod_ip
-        resolved_coord = _require_ip(resolved_coord, "--coordinator-ip")
+        resolved_ctrl = resolved_ctrl or ("" if "controller" in probe_ips else resolved_pod_ip)
+        targets = {"coordinator": resolved_coord}
     elif control == ROLE_COORDINATOR_CONTROLLER:
-        resolved_coord = resolved_coord or resolved_pod_ip
-        resolved_ctrl = resolved_ctrl or resolved_pod_ip
+        resolved_coord = resolved_coord or ("" if "coordinator" in probe_ips else resolved_pod_ip)
+        resolved_ctrl = resolved_ctrl or ("" if "controller" in probe_ips else resolved_pod_ip)
+        targets = {"controller": resolved_ctrl, "coordinator": resolved_coord}
     else:
-        resolved_coord = _require_ip(resolved_coord, "--coordinator-ip")
-        resolved_ctrl = _require_ip(resolved_ctrl, "--controller-ip")
+        targets = {"controller": resolved_ctrl, "coordinator": resolved_coord}
+    for service, address in targets.items():
+        if service not in probe_ips:
+            _require_ip(address, f"--{service}-ip")
 
     if kv_store_enabled:
         if engine == "kv_store":
@@ -1440,6 +1540,7 @@ def prepare_configmap(
     role: str | None = None,
     engine_ports: EnginePortOverrides | None = None,
     render_host: str | None = None,
+    discovery_config: dict | None = None,
 ) -> None:
     def apply_docker_overrides(dest_user_config) -> None:
         with dest_user_config.open(encoding="utf-8") as handle:
@@ -1449,6 +1550,9 @@ def prepare_configmap(
         changed = apply_docker_controller_port_defaults(copied)
         if render_host:
             apply_render_endpoint_host(copied, render_host)
+            changed = True
+        if discovery_config is not None:
+            copied.setdefault(C.MOTOR_DEPLOY_CONFIG, {})["service_discovery_config"] = copy.deepcopy(discovery_config)
             changed = True
         if role and engine_ports and engine_ports.specified():
             apply_engine_port_overrides(copied, role, engine_ports)
@@ -1665,7 +1769,10 @@ def render_start_motor_sh(
     return "\n".join(lines)
 
 
-def infer_endpoint(params: DockerDeployParams, identity: DockerRuntimeIdentity | None = None) -> str:
+def infer_endpoint(params: DockerDeployParams, identity: DockerRuntimeIdentity | None = None) -> str | None:
+    """Return the direct-mode fixed URL; probe discovery does not provide an ingress."""
+    if "coordinator" in params.probe_ips:
+        return None
     if identity is not None:
         return f"http://{identity.coordinator_ip}:{params.infer_container_port}/v1/chat/completions"
     return f"http://<host-ip>:{params.infer_host_port}/v1/chat/completions"
