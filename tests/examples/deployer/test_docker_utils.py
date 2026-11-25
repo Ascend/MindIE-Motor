@@ -637,11 +637,11 @@ class DockerKvConductorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "http_server_port"):
             D.validate_docker_kv_conductor(_affinity_pd_config(conductor=False, affinity=True))
 
-    def test_validate_rejects_single_container(self):
-        with self.assertRaisesRegex(ValueError, "single_container"):
-            D.validate_docker_kv_conductor(_affinity_pd_config(single=True))
-        with self.assertRaisesRegex(ValueError, "single_container"):
+    def test_validate_accepts_single_container(self):
+        D.validate_docker_kv_conductor(_affinity_pd_config(single=True))
+        with self.assertLogs("lib.docker_utils", level="WARNING") as captured:
             D.validate_docker_kv_conductor(_affinity_pd_config(conductor=True, affinity=False, single=True))
+        self.assertTrue(any("kv_cache_affinity" in line for line in captured.output))
 
     def test_validate_warns_when_scheduler_is_not_affinity(self):
         with self.assertLogs("lib.docker_utils", level="WARNING") as captured:
@@ -757,6 +757,56 @@ class DockerKvConductorTests(unittest.TestCase):
         self.assertIn('export KV_CONDUCTOR_SERVICE="10.0.0.2"', prefill)
         self.assertNotIn("KV_CONDUCTOR_PORT", prefill)
 
+    def test_single_container_start_script_exports_conductor(self):
+        params = D.derive_params(_affinity_pd_config(single=True))
+        with patch.object(D, "ip_from_nic", return_value="10.0.0.8"):
+            script = D.render_start_motor_sh(
+                params,
+                "/ws/single/configmap",
+                pod_ip="10.0.0.8",
+                nic_name="eth0",
+            )
+        self.assertIn("export ROLE=SINGLE_CONTAINER", script)
+        self.assertIn('export KV_CONDUCTOR_SERVICE="10.0.0.8"', script)
+        self.assertIn('export KV_CONDUCTOR_PORT="13333"', script)
+        self.assertIn('export POD_IP="10.0.0.8"', script)
+
+    def test_single_container_start_script_points_pool_at_pod_ip(self):
+        params = D.derive_params(_affinity_pd_config(single=True, store=True))
+        with patch.object(D, "ip_from_nic", return_value="10.0.0.8"):
+            script = D.render_start_motor_sh(
+                params,
+                "/ws/single/configmap",
+                pod_ip="10.0.0.8",
+                nic_name="eth0",
+            )
+        self.assertIn('export KVS_MASTER_SERVICE="10.0.0.8"', script)
+        self.assertNotIn("mindie-motor-kvs-master", script)
+        self.assertIn('export KV_CONDUCTOR_SERVICE="10.0.0.8"', script)
+        self.assertIn('export KV_STORE_BACKEND="memcache"', script)
+
+        shell = (
+            Path(D.__file__)
+            .resolve()
+            .parents[1]
+            .joinpath("startup", "roles", "all_combine_in_single_container.sh")
+            .read_text(encoding="utf-8")
+        )
+        master_at = shell.index('export KVS_MASTER_SERVICE="$POD_IP"')
+        coordinator_at = shell.index("motor.coordinator.main")
+        self.assertLess(master_at, coordinator_at)
+
+        plain = D.derive_params(_pd_config())
+        with patch.object(D, "ip_from_nic", return_value="10.0.0.8"):
+            bare = D.render_start_motor_sh(
+                plain,
+                "/ws/single/configmap",
+                pod_ip="10.0.0.8",
+                nic_name="eth0",
+            )
+        self.assertNotIn("KV_CONDUCTOR_SERVICE", bare)
+        self.assertNotIn("KV_CONDUCTOR_PORT", bare)
+
     def test_ports_include_conductor(self):
         cfg = _affinity_pd_config()
         params = D.derive_params(cfg)
@@ -773,6 +823,53 @@ class DockerKvConductorTests(unittest.TestCase):
         )
         ports = dict(docker_deploy._ports_to_check(cfg, params, identity, in_place=True))
         self.assertEqual(ports["kv-conductor"], 13333)
+
+    def test_single_container_ports_include_conductor(self):
+        cfg = _affinity_pd_config(single=True)
+        params = D.derive_params(cfg)
+        ports = dict(docker_deploy._ports_to_check(cfg, params, None, in_place=True))
+        self.assertEqual(ports["kv-conductor"], 13333)
+        self.assertEqual(ports["render"], 8100)
+
+        bare_cfg = _pd_config()
+        bare_ports = dict(docker_deploy._ports_to_check(bare_cfg, D.derive_params(bare_cfg), None, in_place=True))
+        self.assertNotIn("kv-conductor", bare_ports)
+        self.assertNotIn("render", bare_ports)
+
+    def test_single_container_start_script_exports_render(self):
+        params = D.derive_params(_affinity_pd_config(single=True))
+        self.assertTrue(params.render_enabled)
+        self.assertEqual(params.render_port, 8100)
+        with patch.object(D, "ip_from_nic", return_value="10.0.0.8"):
+            script = D.render_start_motor_sh(
+                params,
+                "/ws/single/configmap",
+                pod_ip="10.0.0.8",
+                nic_name="eth0",
+                deployer_dir="/ws/deployer",
+            )
+        self.assertIn('export RENDER_PORT="8100"', script)
+        self.assertIn(f'export MOTOR_DEPLOYER_DIR="{os.path.abspath("/ws/deployer")}"', script)
+
+        disabled = _affinity_pd_config(single=True)
+        disabled["motor_coordinator_config"]["render_config"] = {"enable": False}
+        off = D.derive_params(disabled)
+        self.assertFalse(off.render_enabled)
+        with patch.object(D, "ip_from_nic", return_value="10.0.0.8"):
+            bare = D.render_start_motor_sh(
+                off,
+                "/ws/single/configmap",
+                pod_ip="10.0.0.8",
+                nic_name="eth0",
+                deployer_dir="/ws/deployer",
+            )
+        self.assertNotIn("RENDER_PORT", bare)
+
+        shell = (
+            Path(D.__file__).resolve().parents[1].joinpath("startup", "roles", "all_combine_in_single_container.sh")
+        ).read_text(encoding="utf-8")
+        self.assertLess(shell.index("exec_render_in_place"), shell.index("motor.node_manager.main"))
+        self.assertIn('if [ -n "${RENDER_PORT:-}" ]', shell)
 
     def test_isolate_start_devices_skips_conductor(self):
         self.assertEqual(D.isolate_start_devices("kv_conductor", "0,1"), "")

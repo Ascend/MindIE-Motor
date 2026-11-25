@@ -18,7 +18,6 @@ from typing import Any
 
 import lib.constant as C
 from lib.bind_mount import bind_mount_is_new
-from lib.generator.engine import is_hybrid_deploy, set_weight_mount
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +107,8 @@ def _resolve_model_config(engine_section: dict[str, Any], section_name: str) -> 
 
 
 def _resolve_render_engine_sections(user_config: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    from lib.generator.engine import is_hybrid_deploy
+
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     if is_hybrid_deploy(deploy_config):
         section_name = C.MOTOR_ENGINE_UNION_CONFIG
@@ -429,10 +430,20 @@ def _resolve_render_endpoint(render_config: dict[str, Any]) -> tuple[str, int]:
     return host, port
 
 
+def render_listen_port(user_config: dict[str, Any]) -> int:
+    """Port Render binds. Defaults to 8100 when the endpoint is omitted."""
+    _host, port = _resolve_render_endpoint(_render_config_section(user_config))
+    return port
+
+
 def role_needs_docker_render(role: str | None) -> bool:
-    """True when this Docker role co-locates Coordinator (needs a Render sibling)."""
-    if role is None:
-        return True
+    """True when this Docker role co-locates Coordinator and needs a Render sibling.
+
+    Omitting ``--role`` is the single-container deploy. That container starts
+    Render itself, so a sibling would bind the same port.
+    """
+    if not role:
+        return False
     if role in ("coordinator", "coordinator_controller"):
         return True
     return False
@@ -630,6 +641,8 @@ def configure_render_sidecar(pod_spec: dict[str, Any], user_config: dict[str, An
     weight_mount_path = deploy_config.get(C.WEIGHT_MOUNT_PATH, C.DEFAULT_WEIGHT_MOUNT_PATH)
     _ensure_readonly_host_mount(pod_spec, container, "mnt", "/mnt")
     if weight_mount_path.rstrip("/") != "/mnt":
+        from lib.generator.engine import set_weight_mount
+
         set_weight_mount(pod_spec, container, weight_mount_path)
     if not spec.use_cpu_image:
         _ensure_readonly_host_mount(pod_spec, container, ASCEND_DRIVER_VOLUME_NAME, ASCEND_DRIVER_PATH)

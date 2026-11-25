@@ -218,6 +218,23 @@ def test_build_single_endpoint_keys_by_global_id(instance_assembler, test_config
     assert endpoints[3].id == 3
 
 
+def test_build_endpoints_keep_reported_kv_event_ports(instance_assembler, test_config):
+    msg = create_register_msg(
+        test_config.get("job_name", "decode"),
+        test_config["pod_ip1"],
+        test_config,
+        kv_events_port=5557,
+        kv_replay_port=6667,
+    )
+    single = instance_assembler._build_single_endpoint(msg, 0)
+    assert single[0].kv_events_port == 5557
+    assert single[0].kv_replay_port == 6667
+    multi = instance_assembler._build_multi_endpoints(msg, [0, 1])
+    assert multi[0].kv_events_port == 5557
+    assert multi[1].kv_events_port == 5558
+    assert multi[1].kv_replay_port == 6668
+
+
 def register_instance_with_pods(assembler: InstanceAssembler, job_name: str, config: dict, pod_count: int = 2) -> bool:
     """Register pods for an instance and return whether assembly is complete"""
     pod_ips = [f"127.0.0.{i + 1}" for i in range(pod_count)]

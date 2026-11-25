@@ -50,6 +50,18 @@ class RegisterMsg(BaseModel):
     pod_ip: str = Field(..., description="Pod IP address")
     business_port: list[str] = Field(..., description="Business port for all endpoints managed by this nm")
     bootstrap_port: int | None = Field(default=None, ge=1, le=65535, description="Native PD bootstrap port")
+    kv_events_port: int | None = Field(
+        default=None,
+        ge=1,
+        le=65535,
+        description="Rank-0 KV-events publish port this NodeManager's engine binds",
+    )
+    kv_replay_port: int | None = Field(
+        default=None,
+        ge=1,
+        le=65535,
+        description="Rank-0 KV replay port this NodeManager's engine binds",
+    )
     nm_port: str = Field(..., description="Node manager communication port")
     parallel_config: ParallelConfig = Field(..., description="Parallel configuration")
     enable_multi_endpoints: bool = Field(default=True, description="Whether to enable multi-endpoints mode")

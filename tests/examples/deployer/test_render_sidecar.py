@@ -340,6 +340,7 @@ def test_docker_render_exec_argv_matches_run_command():
     assert role_needs_docker_render("render") is False
     assert role_needs_docker_render("prefill") is False
     assert role_needs_docker_render("coordinator") is True
+    assert role_needs_docker_render(None) is False
     assert render_runtime_env(True)["VLLM_MLA_DISABLE"] == "1"
     disabled = _user_config()
     disabled[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["enable"] = False

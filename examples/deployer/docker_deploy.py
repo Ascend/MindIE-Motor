@@ -158,6 +158,10 @@ def _ports_to_check(
         ports = _coordinator_ports(user_config, params, in_place=in_place)
         if in_place:
             ports.extend(_controller_ports(user_config))
+        if params.kv_conductor_enabled:
+            ports.append(("kv-conductor", params.kv_conductor_port))
+        if params.render_enabled:
+            ports.append(("render", params.render_port))
     else:
         control = D.control_role_of(identity.role)
         ports = []
@@ -169,6 +173,8 @@ def _ports_to_check(
             ports.extend(D.collect_engine_listen_ports(user_config, identity.role))
         if identity.role == D.ROLE_KV_CONDUCTOR:
             ports.append(("kv-conductor", params.kv_conductor_port))
+        if identity.role == D.ROLE_RENDER and params.render_enabled:
+            ports.append(("render", params.render_port))
     seen: set[int] = set()
     unique = []
     for label, port in ports:
@@ -237,17 +243,31 @@ def preflight(
             D.apply_engine_port_overrides(config_for_ports, identity.role, engine_ports)
 
     if check_ports:
+        # Single-container picks a free port in the container, before any child
+        # binds. Failing here would stop that pass from running.
+        defer_conflicts = identity is None and params.deploy_mode == C.DEPLOY_MODE_SINGLE_CONTAINER
         for label, port in _ports_to_check(config_for_ports, params, identity, in_place=in_place):
-            if D.port_in_use(port):
-                holder = D.describe_port_holder(port)
-                logger.error(
+            if not D.port_in_use(port):
+                continue
+            holder = D.describe_port_holder(port)
+            held_by = f" by: {holder}" if holder else ""
+            if defer_conflicts:
+                logger.warning(
                     "Host %s port %s is already in use%s. "
-                    "Another process (not this workspace's Motor container) is holding it.",
+                    "Single-container startup will choose the next free port before any process binds.",
                     label,
                     port,
-                    f" by: {holder}" if holder else "",
+                    held_by,
                 )
-                ok = False
+                continue
+            logger.error(
+                "Host %s port %s is already in use%s. "
+                "Another process (not this workspace's Motor container) is holding it.",
+                label,
+                port,
+                held_by,
+            )
+            ok = False
 
     return ok
 

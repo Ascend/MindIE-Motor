@@ -70,8 +70,9 @@ MindIE Motor修改user_config.json配置文件后，通过deploy.py脚本即可�
     >
     >- 不支持RAS特性，需将enable_fault_tolerance设置为false。
     >- 各组件端口需确保互不重叠：
-    >   - node_manager_port/dp_rpc_port/lookup_rpc_port需确保每个实例不重叠，实际部署时会自动按照先P后D的顺序，依次偏移1，取值范围\[基础端口, 基础端口 + 总实例数\)，其中dp_rpc_port/lookup_rpc_port基础端口以prefill配置为准。
+    >   - node_manager_port/dp_rpc_port需确保每个实例不重叠，实际部署时会自动按照先P后D的顺序，依次偏移1，取值范围\[基础端口, 基础端口 + 总实例数\)，其中dp_rpc_port基础端口以prefill配置为准。lookup_rpc_port 由引擎按 instance_id 写入，单容器不读取、不偏移。
     >   - kv_port需确保每个dp组不重叠，实际部署时会自动按照先P后D的顺序，依次偏移dp组卡数，取值范围\[kv_port, kv_port + 总卡数\)。
+    >   - 上述端口在子进程启动前会再探测一次。被占用时，在从该端口起的100个端口内另选，容器内各进程使用同一结果。
 
 2. 部署服务。
 

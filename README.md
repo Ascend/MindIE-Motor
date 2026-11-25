@@ -69,7 +69,7 @@ MindIE Motor 是面向大语言模型分布式推理的请求调度框架，提�
     <td class="gap" width="24" style="border:none;padding:0;background:transparent"><img alt="" src="./docs/zh/imgs/gap.png" width="24" height="1"></td>
     <td valign="top">
       <table>
-         <tr><th style="font-size:18px" align="center" colspan="5">🤖 常用模型</th></tr>
+         <tr><th id="常用模型" style="font-size:18px" align="center" colspan="5">🤖 常用模型</th></tr>
         <tr>
           <th align="left">模型</th>
           <th align="center">Atlas 800I A2</th>

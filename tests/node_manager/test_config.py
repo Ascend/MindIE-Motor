@@ -24,6 +24,7 @@ from motor.config.node_manager import (
     NodeManagerFaultToleranceConfig,
     SingleContainerNodemanagerConfig,
     VLLMStartupAccelerationConfig,
+    published_kv_event_ports,
 )
 from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import FtCapabilitySnapshot, ParallelConfig, PDRole
@@ -735,6 +736,44 @@ def test_single_container_union_port_offsets_for_hybrid(
     assert config.dp_rpc_port == expected_dp_rpc_port
 
 
+def _kv_event_user_config():
+    config = _single_container_hybrid_user_config()
+    config["motor_deploy_config"]["p_instances_num"] = 2
+    config["motor_deploy_config"]["d_instances_num"] = 2
+    config["motor_engine_prefill_config"] = {
+        "engine_type": "vllm",
+        "engine_config": {
+            "data_parallel_size": 2,
+            "tensor_parallel_size": 1,
+            "pipeline_parallel_size": 1,
+            "kv-events-config": {"endpoint": "tcp://*:5557", "replay_endpoint": "tcp://*:6667"},
+        },
+    }
+    config["motor_engine_decode_config"] = {
+        "engine_type": "vllm",
+        "engine_config": {
+            "data_parallel_size": 1,
+            "tensor_parallel_size": 1,
+            "pipeline_parallel_size": 1,
+            "kv-events-config": {"endpoint": "tcp://*:5557"},
+        },
+    }
+    config["motor_engine_union_config"]["engine_config"]["kv-events-config"] = {
+        "endpoint": "tcp://*:5557",
+        "replay_endpoint": "tcp://*:6667",
+    }
+    return config
+
+
+def test_published_kv_event_ports_follow_single_container_instance_index():
+    user_config = _kv_event_user_config()
+    assert published_kv_event_ports(user_config, "prefill", instance_index=0, single_container=True) == (5557, 6667)
+    assert published_kv_event_ports(user_config, "prefill", instance_index=1, single_container=True) == (5559, 6669)
+    assert published_kv_event_ports(user_config, "decode", instance_index=0, single_container=True) == (5561, None)
+    assert published_kv_event_ports(user_config, "prefill", instance_index=1, single_container=False) == (5557, 6667)
+    assert published_kv_event_ports(user_config, "decode", instance_index=None, single_container=False) == (5557, None)
+
+
 def test_vllm_handoff_connector_infers_handoff_capability():
     capabilities = NodeManagerConfig._infer_dispatch_capabilities(
         {
@@ -1164,8 +1203,8 @@ def _single_container_user_config(store_connector: dict) -> dict:
     }
 
 
-def test_single_container_ucm_store_skips_lookup_rpc_port(monkeypatch):
-    """UCM connectors[1] has no lookup_rpc_port; from_json must not KeyError and leaves it None."""
+def test_single_container_ucm_store_leaves_lookup_rpc_port_unset(monkeypatch):
+    """UCM connectors[1] carries no lookup_rpc_port; from_json must not KeyError."""
     monkeypatch.setenv("ROLE", "prefill")
     monkeypatch.setenv("INDEX", "0")
     ucm = {
@@ -1179,14 +1218,24 @@ def test_single_container_ucm_store_skips_lookup_rpc_port(monkeypatch):
     assert cfg.kv_port == 20001
 
 
-def test_single_container_ascend_store_still_sets_lookup_rpc_port(monkeypatch):
-    """Regression: AscendStore connectors[1] still gets lookup_rpc_port (top-level + offset)."""
+def test_single_container_ascend_store_ignores_lookup_rpc_port(monkeypatch):
+    """lookup_rpc_port is stamped later as instance_id. Nested "0" and a top-level value stay unset."""
+    top_level = {"kv_connector": "AscendStoreConnector", "lookup_rpc_port": "26000"}
+    nested = {
+        "kv_connector": "AscendStoreConnector",
+        "kv_connector_extra_config": {"backend": "memcache", "lookup_rpc_port": "0"},
+    }
     monkeypatch.setenv("ROLE", "prefill")
     monkeypatch.setenv("INDEX", "0")
-    ascend = {"kv_connector": "AscendStoreConnector", "lookup_rpc_port": "26000"}
-    cfg = SingleContainerNodemanagerConfig.from_json(_single_container_user_config(ascend))
-    assert cfg.lookup_rpc_port == 26000
-    assert cfg.kv_port == 20001
+    for store in (top_level, nested):
+        cfg = SingleContainerNodemanagerConfig.from_json(_single_container_user_config(store))
+        assert cfg.lookup_rpc_port is None
+        assert cfg.kv_port == 20001
+
+    monkeypatch.setenv("ROLE", "decode")
+    cfg = SingleContainerNodemanagerConfig.from_json(_single_container_user_config(nested))
+    assert cfg.lookup_rpc_port is None
+    assert cfg.kv_port == 20002
 
 
 def test_single_container_malformed_multi_connectors_rejected(monkeypatch):

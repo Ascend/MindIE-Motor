@@ -400,6 +400,8 @@ class RegisterManager(ThreadSafeSingleton):
             pod_ip = self._config.api_config.pod_ip
             business_port = self._config.endpoint_config.service_ports
             bootstrap_port = self._config.endpoint_config.bootstrap_port
+            kv_events_port = self._config.kv_events_port
+            kv_replay_port = self._config.kv_replay_port
             node_manager_port = self._config.api_config.node_manager_port
             parallel_config = self._config.basic_config.parallel_config
             enable_multi_endpoints = self._config.basic_config.enable_multi_endpoints
@@ -418,6 +420,8 @@ class RegisterManager(ThreadSafeSingleton):
             pod_ip=pod_ip,
             business_port=business_port,
             bootstrap_port=bootstrap_port,
+            kv_events_port=kv_events_port,
+            kv_replay_port=kv_replay_port,
             nm_port=str(node_manager_port),
             parallel_config=parallel_config,
             enable_multi_endpoints=enable_multi_endpoints,

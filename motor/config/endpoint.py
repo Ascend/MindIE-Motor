@@ -372,11 +372,6 @@ class EndpointConfig:
                     )
                 if self.kv_port is not None:
                     connectors[0][constants.KV_PORT] = str(self.kv_port)
-                store = connectors[1]
-                # UCM store has no lookup_rpc_port; writing one would pollute its inline config.
-                # Skip only UCM; other stores keep the original direct write unchanged.
-                if store.get(constants.KV_CONNECTOR) != constants.UCM_CONNECTOR and self.lookup_rpc_port is not None:
-                    store[constants.KV_CONNECTOR_EXTRA_CONFIG][constants.LOOKUP_RPC_PORT] = str(self.lookup_rpc_port)
             else:
                 if self.kv_port is not None:
                     kv_config[constants.KV_PORT] = str(self.kv_port)

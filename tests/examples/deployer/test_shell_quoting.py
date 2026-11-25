@@ -105,6 +105,18 @@ motor_supervise_children() { wait; }
         'if [[ "${2:-}" == ccae_reporter.run ]]',
         'if [[ "${2:-}" != motor.controller.main ]]',
     )
+    if single_container:
+        # The real planner is not available under this mock. Leave the config path
+        # unchanged and only satisfy the env file the startup script sources.
+        capture_controller = capture_controller.replace(
+            "python3() {",
+            "python3() {\n"
+            '    if [[ "${2:-}" == motor.common.utils.single_container_ports ]]; then\n'
+            '        : > "$(dirname "$USER_CONFIG_PATH")/single_container_ports.env"\n'
+            "        return 0\n"
+            "    fi",
+            1,
+        )
     filename = "all_combine_in_single_container.sh" if single_container else "controller.sh"
     result, argv = run_shell(
         tmp_path,

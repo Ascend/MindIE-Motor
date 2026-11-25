@@ -341,11 +341,6 @@ def render(user_config: dict, config_dir: str, deployer_py: str, *, in_container
         argv.extend(["--container-name", "motor-single", "--pod-ip", _HOST_IP, "--nic-name", _NIC])
         if kv_enabled:
             argv.extend(["--kv-store-ip", _HOST_IP])
-        if in_container:
-            from lib.generator.render import is_render_enabled
-
-            if is_render_enabled(user_config):
-                argv.extend(["--render-ip", _RENDER_IP])
         if not in_container:
             return _format([("单容器", argv)], deployer_py, config_dir)
         plans = _in_container_plans(

@@ -174,6 +174,20 @@ def _allocator(cfg: PortAllocatorConfig) -> tuple[str, int, float, float]:
     )
 
 
+def _conductor_listens_locally(cond_host: str, bind_host: str) -> bool:
+    """True when kv-conductor binds on this machine rather than a remote service."""
+    host = _socket_host(cond_host).strip().lower()
+    if host in {"127.0.0.1", "::1", "localhost", "0.0.0.0", "::"}:
+        return True
+    pod_ip = _socket_host(Env.pod_ip or "").strip().lower()
+    if pod_ip and host == pod_ip:
+        return True
+    local_bind = _socket_host(bind_host or "").strip().lower()
+    if local_bind and local_bind not in {"0.0.0.0", "::"} and host == local_bind:
+        return True
+    return False
+
+
 def _parse_host_port(address: str, default_port: int) -> tuple[str, int]:
     if not address:
         return "", default_port
@@ -201,6 +215,24 @@ def _maybe_strict(pac: PortAllocatorConfig, host: str, port: int, name: str, tim
     return PortAllocator.allocate_strict(host, port, name, timeout=timeout)
 
 
+def _ports_already_planned() -> bool:
+    """True after the single-container pre-start pass wrote the listen ports."""
+    return os.environ.get("MOTOR_PORTS_PLANNED") == "1"
+
+
+def planned_node_manager_ports() -> dict | None:
+    """Absolute ports for this process, when the pre-start planner ran."""
+    path = os.environ.get("MOTOR_PORT_PLAN", "")
+    if not path or not os.path.isfile(path) or Env.index is None or not Env.role:
+        return None
+    with open(path, encoding="utf-8") as handle:
+        plan = json.load(handle)
+    if not isinstance(plan, dict):
+        return None
+    assigned = (plan.get("node_managers") or {}).get(f"{Env.role}:{Env.index}")
+    return assigned if isinstance(assigned, dict) else None
+
+
 def _maybe_auto(
     pac: PortAllocatorConfig,
     host: str,
@@ -213,6 +245,21 @@ def _maybe_auto(
     if not pac.enable:
         return port
     return PortAllocator.allocate_auto(host, port, name, scan_range=scan_range, timeout=timeout, skip_ports=skip_ports)
+
+
+def _planned_or_auto(
+    pac: PortAllocatorConfig,
+    host: str,
+    port: int,
+    name: str,
+    scan_range: int,
+    timeout: float,
+    skip_ports: set[int] | None = None,
+) -> int:
+    """Keep a port the pre-start planner already chose. Otherwise scan for a free one."""
+    if _ports_already_planned():
+        return _maybe_strict(pac, host, port, name, timeout)
+    return _maybe_auto(pac, host, port, name, scan_range, timeout, skip_ports)
 
 
 def _append_etcd(rows: list[PortRow], etcd) -> None:
@@ -284,6 +331,14 @@ def _load_user_config(path: str | None) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def _user_config(config) -> dict:
+    """Reuse the dict from_json already parsed. Read the file only if it is absent."""
+    cached = getattr(config, "user_config", None)
+    if isinstance(cached, dict):
+        return cached
+    return _load_user_config(getattr(config, "config_path", None))
+
+
 def _kv_transfer_listen_ports(engine_cfg: dict) -> list[tuple[int, str]]:
     kv = engine_cfg.get("kv_transfer_config")
     if not isinstance(kv, dict) or not kv:
@@ -328,7 +383,7 @@ def _append_pd_engine_ports(
     role = _pod_role(config.basic_config.role) or (Env.role or "").lower()
     component = _role_name(role)
     section_key = _ENGINE_SECTION_BY_ROLE.get(role)
-    raw = _load_user_config(config.config_path)
+    raw = _user_config(config)
     section = raw.get(section_key) if section_key else None
     if not isinstance(section, dict):
         return
@@ -377,8 +432,10 @@ def apply_coordinator_ports(config: CoordinatorConfig) -> None:
     )
     rows.append(_row("Coordinator", host, api.coordinator_api_infer_port, kind, "infer API (external)"))
 
-    kind_auto = _alloc_strategy(pac, "auto")
-    api.coordinator_api_mgmt_port = _maybe_auto(
+    kind_auto = _alloc_strategy(pac, "strict" if _ports_already_planned() else "auto")
+    # The pre-start planner already moved these if they clashed. A second auto
+    # pass would make Coordinator listen somewhere Controller did not record.
+    api.coordinator_api_mgmt_port = _planned_or_auto(
         pac,
         host,
         api.coordinator_api_mgmt_port,
@@ -388,7 +445,7 @@ def apply_coordinator_ports(config: CoordinatorConfig) -> None:
     )
     rows.append(_row("Coordinator", host, api.coordinator_api_mgmt_port, kind_auto, "mgmt API"))
 
-    api.coordinator_obs_port = _maybe_auto(
+    api.coordinator_obs_port = _planned_or_auto(
         pac,
         host,
         api.coordinator_obs_port,
@@ -407,46 +464,100 @@ def apply_coordinator_ports(config: CoordinatorConfig) -> None:
     kv_cfg = config.scheduler_config.kv_conductor_config
     if kv_cfg.conductor_service:
         cond_host, cond_port = _parse_host_port(kv_cfg.conductor_service, kv_cfg.http_server_port)
-        if cond_host:
-            reachable = True
+        if cond_host and _conductor_listens_locally(cond_host, host):
+            # The listen port is shared with the conductor process. Shifting it here
+            # would make Coordinator call a port the process never binds.
+            already_up = False
             if pac.enable:
-                reachable = PortAllocator.check_remote_reachable(cond_host, cond_port, timeout=remote_timeout)
+                already_up = PortAllocator.check_remote_reachable(cond_host, cond_port, timeout=remote_timeout)
+                if not already_up:
+                    probe_host = host if cond_host in {"0.0.0.0", "::"} else cond_host
+                    kv_cfg.http_server_port = _maybe_strict(
+                        pac,
+                        probe_host,
+                        cond_port,
+                        "kv_conductor_http_port",
+                        probe_timeout,
+                    )
+                    cond_port = kv_cfg.http_server_port
             rows.append(
                 _row(
                     "Conductor",
                     cond_host,
                     cond_port,
-                    "remote",
-                    f"KV pool conductor (reachable={reachable})",
+                    "strict" if pac.enable and not already_up else "config",
+                    "KV conductor HTTP" + (" (listening)" if already_up else ""),
                 )
             )
-            if not reachable:
-                logger.warning(
-                    "[Port] Mooncake Conductor %s not reachable at startup",
-                    format_address(cond_host, cond_port),
+        else:
+            if cond_host:
+                reachable = True
+                if pac.enable:
+                    reachable = PortAllocator.check_remote_reachable(cond_host, cond_port, timeout=remote_timeout)
+                rows.append(
+                    _row(
+                        "Conductor",
+                        cond_host,
+                        cond_port,
+                        "remote",
+                        f"KV pool conductor (reachable={reachable})",
+                    )
                 )
+                if not reachable:
+                    logger.warning(
+                        "[Port] Mooncake Conductor %s not reachable at startup",
+                        format_address(cond_host, cond_port),
+                    )
 
-        kv_cfg.http_server_port = _maybe_auto(
-            pac,
-            host,
-            kv_cfg.http_server_port,
-            "http_server_port",
-            scan_range,
-            probe_timeout,
-        )
-        rows.append(_row("Coordinator", host, kv_cfg.http_server_port, kind_auto, "Conductor callback HTTP"))
+            kv_cfg.http_server_port = _planned_or_auto(
+                pac,
+                host,
+                kv_cfg.http_server_port,
+                "http_server_port",
+                scan_range,
+                probe_timeout,
+            )
+            rows.append(_row("Coordinator", host, kv_cfg.http_server_port, kind_auto, "Conductor callback HTTP"))
 
     render = config.render_config
     if render.enable:
-        rows.append(
-            _row(
-                "Render",
-                render.endpoint.host,
-                render.endpoint.port,
-                "config",
-                "vLLM Render sidecar",
+        render_host = render.endpoint.host or "127.0.0.1"
+        render_port = render.endpoint.port
+        if _conductor_listens_locally(render_host, host):
+            # Same rule as the conductor HTTP port: this process binds it, so do not
+            # move it when the first probe finds it free.
+            already_up = False
+            if pac.enable:
+                already_up = PortAllocator.check_remote_reachable(render_host, render_port, timeout=remote_timeout)
+                if not already_up:
+                    probe_host = host if render_host in {"0.0.0.0", "::"} else render_host
+                    render.endpoint.port = _maybe_strict(
+                        pac,
+                        probe_host,
+                        render_port,
+                        "render_endpoint_port",
+                        probe_timeout,
+                    )
+                    render_port = render.endpoint.port
+            rows.append(
+                _row(
+                    "Render",
+                    render_host,
+                    render_port,
+                    "strict" if pac.enable and not already_up else "config",
+                    "vLLM Render" + (" (listening)" if already_up else ""),
+                )
             )
-        )
+        else:
+            reachable = True
+            if pac.enable:
+                reachable = PortAllocator.check_remote_reachable(render_host, render_port, timeout=remote_timeout)
+            rows.append(_row("Render", render_host, render_port, "remote", f"vLLM Render (reachable={reachable})"))
+            if not reachable:
+                logger.warning(
+                    "[Port] Render %s not reachable at startup",
+                    format_address(render_host, render_port),
+                )
 
     pmc = config.prometheus_metrics_config
     if pmc.enable_kv_store_metrics:
@@ -484,7 +595,7 @@ def apply_controller_ports(config: ControllerConfig) -> None:
         _row("Controller", host, api.controller_api_port, _alloc_strategy(pac, "strict"), "mgmt API (external)")
     )
 
-    api.observability_api_port = _maybe_auto(
+    api.observability_api_port = _planned_or_auto(
         pac,
         host,
         api.observability_api_port,
@@ -492,7 +603,8 @@ def apply_controller_ports(config: ControllerConfig) -> None:
         scan_range,
         probe_timeout,
     )
-    rows.append(_row("Controller", host, api.observability_api_port, _alloc_strategy(pac, "auto"), "observability API"))
+    obs_kind = _alloc_strategy(pac, "strict" if _ports_already_planned() else "auto")
+    rows.append(_row("Controller", host, api.observability_api_port, obs_kind, "observability API"))
 
     _append_etcd(rows, config.etcd_config)
     PortAllocator.print_matrix(rows)
@@ -512,21 +624,44 @@ def apply_node_manager_ports(config: NodeManagerConfig) -> None:
     reserved = {api.node_manager_port} | {int(p) for p in ep.service_ports}
     sc = config.single_container_config
     if sc.single_container_flag:
-        reserved |= {p for p in (sc.kv_port, sc.lookup_rpc_port, sc.dp_rpc_port) if p}
-    allocated: set[int] = set()
+        reserved |= {p for p in (sc.kv_port, sc.dp_rpc_port) if p}
+        raw = _user_config(config)
+        kv_cfg = raw.get("kv_conductor_config")
+        if isinstance(kv_cfg, dict):
+            conductor_port = _as_port(kv_cfg.get("http_server_port"))
+            if conductor_port:
+                reserved.add(conductor_port)
+        from motor.config.config_utils import resolve_render_enabled
 
-    def _auto(pref: int, name: str) -> int:
-        p = _maybe_auto(
-            pac,
-            host,
-            pref,
-            name,
-            scan_range,
-            probe_timeout,
-            skip_ports=(reserved - {pref}) | allocated,
-        )
-        allocated.add(p)
-        return p
+        if resolve_render_enabled(raw):
+            coordinator_cfg = raw.get("motor_coordinator_config")
+            render_cfg = coordinator_cfg.get("render_config") if isinstance(coordinator_cfg, dict) else None
+            endpoint = render_cfg.get("endpoint") if isinstance(render_cfg, dict) else None
+            render_port = _as_port(endpoint.get("port")) if isinstance(endpoint, dict) else None
+            reserved.add(render_port or 8100)
+    allocated: set[int] = set()
+    planned: dict = {}
+    if _ports_already_planned():
+        planned = planned_node_manager_ports() or {}
+    planned_services = [int(port) for port in planned.get("service_ports") or []]
+
+    def _assign(pref: int, name: str, planned_port: int | None = None) -> tuple[int, str]:
+        if planned_port is not None:
+            chosen = _maybe_strict(pac, host, int(planned_port), name, probe_timeout)
+            strategy = _alloc_strategy(pac, "strict")
+        else:
+            chosen = _maybe_auto(
+                pac,
+                host,
+                pref,
+                name,
+                scan_range,
+                probe_timeout,
+                skip_ports=(reserved - {pref}) | allocated,
+            )
+            strategy = kind_auto
+        allocated.add(chosen)
+        return chosen, strategy
 
     def _emit(component: str, port: int, strategy: str, purpose: str) -> None:
         parsed = _as_port(port)
@@ -535,15 +670,20 @@ def apply_node_manager_ports(config: NodeManagerConfig) -> None:
         seen.add((parsed, purpose))
         rows.append(_row(component, host, parsed, strategy, purpose))
 
-    api.node_manager_port = _auto(api.node_manager_port, "node_manager_port")
-    _emit("NodeManager", api.node_manager_port, kind_auto, "NM API")
+    api.node_manager_port, nm_strategy = _assign(
+        api.node_manager_port,
+        "node_manager_port",
+        planned.get("node_manager_port"),
+    )
+    _emit("NodeManager", api.node_manager_port, nm_strategy, "NM API")
 
     if ep.service_ports:
         new_service_ports: list[str] = []
         for idx, svc_pref in enumerate(ep.service_ports):
-            svc_port = _auto(int(svc_pref), f"service_ports[{idx}]")
+            planned_service = planned_services[idx] if idx < len(planned_services) else None
+            svc_port, svc_strategy = _assign(int(svc_pref), f"service_ports[{idx}]", planned_service)
             new_service_ports.append(str(svc_port))
-            _emit(engine, svc_port, kind_auto, f"DP{idx} business")
+            _emit(engine, svc_port, svc_strategy, f"DP{idx} business")
         ep.service_ports = new_service_ports
     else:
         _emit(engine, ep.base_port, "config", "business base")
@@ -553,14 +693,11 @@ def apply_node_manager_ports(config: NodeManagerConfig) -> None:
 
     if sc.single_container_flag:
         if sc.kv_port is not None:
-            sc.kv_port = _auto(sc.kv_port, "kv_port")
-            _emit(engine, sc.kv_port, kind_auto, "KV transfer")
-        if sc.lookup_rpc_port is not None:
-            sc.lookup_rpc_port = _auto(sc.lookup_rpc_port, "lookup_rpc_port")
-            _emit(engine, sc.lookup_rpc_port, kind_auto, "KV lookup RPC")
+            sc.kv_port, kv_strategy = _assign(sc.kv_port, "kv_port", planned.get("kv_port"))
+            _emit(engine, sc.kv_port, kv_strategy, "KV transfer")
         if sc.dp_rpc_port is not None:
-            sc.dp_rpc_port = _auto(sc.dp_rpc_port, "dp_rpc_port")
-            _emit(engine, sc.dp_rpc_port, kind_auto, "DP RPC")
+            sc.dp_rpc_port, rpc_strategy = _assign(sc.dp_rpc_port, "dp_rpc_port", planned.get("dp_rpc_port"))
+            _emit(engine, sc.dp_rpc_port, rpc_strategy, "DP RPC")
 
     kcfg = config.kv_cache_store_config
     if kcfg.enable:

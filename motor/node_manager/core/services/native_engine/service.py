@@ -63,6 +63,8 @@ def _create_native_engine(hardware_type: str, config):
         kv_port=config.single_container_config.kv_port,
         lookup_rpc_port=config.single_container_config.lookup_rpc_port,
         dp_rpc_port=config.single_container_config.dp_rpc_port,
+        kv_events_port=config.kv_events_port,
+        kv_replay_port=config.kv_replay_port,
         snapshot_metadata=(
             config.snapshot_config.snapshot_metadata_path or MOTOR_SNAPSHOT_METADATA_PATH
             if config.snapshot_config.enable_snapshot
@@ -89,6 +91,8 @@ class NativeEngineService:
         kv_port: int | None = None,
         lookup_rpc_port: int | None = None,
         dp_rpc_port: int | None = None,
+        kv_events_port: int | None = None,
+        kv_replay_port: int | None = None,
         snapshot_metadata: str | None = None,
         startup_acceleration_config: VLLMStartupAccelerationConfig | None = None,
         enable_dp_scale_up: bool = False,
@@ -103,6 +107,8 @@ class NativeEngineService:
         self.kv_port = kv_port
         self.lookup_rpc_port = lookup_rpc_port
         self.dp_rpc_port = dp_rpc_port
+        self.kv_events_port = kv_events_port
+        self.kv_replay_port = kv_replay_port
         self.snapshot_metadata = snapshot_metadata
         self.startup_acceleration_config = startup_acceleration_config or VLLMStartupAccelerationConfig()
         self.enable_dp_scale_up = enable_dp_scale_up
@@ -131,6 +137,17 @@ class NativeEngineService:
         """Launch native engine subprocesses for every endpoint on this node."""
         with self._pull_lock:
             self._pull(pd_role_info, endpoints_info, instance_id, master_dp_ip, d2d_peer_ips, node_rank)
+
+    def _kv_event_config_overrides(self) -> dict:
+        """Force the launched engine to bind the ports this NodeManager reports."""
+        events = {}
+        if self.kv_events_port:
+            events["endpoint"] = "tcp://*:%s" % self.kv_events_port
+        if self.kv_replay_port:
+            events["replay_endpoint"] = "tcp://*:%s" % self.kv_replay_port
+        if not events:
+            return {}
+        return {"kv-events-config": events}
 
     def _pull(
         self,
@@ -169,6 +186,7 @@ class NativeEngineService:
                         inspect_startup_plan_profiles(cache_root)
                     if self.startup_acceleration_config.enable_graph_reuse:
                         inspect_graph_reuse_cache_root(cache_root)
+            engine_config_overrides.update(self._kv_event_config_overrides())
             # Controller-supplied launch env (e.g. VLLM_ELASTIC_EP_SCALE_UP_LAUNCH for joiners).
             try:
                 from motor.node_manager.core.register_manager import RegisterManager

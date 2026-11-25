@@ -567,6 +567,22 @@ class InstanceAssembler(ThreadSafeSingleton):
             return None
         return free_ranks[:endpoint_count]
 
+    @staticmethod
+    def _reported_kv_port(base: int | None, endpoint_id: int) -> int | None:
+        """Absolute publish port for one DP rank.
+
+        NodeManager reports the rank-0 base it will bind. Coordinator resolves
+        ``base + dp_rank - endpoint_id``, so the value stored on an endpoint is
+        ``base + endpoint_id``.
+        """
+        if base is None:
+            return None
+        port = base + endpoint_id
+        if 1 <= port <= 65535:
+            return port
+        logger.warning("KV event port %s is outside 1-65535; leaving it unset", port)
+        return None
+
     def _build_endpoints(
         self, msg: RegisterMsg, metadata: AssembleInstanceMetadata, endpoint_ids: list[int]
     ) -> dict[int, Endpoint]:
@@ -588,6 +604,8 @@ class InstanceAssembler(ThreadSafeSingleton):
                 ip=msg.pod_ip,
                 business_port=msg.business_port[0],
                 bootstrap_port=msg.bootstrap_port,
+                kv_events_port=self._reported_kv_port(msg.kv_events_port, id_offset),
+                kv_replay_port=self._reported_kv_port(msg.kv_replay_port, id_offset),
                 device_infos=device_infos,
             )
         }
@@ -636,6 +654,8 @@ class InstanceAssembler(ThreadSafeSingleton):
                 ip=msg.pod_ip,
                 business_port=port,
                 bootstrap_port=msg.bootstrap_port,
+                kv_events_port=self._reported_kv_port(msg.kv_events_port, endpoint_id),
+                kv_replay_port=self._reported_kv_port(msg.kv_replay_port, endpoint_id),
                 device_infos=device_infos,
             )
         logger.debug("Built %d endpoints for pod %s", len(pod_endpoints), msg.pod_ip)

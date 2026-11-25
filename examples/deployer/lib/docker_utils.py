@@ -26,6 +26,7 @@ from urllib.parse import quote
 import lib.constant as C
 from lib.bind_mount import bind_mount_destination as bind_mount_destination  # pylint: disable=useless-import-alias
 from lib.bind_mount import bind_mount_is_new as bind_mount_is_new  # pylint: disable=useless-import-alias
+from lib.generator.render import is_render_enabled, render_listen_port
 from lib.prepare_utils import prepare_rendered_local_configmap
 from lib.yuanrong_config import validate_yuanrong_config
 
@@ -296,16 +297,10 @@ def validate_docker_kv_conductor(user_config: dict) -> None:
     """Fail closed when Docker KV affinity is requested without a conductor."""
     enabled = kv_conductor_enabled(user_config)
     affinity = kv_affinity_scheduler_enabled(user_config)
-    deploy_mode = (user_config.get(C.MOTOR_DEPLOY_CONFIG) or {}).get(C.DEPLOY_MODE_CONFIG_KEY, "")
-    if (enabled or affinity) and deploy_mode == C.DEPLOY_MODE_SINGLE_CONTAINER:
-        raise ValueError(
-            "Docker KV affinity requires multi-container PD/hybrid (a motor-kvc container). "
-            f"{C.DEPLOY_MODE_SINGLE_CONTAINER} is not supported."
-        )
     if affinity and not enabled:
         raise ValueError(
             "prefill_scheduler_type is kv_cache_affinity but kv_conductor_config.http_server_port "
-            "is missing. Docker-only KV affinity needs a kv_conductor container; "
+            "is missing. KV affinity needs a running kv_conductor; "
             "set http_server_port (for example 13333)."
         )
     if enabled and not affinity:
@@ -407,6 +402,8 @@ class DockerDeployParams:
     dshm_size: str | None = None
     kv_conductor_enabled: bool = False
     kv_conductor_port: int = DEFAULT_KV_CONDUCTOR_PORT
+    render_enabled: bool = False
+    render_port: int = 8100
 
 
 def _known_hardware_types() -> list[str]:
@@ -625,6 +622,8 @@ def derive_params(user_config: dict) -> DockerDeployParams:
     dshm_size = _derive_dshm_size(deploy_config)
     conductor_enabled = kv_conductor_enabled(user_config)
     conductor_port = kv_conductor_http_port(user_config) or DEFAULT_KV_CONDUCTOR_PORT
+    render_on = is_render_enabled(user_config)
+    render_port = render_listen_port(user_config) if render_on else 8100
 
     return DockerDeployParams(
         image=image,
@@ -642,6 +641,8 @@ def derive_params(user_config: dict) -> DockerDeployParams:
         dshm_size=dshm_size,
         kv_conductor_enabled=conductor_enabled,
         kv_conductor_port=conductor_port,
+        render_enabled=render_on,
+        render_port=render_port,
     )
 
 
@@ -1478,7 +1479,6 @@ def ensure_docker_render_sidecar(main_container_name: str, user_config: dict, ro
     from lib.generator.render import (
         build_docker_render_run_argv,
         docker_render_container_name,
-        is_render_enabled,
         resolve_render_image,
         role_needs_docker_render,
     )
@@ -1599,6 +1599,25 @@ def render_start_motor_sh(
         identity.pod_ip if identity is not None else pod_ip,
         nic_name or (identity.nic_name if identity is not None else None),
     )
+    if identity is None and params.kv_store_enabled and str(kv_env.get(C.ENV_KV_STORE_EXTERNAL, "0")) != "1":
+        # Coordinator is already running when the role script used to rewrite this.
+        # Pool registration resolves tcp://*:port with KVS_MASTER_SERVICE, so the
+        # start script has to publish the pod IP. Leave an external master alone.
+        if kv_env.get(C.ENV_KVS_MASTER_SERVICE, "") in ("", _DEFAULT_KVS_MASTER_SERVICE):
+            kv_env[C.ENV_KVS_MASTER_SERVICE] = ip
+    if identity is None and params.kv_conductor_enabled:
+        # Single container runs the conductor as a local process, so it is reachable on
+        # the pod IP instead of a k8s Service name. KV_CONDUCTOR_PORT doubles as the
+        # switch that makes the single-container script start it.
+        kv_env[C.ENV_KV_CONDUCTOR_SERVICE] = ip
+        kv_env["KV_CONDUCTOR_PORT"] = str(params.kv_conductor_port)
+    # RENDER_PORT is the switch the single-container script uses to start vLLM
+    # Render in this process. K8s leaves it unset and keeps the sidecar container.
+    render_env: list[str] = []
+    if identity is None and params.render_enabled:
+        render_env.append(f'export RENDER_PORT="{params.render_port}"')
+        if deployer_dir:
+            render_env.append(f'export MOTOR_DEPLOYER_DIR="{os.path.abspath(deployer_dir)}"')
     lines = [
         "#!/bin/bash",
         "set -e",
@@ -1633,6 +1652,7 @@ def render_start_motor_sh(
     )
     for key, value in kv_env.items():
         lines.append(f'export {key}="{value}"')
+    lines.extend(render_env)
     lines.extend(_device_env_lines(devices if isolate else None))
     lines.extend(
         [

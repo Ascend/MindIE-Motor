@@ -102,6 +102,8 @@ def test_show_commands_fail_closed_affinity_without_port():
         _text(_pd_config(affinity=True))
 
 
-def test_show_commands_fail_closed_single_container():
-    with pytest.raises(ConfigError, match="single_container"):
-        _text(_pd_config(conductor=True, affinity=True, single=True))
+def test_show_commands_single_container_starts_render_itself():
+    text = _text(_pd_config(conductor=True, affinity=True, single=True))
+    assert "单容器" in text
+    assert "--render-ip" not in text
+    assert "vllm-render" not in text

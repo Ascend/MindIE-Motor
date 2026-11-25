@@ -63,6 +63,10 @@ MOTOR_CONTAINER_SNAPSHOT_CONFIG_KEY = "motor_container_snapshot_config"
 MOTOR_CONTROLLER_CONFIG_KEY = "motor_controller_config"
 VLLM_STARTUP_ACCELERATION_CONFIG_KEY = "vllm_startup_acceleration_config"
 ENGINE_CONFIG_KEY = "engine_config"
+KV_EVENTS_CONFIG_KEY = "kv-events-config"
+KV_EVENTS_CONFIG_UNDERSCORE_KEY = "kv_events_config"
+KV_EVENTS_ENDPOINT_KEY = "endpoint"
+KV_EVENTS_REPLAY_ENDPOINT_KEY = "replay_endpoint"
 KV_TRANSFER_CONFIG_KEY = "kv_transfer_config"
 KV_CONNECTOR_KEY = "kv_connector"
 MULTICONNECTOR = "MultiConnector"
@@ -71,8 +75,6 @@ CONNECTORS_KEY = "connectors"
 KV_PORT_KEY = "kv_port"
 DISAGGREGATION_BOOTSTRAP_PORT_KEY = "disaggregation_bootstrap_port"
 DISAGGREGATION_BOOTSTRAP_PORT_CLI_KEY = "disaggregation-bootstrap-port"
-LOOPUP_RPC_PORT_KEY = "lookup_rpc_port"
-UCM_CONNECTOR = "UCMConnector"
 SERVER_LIST = "server_list"
 DEVICE = "device"
 HARDWARE_TYPE_KEY = "hardware_type"
@@ -226,6 +228,91 @@ class APIConfig:
     node_manager_port: int = 1026
 
 
+_ROLE_ENGINE_SECTION = {
+    "encode": MOTOR_ENGINE_ENCODE_CONFIG_KEY,
+    "prefill": MOTOR_ENGINE_PREFILL_CONFIG_KEY,
+    "decode": MOTOR_ENGINE_DECODE_CONFIG_KEY,
+    "union": MOTOR_ENGINE_UNION_CONFIG_KEY,
+    "both": MOTOR_ENGINE_UNION_CONFIG_KEY,
+}
+
+
+def zmq_star_port(pattern: Any) -> int | None:
+    """Return the port in ``tcp://*:5557``. Other shapes are not a publish base."""
+    if not isinstance(pattern, str) or "*:" not in pattern:
+        return None
+    port_text = pattern.rsplit("*:", 1)[-1].strip()
+    try:
+        port = int(port_text)
+    except ValueError:
+        return None
+    if 1 <= port <= 65535:
+        return port
+    return None
+
+
+def _section_dp_size(section: Any) -> int:
+    if not isinstance(section, dict):
+        return 1
+    try:
+        size = int(ConfigResolver(section).get_parallel_config().get(DP, 1) or 1)
+    except (TypeError, ValueError):
+        return 1
+    return size if size > 0 else 1
+
+
+def _single_container_kv_event_shift(user_config: dict[str, Any], role: str, index: int) -> int:
+    """Ports already taken by earlier instances that share this container's IP."""
+    deploy = user_config.get("motor_deploy_config") or {}
+    if role == "decode":
+        try:
+            prefill_instances = int(deploy.get("p_instances_num") or 0)
+        except (TypeError, ValueError):
+            prefill_instances = 0
+        prefill_dp = _section_dp_size(user_config.get(MOTOR_ENGINE_PREFILL_CONFIG_KEY))
+        decode_dp = _section_dp_size(user_config.get(MOTOR_ENGINE_DECODE_CONFIG_KEY))
+        return prefill_instances * prefill_dp + index * decode_dp
+    section_key = _ROLE_ENGINE_SECTION.get(role)
+    return index * _section_dp_size(user_config.get(section_key) if section_key else None)
+
+
+def published_kv_event_ports(
+    user_config: dict[str, Any] | None,
+    role: str | None,
+    *,
+    instance_index: int | None,
+    single_container: bool,
+) -> tuple[int | None, int | None]:
+    """Rank-0 KV-event and replay ports this NodeManager's engine will bind.
+
+    Single-container instances share one IP, so the base moves by the DP span of
+    earlier instances. Coordinator records these numbers instead of recomputing them.
+    """
+    if not isinstance(user_config, dict) or not role:
+        return None, None
+    section_key = _ROLE_ENGINE_SECTION.get(role)
+    section = user_config.get(section_key) if section_key else None
+    if not isinstance(section, dict):
+        return None, None
+    engine = section.get(ENGINE_CONFIG_KEY)
+    if not isinstance(engine, dict):
+        return None, None
+    events = engine.get(KV_EVENTS_CONFIG_KEY)
+    if not isinstance(events, dict):
+        events = engine.get(KV_EVENTS_CONFIG_UNDERSCORE_KEY)
+    if not isinstance(events, dict):
+        return None, None
+    events_port = zmq_star_port(events.get(KV_EVENTS_ENDPOINT_KEY))
+    replay_port = zmq_star_port(events.get(KV_EVENTS_REPLAY_ENDPOINT_KEY))
+    if single_container and instance_index is not None:
+        shift = _single_container_kv_event_shift(user_config, role, int(instance_index))
+        if events_port is not None:
+            events_port += shift
+        if replay_port is not None:
+            replay_port += shift
+    return events_port, replay_port
+
+
 @dataclass
 class EndpointConfig:
     # Native engine endpoint count
@@ -303,7 +390,6 @@ class SingleContainerNodemanagerConfig:
         e_device_offset = d_device_offset + e_world_size
 
         kv_port_offset = 0
-        lookup_rpc_port_offset = 0
         dp_rpc_port_offset = 0
 
         if Env.role == "prefill":
@@ -312,7 +398,6 @@ class SingleContainerNodemanagerConfig:
             config.device_offset = index * p_world_size
             config.device_num = p_world_size
             kv_port_offset = config.device_offset
-            lookup_rpc_port_offset = index
             dp_rpc_port_offset = index
         elif Env.role == "decode":
             config.node_manager_port_offset = d_node_manager_port_offset
@@ -320,7 +405,6 @@ class SingleContainerNodemanagerConfig:
             config.device_offset = d_device_offset
             config.device_num = d_world_size
             kv_port_offset = config.device_offset
-            lookup_rpc_port_offset = p_instances_num + index
             dp_rpc_port_offset = p_instances_num + index
         elif Env.role == "encode":
             config.node_manager_port_offset = e_node_manager_port_offset
@@ -328,7 +412,6 @@ class SingleContainerNodemanagerConfig:
             config.device_offset = e_device_offset
             config.device_num = e_world_size
             kv_port_offset = config.device_offset
-            lookup_rpc_port_offset = index
             dp_rpc_port_offset = index
 
         kv_config = user_config_data[MOTOR_ENGINE_PREFILL_CONFIG_KEY][ENGINE_CONFIG_KEY].get(KV_TRANSFER_CONFIG_KEY, {})
@@ -348,13 +431,6 @@ class SingleContainerNodemanagerConfig:
                         "entries must be objects (connector configs)"
                     )
                 config.kv_port = int(connectors[0][KV_PORT_KEY]) + kv_port_offset
-                store = connectors[1]
-                # UCM store carries no lookup_rpc_port. Skip ONLY UCM (use .get() to avoid a
-                # KeyError on the kv_connector lookup); every other store still direct-indexes
-                # lookup_rpc_port, so a genuine AscendStore missing its port fails fast exactly
-                # as before instead of being silently skipped.
-                if store.get(KV_CONNECTOR_KEY) != UCM_CONNECTOR:
-                    config.lookup_rpc_port = int(store[LOOPUP_RPC_PORT_KEY]) + lookup_rpc_port_offset
             else:
                 config.kv_port = int(kv_config[KV_PORT_KEY]) + kv_port_offset
 
@@ -511,6 +587,9 @@ class NodeManagerConfig:
     snapshot_config: SnapshotConfig = field(default_factory=SnapshotConfig)
     logging_config: LoggingConfig = field(default_factory=LoggingConfig)
     single_container_config: SingleContainerNodemanagerConfig = field(default_factory=SingleContainerNodemanagerConfig)
+    # Rank-0 ports this process will bind. Reported upstream so Coordinator does not recompute them.
+    kv_events_port: int | None = None
+    kv_replay_port: int | None = None
     fault_tolerance_config: NodeManagerFaultToleranceConfig = field(default_factory=NodeManagerFaultToleranceConfig)
     port_allocator_config: PortAllocatorConfig = field(default_factory=PortAllocatorConfig)
     kv_cache_store_config: KVCacheStoreConfig = field(default_factory=KVCacheStoreConfig)
@@ -521,6 +600,9 @@ class NodeManagerConfig:
     # Internal fields
     config_path: str | None = field(default=None, init=False)
     last_modified: float | None = field(default=None, init=False)
+    # The user_config object already parsed by from_json. Port setup reads it
+    # again for conductor and render ports instead of opening the file twice.
+    user_config: dict[str, Any] | None = field(default=None, init=False)
 
     def __post_init__(self):
         """Validate configuration after initialization"""
@@ -558,6 +640,15 @@ class NodeManagerConfig:
             logger.info("Successfully loaded config file: %s", config_path_obj)
 
             config.single_container_config = SingleContainerNodemanagerConfig.from_json(raw)
+            if isinstance(raw, dict):
+                config.user_config = raw
+                instance_index = int(Env.index) if Env.index is not None else None
+                config.kv_events_port, config.kv_replay_port = published_kv_event_ports(
+                    raw,
+                    Env.role,
+                    instance_index=instance_index,
+                    single_container=config.single_container_config.single_container_flag,
+                )
 
             if isinstance(raw, dict):
                 cls._discard_user_dispatch_capabilities(raw)
@@ -1165,6 +1256,7 @@ class NodeManagerConfig:
         # Remove internal fields that shouldn't be in the output
         config_dict.pop("config_path", None)
         config_dict.pop("last_modified", None)
+        config_dict.pop("user_config", None)
         config_dict["basic_config"].pop(DISPATCH_CAPABILITIES_KEY, None)
 
         return config_dict

@@ -71,7 +71,7 @@
 
 1. 准备配置文件。
 
-    MindIE Motor已提供常用模型（deepseek_v4_flash、deepseek_v4_pro、GLM 5.1等）的[PD分离配置示例](../../../../../model_configs/vllm/models/README.md)，用户修改少量配置后可直接使用。
+    MindIE Motor已在[常用模型](../../../../../README.md#常用模型)中提供配置示例，用户修改少量配置后可直接使用。
 
     对于未提供典型配置的模型，请参考[MindIE Motor配置自动生成指导](../../../../../model_configs/vllm/models/README.md)，自动生成user_config.json与env.json配置文件。
 
@@ -113,30 +113,6 @@
 3. 同步部署脚本配置。
 
     将准备好的配置文件（user_config.json、env.json）存放至部署脚本的model_configs/vllm目录下。
-
-## 启用Render特性（可选）
-
-修改以下配置可以开启Render特性。特性开启后，部署单容器服务时，`docker_deploy.py`会在宿主机额外创建名为`{NAME}-vllm-render`的新容器（`{NAME}`即`--container-name`指定的主容器名），并在其中运行vLLM Render服务。当用户终止服务时，请注意回收该容器。Render创建失败则不再创建主容器；主容器创建失败会删掉本次启动的Render。
-
-容器内`--start`会`docker restart` Render兄弟容器；Coordinator退出时`docker stop` Render。Render退出后Coordinator继续运行。为此会把宿主机`/var/run/docker.sock`挂进单容器；已创建的旧容器需重建后才具备该挂载。
-
-在user_config.json中开启Render特性，示例如下：
-
-```json
-{
-  "motor_coordinator_config": {
-    "render_config": {
-      "enable": true
-    }
-  }
-}
-```
-
-若主容器或 `{NAME}-vllm-render` 已经存在，在终端执行部署命令时会询问是否删除后继续。这一步在端口检查之前，避免把上次容器占用的端口当成新的冲突。回答 `y` 会删除这些已有容器再重新创建；回答 `N`，或在非交互环境执行，则中止且不覆盖。需要沿用已有 Render 容器时，进入该容器执行：
-
-```bash
-python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/model_configs/vllm --start --role render
-```
 
 ## 启动服务
 
