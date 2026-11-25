@@ -209,10 +209,13 @@ def test_update_validates_before_writing_and_guards_old_policy(update_api, tmp_p
 @pytest.mark.parametrize("count", [0, 2])
 def test_ambiguous_target_never_writes(update_api, tmp_path, count):
     current, _, command = update_api
-    command.side_effect = [json.dumps({"items": [current] * count})]
+    command.side_effect = [
+        json.dumps({"items": [current] * count}),
+        json.dumps({"items": []}),
+    ]
     with pytest.raises(ValueError, match="exactly one InferServiceSet"):
         policy_update.run_update(Path("/policy/policy.json"), tmp_path / "kubeconfig")
-    assert command.call_count == 1
+    assert command.call_count == (1 if count else 2)
 
 
 def test_dry_run_failure_prevents_write(update_api, tmp_path):
@@ -239,7 +242,7 @@ def test_kubeconfig_is_private_and_removed_after_execution(monkeypatch, fail):
     monkeypatch.setattr(Path, "is_file", lambda _: True)
     created = []
 
-    def run(policy_path, kubeconfig=None):
+    def run(policy_path, kubeconfig=None, **options):
         assert policy_path == Path("/policy/policy.json")
         created.append(kubeconfig)
         assert kubeconfig.stat().st_mode & 0o777 == 0o600
@@ -263,7 +266,7 @@ def test_manual_update_uses_current_kubectl_context(monkeypatch):
     run = Mock()
     monkeypatch.setattr(policy_update, "run_update", run)
     policy_update.update_scaling_policy("policy.json")
-    run.assert_called_once_with(Path("policy.json"))
+    run.assert_called_once_with(Path("policy.json"), dry_run=False, other_update=False)
 
 
 @pytest.mark.parametrize(

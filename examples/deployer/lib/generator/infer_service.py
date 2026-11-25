@@ -10,6 +10,7 @@
 import os
 
 import lib.constant as C
+from lib.scaling_policy import build_hpa_spec
 from lib.utils import (
     apply_coordinator_infer_node_port,
     apply_coordinator_obs_node_port,
@@ -226,74 +227,17 @@ def _zero_engine_role_replicas(infer_doc, user_config, role_name):
         k8s_utils.apply_additional_labels_annotations(role, user_config.get(get_config_key(role_name), {}))
 
 
-_DEFAULT_SCALING_METRICS = {
-    C.ROLE_PREFILL: C.DEFAULT_PREFILL_SCALING_METRIC,
-    C.ROLE_DECODE: C.DEFAULT_DECODE_SCALING_METRIC,
-}
-
-
 def _build_scaling_policy(role_name, policy_cfg, default_max_replicas, namespace="", instance_name=""):
-    """Build the InferServiceSet role scalingPolicy (HPA) block from user config.
-
-    The metric selector carries the deployment scope labels (namespace =
-    job_id, instance name) so multiple Motor deployments in one cluster do
-    not read each other's metrics; ``_set_scaling_policy_scope`` re-syncs
-    both labels at generation time (idempotent with the values set here).
-    """
-    if not isinstance(policy_cfg, dict):
-        raise ValueError(f"scaling_policy for role '{role_name}' must be a dict")
-    metric_name = policy_cfg.get(C.SCALING_METRIC) or _DEFAULT_SCALING_METRICS.get(role_name)
-    if not metric_name:
-        raise ValueError(
-            f"scaling_policy for role '{role_name}' requires '{C.SCALING_METRIC}' (no default metric for this role)"
-        )
-    min_replicas = int(policy_cfg.get(C.SCALING_MIN_REPLICAS, C.DEFAULT_SCALING_MIN_REPLICAS))
-    max_replicas = int(policy_cfg.get(C.SCALING_MAX_REPLICAS, default_max_replicas))
-    if min_replicas < 1 or max_replicas < min_replicas:
-        raise ValueError(
-            f"scaling_policy for role '{role_name}' requires 1 <= min_replicas <= max_replicas, "
-            f"got min_replicas={min_replicas}, max_replicas={max_replicas}"
-        )
-    target = float(policy_cfg.get(C.SCALING_TARGET, C.DEFAULT_SCALING_TARGET))
-    if target <= 0:
-        raise ValueError(f"scaling_policy for role '{role_name}' requires target > 0, got {target}")
-    target_type = policy_cfg.get(C.SCALING_TARGET_TYPE, C.DEFAULT_SCALING_TARGET_TYPE)
-    if target_type not in C.SCALING_TARGET_TYPES:
-        raise ValueError(
-            f"scaling_policy for role '{role_name}' requires target_type in {C.SCALING_TARGET_TYPES}, "
-            f"got {target_type!r}"
-        )
-    target_block = (
-        {"type": "Value", "value": str(target)}
-        if target_type == "Value"
-        else {"type": "AverageValue", "averageValue": str(target)}
-    )
-    metric_selector = {}
-    if namespace or instance_name:
-        metric_selector = {
-            C.SELECTOR: {
-                C.MATCHLABELS: {
-                    "kubernetes_namespace": namespace,
-                    "infer_huawei_com_inferservice_name": instance_name,
-                }
-            }
+    """Build the InferServiceSet HPA wrapper, preserving its defaults and selectors."""
+    selector = (
+        {
+            "kubernetes_namespace": namespace,
+            "infer_huawei_com_inferservice_name": instance_name,
         }
-    return {
-        "type": "HPA",
-        C.SPEC: {
-            "minReplicas": min_replicas,
-            "maxReplicas": max_replicas,
-            "metrics": [
-                {
-                    "type": "External",
-                    "external": {
-                        "metric": {C.NAME: metric_name, **metric_selector},
-                        "target": target_block,
-                    },
-                }
-            ],
-        },
-    }
+        if namespace or instance_name
+        else None
+    )
+    return {"type": "HPA", C.SPEC: build_hpa_spec(role_name, policy_cfg, default_max_replicas, selector=selector)}
 
 
 def _apply_scaling_policy(role, user_config, role_name, infer_name=""):

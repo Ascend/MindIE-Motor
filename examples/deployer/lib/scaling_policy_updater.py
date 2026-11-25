@@ -14,8 +14,17 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
+
+import lib.constant as C
+from lib.rbg.config import deployment_settings
+
+_INFER_RESOURCE = "inferservicesets.mindcluster.huawei.com"
+
+
+Kubectl = Callable[..., str]
 
 
 def merge_fields(current: dict, updates: dict, path: str, patch: list) -> None:
@@ -54,20 +63,69 @@ def load_policy(path: Path) -> tuple[str, dict]:
     return namespace, roles
 
 
-def run_update(policy_path: Path, kubeconfig: Path | None = None) -> None:
-    executable = shutil.which("kubectl")
-    if executable is None:
-        raise FileNotFoundError("kubectl executable is required")
+def _json_object(output: str, action: str) -> dict:
+    try:
+        value = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise ValueError(action + " returned invalid JSON") from error
+    if not isinstance(value, dict):
+        raise ValueError(action + " did not return a JSON object")
+    return value
 
-    def kubectl(*args: str) -> str:
-        command = [executable]
-        if kubeconfig:
-            command.append("--kubeconfig=" + str(kubeconfig))
-        return subprocess.check_output([*command, "--request-timeout=30s", *args], text=True)
 
-    namespace, desired = load_policy(policy_path)
-    resource = "inferservicesets.mindcluster.huawei.com"
-    items = json.loads(kubectl("get", resource, "-n", namespace, "-o", "json"))["items"]
+def _resource_items(output: str, resource: str) -> list[dict]:
+    value = _json_object(output, "Listing " + resource)
+    items = value.get("items")
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        raise ValueError("Listing " + resource + " did not return an object list")
+    return items
+
+
+def _deployment_config(kubectl: Kubectl, namespace: str) -> dict:
+    current = _json_object(
+        kubectl("get", "configmap", C.MOTOR_CONFIG_CONFIGMAP_NAME, "-n", namespace, "-o", "json"),
+        "Reading the deployed configuration",
+    )
+    data = current.get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("user_config.json"), str):
+        raise ValueError("ConfigMap motor-config must contain data.user_config.json")
+    try:
+        user_config = json.loads(data["user_config.json"])
+    except json.JSONDecodeError as error:
+        raise ValueError("ConfigMap motor-config contains invalid user_config.json") from error
+    if not isinstance(user_config, dict):
+        raise ValueError("ConfigMap motor-config user_config.json must contain an object")
+    deploy_config = user_config.get("motor_deploy_config")
+    if not isinstance(deploy_config, dict):
+        raise ValueError("Deployed user_config must contain motor_deploy_config")
+    if deploy_config.get("deploy_mode") != C.DEPLOY_MODE_RBG or deploy_config.get("job_id") != namespace:
+        raise ValueError("Runtime configuration does not identify this RBG namespace")
+    metadata = current.get("metadata", {})
+    labels = metadata.get("labels", {})
+    if (
+        metadata.get("name") != C.MOTOR_CONFIG_CONFIGMAP_NAME
+        or metadata.get("namespace") != namespace
+        or labels.get(C.RBG_MANAGED_LABEL) != C.RBG_MANAGED_VALUE
+        or not metadata.get("annotations", {}).get(C.RBG_SERVICE_ID_ANNOTATION)
+        or labels.get(C.RBG_GROUP_LABEL) != deployment_settings(user_config)["rbg_name"]
+    ):
+        raise ValueError("Runtime ConfigMap has a conflicting RBG identity")
+    return user_config
+
+
+def _discover_resources(kubectl: Kubectl, resource: str, namespace: str) -> list[dict]:
+    """Only an absent resource API is an empty backend; propagate transport/auth errors."""
+    try:
+        output = kubectl("get", resource, "-n", namespace, "-o", "json")
+    except subprocess.CalledProcessError as error:
+        detail = str(error.stderr or error.output or "")
+        if "(NotFound)" in detail or "the server doesn't have a resource type" in detail:
+            return []
+        raise
+    return _resource_items(output, resource)
+
+
+def _update_infer(kubectl: Kubectl, namespace: str, desired: dict, items: list[dict]) -> None:
     if len(items) != 1:
         raise ValueError("Expected exactly one InferServiceSet in deployment namespace; found " + str(len(items)))
     current = items[0]
@@ -117,9 +175,20 @@ def run_update(policy_path: Path, kubeconfig: Path | None = None) -> None:
         ]
         expected[role_name] = deepcopy(policy)
         merge_fields(expected[role_name], updates, path + "/scalingPolicy", patch)
-    args = ["patch", resource, name, "-n", namespace, "--type=json", "-p", json.dumps(patch), "-o", "json"]
+    args = [
+        "patch",
+        _INFER_RESOURCE,
+        name,
+        "-n",
+        namespace,
+        "--type=json",
+        "-p",
+        json.dumps(patch),
+        "-o",
+        "json",
+    ]
     kubectl(*args, "--dry-run=server")
-    result = json.loads(kubectl(*args))
+    result = _json_object(kubectl(*args), "Updating InferServiceSet scaling policy")
     actual = {r["name"]: r.get("scalingPolicy") for r in result["spec"]["template"]["roles"]}
     for role_name, policy in expected.items():
         if actual[role_name] != policy:
@@ -127,9 +196,150 @@ def run_update(policy_path: Path, kubeconfig: Path | None = None) -> None:
     print(json.dumps({"updated": name, "namespace": namespace, "changes": desired}, indent=2))
 
 
-def update_scaling_policy(policy_path: str) -> None:
+def _rbg_identity(resource: dict, namespace: str) -> str:
+    metadata = resource.get("metadata")
+    if not isinstance(metadata, dict):
+        raise ValueError("RoleBasedGroup has no metadata")
+    name = metadata.get("name")
+    if not isinstance(name, str) or not name:
+        raise ValueError("RoleBasedGroup metadata.name must be a non-empty string")
+    if metadata.get("namespace") != namespace:
+        raise ValueError("RoleBasedGroup metadata.namespace does not match the policy namespace")
+    return name
+
+
+def _managed_hpa_for_role(hpas: list[dict], rbg_name: str, role_name: str) -> dict:
+    expected_target = {
+        "apiVersion": C.RBG_API_VERSION,
+        "kind": C.RBG_SCALING_ADAPTER_KIND,
+        "name": rbg_name + "-" + role_name,
+    }
+    matches = []
+    for hpa in hpas:
+        metadata = hpa.get("metadata")
+        spec = hpa.get("spec")
+        if not isinstance(metadata, dict) or not isinstance(spec, dict):
+            continue
+        labels = metadata.get("labels")
+        if not isinstance(labels, dict):
+            continue
+        if labels.get(C.RBG_MANAGED_LABEL) != C.RBG_MANAGED_VALUE or labels.get(C.RBG_GROUP_LABEL) != rbg_name:
+            continue
+        if spec.get("scaleTargetRef") == expected_target:
+            matches.append(hpa)
+    if len(matches) != 1:
+        raise ValueError("Expected exactly one managed HPA for RBG role " + role_name + "; found " + str(len(matches)))
+    return matches[0]
+
+
+def _rbg_hpa_patch(hpa: dict, role_name: str, updates: dict) -> tuple[str, list[dict], dict]:
+    metadata = hpa.get("metadata")
+    spec = hpa.get("spec")
+    if not isinstance(metadata, dict) or not isinstance(spec, dict):
+        raise ValueError("HPA for role " + role_name + " must contain metadata and spec")
+    name = metadata.get("name")
+    uid = metadata.get("uid")
+    resource_version = metadata.get("resourceVersion")
+    if not isinstance(name, str) or not name:
+        raise ValueError("HPA for role " + role_name + " has no name")
+    if not isinstance(uid, str) or not uid:
+        raise ValueError("HPA for role " + role_name + " has no UID")
+    if not isinstance(resource_version, str) or not resource_version:
+        raise ValueError("HPA for role " + role_name + " has no resourceVersion")
+    spec_updates = updates.get("spec")
+    if not isinstance(spec_updates, dict) or not spec_updates:
+        raise ValueError("RBG HPA update requires a non-empty spec: " + role_name)
+    if "scaleTargetRef" in spec_updates:
+        raise ValueError("RBG HPA scaleTargetRef cannot be changed: " + role_name)
+    expected = deepcopy(spec)
+    patch = [
+        {"op": "test", "path": "/metadata/uid", "value": uid},
+        {"op": "test", "path": "/metadata/resourceVersion", "value": resource_version},
+    ]
+    merge_fields(expected, spec_updates, "/spec", patch)
+    return name, patch, expected
+
+
+def _update_rbg_hpas(kubectl: Kubectl, namespace: str, desired: dict, user_config: dict, rbgs: list[dict]) -> None:
+    from lib.rbg.scaling import validate_role_hpa_spec
+
+    if len(rbgs) != 1:
+        raise ValueError("Expected exactly one managed RoleBasedGroup in deployment namespace; found " + str(len(rbgs)))
+    rbg_name = _rbg_identity(rbgs[0], namespace)
+    if rbg_name != deployment_settings(user_config)["rbg_name"]:
+        raise ValueError("Runtime configuration belongs to a different RoleBasedGroup")
+    if rbgs[0]["metadata"].get("labels", {}).get(C.RBG_MANAGED_LABEL) != C.RBG_MANAGED_VALUE:
+        raise ValueError("RoleBasedGroup is not managed by Motor")
+    hpas = _resource_items(
+        kubectl("get", C.RBG_HPA_RESOURCE, "-n", namespace, "-o", "json"),
+        C.RBG_HPA_KIND,
+    )
+    plans = []
+    expected_by_name = {}
+    for role_name, updates in desired.items():
+        hpa = _managed_hpa_for_role(hpas, rbg_name, role_name)
+        name, patch, expected = _rbg_hpa_patch(hpa, role_name, updates)
+        roles = [role for role in rbgs[0].get("spec", {}).get("roles", []) if role.get("name") == role_name]
+        if len(roles) != 1:
+            raise ValueError("Expected exactly one RBG role: " + role_name)
+        validate_role_hpa_spec(user_config, role_name, roles[0], expected, rbg_name, namespace)
+        args = [
+            "patch",
+            C.RBG_HPA_RESOURCE,
+            name,
+            "-n",
+            namespace,
+            "--type=json",
+            "-p",
+            json.dumps(patch),
+            "-o",
+            "json",
+        ]
+        plans.append((name, args))
+
+    for name, args in plans:
+        preview = _json_object(kubectl(*args, "--dry-run=server"), "Validating RBG HPA " + name)
+        expected_by_name[name] = preview["spec"]
+    for name, args in plans:
+        result = _json_object(kubectl(*args), "Updating RBG HPA " + name)
+        if result.get("spec") != expected_by_name[name]:
+            raise RuntimeError("HPA verification failed: " + name)
+    print(json.dumps({"updated": [name for name, _ in plans], "namespace": namespace, "changes": desired}, indent=2))
+
+
+def run_update(
+    policy_path: Path, kubeconfig: Path | None = None, *, dry_run: bool = False, other_update: bool = False
+) -> None:
+    executable = shutil.which("kubectl")
+    if executable is None:
+        raise FileNotFoundError("kubectl executable is required")
+
+    def kubectl(*args: str) -> str:
+        command = [executable]
+        if kubeconfig:
+            command.append("--kubeconfig=" + str(kubeconfig))
+        return subprocess.check_output([*command, "--request-timeout=30s", *args], text=True, stderr=subprocess.PIPE)
+
+    namespace, desired = load_policy(policy_path)
+    infer = _discover_resources(kubectl, _INFER_RESOURCE, namespace)
+    if infer:
+        # Preserve ISS discovery and operation precedence without requiring RBG permissions.
+        _update_infer(kubectl, namespace, desired, infer)
+        return
+    rbgs = _discover_resources(kubectl, C.RBG_RESOURCE, namespace)
+    if len(rbgs) != 1:
+        raise ValueError(
+            "Expected exactly one InferServiceSet or exactly one managed RoleBasedGroup; found " + str(len(rbgs))
+        )
+    if dry_run or other_update:
+        raise ValueError("RBG scaling-policy update cannot be combined with --dry-run or another update operation")
+    user_config = _deployment_config(kubectl, namespace)
+    _update_rbg_hpas(kubectl, namespace, desired, user_config, rbgs)
+
+
+def update_scaling_policy(policy_path: str, *, dry_run: bool = False, other_update: bool = False) -> None:
     if "KUBERNETES_SERVICE_HOST" not in os.environ:
-        run_update(Path(policy_path))
+        run_update(Path(policy_path), dry_run=dry_run, other_update=other_update)
         return
 
     # Explicit in-cluster auth; kubeconfig references the projected token, never copies it.
@@ -162,4 +372,4 @@ def update_scaling_policy(policy_path: str) -> None:
             config_file,
         )
         config_file.flush()
-        run_update(Path(policy_path), Path(config_file.name))
+        run_update(Path(policy_path), Path(config_file.name), dry_run=dry_run, other_update=other_update)
