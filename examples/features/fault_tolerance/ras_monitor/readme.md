@@ -44,6 +44,17 @@ nohup python3 ras_monitor.py --config_dir ../../model_configs/vllm --coordinator
 
 `--coordinator-ip` 请填写部署 coordinator 容器的宿主机合法 IP（IPv4 或 IPv6）。非法地址会立即报错退出，不会进入探活等待。Docker 场景确认服务异常后，ras_monitor 会把观察结果写入日志并退出，不会调用 K8s 的 delete/deploy 重拉。
 
+RBG 部署场景（`deploy_mode: rbg`）下，ras_monitor 判定故障后的重拉仍执行旧 `delete.sh`，再调用
+`deploy.py`。旧脚本按本地 YAML 删除资源，依赖本地部署产物；它不使用 RBG 专用清理流程，也不具有
+该流程的清理顺序和数据 PVC 保留语义，因此不作为 RBG 的推荐恢复入口。
+
+RBG 整组重新部署应先通过 TUI 删除，或执行
+`MOTOR_DEPLOY_MODE=rbg bash examples/cloud_native_deploy/cleanup.sh <namespace>` 完成清理，再按原配置
+部署，见 [RBG 配置更新与清理](../../../deployer/lib/rbg/README.md#配置更新与清理)。
+`kubectl delete pod` 只删除并补建目标 Pod，不能保证重启整个多 Pod 引擎实例；若需整实例重建，应针对
+对应的 `RoleInstance` 操作。默认 `RecreateRoleInstanceOnPodRestart` 用于 Pod 失败或容器异常重启时的
+实例联动重建，满足 DP 降级条件的 Decode/Union 默认使用 `None`。
+
 ## 说明
 
 ### 参数说明

@@ -41,9 +41,15 @@ make buildx-cloud-native-deployer TAG=latest
 
 Edit `k8s/configmap-user-config.yaml` and paste both your `user_config.json` and `env.json`.
 
+For production, configure inference TLS and management API Key authentication in `user_config.json`
+before deploying or scaling. See the exact fields in the [security pre-check guide](../deployer/README.md#安全预检).
+Keep the pre-check enabled and remove any saved `--skip-check` from Helm values or Job arguments.
+`--skip-check` is only for isolated local or test environments; do not use it in production.
+
 Optional:
 
-- Set `motor_deploy_config.scheduling_queue` to control the Volcano queue.
+- `motor_deploy_config.scheduling_queue` selects the Volcano queue in InferServiceSet mode;
+  RBG has an annotation mismatch described in the [scheduling limits](../deployer/lib/rbg/README.md#调度规格限制).
 - Set `motor_deploy_config.coordinator_service_name` to override the external inference Service name.
 - Set `motor_deploy_config.coordinator_infer_node_port` to override the inference Service NodePort. Use `"-"` for Kubernetes allocation; omitting it keeps the `nodePort` configured in the template, which currently defaults to `31015`.
 - Set `motor_deploy_config.encode_node_selector`, `motor_deploy_config.prefill_node_selector`, and `motor_deploy_config.decode_node_selector` to control Encode/Prefill/Decode node placement separately.
@@ -70,7 +76,91 @@ Use `operation=scale` after changing the instance counts. To remove runtime reso
 
 See [the Helm chart README](helm/README.md) for details.
 
+## Deploy with RBG
+
+Use a code version that includes the RBG implementation and samples, and a deployer image built from that version.
+
+RBG (RoleBasedGroup) samples are provided as:
+
+- Helm: `helm/values-rbg.yaml`. It only overrides `operation` and `userConfig`; the image,
+  `envConfig`, and Jobs still come from the chart defaults. Its `userConfig` differs from the
+  default sample only in `deploy_mode: "rbg"` and the added `rbg_config` section.
+- Plain kubectl: `k8s/configmap-user-config-rbg.yaml`, identical to the `userConfig` above and meant
+  to replace the default `k8s/configmap-user-config.yaml`.
+
+Install and run the RBG v0.8.0 controller and its CRDs first. The sample enables gang scheduling,
+so install Volcano and configure the RBG controller with `--scheduler-name=volcano`
+(`controller.features.gangScheduling.schedulerName=volcano` in the RBG Helm chart).
+The controller defaults to `scheduler-plugins`; setting Motor's `rbg_config.scheduler_name` does
+not configure the controller. See the [RBG prerequisites](../deployer/lib/rbg/README.md#前置条件).
+
+For the prerequisite installation commands and verification steps, see the
+[RBG prerequisite installation](../deployer/lib/rbg/README.md#前置组件安装). In short:
+
+```bash
+# Volcano: install the MindCluster Volcano package and apply its YAML
+kubectl apply -f volcano-v{version}.yaml
+
+# RBG v0.8.0
+git clone https://github.com/sgl-project/rbg.git
+cd rbg && git checkout v0.8.0
+helm upgrade --install rbgs deploy/helm/rbgs \
+  --create-namespace --namespace rbgs-system \
+  --set controller.features.gangScheduling.schedulerName=volcano --wait
+```
+
+Keep one RBG per namespace. RAS (`ras_monitor`) currently rebuilds the whole instance on failure;
+deleting a single Pod only recreates that Pod, not the whole instance. See the
+[ras_monitor guide](../features/fault_tolerance/ras_monitor/readme.md).
+
+After copying the RBG values, set the deployer image, Motor runtime image in `userConfig`, model
+paths, `job_id`, instance counts, NPU counts, hardware type, node selectors, and `envConfig` for
+your environment. The sample's empty runtime image must be filled in before deployment.
+
+The RBG samples use `hardware_type: "800I_A3"`, one Pod per P/D instance, and 16 NPUs per Pod.
+For A2/A5 or another model, replace the embedded JSON with the matching model/hardware configuration,
+then apply the [A2/A3/A5 field changes](../deployer/lib/rbg/README.md#a2a3a5-配置调整).
+Edit `userConfig` and `envConfig` for Helm; for plain kubectl, edit `data.user_config.json` and
+`data.env.json` in `k8s/configmap-user-config-rbg.yaml`. The adapter rejects `*-sp` supernode affinity,
+and default gang scheduling rejects different hardware policy combinations across active roles;
+see the [scheduling limits](../deployer/lib/rbg/README.md#调度规格限制) before reusing an InferServiceSet config.
+
+Configure inference TLS and a management API Key before deploying; keep the security pre-check enabled:
+
+```bash
+cp examples/cloud_native_deploy/helm/values-rbg.yaml /tmp/motor-rbg-values.yaml
+# Edit /tmp/motor-rbg-values.yaml for your environment before deploying
+
+helm upgrade --install motor examples/cloud_native_deploy/helm \
+  --namespace mindie \
+  --create-namespace \
+  --values /tmp/motor-rbg-values.yaml \
+  --set operation=deploy
+```
+
+Scaling reuses `--set operation=scale` with the security pre-check enabled. This operation changes
+only instance counts, and the target role must no longer be managed by an HPA or ScalingAdapter. See the
+[RBG scaling guide](../deployer/lib/rbg/README.md#扩缩容) for enabling, preserving, and disabling HPA.
+Cleanup uses `--set operation=cleanup`: it handles HPAs, deletes the RBG, waits for descendants to
+exit, then removes business attachments and runtime configuration. Data PVCs and external resources
+are retained. The Helm cleanup Job reads `userConfig.motor_deploy_config.deploy_mode` and sets
+`MOTOR_DEPLOY_MODE=rbg` automatically, so run cleanup with the RBG values file (or another values file
+that keeps `deploy_mode: rbg`). For the plain kubectl path, set `MOTOR_DEPLOY_MODE: "rbg"` in
+`k8s/cleanup-job.yaml` before applying it. Uninstall the Helm release after cleanup completes.
+Also configure the same security settings in the ConfigMap for the plain kubectl path, and leave
+`--skip-check` out of `k8s/job.yaml` and `k8s/scale-job.yaml` in production.
+Update `k8s/clusterrole.yaml` or the Helm RBAC with the RBG implementation and check the full
+[deployer permission list](../deployer/lib/rbg/README.md#部署账号-rbac). Older versions contain no
+RBG or HPA rules; adding only RBG `list` is insufficient. Check RBG, CoordinatedPolicy, Adapter,
+HPA, and runtime resource permissions before deploying or updating policies.
+
+See the RBG section in the [deployer README](../deployer/README.md) for configuration fields,
+prerequisites, and limitations.
+
 ## Apply RBAC and run
+
+The following commands use the default config. For RBG, substitute
+`configmap-user-config-rbg.yaml` and complete the image, config, and Job argument settings above.
 
 ```bash
 kubectl apply -f examples/cloud_native_deploy/k8s/serviceaccount.yaml
@@ -88,7 +178,9 @@ kubectl logs job/mindie-motor-deploy -n mindie
 
 ## Scale
 
-Update `p_instances_num` and/or `d_instances_num` in `k8s/configmap-user-config.yaml`, re-apply the ConfigMap, then run:
+Update `p_instances_num` and/or `d_instances_num` in your ConfigMap
+(`k8s/configmap-user-config-rbg.yaml` for RBG), re-apply it, then run the following command.
+An RBG target role must no longer be managed by an HPA or ScalingAdapter.
 
 ```bash
 kubectl apply -f examples/cloud_native_deploy/k8s/scale-job.yaml
@@ -97,7 +189,17 @@ kubectl logs job/mindie-motor-scale -n mindie
 
 ## Cleanup
 
-The cleanup Job only requires a target namespace.
+The cleanup Job requires a target namespace. For an RBG deployment, edit
+`k8s/cleanup-job.yaml` and set `MOTOR_DEPLOY_MODE` to `"rbg"` before applying it; the default empty
+value runs the legacy cleanup flow.
+
+```yaml
+env:
+  - name: NAMESPACE
+    value: mindie
+  - name: MOTOR_DEPLOY_MODE
+    value: "rbg"
+```
 
 ```bash
 kubectl apply -f examples/cloud_native_deploy/k8s/cleanup-job.yaml

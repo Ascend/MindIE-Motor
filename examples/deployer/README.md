@@ -78,8 +78,8 @@ flowchart TD
 
 ### deploy_mode 与 YAML 应用顺序
 
-`deploy_mode` 只接受以下三种值，省略时默认为 `infer_service_set`。所有输出文件均位于
-`output_yamls/`，模板与生成路径由 `lib/constant.py`、`lib/utils.py:get_deploy_paths()` 定义。
+`deploy_mode` 接受以下四种值，省略时默认为 `infer_service_set`；`rbg` 需配套 RBG 适配代码已合入。
+所有输出文件均位于 `output_yamls/`，模板与生成路径由 `lib/constant.py`、`lib/utils.py:get_deploy_paths()` 定义。
 建议始终通过 `deploy.py` 部署，由它创建 ConfigMap 并按下表顺序应用 YAML：
 
 | deploy_mode | 模板与生成资源 | 正常部署的实际应用顺序 |
@@ -87,6 +87,7 @@ flowchart TD
 | `multi_deployment` | `controller_template.yaml` → `mindie_motor_controller.yaml`；`coordinator_template.yaml` → `mindie_motor_coordinator.yaml`；`engine_template.yaml` → 每个 E/P/D 或 E/U 实例一份引擎 YAML；按条件生成存储及 KV 等独立 YAML | `motor-config` → Controller → Coordinator → E 实例 → P、D 实例（或 U 实例）→ 可选存储 PVC → 可选 KV Store → 可选 KV Conductor → 可选 MF Store |
 | `infer_service_set` | `infer_service_template.yaml` → `infer_service.yaml`，包含 Controller、Coordinator、引擎及可选 KV 角色；按需另生成 `mindie_motor_storage_pvc.yaml` | `motor-config` → `infer_service.yaml` → 可选存储 PVC；需预先安装支持 `InferServiceSet` 的 CRD 和控制器 |
 | `single_container` | `single_container_template.yaml` → `mindie_motor_single_container.yaml`；动态 PVC 作为额外 YAML document 追加在同一文件中 | `motor-config` → `mindie_motor_single_container.yaml`；多个组件在同一容器中启动，不为各组件单独生成 YAML |
+| `rbg` | `rbg_template.yaml` → `RoleBasedGroup`（roles: controller、coordinator、prefill、decode、encode、union、kv-store、kv-conductor、mf-store），另生成业务 Service、运行时 SA/RBAC 与 `motor-config` | 运行时 SA/RBAC → `motor-config` → 按需 PVC → 业务 Service → CoordinatedPolicy → RoleBasedGroup → 各角色 ScalingAdapter 绑定后提交 HPA（启用 HPA 时）；需预先安装 RBG v0.8.0 控制器及配套 CRD（`workloads.x-k8s.io/v1alpha2`） |
 
 引擎文件名形如 `vllm_p0.yaml`、`vllm_d0.yaml`，索引从 `0` 开始；可选 Encode 实例用
 `_e0.yaml`，PD 混部 Union 实例用 `_u0.yaml`。文件名前缀根据引擎选择：vLLM 为 `vllm`，
@@ -101,8 +102,8 @@ SGLang 为 `sglang`，MindIE LLM 为 `mindie-server`。实例数为零时不生�
 - `mindie_motor_kv_conductor.yaml`：`kv_conductor_config.http_server_port` 非零时生成。
 - `mindie_motor_mf_store.yaml`：Prefill/Union 配置使用 SGLang 引擎时生成。
 
-表中顺序是 **apply 提交顺序，不是组件就绪顺序**，脚本不会在每次 apply 后等待对应 Pod
-就绪。`multi_deployment` 的动态 PVC 排在 Controller、Coordinator 和引擎实例之后，但在
+表中顺序是**资源提交顺序，不是组件就绪顺序**。RBG 启用 HPA 时会等待 Adapter 绑定和 `scale`
+初始化；其他资源的提交不逐一等待对应 Pod 就绪。`multi_deployment` 的动态 PVC 排在 Controller、Coordinator 和引擎实例之后，但在
 KV Store、KV Conductor、MF Store 之前；`infer_service_set` 的动态 PVC 排在
 `infer_service.yaml` 之后。因此依赖该 PVC 的 Pod 可能先处于 Pending，直到 PVC 完成绑定。
 若存储必须提前就绪，请在部署前准备好；引用的已有 PVC 必须位于 `job_id` 对应的 namespace。
@@ -110,11 +111,137 @@ KV Store、KV Conductor、MF Store 之前；`infer_service_set` 的动态 PVC �
 `output_yamls/` 可能残留上次部署或其他模式的文件。不要用 `kubectl apply -f output_yamls/`
 代替 `deploy.py`：这样不会更新 `motor-config` ConfigMap，还可能应用旧文件。
 
+### RBG（RoleBasedGroup）模式
+
+本节以 RBG 适配代码、模板及云原生示例已合入，且 deployer 镜像包含对应实现为前提。
+
+`deploy_mode` 设为 `rbg` 时，`deploy.py` 使用 `yaml_template/rbg_template.yaml` 渲染一个
+`workloads.x-k8s.io/v1alpha2` 的 `RoleBasedGroup`，角色固定为 controller、coordinator、encode、
+prefill、decode、union、kv-store、kv-conductor、mf-store；未启用的角色保留在模板中、副本数为 0。
+
+`motor_deploy_config.rbg_config` 的主要字段：
+
+| 字段 | 说明 |
+|------|------|
+| `name` | RBG 名称，用作 Pod 名前缀、RBG 原生 headless Service（`s-{name}-{role}`）前缀，以及 `rbg.workloads.x-k8s.io/group-name` 标签值；缺省等于 `logical_service_name` |
+| `logical_service_name` | 业务 Service 名称中缀，缺省 `vllm`；业务 Service 名为 `{模板名}-{logical_service_name}-0-{role}`（`mf-store` 例外，保留模板名） |
+| `gang_scheduling` | 是否启用组调度，首次部署缺省 `true`；启用时 `scheduler_name` 必须为 `volcano` |
+| `scheduler_name` | Pod 模板的 `schedulerName`，首次部署缺省 `volcano` |
+| `restart_policy_by_role` | 按引擎角色指定重启策略；通常默认 `RecreateRoleInstanceOnPodRestart`，满足 DP 降级条件的 Decode/Union 默认 `None`，此时显式配置也只能为 `None` |
+| `coordinated_policy` | 自定义跨角色协调策略；首次省略时生成默认的 `engine-scaling`，配置方式见 [RBG 详细说明](lib/rbg/README.md#协调策略) |
+
+实例数与副本的对应关系：`p_instances_num`、`d_instances_num`、`e_instances_num`、`hybrid_instances_num`
+对应 `spec.roles[].replicas`；`single_p_instance_pod_num`、`single_d_instance_pod_num`、
+`single_e_instance_pod_num`、`single_hybrid_instance_pod_num` 对应每个实例的 Pod 数。
+默认引擎模板写入 `customComponentsPattern.components[0].size`；使用 `leaderWorkerPattern` 时
+写入其 `size`，该值包含 leader。
+
+RBG 产物写入 `output_yamls/<namespace>/<rbg_name>/`，包含 `prerequisites.yaml`、`services.yaml`、
+`policy.yaml`、`rbg.yaml` 和 `hpas.yaml`；本次未提交的 Policy/HPA 对应文件可以为空。
+
+前置条件：
+
+Volcano 和 RBG v0.8.0 控制器需在部署 Motor 前单独安装，安装命令、版本要求和验证方法见
+[RBG 前置组件安装](lib/rbg/README.md#前置组件安装)。最小步骤如下：
+
+```bash
+# Volcano：按 MindCluster Volcano 安装指导准备软件包和镜像，然后执行
+kubectl apply -f volcano-v{version}.yaml
+
+# RBG v0.8.0
+git clone https://github.com/sgl-project/rbg.git
+cd rbg && git checkout v0.8.0
+helm upgrade --install rbgs deploy/helm/rbgs \
+  --create-namespace --namespace rbgs-system \
+  --set controller.features.gangScheduling.schedulerName=volcano --wait
+```
+
+更完整的 Volcano 安装包准备、单机 `useClusterInfoManager=false` 配置和验证命令见上述链接。
+
+- 已安装并运行 RBG v0.8.0 控制器及配套 CRD；部署流程检查的 `rolebasedgroups`、`coordinatedpolicies`、
+  `roleinstancesets`、`roleinstances`、`rolebasedgroupscalingadapters` 均需提供 `v1alpha2` 版本。
+- 默认启用组调度，需安装 Volcano，并将 **RBG 控制器**配置为 `--scheduler-name=volcano`；
+  RBG Helm 配置为 `controller.features.gangScheduling.schedulerName=volcano`，其默认值为 `scheduler-plugins`。
+  Motor 的 `rbg_config.scheduler_name` 也需为 `volcano`。
+- 部署账号需完整具备 RBG、CoordinatedPolicy、Adapter、HPA 及运行时资源权限；
+  旧版 RBAC 不包含 RBG 规则，不能仅补一项 `list`，详见 [部署账号 RBAC](lib/rbg/README.md#部署账号-rbac)。
+- RAS（`ras_monitor`）当前覆盖整实例重建；`kubectl delete pod` 只补建单个 Pod，不能替代整实例重建，
+  详见 [ras_monitor 说明](../features/fault_tolerance/ras_monitor/readme.md)。
+
+以下命令在 `examples/deployer/` 下执行。将 `CONFIG_DIR` 替换为包含已配置好的
+`user_config.json` 和 `env.json` 的目录，`NAMESPACE` 与其中的 `job_id` 保持一致：
+
+```bash
+CONFIG_DIR=/path/to/rbg-config
+NAMESPACE=mindie
+
+# 部署或重新提交配置
+python3 deploy.py --config_dir "$CONFIG_DIR"
+
+# 仅更新白名单内的运行配置，不主动重启 Pod
+python3 deploy.py --config_dir "$CONFIG_DIR" --update_config
+
+# 手动扩缩容：只允许修改实例数
+python3 deploy.py --config_dir "$CONFIG_DIR" --update_instance_num
+
+# 清理 RBG：命令行必须带 MOTOR_DEPLOY_MODE=rbg；也可通过 TUI 删除
+MOTOR_DEPLOY_MODE=rbg bash ../cloud_native_deploy/cleanup.sh "$NAMESPACE"
+```
+
+执行前须完成[安全预检配置](#安全预检)。`--skip-check` 仅限隔离的本地或测试环境验证，
+生产环境不得使用，也不应保存在生产 Helm values 或 Job 参数中。
+
+`--update_config` 仅合入[白名单](lib/update_config_whitelist.py)字段；支持热加载的配置在容器同步和
+进程监听后生效，非白名单变更会被忽略并记录警告。该命令不更新 `env.json`、启动脚本或 Pod 模板。
+
+配置顶层 `scaling_policy` 后，通过正常部署入口启用 HPA；更新时省略该字段通常保留线上 HPA，
+显式设置 `"scaling_policy": {}` 后重新提交配置可关闭受管 HPA 和对应 Adapter。
+角色仍受 HPA/Adapter 管理时不能用 `--update_instance_num` 手动扩缩容。HPA 调整的是完整实例数，
+不改变每实例 Pod 数。启停流程与 P/D HPA 策略更新命令见 [RBG 扩缩容说明](lib/rbg/README.md#扩缩容)。
+
+清理流程先处理 HPA，再删除 RBG 并等待其后代退出，随后清理业务 Service、协调策略、运行时权限和
+`motor-config`；保留数据 PVC 和外部资源。命令行执行 `cleanup.sh` 时必须设置
+`MOTOR_DEPLOY_MODE=rbg`，否则会走旧的非 RBG 清理流程。直接执行旧 `delete.sh` 不具有相同的清理语义。
+
+限制：
+
+- 不支持 InferServiceSet 的 `huawei.com/schedule_policy: *-sp` 超节点亲和策略，关闭组调度也会被拒绝。
+- 默认组调度不支持带硬件调度注解的活动角色使用不同的 `(sp-block, huawei.com/schedule_policy)` 组合；
+  A3/A5 的默认 `sp-block` 为每实例 Pod 数乘以每 Pod NPU 数，P/D 典配可能因此无法直接迁移。
+  规格与源码依据见 [调度规格限制](lib/rbg/README.md#调度规格限制)。
+- 当前 `scheduling_queue` 写入的注解与 RBG v0.8.0 读取组队列的键不同，不能保证其控制 RBG 组队列，
+  详见上述调度限制。
+- 同一 namespace 只部署一套 RBG（运行时 ConfigMap 固定为 `motor-config`）。
+- 不支持 P2D；显式设置 `enable_scale_p2d=true` 会报错，省略或关闭时落实为 `false`。
+- 不支持容器快照；设置 `motor_container_snapshot_config.enable_snapshot=true` 会报错。
+- 修改镜像、环境变量或支持更新的 Pod 模板字段，应通过正常部署入口重新提交，相关角色可能滚动更新。
+  修改组调度、调度器、`scheduling_queue`，或活动引擎角色的实例形态、每实例 Pod 数及重启策略，
+  需要先清理原部署，再按新配置部署；这些变更不能通过两个更新参数完成。
+
+A2/A3/A5 的 `user_config.json` 修改位置、现有典配数值及生成器自动处理的硬件字段，见
+[硬件配置调整](lib/rbg/README.md#a2a3a5-配置调整)。其中 A3 典配的 P/D `sp-block` 可能不一致，
+不能将“增加 RBG 配置字段”等同于该典配已支持默认组调度。
+
+### 安全预检
+
+生产环境应先在 `user_config.json` 中配置推理 TLS 和管理面 API Key，再执行部署或扩缩容，保留安全预检：
+
+- `motor_deploy_config.tls_config.infer_tls_config.enable_tls` 设为 `true`，并配置相应证书及挂载。
+- `motor_coordinator_config.mgmt_api_key_config.enable_api_key` 设为 `true`，
+  `api_key_file` 指向容器内可读取的密钥文件。密钥内容不直接写入 JSON。
+- 部署与扩缩容参数中不携带 `--skip-check`；Helm 的 `jobs.deploy.args` / `jobs.scale.args`
+  默认均为 `[]`。如曾在 values 或 Job 中保存该参数，生产部署前应移除。
+
+以上字段由 [`deploy.py` 的 `is_security_configured`](deploy.py) 检查；
+证书与密钥配置见[配置参数说明](../../docs/zh/user_guide/configuration/config_reference.md)和
+[管理接口鉴权](../../docs/zh/user_guide/api/management_interfaces.md)。
+`--skip-check` 仅用于隔离的本地或测试环境验证，跳过预检不会开启 TLS 或鉴权，生产环境不得使用。
+
 ### YAML 如何影响 Pod 创建
 
-`deploy.py` 不直接创建 Pod，而是通过 `kubectl apply` 提交 Deployment、Service、RBAC 或
-InferServiceSet 等资源，再由控制器创建 Pod：Deployment 的副本由 Kubernetes 内置控制器维护，
-InferServiceSet 的各角色及其工作负载由对应的自定义控制器管理。
+`deploy.py` 不直接创建 Pod，而是提交 Deployment、Service、RBAC、InferServiceSet 或 RoleBasedGroup
+等资源，再由控制器创建 Pod。Deployment 的副本由 Kubernetes 内置控制器维护，InferServiceSet 的各角色
+由对应的自定义控制器管理；RBG 使用 `RoleBasedGroup → RoleInstanceSet → RoleInstance → Pod` 管理角色与实例。
 
 - `job_id` 决定 namespace；镜像、组件调度标签、附加 labels/annotations 等由生成器填入资源模板。
 - `multi_deployment` 的 `p_instances_num` / `d_instances_num` 决定实例 YAML 数量，
@@ -204,7 +331,7 @@ MindIE Motor服务部署参数说明如下所示：
 | `--dry-run` | - | 仅生成 YAML，不执行 `kubectl apply`；不应与 `--update_config`、`--update_instance_num` 组合使用，否则更新操作仍会执行。 |
 | `--auto_log_collect` | - | 部署完成后自动启动日志采集。 |
 | `--nostep` | - | 部署完成后不显示服务启动进度条。 |
-| `--skip-check` | - | 安全预检未通过时仍继续部署；不会自动开启 TLS 或管理 API Key 认证。 |
+| `--skip-check` | - | 仅限隔离的本地或测试环境跳过安全预检；不会开启 TLS 或管理 API Key 认证，生产环境不得使用。 |
 
 Motor 配置文件自动生成参数：
 

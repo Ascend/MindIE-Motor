@@ -18,9 +18,60 @@ helm upgrade --install motor examples/cloud_native_deploy/helm \
 
 Set `image.repository`/`image.tag` to the deployer image and set `motor_deploy_config.image_name` in the `userConfig` JSON string to the Motor runtime image before deployment. Both `userConfig` and `envConfig` are JSON strings embedded in `values.yaml`.
 
+Before production deployment or scaling, configure inference TLS and management API Key authentication
+inside `userConfig`; see the [security pre-check fields](../../deployer/README.md#安全预检).
+Keep `jobs.deploy.args` and `jobs.scale.args` free of `--skip-check`, including saved values from earlier runs.
+That flag is only for isolated local or test environments; do not use it in production.
+
 The chart and default deployer image are named `mindie-motor-deployer`.
 When upgrading an existing release, retain its release name and set
 `fullnameOverride` to its existing resource prefix if resource names must stay the same.
+
+A RoleBasedGroup (RBG) deployment requires the RBG implementation and samples to be merged and
+a deployer image built from that code. It uses `helm/values-rbg.yaml`, which only overrides `operation` and
+`userConfig`; the image, `envConfig`, and Jobs still come from the chart defaults. Its `userConfig`
+differs from the default only in `deploy_mode: "rbg"` and the `rbg_config` section.
+Configure inference TLS and a management API Key and keep the security pre-check enabled;
+replace the `--values` path used below with
+`/tmp/motor-rbg-values.yaml`.
+
+```bash
+cp examples/cloud_native_deploy/helm/values-rbg.yaml /tmp/motor-rbg-values.yaml
+```
+
+Edit the copy for your images, model paths, `job_id`, instance counts, NPU counts, hardware,
+node selectors, and `envConfig`. Install and run the RBG v0.8.0 controller and its CRDs first.
+The default gang scheduling setup also requires Volcano and `--scheduler-name=volcano` on
+the RBG controller (`controller.features.gangScheduling.schedulerName=volcano` in the RBG
+chart). The controller defaults to `scheduler-plugins`; Motor's `rbg_config.scheduler_name`
+is a separate setting. See the [RBG prerequisites](../../deployer/lib/rbg/README.md#前置条件).
+
+For the prerequisite installation commands and verification steps, see the
+[RBG prerequisite installation](../../deployer/lib/rbg/README.md#前置组件安装). In short:
+
+```bash
+# Volcano: install the MindCluster Volcano package and apply its YAML
+kubectl apply -f volcano-v{version}.yaml
+
+# RBG v0.8.0
+git clone https://github.com/sgl-project/rbg.git
+cd rbg && git checkout v0.8.0
+helm upgrade --install rbgs deploy/helm/rbgs \
+  --create-namespace --namespace rbgs-system \
+  --set controller.features.gangScheduling.schedulerName=volcano --wait
+```
+
+Keep one RBG per namespace. RAS (`ras_monitor`) currently rebuilds the whole instance on failure;
+deleting a single Pod only recreates that Pod, not the whole instance. See the
+[ras_monitor guide](../../features/fault_tolerance/ras_monitor/readme.md).
+
+The RBG values sample uses A3 (`800I_A3`), one Pod per P/D instance, and 16 NPUs per Pod.
+For A2/A5 or another model, use its matching configuration inside the `userConfig` JSON string
+and supply the corresponding `envConfig`; follow the
+[A2/A3/A5 field guide](../../deployer/lib/rbg/README.md#a2a3a5-配置调整).
+Check the [scheduling limits](../../deployer/lib/rbg/README.md#调度规格限制): `*-sp` supernode affinity
+is rejected, and default gang scheduling rejects different hardware policy combinations across active roles.
+That section also explains the RBG queue annotation mismatch affecting `scheduling_queue`.
 
 ## Scale and cleanup
 
@@ -30,21 +81,66 @@ After changing instance counts, run the same command with `--set operation=scale
 helm uninstall motor --namespace mindie
 ```
 
-The cleanup script deletes Deployments and Services in the namespace configured by `userConfig.motor_deploy_config.job_id`. Use a dedicated namespace for each deployment.
+For RBG, manual scaling changes only instance counts and rejects roles still managed by
+an HPA or ScalingAdapter. Use the RBG values file and keep the security pre-check enabled.
+
+For RBG cleanup, use the RBG values file as well. The cleanup Job reads
+`userConfig.motor_deploy_config.deploy_mode` and sets `MOTOR_DEPLOY_MODE=rbg` automatically;
+if the values file used for cleanup does not contain `deploy_mode: rbg`, cleanup falls back to the
+legacy non-RBG flow. For the plain kubectl path, set `MOTOR_DEPLOY_MODE: "rbg"` in
+`k8s/cleanup-job.yaml` before applying it.
+
+Cleanup targets the namespace configured by `userConfig.motor_deploy_config.job_id`.
+In RBG mode it handles managed HPAs, deletes the RBG, waits for descendants to exit, then
+removes business Services, coordination policy, runtime permissions, and `motor-config`.
+Data PVCs and external resources are retained. Other modes retain their Deployment/Service
+cleanup flow. Use a dedicated namespace for each deployment (one RBG per namespace) and uninstall
+only after cleanup completes.
 
 ## Autoscaling (HPA)
 
-Set the optional `scalingPolicy` value to render an HPA `scalingPolicy` field into the InferServiceSet engine roles (prefill/decode/union). It is injected into the deployer `user_config` as the `scaling_policy` section; each role entry accepts `min_replicas`, `max_replicas`, `metric` (defaults to `motor_prefill_utilization` / `motor_decode_utilization` by role), and `target` (default `0.8`). When left empty, no `scalingPolicy` is rendered and the deploy artifacts stay unchanged. See `values.yaml` for an example and `docs/zh/user_guide/features/scaling_deployment/auto_scaling.md` for the full HPA setup (External Metrics Adaptor, recommended metrics).
+A non-empty `scalingPolicy` value is injected into `userConfig` as the top-level `scaling_policy`.
+Role entries accept `min_replicas`, `max_replicas`, `metric`, `target` (default `0.8`),
+and `target_type`; RBG also accepts `behavior`. Prefill/Decode default to `motor_prefill_utilization` /
+`motor_decode_utilization`. InferServiceSet mode renders the role's `scalingPolicy` field;
+RBG mode renders HPAs targeting `RoleBasedGroupScalingAdapter/{rbg_name}-{role}`.
+
+In RBG mode use `operation=deploy` to enable or adjust HPA. The role must have a positive
+instance count; the deployer enables its Adapter and waits for binding and scale initialization
+before submitting the HPA. HPA changes complete instance counts, not Pods per instance.
+On later submissions, omitting `scaling_policy` normally preserves online HPAs; explicitly
+setting `"scaling_policy": {}` deletes managed HPAs and disables and waits for their Adapters
+to disappear. **An empty Helm `scalingPolicy: {}` does not inject a disable instruction.**
+To disable, leave that Helm value empty or omit it and write `"scaling_policy": {}` explicitly
+inside the `userConfig` JSON, then submit with `operation=deploy`. Disable HPA/Adapter management
+before manual scaling. Setting an HPA behavior's `selectPolicy` to `Disabled` only disables
+that scaling direction; it does not remove the HPA or release Adapter management.
+
+See `values.yaml` for an example, the [RBG scaling guide](../../deployer/lib/rbg/README.md#扩缩容)
+for the lifecycle, and the [coordination guide](../../deployer/lib/rbg/README.md#协调策略)
+for CoordinatedPolicy configuration. Set up metric collection and the External Metrics Adaptor
+before enabling HPA; see the [autoscaling guide](../../../docs/zh/user_guide/features/scaling_deployment/auto_scaling.md).
 
 ## Update P/D scaling policies
 
 Use `helm upgrade` with `--set operation=update-scaling-policy` and
 `policyUpdate.roles.prefill` and/or `policyUpdate.roles.decode` in your values file.
 The post-upgrade Hook Job discovers the single InferServiceSet in the deployment
-namespace; zero or multiple matches fail explicitly. Object fields are merged,
-arrays are replaced, and omitted fields are unchanged. A missing scalingPolicy
-requires a complete HPA policy. The Job validates with a server-side dry-run,
-applies a guarded JSON Patch, and verifies the result. It does not redeploy engines.
+namespace; zero or multiple matches fail explicitly. In RBG mode it discovers the
+managed RoleBasedGroup and its HPAs instead; only `prefill` and `decode` are
+supported, and the role's HPA must already exist. Create a missing RBG HPA through
+`operation=deploy` with `scalingPolicy` first; this update operation does not create it
+or modify `scaleTargetRef`. Only the InferServiceSet path can add a missing scalingPolicy
+by receiving a complete HPA policy. Object fields are merged, arrays are replaced, and
+omitted fields are unchanged. The Job validates with a server-side dry-run, applies a
+guarded JSON Patch, and verifies the result. It does not redeploy engines or modify
+CoordinatedPolicy. The deployed mode is read from `motor-config`.
+
+The chart RBAC and `k8s/clusterrole.yaml` must be updated with the RBG implementation.
+Older versions contain no RBG or HPA rules; adding only RBG `list` is insufficient.
+Check all RBG, CoordinatedPolicy, Adapter, HPA, and runtime resource permissions against the
+[deployer RBAC list](../../deployer/lib/rbg/README.md#部署账号-rbac) before deploying or updating policies.
+
 The Job runs `examples/deployer/deploy.py --update_scaling_policy /policy/policy.json`
 from the deployer image. The ConfigMap carries only `policy.json`; later policy
 parameter updates reuse the same image. The same command can be run manually;
@@ -65,9 +161,19 @@ full field path, for example:
 --set policyUpdate.roles.prefill.spec.behavior.scaleUp.selectPolicy=Min
 ```
 
-For an existing policy this changes only that field. If the role has no policy,
-a complete HPA policy is required before it can be created.
+For an existing policy this changes only that field. On the InferServiceSet path,
+a missing role policy requires a complete HPA policy to add it. On the RBG path,
+create a missing HPA through `operation=deploy` first. RBG patches are guarded by
+the HPA UID and resourceVersion.
+
+A successful policy update means the InferServiceSet was written (its operator still needs
+to synchronize the HPA), or the RBG role's existing HPA was written and verified. Actual
+scaling is asynchronous. A normal `operation=deploy` Job only confirms resource submission,
+not workload readiness or successful inference. Policy updates do not rewrite the original
+deployment config; keep `scaling_policy` there aligned if future deployments should retain
+the changes. Restore policies through an explicit update, not Helm rollback.
+
 See README.zh.md for field details and examples.
 Additional deploy.py arguments are passed through `jobs.deploy.args` or `jobs.scale.args`. Without arguments, the existing behavior and security pre-check remain unchanged.
-Both values default to empty arrays and accept only arrays of strings, for example
-`--set 'jobs.scale.args[0]=--skip-check'`.
+Both values default to empty arrays and accept only arrays of strings.
+`--skip-check` is restricted to isolated local or test environments; production must retain the pre-check.

@@ -2,6 +2,11 @@
 
 Coordinator Observability 进程在 **1027** 端口暴露 Prometheus 格式的 `/metrics`（K8s 下经 obs Service
 `mindie-motor-coordinator-obs-<infer_service_set_name>-0-coordinator`，默认 NodePort 31017）。
+RBG 部署形态下 obs Service 名为 `mindie-motor-coordinator-obs-{logical_service_name}-0-coordinator`，
+命名规则相同；其 Service metadata 保留 `app: mindie-motor-coordinator` 供现有 ServiceMonitor 选择。
+可在 `spec.selector.matchLabels` 中追加 `rbg.workloads.x-k8s.io/group-name: <rbg_name>`，
+其中值取实际 RBG 名；省略 `rbg_config.name` 时随 `logical_service_name`，后者默认 `vllm`。
+namespace 与 `job_id` 一致。
 本目录提供 K8s 环境下的采集集成产物；docker-compose 本地参考栈见上级目录 `stack/`。
 
 ## 形态一：Prometheus Operator（ServiceMonitor）
@@ -53,3 +58,8 @@ HPA 经 External Metrics Adaptor 消费 Coordinator `/metrics`，Adaptor 部署�
   避免 HPA 抖动。
 - `motor_pd_ratio_suggested` 仅为建议信号，执行（修改 InferServiceSet 各 role replicas）由外部控制器
   完成，建议执行周期 ≥ 5min 并带冷却约束；multi_deployment 模式无 Infer Operator，不支持 HPA 路径。
+- RBG 部署形态下 HPA 的 `scaleTargetRef` 为 `RoleBasedGroupScalingAdapter/{rbg_name}-{role}`；外部指标
+  selector 需带 `kubernetes_namespace={job_id}` 与
+  `infer_huawei_com_inferservice_name={logical_service_name}-0`，Prometheus/Adaptor 中的指标标签需与之对应。
+  HPA 调整完整实例数；手动扩缩容前需先关闭对应 HPA/Adapter。启用、保留与关闭步骤见
+  [RBG 扩缩容说明](../../../deployer/lib/rbg/README.md#扩缩容)。

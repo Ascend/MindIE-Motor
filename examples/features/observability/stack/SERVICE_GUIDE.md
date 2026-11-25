@@ -25,6 +25,8 @@
 ### 1.2 业务侧就绪
 
 - 目标 **namespace** 内 Coordinator、Engine（含 `vllm-p0` / `vllm-d0` 等命名）Pod 已处于 **Running**。
+- RBG 默认组件模板的引擎 Pod 名为 `{rbg_name}-{role}-{实例序号}-engine-{Pod序号}`。§3.6 的引擎自动发现
+  也识别包含 `engine` 的 Pod 名，可生成这些 Pod 的指标抓取目标；实例标识仍按现有名称推断逻辑生成。
 - 切换 `mindie-*` 等不同环境时，先执行 `./stop.sh` 再重新 `./launch.sh`，避免复用其他 namespace 的旧 `generated/discovered.env`。
 - 可选：准备 MindIE Motor 的 `user_config.json` 路径，用于从 `motor_deploy_config.job_id` 推断 namespace。
 
@@ -370,6 +372,10 @@ launch.sh
 - **Coordinator**：优先发现 Running 的 Coordinator Pod（HA 时选 READY N/N 的主 Pod），抓取其 `1027` 端口；找不到 Pod 时回退 observability NodePort。生成 `/metrics` 及 `type=instance|role|dp|node` 等指标端点。
 - **Engine**：Docker runtime 优先使用 PodIP + `MOTOR_ENGINE_BUSINESS_PORT`（默认 `10000`）并启动主机端口转发；无可用 Pod 目标时回退 Service NodePort。Native runtime 优先 Service NodePort，再回退 PodIP 直连。根据 `vllm-p0` / `vllm-d0` 等命名推断 `pd_role` 与 `instance_id`。
 - **Tracing**：写入 `OBS_HOST`、`OTLP_HTTP_ENDPOINT=http://<obs-host>:4318/v1/traces`、`OTLP_GRPC_ENDPOINT=http://<obs-host>:4317`。
+
+RBG 默认组件模板的 Pod 名包含 `engine`，也能被发现。此时通过名称中的 `prefill` / `decode` 推断角色，
+并按现有名称匹配或发现顺序分配实例标识，不按 RBG 的实例标签分组。多 Pod 实例需核对生成的标识，
+不能将每个抓取目标直接当作一个完整实例；改用 `leaderWorkerPattern` 后也需按实际命名核对或另行配置抓取目标。
 
 ### 3.7 默认端口
 
