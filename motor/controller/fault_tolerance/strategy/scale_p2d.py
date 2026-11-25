@@ -8,6 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import os
 import time
 from enum import Enum
 from dataclasses import dataclass, field
@@ -22,6 +23,9 @@ from motor.controller.fault_tolerance.fault_types import FaultLevel
 from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient
 
 logger = get_logger(__name__)
+
+_FAULT_SCHEDULING_ENV = "FAULT_SCHEDULING"
+_EXTERNAL_FORCE_POD_FAILED = "external-force-pod-failed"
 
 
 class RecoveryState(str, Enum):
@@ -213,6 +217,10 @@ class ScaleP2DStrategy(StrategyBase):
             True if all steps succeed; False otherwise.
         """
         try:
+            # Step 0: external-force-pod-failed tries to exit the faulty Decode
+            # before Prefill preemption. A failed NodeManager send is only logged.
+            self._stop_decode_for_pod_failed()
+
             # Step 1: load Decode instance and resource requirement.
             if not self._get_d_instance():
                 return False
@@ -245,6 +253,51 @@ class ScaleP2DStrategy(StrategyBase):
             self.context.last_error = f"Error in recovery flow: {e}"
             self.context.current_state = RecoveryState.FAILED
             return False
+
+    def _stop_decode_for_pod_failed(self) -> None:
+        """Ask the faulty Decode to exit. A failed send does not stop ScaleP2D.
+
+        external-force-pod-failed does not delete the Pod by itself. The Decode
+        NodeManagers should exit so MindCluster can recycle that instance. grace
+        and external-force skip this step. If the NodeManager stop fails or raises,
+        the error is logged and Prefill preemption still runs.
+        """
+        mode = os.environ.get(_FAULT_SCHEDULING_ENV, "").strip()
+        if mode != _EXTERNAL_FORCE_POD_FAILED:
+            return
+
+        from motor.controller.core.recovery_service import terminate_instance_for_recovery
+
+        logger.info(
+            "Stopping Decode for external-force-pod-failed before ScaleP2D. instance_id=%d, job_name=%s",
+            self.context.d_instance_id,
+            self.context.d_instance_job_name,
+        )
+        try:
+            stopped = terminate_instance_for_recovery(
+                self.context.d_instance_id,
+                reason="external_force_pod_failed_scale_p2d",
+            )
+        except Exception:
+            logger.exception(
+                "Decode stop raised before ScaleP2D. instance_id=%d, job_name=%s, "
+                "check: 1. Decode instance still exists "
+                "2. NodeManager stop API is reachable",
+                self.context.d_instance_id,
+                self.context.d_instance_job_name,
+            )
+            return
+
+        if stopped:
+            return
+
+        logger.error(
+            "Decode stop failed before ScaleP2D. instance_id=%d, job_name=%s, "
+            "check: 1. Decode instance still exists "
+            "2. NodeManager stop API is reachable",
+            self.context.d_instance_id,
+            self.context.d_instance_job_name,
+        )
 
     def _get_d_instance(self) -> bool:
         """Load the faulty Decode instance and compute how many nodes are required."""

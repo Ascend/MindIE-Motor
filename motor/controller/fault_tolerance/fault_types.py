@@ -118,6 +118,8 @@ class OriginFaultLevel(str, Enum):
     FREE_RESTART_NPU = "FreeRestartNPU"
     RESTART_NPU = "RestartNPU"
     SEPARATE_NPU = "SeparateNPU"
+    # MindCluster DPU 故障等级。恢复路径与 SeparateNPU 相同，都映射到 L6。
+    SEPARATE_DPU = "SeparateDPU"
     PRE_SEPARATE_NPU = "PreSeparateNPU"
     MANUALLY_SEPARATE_NPU = "ManuallySeparateNPU"
 
@@ -301,8 +303,9 @@ def map_fault_level(fault_level_str: str) -> FaultLevel:
     - L3: OriginFaultLevel.RESTART_BUSINESS
     - L4: OriginFaultLevel.FREE_RESTART_NPU
     - L5: OriginFaultLevel.RESTART_NPU
-    - L6: OriginFaultLevel.SEPARATE_NPU, OriginFaultLevel.PRE_SEPARATE_NPU,
-      OriginFaultLevel.MANUALLY_SEPARATE_NPU
+    - L6: OriginFaultLevel.SEPARATE_NPU, OriginFaultLevel.SEPARATE_DPU,
+      OriginFaultLevel.PRE_SEPARATE_NPU, OriginFaultLevel.MANUALLY_SEPARATE_NPU
+    - SubHealthFault 保持 L1。Controller 不为其选择恢复策略。
 
     Note: OriginFaultLevel.PRE_SEPARATE_NPU is statically mapped to L6 here,
     but at runtime the FaultManager may downgrade it to L2 when the affected
@@ -318,6 +321,7 @@ def map_fault_level(fault_level_str: str) -> FaultLevel:
         OriginFaultLevel.FREE_RESTART_NPU: FaultLevel.L4,
         OriginFaultLevel.RESTART_NPU: FaultLevel.L5,
         OriginFaultLevel.SEPARATE_NPU: FaultLevel.L6,
+        OriginFaultLevel.SEPARATE_DPU: FaultLevel.L6,
         OriginFaultLevel.PRE_SEPARATE_NPU: FaultLevel.L6,
         OriginFaultLevel.MANUALLY_SEPARATE_NPU: FaultLevel.L6,
     }

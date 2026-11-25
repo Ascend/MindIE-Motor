@@ -642,3 +642,67 @@ def test_fault_policy_change_is_delivered_even_with_same_code_and_level(field, v
     monitor.last_fault_infos = [fault]
     changed = fault.model_copy(update={field: value})
     assert monitor._has_fault_info_changed([changed])
+
+
+def test_device_update_keeps_dpu_and_delete_clears_only_dpu():
+    """Each source replaces only its own snapshot. Deleting the DPU ConfigMap clears only DPU."""
+    monitor = create_test_monitor()
+    handler = Mock()
+    monitor.configmap_change_handler = handler
+    dpu = FaultInfo(npu_name="Ascend910-0", fault_code=21000024, fault_level=6)
+    device = FaultInfo(npu_name="npu-0", fault_code=0x1000, fault_level=3)
+    monitor._publish_merged_faults("dpu", [dpu])
+    monitor._publish_merged_faults("device", [device])
+    assert {item.fault_code for item in handler.call_args.args[0]} == {21000024, 0x1000}
+
+    device_again = FaultInfo(npu_name="npu-1", fault_code=0x1001, fault_level=3)
+    monitor._publish_merged_faults("device", [device_again])
+    assert {item.fault_code for item in handler.call_args.args[0]} == {21000024, 0x1001}
+
+    dpu_v2 = FaultInfo(npu_name="Ascend910-1", fault_code=21000026, fault_level=6)
+    monitor._publish_merged_faults("dpu", [dpu_v2])
+    assert {item.fault_code for item in handler.call_args.args[0]} == {21000026, 0x1001}
+
+    configmap = Mock()
+    configmap.metadata.name = "dpuinfo-test-node"
+    configmap.metadata.namespace = "kube-system"
+    configmap.data = {}
+    monitor._handle_configmap_change("DELETED", configmap, "dpuinfo-test-node")
+    assert [item.fault_code for item in handler.call_args.args[0]] == [0x1001]
+
+
+def test_malformed_dpu_config_keeps_existing_dpu_faults():
+    """Unparseable DpuInfoCfg keeps the DPU snapshot. An empty DPUInfo clears it."""
+    monitor = create_test_monitor()
+    handler = Mock()
+    monitor.configmap_change_handler = handler
+    dpu = FaultInfo(npu_name="Ascend910-0", fault_code=21000024, fault_level=6)
+    monitor._publish_merged_faults("dpu", [dpu])
+    handler.reset_mock()
+
+    configmap = Mock()
+    configmap.metadata.name = "dpuinfo-test-node"
+    configmap.metadata.namespace = "kube-system"
+    configmap.data = {"DpuInfoCfg": "{not-json"}
+    monitor._handle_configmap_change("MODIFIED", configmap, "dpuinfo-test-node")
+    handler.assert_not_called()
+    assert [item.fault_code for item in monitor._dpu_fault_infos] == [21000024]
+
+    configmap.data = {"DpuInfoCfg": json.dumps({"DPUInfo": 123})}
+    monitor._handle_configmap_change("MODIFIED", configmap, "dpuinfo-test-node")
+    handler.assert_not_called()
+    assert [item.fault_code for item in monitor._dpu_fault_infos] == [21000024]
+
+    configmap.data = {"DpuInfoCfg": json.dumps({"DPUInfo": {"DPUList": {"AffectedNPU": [0]}}})}
+    monitor._handle_configmap_change("MODIFIED", configmap, "dpuinfo-test-node")
+    handler.assert_not_called()
+    assert [item.fault_code for item in monitor._dpu_fault_infos] == [21000024]
+
+    configmap.data = {"DpuInfoCfg": json.dumps({"DPUInfo": {"NodeEvent": 123}})}
+    monitor._handle_configmap_change("MODIFIED", configmap, "dpuinfo-test-node")
+    handler.assert_not_called()
+    assert [item.fault_code for item in monitor._dpu_fault_infos] == [21000024]
+
+    configmap.data = {"DpuInfoCfg": json.dumps({"DPUInfo": {}})}
+    monitor._handle_configmap_change("MODIFIED", configmap, "dpuinfo-test-node")
+    assert [item.fault_code for item in handler.call_args.args[0]] == []

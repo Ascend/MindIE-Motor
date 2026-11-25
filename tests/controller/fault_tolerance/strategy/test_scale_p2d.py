@@ -195,6 +195,51 @@ def test_execute_deduplicates_only_successful_preemption(strategy, fault_manager
     assert not retry.is_failed()
 
 
+def test_pod_failed_stops_decode_before_the_prefill_flow(bind_context, monkeypatch):
+    """external-force-pod-failed exits the faulty Decode, then continues ScaleP2D."""
+    monkeypatch.setenv("FAULT_SCHEDULING", "external-force-pod-failed")
+    with (
+        patch(
+            "motor.controller.core.recovery_service.terminate_instance_for_recovery",
+            return_value=True,
+        ) as stop_decode,
+        patch.object(bind_context, "_get_d_instance", return_value=False) as load_decode,
+    ):
+        assert bind_context._execute_recovery_flow() is False
+    stop_decode.assert_called_once_with(1, reason="external_force_pod_failed_scale_p2d")
+    load_decode.assert_called_once()
+
+
+def test_other_fault_scheduling_does_not_stop_decode(bind_context, monkeypatch):
+    """grace keeps the historical Prefill-only stop."""
+    monkeypatch.setenv("FAULT_SCHEDULING", "grace")
+    with (
+        patch(
+            "motor.controller.core.recovery_service.terminate_instance_for_recovery",
+            return_value=True,
+        ) as stop_decode,
+        patch.object(bind_context, "_get_d_instance", return_value=False),
+    ):
+        bind_context._execute_recovery_flow()
+    stop_decode.assert_not_called()
+
+
+def test_pod_failed_decode_stop_failure_continues_prefill(bind_context, monkeypatch):
+    """A failed Decode NodeManager send is logged and ScaleP2D still continues."""
+    monkeypatch.setenv("FAULT_SCHEDULING", "external-force-pod-failed")
+    with (
+        patch(
+            "motor.controller.core.recovery_service.terminate_instance_for_recovery",
+            return_value=False,
+        ),
+        patch.object(bind_context, "_get_d_instance", return_value=False) as load_decode,
+    ):
+        assert bind_context._execute_recovery_flow() is False
+    load_decode.assert_called_once()
+    assert bind_context.context.current_state == RecoveryState.INIT
+    assert bind_context.context.last_error is None
+
+
 def test_execute_does_not_preempt_when_same_decode_job_already_running(strategy, fault_manager):
     """Old and replacement instance ids share the same preemption guard."""
     manager = fault_manager

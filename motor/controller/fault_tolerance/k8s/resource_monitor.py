@@ -17,7 +17,10 @@ from kubernetes.client.rest import ApiException
 from motor.common.logger import get_logger
 from motor.controller.fault_tolerance.fault_types import NodeStatus, FaultInfo
 from motor.controller.fault_tolerance.k8s.configmap_parser import (
+    DPU_CONFIGMAP_PREFIX,
+    DPU_INFO_CFG_KEY,
     process_device_info,
+    process_dpu_info,
     process_switch_info,
     process_manually_separate_npu,
     is_configmap_valid,
@@ -74,6 +77,10 @@ class ResourceMonitor:
 
         # Cache for last processed fault information
         self.last_fault_infos: list[FaultInfo] | None = None
+        # NPU and DPU faults come from separate ConfigMaps and are merged before FaultManager.
+        self._fault_merge_lock = threading.Lock()
+        self._device_fault_infos: list[FaultInfo] = []
+        self._dpu_fault_infos: list[FaultInfo] = []
 
         # Cache for last processed node status
         self.last_node_status: NodeStatus | None = None
@@ -134,6 +141,20 @@ class ResourceMonitor:
         cm_thread.start()
         self.monitor_threads.append(cm_thread)
         logger.info("Started ConfigMap monitoring for %s/%s", self.namespace, configmap_name)
+
+        # DPU is also a ConfigMap, so it uses the same configmap_namespace.
+        # Skip the extra watch when the device prefix is already dpuinfo-.
+        dpu_configmap_name = f"{DPU_CONFIGMAP_PREFIX}{node_name}"
+        if configmap_name != dpu_configmap_name:
+            dpu_thread = threading.Thread(
+                target=self._monitor_configmap,
+                args=(dpu_configmap_name,),
+                daemon=True,
+                name=f"ResourceMonitor-CM-{self.namespace}-{dpu_configmap_name}",
+            )
+            dpu_thread.start()
+            self.monitor_threads.append(dpu_thread)
+            logger.info("Started DPU ConfigMap monitoring for %s/%s", self.namespace, dpu_configmap_name)
 
         logger.info("Resource monitor started for node %s", node_name)
 
@@ -244,7 +265,7 @@ class ResourceMonitor:
                     consecutive_failures += 1
 
     def _monitor_configmap(self, configmap_name: str) -> None:
-        """Monitor ConfigMap changes for this host"""
+        """Monitor one ConfigMap. Device and DPU both use configmap_namespace."""
         resource_version = None
         consecutive_failures = 0
 
@@ -397,22 +418,23 @@ class ResourceMonitor:
                 if event_type in ["ADDED", "MODIFIED"]:
                     data = configmap.data or {}
                     logger.debug("ConfigMap %s changed! changed data keys: %s", cm_metadata.name, list(data.keys()))
-
-                    # Process ConfigMap data to check for changes and handle
-                    fault_infos = self._process_configmap_data(data)
-
-                    # Check if fault information has actually changed (ignore time-only updates)
-                    if self._has_fault_info_changed(fault_infos):
-                        logger.info("Fault information changed, processing ConfigMap update")
-                        self.last_fault_infos = fault_infos.copy()  # Update cache
-                        self.configmap_change_handler(fault_infos, self.node_name)
+                    source = self._fault_source(configmap_name)
+                    if source == "dpu":
+                        fault_infos = self._process_dpu_configmap_data(data)
+                        # Unparseable DpuInfoCfg returns None. Keep the existing DPU snapshot.
+                        if fault_infos is None:
+                            logger.warning(
+                                "Skip DPU snapshot update because DpuInfoCfg could not be parsed on node %s",
+                                self.node_name,
+                            )
+                            return
                     else:
-                        logger.debug("Fault information unchanged, skipping duplicate processing")
+                        fault_infos = self._process_configmap_data(data)
+                    self._publish_merged_faults(source, fault_infos)
                 elif event_type == "DELETED":
                     logger.warning("ConfigMap %s was deleted", cm_metadata.name)
-                    # ConfigMap deleted means no fault information available
-                    self.last_fault_infos = None  # Reset cache on deletion
-                    self.configmap_change_handler([], self.node_name)
+                    # Clear only the deleted source. The other ConfigMap's faults stay.
+                    self._publish_merged_faults(self._fault_source(configmap_name), [])
 
             except Exception as e:
                 logger.error("Error in configmap change handler for %s: %s", cm_metadata.name, e)
@@ -481,3 +503,36 @@ class ResourceMonitor:
 
         logger.debug("Total processed %d fault infos for node %s", len(fault_infos), self.node_name)
         return fault_infos
+
+    @staticmethod
+    def _fault_source(configmap_name: str) -> str:
+        """A dpuinfo- prefix is a MindCluster DPU report. Anything else is NPU deviceinfo."""
+        # Device ConfigMaps use mindx-dl-deviceinfo- and stay on the device path.
+        if configmap_name.startswith(DPU_CONFIGMAP_PREFIX):
+            return "dpu"
+        return "device"
+
+    def _process_dpu_configmap_data(self, config_data: dict[str, Any]) -> list[FaultInfo] | None:
+        """Read DpuInfoCfg. A missing key means no DPU fault. Parse failure returns None."""
+        dpu_info_cfg = config_data.get(DPU_INFO_CFG_KEY, "")
+        if not dpu_info_cfg:
+            return []
+        return process_dpu_info(dpu_info_cfg)
+
+    def _publish_merged_faults(self, source: str, fault_infos: list[FaultInfo]) -> None:
+        """Merge NPU and DPU faults so a later ConfigMap does not cover the earlier one."""
+        # Do not wait for both sources. A missing DPU ConfigMap must not block NPU faults.
+        # Each update replaces only its own snapshot.
+        with self._fault_merge_lock:
+            if source == "dpu":
+                self._dpu_fault_infos = list(fault_infos)
+            else:
+                self._device_fault_infos = list(fault_infos)
+            merged = list(self._device_fault_infos) + list(self._dpu_fault_infos)
+            if not self._has_fault_info_changed(merged):
+                logger.debug("Fault information unchanged, skipping duplicate processing")
+                return
+            self.last_fault_infos = merged.copy()
+            logger.info("Fault information changed, processing ConfigMap update")
+            if self.configmap_change_handler:
+                self.configmap_change_handler(merged, self.node_name)

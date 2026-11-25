@@ -406,3 +406,185 @@ def process_manually_separate_npu(manually_separate_npu: str) -> list[int]:
         logger.error("Error processing manually separate NPU: %s", e)
 
     return separated_ranks
+
+
+DPU_INFO_CFG_KEY = "DpuInfoCfg"
+# Object name is dpuinfo-<nodeName>. Its namespace is configmap_namespace.
+DPU_CONFIGMAP_PREFIX = "dpuinfo-"
+
+# MindCluster skips these levels for an unhealthy HCA. Controller skips them too.
+_DPU_LEVELS_NOT_HANDLED = {
+    OriginFaultLevel.SUB_HEALTH_FAULT.value,
+    OriginFaultLevel.NOT_HANDLE_FAULT.value,
+}
+
+
+def _parse_dpu_fault_code(raw_code: str) -> int | None:
+    """Parse a MindCluster DPU fault code.
+
+    fault_code.json uses decimal strings such as 21000024. A 0x prefix is hexadecimal.
+    Empty, zero, and unparseable values return None so they do not become storage key 0:node.
+    """
+    text = raw_code.strip() if isinstance(raw_code, str) else ""
+    if not text:
+        return None
+    if text.lower().startswith("0x"):
+        parsed = parse_fault_code(text)
+    elif text.isdigit():
+        parsed = int(text)
+    else:
+        parsed = parse_fault_code(text)
+    if not parsed:
+        return None
+    return parsed
+
+
+def _as_config_object(value: Any) -> dict | None:
+    """Normalize an object field to a dict. A nested JSON string is parsed once more."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip().startswith("{"):
+        parsed = _parse_json_string(value)
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _affected_npu_name(affected_npu: Any) -> str:
+    """Turn AffectedNPU into an NPU name. Only a list of integer chip ids is accepted."""
+    if not isinstance(affected_npu, list):
+        return ""
+    names = []
+    for chip_id in affected_npu:
+        try:
+            names.append("Ascend910-%d" % int(chip_id))
+        except (TypeError, ValueError):
+            continue
+    return ",".join(names)
+
+
+def _dpu_detail_to_fault_info(detail: dict, npu_name: str) -> FaultInfo | None:
+    """Convert one DPU fault detail. Only SeparateDPU is kept, at the SeparateNPU L6 mapping."""
+    if not isinstance(detail, dict):
+        return None
+    level = detail.get("FaultLevel") or detail.get("fault_level") or ""
+    raw_code = str(detail.get("FaultCode") or detail.get("fault_code") or "")
+    if level in _DPU_LEVELS_NOT_HANDLED:
+        logger.info(
+            "Skip DPU fault because controller does not handle %s, code=%s, npu=%s",
+            level,
+            raw_code,
+            npu_name or "node",
+        )
+        return None
+    # DPU FaultLevel is the full OriginFaultLevel name, such as SeparateDPU.
+    # SwitchInfoCfg short form "Separate" is SeparateNPU and is not accepted here.
+    if level != OriginFaultLevel.SEPARATE_DPU.value:
+        logger.info("Skip DPU fault level %s, only SeparateDPU is recovered, code=%s", level, raw_code)
+        return None
+    fault_code = _parse_dpu_fault_code(raw_code)
+    if fault_code is None:
+        logger.warning(
+            "Skip SeparateDPU because fault code is missing or invalid, raw=%s, npu=%s",
+            raw_code,
+            npu_name or "node",
+        )
+        return None
+    return _create_device_fault_info("CardUnhealthy", npu_name, level, fault_code)
+
+
+def _dpu_list_field(value: Any) -> list | None:
+    """Normalize a DPU list field.
+
+    Missing, blank, and [] mean the field has no entries.
+    A present value that is not a list, and not a JSON array string, returns None.
+    """
+    if isinstance(value, str) and not value.strip():
+        return []
+    if value in (None, []):
+        return []
+    if isinstance(value, list):
+        return value
+    # Native lists are returned above. Only a JSON array string is parsed again.
+    if isinstance(value, str) and value.strip().startswith("["):
+        parsed = _parse_json_string(value)
+        if isinstance(parsed, list):
+            return parsed
+    return None
+
+
+def process_dpu_info(dpu_info_json: str) -> list[FaultInfo] | None:
+    """Parse DpuInfoCfg from <configmap_namespace>/dpuinfo-<node>.
+
+    None means the payload cannot be parsed; the caller keeps the existing DPU snapshot.
+    An empty list means the payload parsed and has no DPU fault.
+    A missing list field is no fault. A present field with the wrong shape is unparseable.
+    """
+    dpu_info = _parse_json_string(dpu_info_json)
+    if not isinstance(dpu_info, dict):
+        logger.warning("Failed to parse DpuInfoCfg: %s", dpu_info_json)
+        return None
+
+    raw_body = dpu_info.get("DPUInfo", {})
+    dpu_body = _as_config_object(raw_body)
+    if raw_body in ({}, None, ""):
+        return []
+    if dpu_body is None:
+        logger.warning("DpuInfoCfg DPUInfo is not an object: %s", type(raw_body).__name__)
+        return None
+
+    fault_infos: list[FaultInfo] = []
+    dpu_items = _dpu_list_field(dpu_body.get("DPUList"))
+    if dpu_items is None:
+        logger.warning("DpuInfoCfg DPUList is not a list: %s", type(dpu_body.get("DPUList")).__name__)
+        return None
+    for item in dpu_items:
+        if not isinstance(item, dict):
+            logger.warning("Skip DPU list item because it is not an object: %s", type(item).__name__)
+            continue
+        try:
+            # DPUList needs one integer chip id. Missing or unparseable AffectedNPU is skipped.
+            # Node-level DPU faults come from NodeEvent.
+            affected_npu = item.get("AffectedNPU")
+            npu_name = _affected_npu_name(affected_npu)
+            if not npu_name:
+                logger.warning("Skip DPU list item because AffectedNPU has no chip id: %s", affected_npu)
+                continue
+            fault_details = _dpu_list_field(item.get("FaultList"))
+            if fault_details is None:
+                logger.warning("DpuInfoCfg FaultList is not a list: %s", type(item.get("FaultList")).__name__)
+                return None
+            for detail in fault_details:
+                fault_info = _dpu_detail_to_fault_info(detail, npu_name)
+                if fault_info is not None:
+                    fault_infos.append(fault_info)
+        except Exception as e:
+            logger.error("Error processing DPU list item: %s", e)
+
+    raw_node_event = dpu_body.get("NodeEvent")
+    if isinstance(raw_node_event, str) and not raw_node_event.strip():
+        raw_node_event = ""
+    if raw_node_event in (None, {}, ""):
+        logger.debug("Processed %d DPU fault infos", len(fault_infos))
+        return fault_infos
+    node_event = _as_config_object(raw_node_event)
+    if node_event is None:
+        logger.warning("DpuInfoCfg NodeEvent is not an object: %s", type(dpu_body.get("NodeEvent")).__name__)
+        return None
+    node_faults = _dpu_list_field(node_event.get("FaultList"))
+    if node_faults is None:
+        logger.warning(
+            "DpuInfoCfg NodeEvent FaultList is not a list: %s",
+            type(node_event.get("FaultList")).__name__,
+        )
+        return None
+    # Card drop has no AffectedNPU and stays a node-level fault (empty npu_name).
+    try:
+        for detail in node_faults:
+            fault_info = _dpu_detail_to_fault_info(detail, "")
+            if fault_info is not None:
+                fault_infos.append(fault_info)
+    except Exception as e:
+        logger.error("Error processing DPU node event: %s", e)
+    logger.debug("Processed %d DPU fault infos", len(fault_infos))
+    return fault_infos

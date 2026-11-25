@@ -29,6 +29,7 @@ from motor.controller.fault_tolerance.k8s.configmap_parser import (
     _resolve_device_list_key,
     _parse_switch_fault_key,
     process_device_info,
+    process_dpu_info,
     process_switch_info,
     process_manually_separate_npu,
 )
@@ -1043,3 +1044,171 @@ def test_device_fault_missing_detail_uses_card_level(details):
     assert len(result) == 1
     assert result[0].fault_code == 0x80E01801
     assert result[0].fault_level == FaultLevel.L3
+
+
+def test_process_dpu_info_skips_subhealth_and_recovers_separate_dpu_like_separate_npu():
+    """SubHealthFault is dropped. SeparateDPU is stored at L6, same as SeparateNPU."""
+    payload = {
+        "DPUInfo": {
+            "DPUList": [
+                {
+                    "HcaName": "hrn5_0",
+                    "EthName": "ens0f0",
+                    "AffectedNPU": [0],
+                    "FaultList": [
+                        {"FaultCode": "21000022", "FaultLevel": "SubHealthFault", "Description": "ub port down"},
+                        {"FaultCode": "21000024", "FaultLevel": "SeparateDPU", "Description": "hca port down"},
+                    ],
+                }
+            ],
+            "NodeEvent": {
+                "NodeName": "motor-worker-114",
+                "FaultList": [
+                    {"FaultCode": "22000026", "FaultLevel": "SeparateDPU", "Description": "dpu card drop"},
+                ],
+            },
+        },
+        "UpdateTime": 1,
+    }
+    result = process_dpu_info(json.dumps(payload))
+    assert [
+        (item.fault_code, item.npu_name, item.origin_fault_level, item.fault_level, item.fault_type) for item in result
+    ] == [
+        (21000024, "Ascend910-0", OriginFaultLevel.SEPARATE_DPU, FaultLevel.L6, HardwareFaultType.CARD_UNHEALTHY),
+        (22000026, "", OriginFaultLevel.SEPARATE_DPU, FaultLevel.L6, HardwareFaultType.CARD_UNHEALTHY),
+    ]
+    assert map_fault_level(OriginFaultLevel.SEPARATE_DPU) == map_fault_level(OriginFaultLevel.SEPARATE_NPU)
+    assert map_fault_level(OriginFaultLevel.SUB_HEALTH_FAULT) == FaultLevel.L1
+
+
+def test_process_dpu_info_skips_invalid_fault_code_and_keeps_later_faults():
+    """A missing DPU code must not become fault code 0, and must not drop the node event."""
+    payload = {
+        "DPUInfo": {
+            "DPUList": [
+                {
+                    "AffectedNPU": [0],
+                    "FaultList": [
+                        {"FaultCode": "", "FaultLevel": "SeparateDPU"},
+                        {"FaultCode": "0x", "FaultLevel": "SeparateDPU"},
+                        {"FaultCode": "21000024", "FaultLevel": "SeparateDPU"},
+                    ],
+                }
+            ],
+            "NodeEvent": {
+                "FaultList": [{"FaultCode": "0", "FaultLevel": "SeparateDPU"}],
+            },
+        }
+    }
+    result = process_dpu_info(json.dumps(payload))
+    assert [(item.fault_code, item.npu_name, item.fault_type) for item in result] == [
+        (21000024, "Ascend910-0", HardwareFaultType.CARD_UNHEALTHY),
+    ]
+
+
+def test_process_dpu_info_accepts_json_string_fields_and_rejects_scalar_body():
+    """Nested JSON strings are parsed. A scalar DPUInfo is rejected instead of looking healthy."""
+    body = {
+        "DPUList": [
+            {
+                "AffectedNPU": [0],
+                "FaultList": [{"FaultCode": "21000024", "FaultLevel": "SeparateDPU"}],
+            }
+        ],
+        "NodeEvent": {"FaultList": [{"FaultCode": "22000026", "FaultLevel": "SeparateDPU"}]},
+    }
+    encoded = {"DPUInfo": json.dumps(body)}
+    result = process_dpu_info(json.dumps(encoded))
+    assert [(item.fault_code, item.npu_name, item.fault_type) for item in result] == [
+        (21000024, "Ascend910-0", HardwareFaultType.CARD_UNHEALTHY),
+        (22000026, "", HardwareFaultType.CARD_UNHEALTHY),
+    ]
+
+    rejected = process_dpu_info(json.dumps({"DPUInfo": 1, "NodeEventIgnored": True}))
+    assert rejected is None
+    assert process_dpu_info("[") is None
+    assert process_dpu_info("[]") is None
+
+
+def test_process_dpu_info_keeps_node_event_when_one_dpu_item_fails():
+    """One bad DPU list item does not discard a later node-level SeparateDPU."""
+    payload = {
+        "DPUInfo": {
+            "DPUList": ["not-an-object"],
+            "NodeEvent": {
+                "FaultList": json.dumps([{"FaultCode": "22000026", "FaultLevel": "SeparateDPU"}]),
+            },
+        }
+    }
+    result = process_dpu_info(json.dumps(payload))
+    assert [(item.fault_code, item.npu_name, item.fault_level, item.fault_type) for item in result] == [
+        (22000026, "", FaultLevel.L6, HardwareFaultType.CARD_UNHEALTHY),
+    ]
+
+
+def test_process_dpu_info_keeps_snapshot_when_list_shape_is_unparseable():
+    """A present field that is not a list returns None. A missing field is no fault."""
+    object_list = process_dpu_info(
+        json.dumps(
+            {
+                "DPUInfo": {
+                    "DPUList": {
+                        "AffectedNPU": [0],
+                        "FaultList": [{"FaultCode": "21000024", "FaultLevel": "SeparateDPU"}],
+                    }
+                }
+            }
+        )
+    )
+    assert object_list is None
+    truncated_faults = process_dpu_info(
+        json.dumps(
+            {
+                "DPUInfo": {
+                    "DPUList": [{"AffectedNPU": [0], "FaultList": "[{"}],
+                }
+            }
+        )
+    )
+    assert truncated_faults is None
+    scalar_node_event = process_dpu_info(json.dumps({"DPUInfo": {"NodeEvent": 123}}))
+    assert scalar_node_event is None
+    bad_node_faults = process_dpu_info(
+        json.dumps(
+            {
+                "DPUInfo": {
+                    "DPUList": [
+                        {"AffectedNPU": [0], "FaultList": [{"FaultCode": "21000024", "FaultLevel": "SeparateDPU"}]}
+                    ],
+                    "NodeEvent": {"FaultList": {"FaultCode": "22000026", "FaultLevel": "SeparateDPU"}},
+                }
+            }
+        )
+    )
+    assert bad_node_faults is None
+    assert process_dpu_info(json.dumps({"DPUInfo": {"UpdateTime": 1}})) == []
+
+
+def test_process_dpu_info_skips_dpu_list_item_without_a_chip_id():
+    """A DPUList item without one integer chip id is skipped. NodeEvent stays node-level."""
+    payload = {
+        "DPUInfo": {
+            "DPUList": [
+                {"FaultList": [{"FaultCode": "21000024", "FaultLevel": "SeparateDPU"}]},
+                {"AffectedNPU": [], "FaultList": [{"FaultCode": "21000024", "FaultLevel": "SeparateDPU"}]},
+                {
+                    "AffectedNPU": ["Ascend910-0"],
+                    "FaultList": [{"FaultCode": "21000024", "FaultLevel": "SeparateDPU"}],
+                },
+                {"AffectedNPU": [0], "FaultList": [{"FaultCode": "21000024", "FaultLevel": "SeparateDPU"}]},
+            ],
+            "NodeEvent": {
+                "FaultList": [{"FaultCode": "22000026", "FaultLevel": "SeparateDPU"}],
+            },
+        }
+    }
+    result = process_dpu_info(json.dumps(payload))
+    assert [(item.fault_code, item.npu_name, item.fault_level, item.fault_type) for item in result] == [
+        (21000024, "Ascend910-0", FaultLevel.L6, HardwareFaultType.CARD_UNHEALTHY),
+        (22000026, "", FaultLevel.L6, HardwareFaultType.CARD_UNHEALTHY),
+    ]
