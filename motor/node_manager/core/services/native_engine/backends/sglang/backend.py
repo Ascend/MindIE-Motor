@@ -8,6 +8,8 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+from pathlib import PurePosixPath
+
 from motor.common.logger import get_logger
 from motor.common.resources.instance import PDRole
 from motor.node_manager.core.services.native_engine.backends.base import BaseNativeEngineBackend
@@ -39,6 +41,23 @@ class SGLangBackend(BaseNativeEngineBackend):
         # Pin generative /health on; container env or enable_virtual_inference=false must not disable it.
         env = dict(launch_spec.command.env)
         env[SGLANG_HEALTH_ENDPOINT_GENERATION_ENV] = "true"
+        engine_root = self._get_engine_log_path(env)
+        if engine_root is not None:
+            profiler_path = env.get("SGLANG_TORCH_PROFILER_DIR")
+            default_path = str(engine_root / "profile")
+            if not profiler_path:
+                env["SGLANG_TORCH_PROFILER_DIR"] = default_path
+            elif (
+                not isinstance(profiler_path, str)
+                or not PurePosixPath(profiler_path).is_absolute()
+                or ".." in PurePosixPath(profiler_path).parts
+            ):
+                raise ValueError("SGLANG_TORCH_PROFILER_DIR must be an absolute path without ..")
+            elif str(PurePosixPath(profiler_path)) != default_path:
+                logger.warning(
+                    "Preserving SGLANG_TORCH_PROFILER_DIR=%s; verify its mount and isolation from other instances",
+                    profiler_path,
+                )
 
         # Cross-node PP/ZBAL: all ranks must rendezvous on Controller-provided master_dp_ip,
         # not each pod's own POD_IP from a static env.json value.

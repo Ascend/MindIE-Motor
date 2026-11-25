@@ -94,7 +94,7 @@ def test_controller_preserves_config_path(tmp_path, single_container):
     config = tmp_path / "user config[1].json"
     config.write_text('{"p_instances_num": 0, "d_instances_num": 0}', encoding="utf-8")
     setup = """
-set_controller_env() { :; }; setup_motor_log_path() { :; }
+set_controller_env() { :; }; setup_log_paths() { :; }
 set_cann_env() { :; }; is_a5_hardware() { return 1; }
 apply_patches() { :; }; set_coordinator_env() { :; }; motor_track_helper() { :; }
 motor_track_child() { :; }; set_prefill_env() { :; }; set_decode_env() { :; }
@@ -105,6 +105,7 @@ motor_supervise_children() { wait; }
         'if [[ "${2:-}" == ccae_reporter.run ]]',
         'if [[ "${2:-}" != motor.controller.main ]]',
     )
+    command_path = os.environ["PATH"]
     if single_container:
         # The real planner is not available under this mock. Leave the config path
         # unchanged and only satisfy the env file the startup script sources.
@@ -117,6 +118,13 @@ motor_supervise_children() { wait; }
             "    fi",
             1,
         )
+        # Role subprocesses exec the interpreter, so use an executable recorder.
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        recorder = fake_bin / "python3"
+        recorder.write_text('#!/bin/bash\n' + capture_controller + '\npython3 "$@"\n', encoding="utf-8")
+        recorder.chmod(0o750)
+        command_path = str(fake_bin) + os.pathsep + command_path
     filename = "all_combine_in_single_container.sh" if single_container else "controller.sh"
     result, argv = run_shell(
         tmp_path,
@@ -126,6 +134,7 @@ motor_supervise_children() { wait; }
         USER_CONFIG_PATH=config.as_posix(),
         POD_IP="127.0.0.1",
         KV_STORE_BACKEND="",
+        PATH=command_path,
     )
     assert result.returncode == 0, result.stderr
     assert argv == ["-m", "motor.controller.main", "--config", config.as_posix()]

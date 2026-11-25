@@ -62,6 +62,7 @@
   - [服务运行状态观测接口](./api/observability_interface.md)
 - [集群维护]()
   - [常用维护](./maintenance/maintenance_tips.md)
+  - [日志与诊断文件目录](./maintenance/log_directory.md)
   - [故障案例](./maintenance/solutions_to_common_problems.md)
 - [集群管理组件]()
   - [Controller](../developer_guide/components/controller.md)

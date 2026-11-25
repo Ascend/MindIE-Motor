@@ -473,6 +473,7 @@ def modify_engine_yaml(deployment_data, user_config, index, node_type):
     apply_a5_workload(deployment_data, deploy_config)
     modify_log_mount(deployment_data, user_config, deployment_data[C.METADATA][C.NAME])
     apply_additional_labels_annotations(deployment_data, user_config.get(get_config_key(node_type), {}))
+    k8s_utils.configure_pod_log_identity(engine_pod_spec)
 
 
 def validate_instance_nums(user_config):

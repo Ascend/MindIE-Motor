@@ -13,10 +13,13 @@ import base64
 from io import BytesIO
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tarfile
 from pathlib import Path
+
+import pytest
 
 
 DEPLOYER_DIR = Path(__file__).resolve().parents[3] / "examples" / "deployer"
@@ -157,7 +160,7 @@ def test_slurm_job_broadcasts_configmap_to_configurable_node_local_workspace():
     assert "MF_RUNTIME_ENV" not in job_script
     assert "NETWORK_RUNTIME_ENV" not in job_script
     assert "ENABLE_IPC_HOST" not in job_script
-    assert "CONTAINER_NAME" not in job_script
+    assert '--env "COMPUTE_UNIT_LOG_SUBPATH=${SLURMD_NODENAME:-$(hostname)}/$INSTANCE_NAME"' in job_script
     assert '--env "ENGINE_TYPE=$ENGINE_TYPE"' in job_script
     assert "apptainer exec \\\n  --cleanenv \\" in job_script
 
@@ -212,11 +215,14 @@ def test_runtime_env_preserves_enabled_optional_service_addresses(monkeypatch):
     assert runtime_env["ASCEND_MF_STORE_URL"] == "tcp://10.0.0.5:50089"
 
 
-def test_generated_job_script_contains_complete_configmap(tmp_path, monkeypatch):
+@pytest.mark.parametrize("log_root", [None, "/data/native 'logs'"])
+def test_generated_job_script_contains_complete_configmap(tmp_path, monkeypatch, log_root):
     configmap = tmp_path / "configmap"
     configmap.mkdir()
     (configmap / "boot.sh").write_text("source common.sh\n", encoding="utf-8")
     (configmap / "user_config.json").write_text('{"job_id": "test"}', encoding="utf-8")
+    common_env = {} if log_root is None else {"MOTOR_LOG_ROOT_PATH": log_root}
+    (configmap / "env.json").write_text(json.dumps({"motor_common_env": common_env}), encoding="utf-8")
     (configmap / "kv_store_backends.memcache.mmc-local-inprocess.conf").write_text(
         "custom memcache config", encoding="utf-8"
     )
@@ -228,11 +234,28 @@ def test_generated_job_script_contains_complete_configmap(tmp_path, monkeypatch)
 
     rendered = job_script.read_text(encoding="utf-8")
     assert slurm_deploy.CONFIGMAP_ARCHIVE_MARKER not in rendered
+    assert slurm_deploy.LOG_ROOT_MARKER not in rendered
+    root_assignment = next(line for line in rendered.splitlines() if line.startswith("LOG_ROOT="))
+    assert shlex.split(root_assignment) == [f"LOG_ROOT={log_root or '/root/ascend/log'}"]
+    assert '--bind "$LOG_ROOT:$LOG_ROOT"' in rendered
     payload = rendered.split('CONFIGMAP_ARCHIVE_B64="', 1)[1].split('"', 1)[0]
     with tarfile.open(fileobj=BytesIO(base64.b64decode(payload)), mode="r:gz") as archive:
         assert archive.extractfile("configmap/user_config.json").read() == b'{"job_id": "test"}'
         memcache = archive.extractfile("configmap/kv_store_backends.memcache.mmc-local-inprocess.conf")
         assert memcache.read() == b"custom memcache config"
+
+
+@pytest.mark.parametrize("log_root", ["/logs:other", "/logs,other"])
+def test_job_script_rejects_ambiguous_log_bind_before_submission(tmp_path, monkeypatch, log_root):
+    configmap = tmp_path / "configmap"
+    configmap.mkdir()
+    (configmap / "env.json").write_text(
+        json.dumps({"motor_common_env": {"MOTOR_LOG_ROOT_PATH": log_root}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(slurm_deploy, "CONFIGMAP_PREPARE_PATH", configmap)
+
+    with pytest.raises(ValueError, match="bind separators"):
+        slurm_deploy._prepare_job_script()
 
 
 def test_submit_engine_jobs_reports_skipped_resources(monkeypatch, capsys):
@@ -479,6 +502,7 @@ def test_update_instance_num_scales_engine_jobs_and_keeps_deployment_id(tmp_path
     configmap = tmp_path / "slurm_workspace" / "configmap"
     configmap.mkdir(parents=True)
     (configmap / "user_config.json").write_text(json.dumps(baseline_config), encoding="utf-8")
+    (configmap / "env.json").write_text("{}", encoding="utf-8")
     state = {
         "deployment_id": "slurm-test-deployment",
         "partition": "test-partition",

@@ -18,6 +18,7 @@ export CONTROLLER_SERVICE=$3
 export POD_IP=$4
 export MOTOR_LOG_ROOT_PATH=/mnt/cache/logs/
 export JOB_NAME=$5
+export COMPUTE_UNIT_LOG_SUBPATH="${POD_NAME:-${HOSTNAME:-modelarts}}/${CONTAINER_NAME:-${ROLE}-${JOB_NAME}}"
 export KV_CONDUCTOR_SERVICE=$6
 export KVP_MASTER_SERVICE=$7
 # yuanrong

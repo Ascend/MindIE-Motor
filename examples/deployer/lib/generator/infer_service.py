@@ -479,6 +479,9 @@ def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
         _zero_engine_role_replicas(infer_doc, user_config, C.ROLE_UNION)
     _configure_kv_store_role(infer_doc, user_config)
     _configure_kv_conductor_role(infer_doc, user_config)
+    for role in infer_doc[C.SPEC][C.TEMPLATE][C.ROLES]:
+        if role[C.NAME] in (C.ROLE_ENCODE, C.ROLE_PREFILL, C.ROLE_DECODE, C.ROLE_UNION):
+            k8s_utils.configure_pod_log_identity(role[C.SPEC][C.TEMPLATE][C.SPEC])
     configure_container_snapshot(infer_doc, user_config)
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     write_yaml(all_docs, output_file, False)

@@ -310,13 +310,28 @@ enabled, `MC_USE_IPV6=1` is supplied unless the environment already defines it.
 
 The backend configuration adapters initialize and flatten engine-specific JSON into native CLI
 arguments. Final argument validation is delegated to the native engine process; NodeManager does
-not import engine parser implementations. `None` values are omitted from CLI arguments. SGLang
+not run the engine's CLI parser. `None` values are omitted from CLI arguments. SGLang
 receives `enable-metrics=true` because Coordinator metrics and PreStop drain depend on the native
 metrics endpoint.
 
 For SGLang P/D roles, the backend sets `disaggregation-mode=prefill|decode`; union uses
 `disaggregation-mode=null`. Multi-node configurations validate `nnodes` and require
 `master_dp_ip`, which is formatted with the shared IPv4/IPv6 address helper.
+
+### Native log paths
+
+Startup initializes the compute unit's `SERVICE_ENGINE_LOG_PATH` as an absolute path without `..`.
+`NativeEngineService` appends `endpoint-<id>` in per-endpoint environment copies when the path exists and isolation is needed.
+`BaseNativeEngineBackend.prepare()` applies log paths before generating argv: `VllmBackend` uses
+`backends/vllm/log_cli_config.py:apply_log_cli_paths()` with version gates based on installed package metadata.
+Supported CLI paths preserve valid explicit values and warn when they differ from the defaults; missing paths
+use the final engine root. Watchdog's missing or empty dump directory keeps its native disabled semantics.
+`SGLangBackend` preserves an explicit `SGLANG_TORCH_PROFILER_DIR`, otherwise defaults to
+`<final engine path>/profile` in its environment copy. Explicit paths do not receive an endpoint suffix.
+If `SERVICE_ENGINE_LOG_PATH` is missing or empty, the backend preserves existing engine log configuration;
+non-empty invalid paths are rejected. Path configuration does not enable diagnostics.
+Directory layout, version rules and persistence:
+[Log directories](../../../../docs/zh/user_guide/maintenance/log_directory.md).
 
 ### Probe and Runtime State
 
@@ -487,6 +502,8 @@ barriers heartbeat until the container checkpoint is done. During container snap
 | `motor/node_manager/core/daemon.py` | Service discovery, preparable-service ordering and process monitor |
 | `motor/node_manager/core/services/native_engine/service.py` | LaunchContext creation, device pinning, native launch and recovery request |
 | `motor/node_manager/core/services/native_engine/startup_acceleration.py` | Feature-gated vLLM StartPlan/graph-reuse environment, engine overrides and cache preflight |
+| `motor/node_manager/core/services/native_engine/backends/base.py` | Shared launch-spec construction, final engine path validation and default log CLI hook |
+| `motor/node_manager/core/services/native_engine/backends/vllm/log_cli_config.py` | Package version rules and native log CLI path configuration |
 | `motor/node_manager/core/services/native_engine/models.py` | LaunchContext, CommandSpec, ProbeSpec, LaunchSpec and RuntimeState |
 | `motor/node_manager/core/services/native_engine/factory.py` | Selects the stateless vLLM/SGLang backend by engine type |
 | `motor/node_manager/core/services/native_engine/config_factory.py` | Lazily loads engine-specific CLI configuration adapters |
@@ -553,7 +570,10 @@ Important test areas:
 - `tests/node_manager/core/services/native_engine/test_supervisor.py`: process-group ownership, state races, bounded
   timeout retries, headless liveness and cleanup.
 - `tests/node_manager/core/services/native_engine/test_backends.py`: vLLM/SGLang command construction and ProbeSpec
-  mapping; SGLang always pins `SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=true` and keeps probe `GET /health`.
+  mapping and log-path integration;
+  SGLang always pins `SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=true` and keeps probe `GET /health`.
+- `tests/node_manager/core/services/native_engine/backends/vllm/test_log_capabilities.py`: package version gates.
+- `tests/node_manager/core/services/native_engine/backends/vllm/test_log_config.py`: log-path CLI configuration.
 - `tests/node_manager/core/test_heartbeat_manager.py`: generation-safe status mapping and heartbeat
   behavior.
 - `tests/node_manager/core/services/native_engine/test_service.py`: recovery latch, process-death handling, vLLM virtual worker registration gates (SGLang never creates a Motor monitor), runtime-state merge, CAS install, pull/stop serialization and rollback identity rules.

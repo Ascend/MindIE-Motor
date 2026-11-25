@@ -85,6 +85,28 @@ def set_user_config_path(path):
     g_user_config_path = path
 
 
+def configure_pod_log_identity(pod_spec: dict) -> None:
+    """Provide a compute-unit prefix; single-container startup appends its local role/index."""
+    container_names = set()
+    for container in pod_spec.get("containers", []):
+        name = container.get("name")
+        if not isinstance(name, str) or len(name) > 63 or not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?", name):
+            raise ValueError(f"Invalid container name {name!r}: expected a DNS label of at most 63 characters")
+        if name in container_names:
+            raise ValueError(f"Duplicate container name {name!r} in Pod")
+        container_names.add(name)
+
+    for container in pod_spec.get("containers", []):
+        environment = container.setdefault("env", [])
+        values = [
+            {"name": "POD_NAME", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}},
+            {"name": "COMPUTE_UNIT_LOG_SUBPATH", "value": f"$(POD_NAME)/{container['name']}"},
+        ]
+        names = {item["name"] for item in values}
+        environment[:] = [item for item in environment if item.get("name") not in names]
+        environment.extend(values)
+
+
 def build_kv_store_env_items():
     """Return KV-store env items that cannot be derived from config."""
     items = []

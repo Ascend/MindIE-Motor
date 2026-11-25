@@ -156,6 +156,7 @@ def test_cli_candidates_reach_only_generated_config_and_forward_to_inner_command
         Path(directory).mkdir()
         copied = Path(directory) / "user_config.json"
         shutil.copyfile(source_file, copied)
+        shutil.copyfile(tmp_path / "env.json", Path(directory) / "env.json")
         before_render(copied)
 
     with patch.object(D, "prepare_rendered_local_configmap", side_effect=copy_and_override):
@@ -166,8 +167,11 @@ def test_cli_candidates_reach_only_generated_config_and_forward_to_inner_command
             "unused-env.json",
             discovery_config=resolved["motor_deploy_config"]["service_discovery_config"],
             render_host="192.0.2.30",
+            container_name="motor-ha",
         )
     assert source.read_text(encoding="utf-8") == original
+    environment = json.loads((destination / "env.json").read_text(encoding="utf-8"))
+    assert environment["motor_common_env"]["COMPUTE_UNIT_LOG_SUBPATH"] == "motor-ha"
     copied = json.loads((destination / "user_config.json").read_text(encoding="utf-8"))
     assert copied["motor_coordinator_config"]["render_config"]["endpoint"]["host"] == "192.0.2.30"
     assert D.configured_probe_ips(copied) == {
@@ -804,6 +808,8 @@ class DockerRenderLifecycleTests(unittest.TestCase):
             patch.object(docker_deploy, "insert_create_binds", side_effect=lambda t, *_a, **_k: t),
             patch.object(docker_deploy, "apply_enter_weight", side_effect=lambda t, *_a, **_k: t),
             patch.object(docker_deploy, "apply_enter_shm", side_effect=lambda t, *_a, **_k: t),
+            patch.object(docker_deploy, "resolve_config_paths", return_value=("user.json", "env.json")),
+            patch.object(docker_deploy, "read_json", return_value={}),
             patch.object(docker_deploy, "_require_host_binds"),
             patch.object(docker_deploy, "_ensure_kv_conductor_sidecar_on_host", return_value=(0, None)),
             patch.object(
@@ -1125,3 +1131,33 @@ def test_vllm_model_name_defaults_to_model(name):
     }
 
     assert D.resolve_model_name(section) == "/weights/model"
+
+
+@pytest.mark.parametrize("role,container_name", [(None, "motor-test"), ("prefill", "motor-test"), ("prefill", "")])
+def test_docker_preparation_sets_compute_identity_and_preserves_input(tmp_path, monkeypatch, role, container_name):
+    monkeypatch.setattr(D.socket, "gethostname", lambda: "existing-container")
+    user = _pd_config()
+    user["motor_deploy_config"]["deploy_mode"] = "infer_service_set" if role else "single_container"
+    user["motor_deploy_config"]["job_id"] = "native-log-test"
+    user_file, env_file = tmp_path / "user_config.json", tmp_path / "env.json"
+    user_file.write_text(json.dumps(user))
+    environment = {
+        "motor_common_env": {"MOTOR_LOG_ROOT_PATH": "/container/native"},
+        "motor_engine_decode_env": {"MOTOR_LOG_ROOT_PATH": "/decode/native"},
+    }
+    env_file.write_text(json.dumps(environment))
+    before = (user_file.read_bytes(), env_file.read_bytes())
+    workspace = tmp_path / "configmap"
+    D.prepare_configmap(
+        str(DEPLOYER_ROOT),
+        str(workspace),
+        str(user_file),
+        str(env_file),
+        role=role,
+        container_name=container_name,
+    )
+    prepared = json.loads((workspace / "env.json").read_text())
+    assert prepared["motor_common_env"]["MOTOR_LOG_ROOT_PATH"] == "/container/native"
+    assert prepared["motor_engine_decode_env"] == environment["motor_engine_decode_env"]
+    assert prepared["motor_common_env"]["COMPUTE_UNIT_LOG_SUBPATH"] == (container_name or "existing-container")
+    assert (user_file.read_bytes(), env_file.read_bytes()) == before

@@ -15,7 +15,6 @@ if [ "$ROLE" != "coordinator" ]; then
 fi
 
 set_coordinator_env
-setup_motor_log_path
 
 NODEPORT_WARN_FILE="${CONFIGMAP_PATH}/nodeport_conflict_coordinator.txt"
 if [ -f "$NODEPORT_WARN_FILE" ] && [ -s "$NODEPORT_WARN_FILE" ]; then
@@ -29,4 +28,6 @@ fi
 # not necessary if no ccae
 python3 -m ccae_reporter.run Coordinator &
 
+# Start the reporter before setting Motor's derived log path so it does not inherit it.
+setup_log_paths --role coordinator || exit 1
 python3 -m motor.coordinator.main

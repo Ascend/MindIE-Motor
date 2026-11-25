@@ -17,6 +17,7 @@ import base64
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,7 @@ from lib.config_validator import (
     validate_reserved_labels,
 )
 from lib.prepare_utils import prepare_rendered_local_configmap
+from lib.log_mount import common_log_root
 from lib.generator import k8s_utils
 from lib.generator.engine import validate_instance_nums
 from lib.generator.kv_cache_store import normalize_kv_cache_store_config
@@ -70,6 +72,7 @@ JOB_SCRIPT = USER_WORKSPACE_PATH / "slurm_job.sh"
 DEPLOYMENT_STATE_FILE = USER_WORKSPACE_PATH / "slurm_deployment.json"
 CONTAINER_CONFIG_PATH = "/usr/local/Ascend/Motor/conf"
 CONFIGMAP_ARCHIVE_MARKER = "__MOTOR_CONFIGMAP_ARCHIVE_B64__"
+LOG_ROOT_MARKER = "__MOTOR_LOG_ROOT__"
 DEFAULT_MAX_BATCH_SCRIPT_BYTES = 4 * 1024 * 1024
 ENGINE_RESOURCE_KEYS = {
     "encode": (C.E_INSTANCES_NUM, C.SINGER_E_INSTANCES_NUM, C.E_POD_NPU_NUM),
@@ -173,15 +176,20 @@ def _prepare_configmap(user_config_path: str, env_config_path: str) -> None:
 
 def _prepare_job_script() -> None:
     """Pack the ConfigMap and place it inside the generated Slurm script."""
+    log_root = common_log_root(read_json(CONFIGMAP_PREPARE_PATH / "env.json"))
+    if any(char in log_root for char in ":,"):
+        raise ValueError("MOTOR_LOG_ROOT_PATH must not contain Apptainer bind separators ':' or ','")
     archive = BytesIO()
     with tarfile.open(fileobj=archive, mode="w:gz") as tar:
         tar.add(CONFIGMAP_PREPARE_PATH, arcname="configmap")
 
     payload = base64.b64encode(archive.getvalue()).decode("ascii")
     template = JOB_SCRIPT_TEMPLATE.read_text(encoding="utf-8")
-    if template.count(CONFIGMAP_ARCHIVE_MARKER) != 1:
-        raise ValueError(f"Expected one {CONFIGMAP_ARCHIVE_MARKER} marker in {JOB_SCRIPT_TEMPLATE}")
-    rendered = template.replace(CONFIGMAP_ARCHIVE_MARKER, payload)
+    rendered = template
+    for marker, value in ((CONFIGMAP_ARCHIVE_MARKER, payload), (LOG_ROOT_MARKER, shlex.quote(log_root))):
+        if template.count(marker) != 1:
+            raise ValueError(f"Expected one {marker} marker in {JOB_SCRIPT_TEMPLATE}")
+        rendered = rendered.replace(marker, value)
     rendered_size = len(rendered.encode("utf-8"))
     if rendered_size > DEFAULT_MAX_BATCH_SCRIPT_BYTES:
         raise ValueError(

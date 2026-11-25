@@ -399,6 +399,8 @@ def generate_rbg_resources(
     """Return a complete resource bundle without API writes, shell execution or global state mutation."""
     from lib.config_validator import validate_kv_cache_store_config
 
+    from lib.log_mount import apply_log_mount, common_log_root
+
     config, env, facts = deepcopy(user_config), deepcopy(env_config), deepcopy(facts or {})
     for values in env.values():
         if isinstance(values, dict) and C.ENV_MOTOR_INSTANCE_PORTS_ENABLE in values:
@@ -434,6 +436,7 @@ def generate_rbg_resources(
     services, addresses = build_services(context, roles, config, facts, service_templates)
     identity = service_identity(facts)
     runtime = render_configmap(context, config, env, identity)
+    log_root = common_log_root(env)
     rendered = []
     for name, plan in roles.items():
         role = render_role(
@@ -447,6 +450,7 @@ def generate_rbg_resources(
             scheduler,
             identity,
         )
+        apply_log_mount(pod_template(role)["spec"], log_root)
         pod_template(role).setdefault("metadata", {}).setdefault("annotations", {})[C.RBG_STARTUP_DIGEST_ANNOTATION] = (
             startup_digest(runtime["data"], config, name)
         )

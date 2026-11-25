@@ -8,13 +8,14 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from motor.common.resources.instance import PDRole
-from motor.config.endpoint import EndpointConfig, EngineConfig
+from motor.config.endpoint import DeployConfig, EndpointConfig, EngineConfig, ModelConfig, ParallelConfig
 from motor.config.tls_config import TLSConfig
 from motor.node_manager.core.services.native_engine.backends.base import build_endpoint_config
 from motor.node_manager.core.services.native_engine.backends.sglang.backend import (
@@ -22,6 +23,7 @@ from motor.node_manager.core.services.native_engine.backends.sglang.backend impo
     SGLANG_ZBAL_BOOTSTRAP_URL_ENV,
     SGLangBackend,
 )
+from motor.node_manager.core.services.native_engine.backends.vllm import backend as vllm_backend
 from motor.node_manager.core.services.native_engine.backends.vllm.backend import VllmBackend
 from motor.node_manager.core.services.native_engine.factory import get_backend
 from motor.node_manager.core.services.native_engine.models import LaunchContext
@@ -519,3 +521,108 @@ def test_headless_backend_uses_process_only_probe():
     probe = _prepare_with_config(VllmBackend(), context, endpoint).probe
 
     assert probe.process_only is True
+
+
+@pytest.fixture
+def supported_vllm_logs(monkeypatch):
+    versions = MagicMock(return_value={"vllm": "0.33.0", "vllm-ascend": "0.33.0"})
+    monkeypatch.setattr(vllm_backend, "read_engine_versions", versions)
+    return versions
+
+
+def _prepare_log_config(native_config, environment):
+    def load_deploy_config(endpoint):
+        endpoint.deploy_config = DeployConfig(
+            engine_type="vllm",
+            model_config=ModelConfig("test", "/weights", 0.8, ParallelConfig(), ParallelConfig(), ParallelConfig()),
+            engine_config=EngineConfig.from_dict(native_config),
+            mgmt_tls_config=None,
+            infer_tls_config=None,
+        )
+
+    with (
+        patch.object(EndpointConfig, "validate"),
+        patch.object(EndpointConfig, "load_deploy_config", autospec=True, side_effect=load_deploy_config),
+    ):
+        return VllmBackend().prepare(_context(role=PDRole.ROLE_U, environment=environment))
+
+
+@pytest.mark.parametrize(
+    "explicit_paths", [{}, {"ascend_log_path": "/user/logs", "runtime_config_path": "/config.json"}]
+)
+def test_vllm_backend_serializes_default_and_explicit_log_paths(supported_vllm_logs, explicit_paths):
+    root = "/logs/unit/vllm/endpoint-1"
+    environment = {"SERVICE_ENGINE_LOG_PATH": root, "ASCEND_WORK_PATH": "/work", "VLLM_CACHE_ROOT": "/cache"}
+    watchdog = {"dump_dir": "/user/stacks", "timeout": 60}
+    configured = {"additional_config": explicit_paths, "watchdog_config": watchdog}
+    spec = _prepare_log_config(configured, environment)
+    argv = spec.command.argv
+    assert argv[:2] == ("vllm", "serve")
+    assert argv.count("--additional-config") == 1
+    assert not any(argument.startswith("--additional-config.") for argument in argv)
+    assert json.loads(argv[argv.index("--additional-config") + 1]) == {
+        "ascend_log_path": root + "/vllm_ascend",
+        "runtime_config_path": root + "/runtime/config/runtime_config.json",
+        "runtime_report_dir": root + "/runtime/report",
+        "runtime_dump_dir": root + "/runtime/kv_cache",
+        **explicit_paths,
+    }
+    assert json.loads(argv[argv.index("--watchdog-config") + 1]) == watchdog
+    assert dict(spec.command.env) == environment
+
+
+def test_vllm_backend_omits_unsupported_options_from_cli(monkeypatch):
+    monkeypatch.setattr(vllm_backend, "read_engine_versions", lambda: {"vllm": "0.30.0", "vllm-ascend": "0.11.0rc1"})
+    configured = {
+        "additional_config": {"runtime_report_dir": "/outside", "unrelated": "keep"},
+        "watchdog_config.dump_dir": "/outside",
+    }
+    argv = _prepare_log_config(configured, {"SERVICE_ENGINE_LOG_PATH": "/logs/unit/vllm"}).command.argv
+    assert json.loads(argv[argv.index("--additional-config") + 1]) == {
+        "unrelated": "keep",
+        "ascend_log_path": "/logs/unit/vllm/vllm_ascend",
+    }
+    assert not any(argument.startswith("--watchdog-config") for argument in argv)
+
+
+@pytest.mark.parametrize("engine_root", [None, ""])
+def test_vllm_without_engine_log_root_preserves_native_options(engine_root, supported_vllm_logs):
+    environment = {} if engine_root is None else {"SERVICE_ENGINE_LOG_PATH": engine_root}
+    configured = {
+        "additional_config": {"ascend_log_path": "/previous/logs", "runtime_report_dir": "/previous/reports"},
+        "watchdog_config": {"dump_dir": "/previous/watchdog"},
+    }
+    argv = _prepare_log_config(configured, environment).command.argv
+    assert json.loads(argv[argv.index("--additional-config") + 1]) == configured["additional_config"]
+    assert json.loads(argv[argv.index("--watchdog-config") + 1]) == configured["watchdog_config"]
+    supported_vllm_logs.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "engine_root,profiler_path",
+    [
+        ("/logs/unit/sglang", None),
+        ("/logs/unit/sglang", ""),
+        ("/logs/unit/sglang", "/previous/profile"),
+        (None, "/previous/profile"),
+    ],
+)
+def test_sglang_profiler_defaults_and_explicit_paths(engine_root, profiler_path):
+    environment = {"KEEP": "1"}
+    if engine_root is not None:
+        environment["SERVICE_ENGINE_LOG_PATH"] = engine_root
+    if profiler_path is not None:
+        environment["SGLANG_TORCH_PROFILER_DIR"] = profiler_path
+    before = dict(environment)
+    spec = _sglang_prepare(env=environment)
+    assert spec.command.env["SGLANG_TORCH_PROFILER_DIR"] == (profiler_path or engine_root + "/profile")
+    assert environment == before
+
+
+@pytest.mark.parametrize(
+    "engine_root,profiler_path",
+    [("relative", "/profile"), ("/logs/../unit", "/profile"), ("/logs/unit", "relative/profile")],
+)
+def test_sglang_rejects_invalid_log_paths(engine_root, profiler_path):
+    with pytest.raises(ValueError, match="SERVICE_ENGINE_LOG_PATH|SGLANG_TORCH_PROFILER_DIR"):
+        _sglang_prepare(env={"SERVICE_ENGINE_LOG_PATH": engine_root, "SGLANG_TORCH_PROFILER_DIR": profiler_path})

@@ -339,33 +339,40 @@ PD混部可直接参考代码仓model_configs/vllm/pd_hybrid/env.json文件进�
 
   在CRD默认方式下，InferServiceSet会拉起Controller、Coordinator和union角色对应的Pod。Pod状态为Running仅表示已成功调度并启动，业务是否就绪仍需结合日志进一步确认。
 
-- **查看日志**
+- **查看容器输出**
+
+  `show_log.sh` 和 `kubectl logs` 查看 Pod 容器的标准输出和标准错误。
 
   1. 配置log_collect/log_config.ini，设置name_space属性为实际的命名空间，此处为mindie-motor。
 
-  2. 在/examples/deployer目录下执行以下命令获取/查看日志路径。
+  2. 在examples/deployer目录下执行以下命令，持续采集容器输出。
 
       ```bash
       cd examples/deployer
       bash show_log.sh
       ```
 
-      日志生成路径：examples/deployer/log_collect/log/\<YYYYMMDD_hhmmss>。
+      容器输出采集路径：examples/deployer/log_collect/log/\<YYYYMMDD_hhmmss>。
 
-      单个Pod的日志文件命名格式为\<pod_name>\_\<node_name>\_\<retry_count>.log，例如：vllm-0-controller-0-xxxx_node01_0.log。
-  3. 使用以下命令查看日志内容。
+      单个Pod的采集文件命名格式为\<pod_name>\_\<node_name>\_\<retry_count>.log，例如：vllm-0-controller-0-xxxx_node01_0.log。
+
+  3. 使用以下命令查看采集内容。
 
       ```bash
       tail -f log_collect/log/<YYYYMMDD_hhmmss>/<pod_name>_<node_name>_<retry_count>.log
       ```
 
-- **查看单个Pod日志**
+  也可以直接查看指定 Pod 的容器输出：
 
   ```bash
   kubectl logs <pod_name> -n <job_id>
   ```
 
-- **进入容器内部查看日志**
+- **查看组件日志、诊断文件和缓存**
+
+  使用已有 `plog-path` hostPath 日志卷的标准模板部署时，计算 Pod 内各组件写入的日志文件、诊断文件和缓存默认位于其所在宿主机的 `<宿主机日志根>/<模型名>/<service_id>/<Pod名>/<容器名>/`。宿主机日志根默认与 `env.json` 中的 `motor_common_env.MOTOR_LOG_ROOT_PATH` 相同，未配置时为 `/root/ascend/log`；`multi_deployment` 可通过 `logging_config.host_log_dir` 指定宿主机日志根。`service_id` 在环境生成阶段按 `<job_id>_<北京时间YYYYMMDDhhmmss>` 生成。挂载适用范围、组件子目录及控制面目录见[日志与诊断文件目录](../../maintenance/log_directory.md)。
+
+  也可以进入对应容器，在 `<MOTOR_LOG_ROOT_PATH>/<模型名>/<service_id>/<Pod名>/<容器名>/` 下查看文件：
 
   ```bash
   kubectl exec -it <pod_name> -n <job_id> -- bash

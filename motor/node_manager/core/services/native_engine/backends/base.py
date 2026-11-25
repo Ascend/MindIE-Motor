@@ -10,6 +10,7 @@
 
 from collections.abc import Mapping
 from copy import deepcopy
+from pathlib import PurePosixPath
 from typing import Any, Protocol
 
 from motor.common.logger import get_logger
@@ -22,6 +23,8 @@ from motor.node_manager.core.services.native_engine.models import (
 )
 
 logger = get_logger(__name__)
+
+SERVICE_ENGINE_LOG_PATH_ENV = "SERVICE_ENGINE_LOG_PATH"
 
 
 class NativeEngineBackend(Protocol):
@@ -40,6 +43,17 @@ class BaseNativeEngineBackend:
     engine_type: str
     command_prefix: tuple[str, ...]
 
+    @staticmethod
+    def _get_engine_log_path(environment: Mapping[str, str]) -> PurePosixPath | None:
+        engine_log_path = environment.get(SERVICE_ENGINE_LOG_PATH_ENV)
+        if not engine_log_path:
+            logger.warning("%s is not set; preserving native engine log paths", SERVICE_ENGINE_LOG_PATH_ENV)
+            return None
+        engine_root = PurePosixPath(engine_log_path)
+        if not engine_root.is_absolute() or ".." in engine_root.parts:
+            raise ValueError(f"{SERVICE_ENGINE_LOG_PATH_ENV} must be an absolute path without '..'")
+        return engine_root
+
     def prepare(self, context: LaunchContext) -> LaunchSpec:
         self._validate_context(context)
         endpoint_config = build_endpoint_config(context, self.engine_type)
@@ -49,6 +63,7 @@ class BaseNativeEngineBackend:
                 f"Node Manager engine type {self.engine_type}"
             )
         self._validate_endpoint_config(endpoint_config)
+        self._configure_log_cli_paths(endpoint_config, context)
 
         # Import lazily to keep backend selection independent from engine-specific config modules.
         from motor.node_manager.core.services.native_engine.config_factory import ConfigFactory
@@ -75,6 +90,9 @@ class BaseNativeEngineBackend:
         pass
 
     def _validate_endpoint_config(self, endpoint_config: EndpointConfig) -> None:
+        pass
+
+    def _configure_log_cli_paths(self, endpoint_config: EndpointConfig, context: LaunchContext) -> None:
         pass
 
 

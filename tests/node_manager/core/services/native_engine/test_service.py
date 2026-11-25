@@ -73,7 +73,7 @@ def _native_engine_service(
             engine_type=engine_type,
             config_path="/tmp/config.json",
             device_num=1,
-            parallel_config=SimpleNamespace(local_world_size=1),
+            parallel_config=SimpleNamespace(local_world_size=1, dp_size=1),
             enable_multi_endpoints=False,
             snapshot_metadata=snapshot_metadata,
             startup_acceleration_config=startup_acceleration_config,
@@ -121,6 +121,80 @@ def _log_level_warning_emitted(mock_warning) -> bool:
     return any(
         "ASCEND_GLOBAL_LOG_LEVEL" in str(call.args[0]) if call.args else False for call in mock_warning.call_args_list
     )
+
+
+@pytest.mark.parametrize(
+    "engine_type,local_endpoints,devices_per_endpoint", [("vllm", 1, 2), ("vllm", 2, 1), ("sglang", 2, 2)]
+)
+def test_engine_log_identity_isolated_per_endpoint_without_changing_shared_paths(
+    monkeypatch, local_endpoints, devices_per_endpoint, engine_type
+):
+    engine_root = "/logs/unit/prefill-0/" + engine_type
+    monkeypatch.setenv("SERVICE_ENGINE_LOG_PATH", engine_root)
+    inherited = {
+        "XDG_CONFIG_HOME": "/config/native",
+        "XDG_CACHE_HOME": "/cache/native",
+        "ASCEND_WORK_PATH": "/work/native",
+        "MOTOR_LOG_PATH": "/motor/native",
+        "TRITON_HOME": "/triton",
+    }
+    for name, value in inherited.items():
+        monkeypatch.setenv(name, value)
+    service = _native_engine_service(engine_type=engine_type)
+    service.enable_multi_endpoints = True
+    service.parallel_config.dp_size = 2
+    service.parallel_config.local_world_size = devices_per_endpoint
+    # Spare devices do not create an additional endpoint.
+    service.device_num = local_endpoints * devices_per_endpoint + devices_per_endpoint - 1
+    service.backend.prepare.return_value = _make_launch_spec(_fake_deploy_config(enable_virtual_inference=False))
+    service.supervisor.start.return_value = True
+    for endpoint_id in list(range(local_endpoints)) * 2:
+        # A subset retry keeps its endpoint identity and never appends twice.
+        service.pull(PDRole.ROLE_P, [_make_endpoint(endpoint_id)], instance_id=1, master_dp_ip="127.0.0.1")
+        environment = service.backend.prepare.call_args.args[0].environment
+        expected = engine_root + (f"/endpoint-{endpoint_id}" if local_endpoints > 1 else "")
+        assert environment["SERVICE_ENGINE_LOG_PATH"] == expected
+        assert {name: environment[name] for name in inherited} == inherited
+    assert os.environ["SERVICE_ENGINE_LOG_PATH"] == engine_root
+
+
+@pytest.mark.parametrize(("enable_multi_endpoints", "dp_size"), [(False, 2), (True, 1)])
+def test_single_endpoint_configuration_needs_no_endpoint_log_subdirectory(monkeypatch, enable_multi_endpoints, dp_size):
+    engine_root = "/logs/unit/prefill-0/vllm"
+    monkeypatch.setenv("SERVICE_ENGINE_LOG_PATH", engine_root)
+    service = _native_engine_service(engine_type="vllm")
+    service.enable_multi_endpoints = enable_multi_endpoints
+    service.parallel_config.dp_size = dp_size
+    service.device_num = 4
+
+    _arrange_successful_pull(service, deploy_config=_fake_deploy_config(enable_virtual_inference=False))
+
+    environment = service.backend.prepare.call_args.args[0].environment
+    assert environment["SERVICE_ENGINE_LOG_PATH"] == engine_root
+
+
+@pytest.mark.parametrize("engine_root", [None, ""])
+def test_multi_endpoint_without_engine_log_path_launches_all_endpoints(monkeypatch, engine_root):
+    if engine_root is None:
+        monkeypatch.delenv("SERVICE_ENGINE_LOG_PATH", raising=False)
+    else:
+        monkeypatch.setenv("SERVICE_ENGINE_LOG_PATH", engine_root)
+    service = _native_engine_service(engine_type="vllm")
+    service.enable_multi_endpoints = True
+    service.parallel_config.dp_size = 2
+    service.device_num = 2
+
+    _arrange_successful_pull(
+        service,
+        deploy_config=_fake_deploy_config(enable_virtual_inference=False),
+        endpoints=[_make_endpoint(0), _make_endpoint(1)],
+    )
+
+    assert service.backend.prepare.call_count == 2
+    assert service.supervisor.start.call_count == 2
+    for call in service.backend.prepare.call_args_list:
+        assert call.args[0].environment.get("SERVICE_ENGINE_LOG_PATH") == engine_root
+    assert os.environ.get("SERVICE_ENGINE_LOG_PATH") == engine_root
 
 
 def test_pull_sets_moe_distribute_v3_when_dp_scale_up_is_enabled():

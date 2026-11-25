@@ -1212,6 +1212,8 @@ PD混部场景下，union 原生引擎的环境变量配置在 `env.json` 的 `m
 | motor_common_env | 所有组件共用环境变量，如CANN安装路径、日志根目录。 |
 | motor_engine_union_env | PD混部union实例的NPU、HCCL、OMP等环境变量，可按机型与模型进行调优。 |
 
+`motor_common_env.MOTOR_LOG_ROOT_PATH` 是容器内 Motor 管理的原生日志、诊断文件和缓存的公共根，默认 `/root/ascend/log`；目录规则及持久化边界见[日志与诊断文件目录](../maintenance/log_directory.md)。
+
 <a id="prefill_kv_event_config-自动推导"></a>
 
 ### kv_conductor_config 自动推导与兼容

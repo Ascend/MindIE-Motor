@@ -24,6 +24,7 @@ from motor.node_manager.core.services.native_engine.ascend_device_ids import (
     list_pod_physical_device_ids,
     list_runtime_device_ids,
 )
+from motor.node_manager.core.services.native_engine.backends.base import SERVICE_ENGINE_LOG_PATH_ENV
 from motor.node_manager.core.services.native_engine.factory import get_backend
 from motor.node_manager.core.services.native_engine.models import LaunchContext, LaunchSpec, RuntimeState
 from motor.node_manager.core.services.native_engine.startup_acceleration import (
@@ -219,8 +220,17 @@ class NativeEngineService:
                 logger.info("Pod Ascend plugin/env device ids: %s", ",".join(plugin_device_ids))
             if runtime_ids:
                 logger.info("Pod runtime device ids: %s", ",".join(runtime_ids))
+            # Keep endpoint directories stable when retries launch only a subset.
+            use_endpoint_log_subdir = (
+                self.enable_multi_endpoints
+                and self.parallel_config.dp_size > 1
+                and device_size >= 2 * self.parallel_config.local_world_size
+            )
             for i, endpoint in enumerate(endpoints_info):
                 env = base_env.copy()
+                engine_log_path = env.get(SERVICE_ENGINE_LOG_PATH_ENV)
+                if use_endpoint_log_subdir and engine_log_path:
+                    env[SERVICE_ENGINE_LOG_PATH_ENV] = f"{engine_log_path.rstrip('/')}/endpoint-{endpoint.id}"
                 if self.enable_multi_endpoints:
                     device_ids_str = self._endpoint_visible_device_ids(env, i, device_size)
                     logger.info("Device IDs: %s", device_ids_str)

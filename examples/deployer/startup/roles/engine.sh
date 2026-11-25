@@ -57,10 +57,6 @@ if [ -n "$INFER_SERVICE_INDEX" ] && [ -n "$INSTANCE_INDEX" ]; then
     echo "CRD mode: JOB_NAME refreshed to $JOB_NAME"
 fi
 
-setup_motor_log_path
-setup_ascend_work_path
-setup_ascend_cache_path
-
 if [ "$ROLE" = "encode" ]; then
     set_encode_env
 elif [ "$ROLE" = "decode" ]; then
@@ -71,6 +67,8 @@ elif [ "$ROLE" = "union" ]; then
     set_union_env
 fi
 
+# Resolve after role overrides so derived paths follow the effective root directory.
+setup_log_paths --role "$ROLE" || exit 1
 apply_instance_port_env || exit 1
 
 set_container_snapshot_engine_env || exit 1

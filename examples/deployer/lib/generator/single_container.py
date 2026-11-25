@@ -111,4 +111,5 @@ def generate_yaml_single_container(input_yaml, output_file, user_config):
         # Embed the PVC(s) as extra documents so `kubectl apply -f` creates them with the pod.
         pvc_template = os.path.join(os.path.dirname(input_yaml), "storage_pvc_template.yaml")
         data.extend(build_storage_pvc_docs(pvc_template, user_config, storage_entries))
+    k8s_utils.configure_pod_log_identity(deployment_data[C.SPEC][C.TEMPLATE][C.SPEC])
     write_yaml(data, output_file, False)

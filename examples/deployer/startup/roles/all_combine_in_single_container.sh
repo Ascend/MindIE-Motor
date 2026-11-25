@@ -89,7 +89,11 @@ set_coordinator_env
 python3 -m ccae_reporter.run Coordinator &
 motor_track_helper $!
 
-ROLE=coordinator python3 -m motor.coordinator.main &
+(
+    export ROLE=coordinator
+    setup_log_paths --role "$ROLE" || exit 1
+    exec python3 -m motor.coordinator.main
+) &
 motor_track_child $!
 
 set_controller_env
@@ -98,7 +102,11 @@ set_controller_env
 python3 -m ccae_reporter.run Controller &
 motor_track_helper $!
 
-ROLE=controller python3 -m motor.controller.main --config "$USER_CONFIG_PATH" &
+(
+    export ROLE=controller
+    setup_log_paths --role "$ROLE" || exit 1
+    exec python3 -m motor.controller.main --config "$USER_CONFIG_PATH"
+) &
 motor_track_child $!
 
 case "${KV_STORE_BACKEND:-}" in
@@ -166,7 +174,13 @@ if grep -q '"motor_engine_union_config"' "$USER_CONFIG_PATH"; then
 
     set_union_env
     for i in $(seq 0 $((hybrid_instances_num - 1))); do
-        ROLE=union INDEX=$i JOB_NAME=u$i python3 -m motor.node_manager.main &
+        (
+            export ROLE=union INDEX="$i" JOB_NAME="u$i"
+            export COMPUTE_UNIT_LOG_SUBPATH="${COMPUTE_UNIT_LOG_SUBPATH:+${COMPUTE_UNIT_LOG_SUBPATH}/}union-${INDEX}"
+
+            setup_log_paths --role "$ROLE" || exit 1
+            exec python3 -m motor.node_manager.main
+        ) &
         motor_track_child $!
         echo "pull up instance: ROLE=union INDEX=$i JOB_NAME=u$i python3 -m motor.node_manager.main &"
     done
@@ -176,14 +190,26 @@ else
 
     set_prefill_env
     for i in $(seq 0 $((p_instances_num - 1))); do
-        ROLE=prefill INDEX=$i JOB_NAME=p$i python3 -m motor.node_manager.main &
+        (
+            export ROLE=prefill INDEX="$i" JOB_NAME="p$i"
+            export COMPUTE_UNIT_LOG_SUBPATH="${COMPUTE_UNIT_LOG_SUBPATH:+${COMPUTE_UNIT_LOG_SUBPATH}/}prefill-${INDEX}"
+
+            setup_log_paths --role "$ROLE" || exit 1
+            exec python3 -m motor.node_manager.main
+        ) &
         motor_track_child $!
         echo "pull up instance: ROLE=prefill INDEX=$i JOB_NAME=p$i python3 -m motor.node_manager.main &"
     done
 
     set_decode_env
     for i in $(seq 0 $((d_instances_num - 1))); do
-        ROLE=decode INDEX=$i JOB_NAME=d$i python3 -m motor.node_manager.main &
+        (
+            export ROLE=decode INDEX="$i" JOB_NAME="d$i"
+            export COMPUTE_UNIT_LOG_SUBPATH="${COMPUTE_UNIT_LOG_SUBPATH:+${COMPUTE_UNIT_LOG_SUBPATH}/}decode-${INDEX}"
+
+            setup_log_paths --role "$ROLE" || exit 1
+            exec python3 -m motor.node_manager.main
+        ) &
         motor_track_child $!
         echo "pull up instance: ROLE=decode INDEX=$i JOB_NAME=d$i python3 -m motor.node_manager.main &"
     done

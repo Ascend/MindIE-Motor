@@ -20,6 +20,7 @@ from pathlib import Path
 _STATIC_ASSETS = (
     ("startup/boot.sh", "boot.sh"),
     ("startup/common.sh", "common.sh"),
+    ("startup/log_paths.py", "log_paths.py"),
     ("startup/instance_config.py", "instance_config.py"),
     ("probe/probe.sh", "probe.sh"),
     ("probe/probe.py", "probe.py"),

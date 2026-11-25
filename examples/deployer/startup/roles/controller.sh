@@ -15,7 +15,6 @@ if [ "$ROLE" != "controller" ]; then
 fi
 
 set_controller_env
-setup_motor_log_path
 
 NODEPORT_WARN_FILE="${CONFIGMAP_PATH}/nodeport_conflict_controller.txt"
 if [ -f "$NODEPORT_WARN_FILE" ] && [ -s "$NODEPORT_WARN_FILE" ]; then
@@ -27,4 +26,6 @@ fi
 # not necessary if no ccae
 python3 -m ccae_reporter.run Controller &
 
+# Start the reporter before setting Motor's derived log path so it does not inherit it.
+setup_log_paths --role controller || exit 1
 python3 -m motor.controller.main --config "$USER_CONFIG_PATH"

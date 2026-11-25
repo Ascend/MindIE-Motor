@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -705,7 +706,8 @@ def test_handle_update_instance_num_scales_hybrid_via_crd_when_current_omits_dep
     assert get_infer_role(infer_doc, C.ROLE_UNION)[C.REPLICAS] == 2
 
 
-def test_handle_update_instance_num_scales_hybrid_via_crd(tmp_path, monkeypatch):
+@pytest.mark.parametrize("env_log_root", [None, "/new/log"])
+def test_handle_update_instance_num_scales_hybrid_via_crd(tmp_path, monkeypatch, env_log_root):
     baseline_config = make_pd_hybrid_user_config()
     current_config = make_pd_hybrid_user_config()
     current_config[C.MOTOR_DEPLOY_CONFIG][C.HYBRID_INSTANCES_NUM] = 2
@@ -718,14 +720,24 @@ def test_handle_update_instance_num_scales_hybrid_via_crd(tmp_path, monkeypatch)
     monkeypatch.setattr(k8s_utils, "safe_exec_cmd", commands.append)
     monkeypatch.setattr(k8s_utils, "g_controller_service", "ctrl.pd-hybrid.svc.cluster.local")
     monkeypatch.setattr(k8s_utils, "g_coordinator_service", "coord.pd-hybrid.svc.cluster.local")
+    monkeypatch.setattr(deploy_module, "set_env_to_shell", lambda *_args: None)
 
     generate_yaml_infer_service_set(
         paths["infer_service_input_yaml"],
         paths["infer_service_output_yaml"],
         baseline_config,
     )
+    deploy_module._apply_log_mounts_to_files([paths["infer_service_output_yaml"]], "/saved/log")
+    before = _find_infer_service_set_doc(load_yaml(paths["infer_service_output_yaml"], False))
+    before_specs = {role["name"]: deepcopy(role["spec"]) for role in before["spec"]["template"]["roles"]}
+    env_path = None
+    if env_log_root is not None:
+        env_path = str(tmp_path / "env.json")
+        Path(env_path).write_text(
+            json.dumps({"motor_common_env": {"MOTOR_LOG_ROOT_PATH": env_log_root}}), encoding="utf-8"
+        )
 
-    deploy_module.handle_update_instance_num(current_config)
+    deploy_module.handle_update_instance_num(current_config, env_path)
 
     assert commands == [
         [
@@ -740,6 +752,7 @@ def test_handle_update_instance_num_scales_hybrid_via_crd(tmp_path, monkeypatch)
     all_docs = load_yaml(paths["infer_service_output_yaml"], False)
     infer_doc = _find_infer_service_set_doc(all_docs)
     assert get_infer_role(infer_doc, C.ROLE_UNION)[C.REPLICAS] == 2
+    assert {role["name"]: role["spec"] for role in infer_doc["spec"]["template"]["roles"]} == before_specs
 
 
 def test_handle_update_instance_num_regenerates_kv_conductor_when_infer_yaml_missing(tmp_path, monkeypatch):
@@ -747,10 +760,12 @@ def test_handle_update_instance_num_regenerates_kv_conductor_when_infer_yaml_mis
     baseline_config = make_pd_hybrid_user_config()
     baseline_config[C.MOTOR_DEPLOY_CONFIG][C.DEPLOY_MODE_CONFIG_KEY] = C.DEPLOY_MODE_INFER_SERVICE_SET
     baseline_config[C.KV_CONDUCTOR_CONFIG] = {C.KV_CONDUCTOR_PORT: 14444}
+    baseline_config["motor_nodemanger_config"] = {"logging_config": {"host_log_dir": "/host/engine"}}
     current_config = make_pd_hybrid_user_config()
     current_config[C.MOTOR_DEPLOY_CONFIG][C.DEPLOY_MODE_CONFIG_KEY] = C.DEPLOY_MODE_INFER_SERVICE_SET
     current_config[C.MOTOR_DEPLOY_CONFIG][C.HYBRID_INSTANCES_NUM] = 2
     current_config[C.KV_CONDUCTOR_CONFIG] = {C.KV_CONDUCTOR_PORT: 14444}
+    current_config["motor_nodemanger_config"] = {"logging_config": {"host_log_dir": "/host/engine"}}
     paths = make_deploy_paths(tmp_path)
     monkeypatch.setattr(k8s_utils, "g_kv_conductor_enabled", False)
     monkeypatch.setattr(deploy_module, "get_baseline_config_from_configmap", lambda _: baseline_config)
@@ -766,6 +781,9 @@ def test_handle_update_instance_num_regenerates_kv_conductor_when_infer_yaml_mis
     infer_doc = _find_infer_service_set_doc(load_yaml(paths["infer_service_output_yaml"], False))
     assert get_infer_role(infer_doc, C.ROLE_UNION)[C.REPLICAS] == 2
     conductor_role = get_infer_role(infer_doc, C.ROLE_KV_CONDUCTOR)
+    union_spec = get_infer_role(infer_doc, C.ROLE_UNION)[C.SPEC][C.TEMPLATE][C.SPEC]
+    log_volume = next(volume for volume in union_spec["volumes"] if volume["name"] == "plog-path")
+    assert log_volume["hostPath"]["path"] == "/host/engine"
     assert conductor_role[C.REPLICAS] == 1
     coordinator_container = get_infer_role(infer_doc, C.COORDINATOR)[C.SPEC][C.TEMPLATE][C.SPEC][C.CONTAINERS][0]
     coordinator_env = {item[C.NAME] for item in coordinator_container.get(C.ENV, [])}

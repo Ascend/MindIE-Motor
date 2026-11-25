@@ -33,6 +33,7 @@ from lib.docker_utils import (
 )
 from lib.in_place_run import run_in_place
 from lib.container_ipc import host_ipc_enabled
+from lib.log_mount import common_log_root, DEFAULT_LOG_ROOT
 from lib.docker_commands import emit as emit_commands
 from lib.port_conflict import offer_engine_port_remap
 
@@ -356,6 +357,7 @@ def _prepare_and_render(args, deployer_dir: str):
             role=identity.role if identity else None,
             engine_ports=engine_ports,
             render_host=render_host,
+            container_name=_container_name_from_args_or_env(args),
             discovery_config=user_config[C.MOTOR_DEPLOY_CONFIG].get("service_discovery_config"),
         )
     except ValueError as exc:
@@ -907,6 +909,35 @@ def drop_duplicate_bind_mounts(template: str, env: dict[str, str] | None = None)
             ", ".join(dropped),
         )
     return "".join(kept)
+
+
+def apply_log_root_bind(template: str, log_root: str, env: dict[str, str]) -> str:
+    if log_root == DEFAULT_LOG_ROOT:
+        return template
+    covering: dict[str, bool] = {}
+    for line in template.splitlines():
+        stripped = line.strip().rstrip("\\").strip()
+        if stripped.startswith("-v "):
+            spec = stripped[3:].strip().strip('"').strip("'")
+            destination = D.bind_mount_destination(spec, env)
+            if destination:
+                destination = destination.replace("\\", "/")
+            if destination and (log_root == destination or log_root.startswith(destination.rstrip("/") + "/")):
+                # Duplicate destinations keep their first bind, as in drop_duplicate_bind_mounts.
+                covering.setdefault(destination, "ro" in spec.rsplit(":", 1)[-1].split(","))
+    if covering:
+        # A nested mount determines access even when its parent appears first.
+        if covering[max(covering, key=len)]:
+            raise ValueError(f"Log root {log_root} is covered by a read-only bind")
+        return template
+    if ":" in log_root or _IMAGE_BASH not in template:
+        raise ValueError(f"Cannot add Docker log bind for {log_root}")
+    try:
+        os.makedirs(log_root, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(f"Failed to create log bind directory {log_root}: {exc}") from exc
+    bind = shlex.quote(f"{log_root}:{log_root}")
+    return template.replace(_IMAGE_BASH, f"-v {bind} \\\n  {_IMAGE_BASH}", 1)
 
 
 def apply_enter_shm(template: str, dshm_size: str | None, *, ipc_host: bool = False) -> str:
@@ -1477,6 +1508,17 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
         return 1
     command = insert_create_binds(command, extra_create_bind_paths(args, env["EXAMPLES"]))
     command = apply_enter_weight(command, env.get("WEIGHT"))
+    try:
+        config_dir = getattr(args, "config_dir", None)
+        env_path = getattr(args, "env_config_path", None)
+        user_path = getattr(args, "user_config_path", None)
+        if env_config_path is None and (config_dir or env_path or user_path):
+            _, env_config_path = resolve_config_paths(config_dir, user_path, env_path)
+        log_root = common_log_root(read_json(env_config_path)) if env_config_path else DEFAULT_LOG_ROOT
+        command = apply_log_root_bind(command, log_root, env)
+    except (OSError, TypeError, ValueError) as exc:
+        logger.error("%s", exc)
+        return 1
     try:
         command = apply_enter_shm(command, dshm_size, ipc_host=ipc_host)
     except ValueError as exc:

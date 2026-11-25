@@ -60,13 +60,15 @@ IFACE=$(ip -o addr show scope global up | \
   awk -v ip="$POD_IP" \
     '{addr=$4; sub(/\/.*/, "", addr); if (addr == ip && !found) {iface=$2; found=1}} END {if (found) print iface}')
 echo "This is the $ROLE $POD_IP${IFACE:+ iface=$IFACE}."
-mkdir -p /root/.cache /root/ascend/log
+LOG_ROOT=__MOTOR_LOG_ROOT__
+mkdir -p /root/.cache "$LOG_ROOT"
 
 INSTANCE_NAME="${ROLE}_${SLURM_JOB_ID:-$$}"
 RUNTIME_ENV=(
   --env "CONFIGMAP_PATH=$CONFIGMAP_PATH"
   --env "CONFIG_PATH=$CONFIG_PATH"
   --env "ROLE=$ROLE"
+  --env "COMPUTE_UNIT_LOG_SUBPATH=${SLURMD_NODENAME:-$(hostname)}/$INSTANCE_NAME"
   --env "POD_IP=$POD_IP"
   --env "HOST_IP=$POD_IP"
   --env "SGLANG_HOST_IP=$POD_IP"
@@ -160,7 +162,7 @@ apptainer instance start --cleanenv --no-home --writable-tmpfs \
   --bind /usr/local/sbin:/usr/local/sbin \
   --bind "$MODEL_PATH:$MODEL_PATH" \
   --bind /root/.cache:/root/.cache \
-  --bind /root/ascend/log:/root/ascend/log \
+  --bind "$LOG_ROOT:$LOG_ROOT" \
   --bind "$CONFIGMAP_PATH:$CONFIGMAP_PATH:ro" \
   "$IMAGE_NAME" "$INSTANCE_NAME"
 

@@ -149,6 +149,8 @@ spec:
                   memory: "4Gi"
                   cpu: "8"
               volumeMounts:
+              - name: plog-path
+                mountPath: /root/ascend/log
               - name: motor-config
                 mountPath: /mnt/configmap
               - name: coredump
@@ -156,6 +158,10 @@ spec:
               - name: mnt
                 mountPath: /mnt
             volumes:
+            - name: plog-path
+              hostPath:
+                path: /root/ascend/log
+                type: DirectoryOrCreate
             - name: motor-config
               configMap:
                 name: motor-config
@@ -282,6 +288,8 @@ spec:
                   memory: "128Gi"
                   cpu: "64"
               volumeMounts:
+              - name: plog-path
+                mountPath: /root/ascend/log
               - name: motor-config
                 mountPath: /mnt/configmap
               - name: coredump
@@ -289,6 +297,10 @@ spec:
               - name: mnt
                 mountPath: /mnt
             volumes:
+            - name: plog-path
+              hostPath:
+                path: /root/ascend/log
+                type: DirectoryOrCreate
             - name: motor-config
               configMap:
                 name: motor-config

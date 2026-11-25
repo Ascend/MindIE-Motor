@@ -1540,9 +1540,18 @@ def prepare_configmap(
     role: str | None = None,
     engine_ports: EnginePortOverrides | None = None,
     render_host: str | None = None,
+    container_name: str = "",
     discovery_config: dict | None = None,
 ) -> None:
     def apply_docker_overrides(dest_user_config) -> None:
+        # Path initialization consumes this prefix only for engine roles.
+        log_subpath = container_name or socket.gethostname()
+        env_path = dest_user_config.parent / "env.json"
+        environment = read_json(str(env_path))
+        environment.setdefault(C.MOTOR_COMMON_ENV, {})["COMPUTE_UNIT_LOG_SUBPATH"] = log_subpath
+        with env_path.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(environment, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
         with dest_user_config.open(encoding="utf-8") as handle:
             copied = json.load(handle)
         if not isinstance(copied, dict):

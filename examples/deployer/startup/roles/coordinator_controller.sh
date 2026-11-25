@@ -18,7 +18,6 @@ fi
 export MOTOR_DISABLE_LOG_LOGO=1
 
 set_cann_env
-setup_motor_log_path
 
 for warn_file in \
     "${CONFIGMAP_PATH}/nodeport_conflict_coordinator.txt" \
@@ -36,14 +35,22 @@ set_coordinator_env
 python3 -m ccae_reporter.run Coordinator &
 motor_track_helper $!
 
-ROLE=coordinator python3 -m motor.coordinator.main &
+(
+    export ROLE=coordinator
+    setup_log_paths --role "$ROLE" || exit 1
+    exec python3 -m motor.coordinator.main
+) &
 motor_track_child $!
 
 set_controller_env
 # not necessary if no ccae
 python3 -m ccae_reporter.run Controller &
 motor_track_helper $!
-ROLE=controller python3 -m motor.controller.main --config "$USER_CONFIG_PATH" &
+(
+    export ROLE=controller
+    setup_log_paths --role "$ROLE" || exit 1
+    exec python3 -m motor.controller.main --config "$USER_CONFIG_PATH"
+) &
 motor_track_child $!
 
 motor_supervise_children

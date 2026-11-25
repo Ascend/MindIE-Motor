@@ -22,6 +22,7 @@ import lib.constant as C
 from lib.service_identity import output_root, service_name, validate as validate_service_identity
 from lib.tui.step import start_monitor
 from lib.utils import logger, read_json, set_env_to_shell, get_deploy_paths
+from lib.log_mount import common_log_root, apply_document_log_mounts
 from lib.update_config_whitelist import apply_whitelist_update
 from lib.scaling_policy_updater import update_scaling_policy
 from lib.generator import k8s_utils
@@ -155,6 +156,7 @@ def handle_update_config(user_config):
 
 
 def handle_update_instance_num(user_config, env_config_path=None):
+    log_root = common_log_root(read_json(env_config_path)) if env_config_path else common_log_root({})
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     if resolve_deploy_mode_for_services(deploy_config) == C.DEPLOY_MODE_RBG:
         from lib.rbg.lifecycle import get_rbg_baseline_config
@@ -200,6 +202,7 @@ def handle_update_instance_num(user_config, env_config_path=None):
         generate_yaml_single_container(
             paths["single_container_input_yaml"], paths["single_container_output_yaml"], user_config
         )
+        _apply_log_mounts_to_files([paths["single_container_output_yaml"]], log_root)
         exec_all_kubectl_singer(
             deploy_config,
             paths["single_container_output_yaml"],
@@ -219,17 +222,27 @@ def handle_update_instance_num(user_config, env_config_path=None):
                 raise FileNotFoundError(f"InferServiceSet template yaml not found: {infer_input}.")
             init_infer_service_domain_name(infer_input, deploy_config, user_config)
             generate_yaml_infer_service_set(infer_input, infer_output, user_config)
+            _apply_log_mounts_to_files([infer_output], log_root, user_config)
     else:
         init_service_domain_name(paths, deploy_config, user_config)
         if k8s_utils.g_kv_store_enabled:
             normalize_kv_cache_store_config(user_config)
         generate_yaml_engine(paths["engine_input_yaml"], paths["engine_output_yaml"], user_config)
-
+        _apply_log_mounts_to_files(k8s_utils.g_generate_yaml_list, log_root, user_config)
     exec_all_kubectl_multi(deploy_config, baseline_config, deploy_mode_arg, user_config=user_config)
     logger.info("instance num update end.")
 
 
-def deploy_services_multi_yaml(paths, user_config, dry_run=False):
+def _apply_log_mounts_to_files(files, log_root, user_config=None):
+    from lib.utils import load_yaml, write_yaml
+
+    for path in files:
+        docs = load_yaml(path, False)
+        apply_document_log_mounts(docs, log_root, user_config)
+        write_yaml(docs, path, False)
+
+
+def deploy_services_multi_yaml(paths, user_config, dry_run=False, log_root=None):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     init_service_domain_name(paths, deploy_config, user_config)
     generate_yaml_controller(paths["controller_input_yaml"], paths["controller_output_yaml"], user_config)
@@ -256,11 +269,13 @@ def deploy_services_multi_yaml(paths, user_config, dry_run=False):
         )
     if k8s_utils.g_mf_store_enabled:
         generate_yaml_mf_store(paths["mf_store_input_yaml"], paths["mf_store_output_yaml"], user_config)
+    if log_root:
+        _apply_log_mounts_to_files(k8s_utils.g_generate_yaml_list, log_root, user_config)
     if not dry_run:
         exec_all_kubectl_multi(deploy_config, None, C.DEPLOY_MODE_MULTI_DEPLOYMENT_YAML, user_config=user_config)
 
 
-def deploy_services_infer_service_set(paths, user_config, dry_run=False):
+def deploy_services_infer_service_set(paths, user_config, dry_run=False, log_root=None):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     init_service_domain_name(paths, deploy_config, user_config, skip_kv_store=True)
     infer_input = resolve_infer_service_template(paths, user_config)
@@ -276,17 +291,21 @@ def deploy_services_infer_service_set(paths, user_config, dry_run=False):
         generate_yaml_storage_pvc(
             paths["storage_pvc_input_yaml"], paths["storage_pvc_output_yaml"], user_config, storage_entries
         )
+    if log_root:
+        _apply_log_mounts_to_files(k8s_utils.g_generate_yaml_list, log_root, user_config)
     if not dry_run:
         deploy_mode_arg = resolve_deploy_mode_for_services(deploy_config)
         exec_all_kubectl_multi(deploy_config, None, deploy_mode_arg, user_config=user_config)
 
 
-def deploy_services_single_container(paths, user_config, dry_run=False):
+def deploy_services_single_container(paths, user_config, dry_run=False, log_root=None):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     update_kv_store_enabled_flag(user_config)
     generate_yaml_single_container(
         paths["single_container_input_yaml"], paths["single_container_output_yaml"], user_config
     )
+    if log_root:
+        _apply_log_mounts_to_files([paths["single_container_output_yaml"]], log_root)
     if not dry_run:
         exec_all_kubectl_singer(
             deploy_config,
@@ -361,6 +380,7 @@ def warn_existing_service(namespace):
 
 
 def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collect=False):
+    log_root = common_log_root(read_json(env_config_path)) if env_config_path else common_log_root({})
     sync_decode_first_token_timeout_from_env(user_config, env_config_path)
     # Also validate here: TUI / programmatic callers bypass main()'s pre-flight checks.
     validate_kv_cache_store_config(user_config)
@@ -394,15 +414,15 @@ def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collec
     paths = get_deploy_paths()
 
     if deploy_mode_arg == C.DEPLOY_MODE_SINGLE_CONTAINER:
-        deploy_services_single_container(paths, user_config, dry_run=dry_run)
+        deploy_services_single_container(paths, user_config, dry_run=dry_run, log_root=log_root)
     elif deploy_mode_arg == C.DEPLOY_MODE_INFER_SERVICE_SET:
-        deploy_services_infer_service_set(paths, user_config, dry_run=dry_run)
+        deploy_services_infer_service_set(paths, user_config, dry_run=dry_run, log_root=log_root)
     elif deploy_mode_arg == C.DEPLOY_MODE_RBG:
         from lib.rbg.lifecycle import deploy_services_rbg  # pylint: disable=no-name-in-module
 
         deploy_services_rbg(user_config, env_config_path, dry_run=dry_run)
     else:
-        deploy_services_multi_yaml(paths, user_config, dry_run=dry_run)
+        deploy_services_multi_yaml(paths, user_config, dry_run=dry_run, log_root=log_root)
 
     if dry_run:
         # Apply path already resolves NodePorts; dry-run must do it after yaml generation.

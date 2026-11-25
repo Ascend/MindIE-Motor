@@ -96,32 +96,15 @@ if [ -n "$ENABLE_GEN_CERT" ] && [ "$ENABLE_GEN_CERT" = "true" ]; then
     setup_tls_certificates
 fi
 
-setup_motor_log_path() {
-    # Default aligns with env.json motor_common_env.MOTOR_LOG_ROOT_PATH
-    MOTOR_LOG_ROOT_PATH="${MOTOR_LOG_ROOT_PATH:-/root/ascend/log}"
-    if [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
-        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH"
-        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/motor"
-        export MOTOR_LOG_PATH="$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/motor"
-    fi
-}
-
-setup_ascend_work_path() {
-    MOTOR_LOG_ROOT_PATH="${MOTOR_LOG_ROOT_PATH:-/root/ascend/log}"
-    if [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
-        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH"
-        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_work_path"
-        export ASCEND_WORK_PATH="$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_work_path"
-    fi
-}
-
-setup_ascend_cache_path() {
-    MOTOR_LOG_ROOT_PATH="${MOTOR_LOG_ROOT_PATH:-/root/ascend/log}"
-    if [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
-        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH"
-        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_cache_path"
-        export ASCEND_CACHE_PATH="$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_cache_path"
-    fi
+setup_log_paths() {
+    # Failed path calculation stops startup; directory preparation failures only warn.
+    local helper="${SCRIPT_DIR}/log_paths.py"
+    local assignments assignment
+    assignments=$(python3 "$helper" "$@") || return 1
+    while IFS= read -r assignment; do
+        [ -n "$assignment" ] || continue
+        export "$assignment" || return 1
+    done <<< "$assignments"
 }
 
 apply_patches() {
