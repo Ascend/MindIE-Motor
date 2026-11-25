@@ -62,6 +62,12 @@ from motor.coordinator.metrics.request_lifecycle_metrics import (
     merge_request_lifecycle_snapshots,
     request_lifecycle_slots_to_motor_metrics,
 )
+from motor.coordinator.scheduler.runtime.scheduling_obs_metrics import (
+    DEFAULT_SCHED_OBS_SHM_NAME,
+    SchedulingObsMetricsShmReader,
+    merge_scheduling_obs_snapshots,
+    scheduling_obs_slots_to_motor_metrics,
+)
 from motor.common.resources.instance import Instance
 
 logger = get_logger(__name__)
@@ -133,6 +139,7 @@ class ObservabilityServer(BaseCoordinatorServer):
         self._kvc_metrics_readers: dict[int, KvcMetricsShmReader] = {}
         self._req_lifecycle_readers: dict[int, RequestLifecycleMetricsShmReader] = {}
         self._req_lifecycle_rate_tracker = RequestLifecycleRateTracker()
+        self._sched_obs_readers: dict[int, SchedulingObsMetricsShmReader] = {}
         self._app_builder = AppBuilder(config)
         self.observability_app = self._app_builder.create_observability_app(lifespan=self._lifespan)
         self._register_routes()
@@ -205,6 +212,13 @@ class ObservabilityServer(BaseCoordinatorServer):
                     logger.warning("Ignored error detaching req lifecycle metrics reader: %s", e)
             if hasattr(self, "_req_lifecycle_readers"):
                 self._req_lifecycle_readers.clear()
+            for reader in list(getattr(self, "_sched_obs_readers", {}).values()):
+                try:
+                    reader.detach()
+                except Exception as e:
+                    logger.warning("Ignored error detaching sched obs metrics reader: %s", e)
+            if hasattr(self, "_sched_obs_readers"):
+                self._sched_obs_readers.clear()
             if self._central_lifecycle is not None:
                 await self._central_lifecycle.aclose()
             await self._scheduler_connection.disconnect()
@@ -214,7 +228,7 @@ class ObservabilityServer(BaseCoordinatorServer):
 
         Attaches lazily to the scheduling-metrics shm (name received via the scheduler
         client), and returns [] until the shm is available. KVC counters stay on this
-        path when the shm is missing. Request-lifecycle metrics are added separately.
+        path when the shm is missing. Request-lifecycle and scheduling observation metrics are added separately.
         """
         shm_name = self._get_sched_metrics_shm_name()
         if not shm_name:
@@ -241,12 +255,16 @@ class ObservabilityServer(BaseCoordinatorServer):
         return metrics
 
     def _provide_exported_metrics(self) -> list:
-        """MetricsCollector callback: scheduler/KVC metrics plus request lifecycle."""
+        """MetricsCollector callback: scheduler/KVC, request lifecycle, and scheduling observation."""
         metrics = list(self._provide_sched_metrics() or [])
         try:
             metrics.extend(self._provide_req_lifecycle_metrics())
         except Exception as e:
             logger.warning("request lifecycle metrics unavailable: %s", e)
+        try:
+            metrics.extend(self._provide_sched_obs_metrics())
+        except Exception as e:
+            logger.warning("scheduling observation metrics unavailable: %s", e)
         return metrics
 
     def _provide_req_lifecycle_metrics(self) -> list:
@@ -283,6 +301,34 @@ class ObservabilityServer(BaseCoordinatorServer):
             merge_request_lifecycle_snapshots(snapshots),
             rate_tracker=rate_tracker,
         )
+
+    def _provide_sched_obs_metrics(self) -> list:
+        """Read per-worker scheduling & KV attribution metrics from shared memory."""
+        config = getattr(self, "coordinator_config", None)
+        workers_cfg = getattr(config, "inference_workers_config", None)
+        workers = max(1, int(getattr(workers_cfg, "num_workers", 1) or 1))
+        readers = getattr(self, "_sched_obs_readers", None)
+        if readers is None:
+            readers = {}
+            self._sched_obs_readers = readers
+        snapshots: list[list[int]] = []
+        for worker_index in range(workers):
+            shm_name = f"{DEFAULT_SCHED_OBS_SHM_NAME}_{worker_index}"
+            reader = readers.get(worker_index)
+            if reader is None or reader.shm_name != shm_name:
+                if reader is not None:
+                    reader.detach()
+                reader = SchedulingObsMetricsShmReader(shm_name)
+                if not reader.attach():
+                    readers.pop(worker_index, None)
+                    continue
+                readers[worker_index] = reader
+            snap = reader.read()
+            if snap is not None:
+                snapshots.append(snap)
+        if not snapshots:
+            return []
+        return scheduling_obs_slots_to_motor_metrics(merge_scheduling_obs_snapshots(snapshots))
 
     def _provide_kvc_metrics(self) -> list:
         """Append KVC counters from the single central owner or per-worker shm."""

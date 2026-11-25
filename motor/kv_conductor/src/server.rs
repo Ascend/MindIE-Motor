@@ -18,6 +18,7 @@
 //! - `POST /events`         — Ingest KV cache events from workers
 //! - `GET /health`          — Health check
 //! - `GET /workers`         — List registered workers (debug)
+//! - `GET /metrics`         — Prometheus metrics endpoint
 
 use std::sync::Arc;
 
@@ -37,6 +38,7 @@ use tower_http::trace::TraceLayer;
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 use crate::error::KvConductorError;
+use crate::metrics::{MetricEventSource, QueryEndpoint, QueryErrorKind, QueryResultKind};
 use crate::protocols::*;
 use crate::registry::WorkerRegistry;
 
@@ -60,7 +62,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/query_by_hash", post(query_by_hash_handler))
         .route("/events", post(events_handler))
         .route("/health", get(health_handler))
-        .route("/workers", get(workers_handler));
+        .route("/workers", get(workers_handler))
+        .route("/metrics", get(metrics_handler));
 
     // Raise the global body limit — DeepSeek V4 queries carry 400K+ token
     // IDs (~2.4 MB JSON body), beyond axum's 2 MB default.
@@ -186,6 +189,13 @@ fn ok_query_response(response: QueryResponse, msgpack: bool) -> Response {
     }
 }
 
+fn response_has_match(response: &QueryResponse) -> bool {
+    response
+        .tenants
+        .values()
+        .any(|instances| instances.values().any(|imd| imd.longest_matched > 0))
+}
+
 /// POST /query
 ///
 /// Request body: `{ "model": "...", "block_size": 128, "token_ids": [...], "tenant_id": "default" }`
@@ -197,10 +207,18 @@ fn ok_query_response(response: QueryResponse, msgpack: bool) -> Response {
 /// Both JSON (default) and MessagePack (`Content-Type: application/msgpack`)
 /// encodings are accepted; the response is returned in the request's encoding.
 async fn query_handler(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let t0 = std::time::Instant::now();
     let msgpack = is_msgpack_content_type(&headers);
+    let metrics = state.registry.metrics();
     let req = match parse_query_body::<QueryRequest>(&headers, &body) {
         Ok(parsed) => parsed,
         Err(message) => {
+            metrics.record_query_error(QueryEndpoint::Query, QueryErrorKind::BadRequest);
+            metrics.record_query_result(
+                QueryEndpoint::Query,
+                QueryResultKind::BadRequest,
+                t0.elapsed().as_secs_f64(),
+            );
             return query_error_response(StatusCode::BAD_REQUEST, &message, msgpack);
         }
     };
@@ -213,24 +231,60 @@ async fn query_handler(State(state): State<AppState>, headers: HeaderMap, body: 
         "query request"
     );
 
-    match state.registry.query(&req).await {
-        Ok(response) => ok_query_response(response, msgpack),
+    let query_result = state.registry.query(&req).await;
+
+    match query_result {
+        Ok(response) => {
+            let result_kind = if response_has_match(&response) {
+                QueryResultKind::Hit
+            } else {
+                QueryResultKind::Miss
+            };
+            let resp = ok_query_response(response, msgpack);
+            metrics.record_query_result(
+                QueryEndpoint::Query,
+                result_kind,
+                t0.elapsed().as_secs_f64(),
+            );
+            resp
+        }
         Err(KvConductorError::NoIndexer {
             model_name,
             tenant_id,
-        }) => query_error_response(
-            StatusCode::NOT_FOUND,
-            &format!("no indexer for model={model_name} tenant={tenant_id}"),
-            msgpack,
-        ),
+        }) => {
+            metrics.record_query_error(QueryEndpoint::Query, QueryErrorKind::NoIndexer);
+            metrics.record_query_result(
+                QueryEndpoint::Query,
+                QueryResultKind::NoIndexer,
+                t0.elapsed().as_secs_f64(),
+            );
+            query_error_response(
+                StatusCode::NOT_FOUND,
+                &format!("no indexer for model={model_name} tenant={tenant_id}"),
+                msgpack,
+            )
+        }
         Err(KvConductorError::NoWorkers {
             model_name: _,
             tenant_id,
         }) => {
+            metrics.record_query_result(
+                QueryEndpoint::Query,
+                QueryResultKind::Empty,
+                t0.elapsed().as_secs_f64(),
+            );
             // Return empty response structure matching expected format
             empty_tenant_response(&tenant_id, msgpack)
         }
-        Err(e) => query_error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string(), msgpack),
+        Err(e) => {
+            metrics.record_query_error(QueryEndpoint::Query, QueryErrorKind::Internal);
+            metrics.record_query_result(
+                QueryEndpoint::Query,
+                QueryResultKind::Error,
+                t0.elapsed().as_secs_f64(),
+            );
+            query_error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string(), msgpack)
+        }
     }
 }
 
@@ -244,10 +298,18 @@ async fn query_by_hash_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    let t0 = std::time::Instant::now();
     let msgpack = is_msgpack_content_type(&headers);
+    let metrics = state.registry.metrics();
     let req = match parse_query_body::<QueryByHashRequest>(&headers, &body) {
         Ok(parsed) => parsed,
         Err(message) => {
+            metrics.record_query_error(QueryEndpoint::QueryByHash, QueryErrorKind::BadRequest);
+            metrics.record_query_result(
+                QueryEndpoint::QueryByHash,
+                QueryResultKind::BadRequest,
+                t0.elapsed().as_secs_f64(),
+            );
             return query_error_response(StatusCode::BAD_REQUEST, &message, msgpack);
         }
     };
@@ -260,24 +322,60 @@ async fn query_by_hash_handler(
         "query_by_hash request"
     );
 
-    match state.registry.query_by_hash(&req).await {
-        Ok(response) => ok_query_response(response, msgpack),
+    let query_result = state.registry.query_by_hash(&req).await;
+
+    match query_result {
+        Ok(response) => {
+            let result_kind = if response_has_match(&response) {
+                QueryResultKind::Hit
+            } else {
+                QueryResultKind::Miss
+            };
+            let resp = ok_query_response(response, msgpack);
+            metrics.record_query_result(
+                QueryEndpoint::QueryByHash,
+                result_kind,
+                t0.elapsed().as_secs_f64(),
+            );
+            resp
+        }
         Err(KvConductorError::NoIndexer {
             model_name,
             tenant_id,
-        }) => query_error_response(
-            StatusCode::NOT_FOUND,
-            &format!("no indexer for model={model_name} tenant={tenant_id}"),
-            msgpack,
-        ),
+        }) => {
+            metrics.record_query_error(QueryEndpoint::QueryByHash, QueryErrorKind::NoIndexer);
+            metrics.record_query_result(
+                QueryEndpoint::QueryByHash,
+                QueryResultKind::NoIndexer,
+                t0.elapsed().as_secs_f64(),
+            );
+            query_error_response(
+                StatusCode::NOT_FOUND,
+                &format!("no indexer for model={model_name} tenant={tenant_id}"),
+                msgpack,
+            )
+        }
         Err(KvConductorError::NoWorkers {
             model_name: _,
             tenant_id,
         }) => {
+            metrics.record_query_result(
+                QueryEndpoint::QueryByHash,
+                QueryResultKind::Empty,
+                t0.elapsed().as_secs_f64(),
+            );
             // Return empty response structure matching expected format
             empty_tenant_response(&tenant_id, msgpack)
         }
-        Err(e) => query_error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string(), msgpack),
+        Err(e) => {
+            metrics.record_query_error(QueryEndpoint::QueryByHash, QueryErrorKind::Internal);
+            metrics.record_query_result(
+                QueryEndpoint::QueryByHash,
+                QueryResultKind::Error,
+                t0.elapsed().as_secs_f64(),
+            );
+            query_error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string(), msgpack)
+        }
     }
 }
 
@@ -354,6 +452,10 @@ async fn events_handler(
     }
 
     if !errors.is_empty() {
+        state
+            .registry
+            .metrics()
+            .record_event_batch(MetricEventSource::Http, false);
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
@@ -364,6 +466,10 @@ async fn events_handler(
         );
     }
 
+    state
+        .registry
+        .metrics()
+        .record_event_batch(MetricEventSource::Http, true);
     (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -387,4 +493,18 @@ async fn workers_handler(State(state): State<AppState>) -> Json<serde_json::Valu
         "workers": workers,
         "indexer": indexer,
     }))
+}
+
+/// GET /metrics
+async fn metrics_handler(State(state): State<AppState>) -> Response {
+    let body = state.registry.render_metrics().await;
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
 }

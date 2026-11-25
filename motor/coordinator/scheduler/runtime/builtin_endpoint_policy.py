@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import time
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
@@ -32,6 +33,7 @@ from motor.coordinator.scheduler.policy.kv_cache_affinity import KvCacheAffinity
 from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
 from motor.coordinator.scheduler.policy.round_robin import RoundRobinPolicy
 from motor.coordinator.scheduler.runtime.kv_usage import get_endpoint_kv_cache_usage
+from motor.coordinator.scheduler.runtime.scheduling_obs_metrics import get_scheduling_obs_metrics
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
     CANDIDATE_POLICY_DYNAMIC_BUCKET,
     CANDIDATE_POLICY_KV_CACHE_AFFINITY,
@@ -138,10 +140,12 @@ class _LoadBalance(BuiltinEndpointPolicy):
         *,
         req_id: str | None,
     ) -> RankResult:
+        t0 = time.perf_counter()
         candidates = self._rank_candidates(client, instances, role, top_k, req_id=req_id)
         if candidates:
             return candidates, self.name
         logger.warning("load_balance unavailable, falling back to round-robin")
+        get_scheduling_obs_metrics().record_degradation(role, "load_balance_to_round_robin", time.perf_counter() - t0)
         return _ROUND_ROBIN.rank(client, instances, role, req_info, top_k)
 
     @staticmethod
@@ -189,6 +193,7 @@ class _KvCacheAffinity(BuiltinEndpointPolicy):
         self, client: AsyncSchedulerClient, instances: list[Instance], role: PDRole, req_info: RequestInfo, top_k: int
     ) -> RankResult:
         if role in _AFFINITY_ROLES:
+            t0 = time.perf_counter()
             ranked = KvCacheAffinityPolicy.select_endpoint_candidates_from_list(
                 instances,
                 req_info,
@@ -205,8 +210,12 @@ class _KvCacheAffinity(BuiltinEndpointPolicy):
             )
             if ranked:
                 return ranked, self.name
+            elapsed = time.perf_counter() - t0
             if ranked is None:
                 logger.warning("kv_cache_affinity unavailable (no conductor match), falling back to load_balance")
+                get_scheduling_obs_metrics().record_degradation(role, "kv_conductor_unavailable", elapsed)
+            else:
+                get_scheduling_obs_metrics().record_degradation(role, "kv_hit_rate_below_threshold", elapsed)
         return _LOAD_BALANCE.rank(client, instances, role, req_info, top_k)
 
     def prepare_candidates(

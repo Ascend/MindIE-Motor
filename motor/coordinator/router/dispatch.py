@@ -22,6 +22,7 @@
 import asyncio
 import os
 import string
+import time
 import uuid
 from functools import wraps
 
@@ -75,6 +76,7 @@ from motor.common.utils.error import RequestCancelledError
 from motor.coordinator.metrics.request_lifecycle_metrics import (
     get_tracker_from_request,
 )
+from motor.coordinator.scheduler.runtime.scheduling_obs_metrics import get_scheduling_obs_metrics
 
 logger = get_logger(__name__)
 
@@ -275,6 +277,7 @@ async def select_router_class(
 
     Raises HTTPException(503) when no routable topology is available.
     """
+    t0 = time.perf_counter()
     roles = await scheduler.get_available_instance_roles()
     has_pd_roles = PDRole.ROLE_P in roles and PDRole.ROLE_D in roles
     has_routable_pd_pair = has_pd_roles
@@ -321,8 +324,10 @@ async def select_router_class(
         PDRole.ROLE_D in roles and fallback_enabled and await has_decode_colocation_candidate(scheduler)
     )
     if PDRole.ROLE_U in roles or PDRole.ROLE_P in roles or decode_colocation_available:
+        degradation_reason: str | None = None
         if has_pd_roles and not has_routable_pd_pair and PDRole.ROLE_U in roles:
             message = "P/D instances are unavailable; falling back to PDHybridRouter via union instances"
+            degradation_reason = "pd_to_hybrid"
             if req_info is not None:
                 req_info.trace_obj.set_trace_error_message(message)
             logger.warning(message)
@@ -332,8 +337,10 @@ async def select_router_class(
             ):
                 error_message = "PD separate service degraded to decode co-location"
                 req_info.trace_obj.route_degradation = "decode_co_location"
+                degradation_reason = "pd_to_decode_colocation"
             else:
                 error_message = "PD separate service degraded to hybrid: no compatible unblocked P/D pair"
+                degradation_reason = "pd_to_hybrid"
             req_info.trace_obj.set_trace_error_message(error_message)
             logger.warning(error_message)
         elif req_info is not None and PDRole.ROLE_U not in roles:
@@ -342,10 +349,18 @@ async def select_router_class(
             ):
                 error_message = "PD separate service degraded to decode co-location"
                 req_info.trace_obj.route_degradation = "decode_co_location"
+                degradation_reason = "pd_to_decode_colocation"
             else:
                 error_message = "PD separate service degraded to hybrid: only prefill instances available"
+                degradation_reason = "pd_to_hybrid"
             req_info.trace_obj.set_trace_error_message(error_message)
             logger.warning(error_message)
+        if degradation_reason is not None:
+            get_scheduling_obs_metrics().record_degradation(
+                PDRole.ROLE_D if degradation_reason == "pd_to_decode_colocation" else PDRole.ROLE_U,
+                degradation_reason,
+                time.perf_counter() - t0,
+            )
         return PDHybridRouter
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

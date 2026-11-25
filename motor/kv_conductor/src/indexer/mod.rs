@@ -41,6 +41,7 @@ use crate::concurrent_tree::{ConcurrentRadixTree, PrefixMatch, WorkerLookup};
 use crate::error::KvConductorError;
 use crate::hashing::compute_block_hash_for_seq;
 use crate::lower_tier::{ContiguousHit, LowerTierContinuation, LowerTierIndexer};
+use crate::metrics::QueryObservation;
 use crate::protocols::*;
 
 /// TTL for stale pending pool entries (60 seconds).
@@ -890,8 +891,40 @@ impl IndexerEntry {
 
     /// Get the total number of cached blocks across all workers and media.
     pub fn total_blocks(&self) -> usize {
+        let (hbm, cpu, disk) = self.tier_block_counts();
+        hbm + cpu + disk
+    }
+
+    /// Per-tier cached block counts: `(hbm, cpu, disk)`.
+    pub fn tier_block_counts(&self) -> (usize, usize, usize) {
         let hbm = self.lookups.read().values().map(|l| l.len()).sum::<usize>();
-        hbm + self.cpu_tiers.total_blocks() + self.disk_tiers.total_blocks()
+        let cpu = self.cpu_tiers.total_blocks();
+        let disk = self.disk_tiers.total_blocks();
+        (hbm, cpu, disk)
+    }
+
+    /// Two-phase offload/pool matching cache counts: `(offload, content, pending_pool)`.
+    pub fn offload_cache_counts(&self) -> (usize, usize, usize) {
+        let state = self.offload_pool_state.read();
+        let pending: usize = state.pending_pool.values().map(|s| s.len()).sum();
+        (state.offload.len(), state.content.len(), pending)
+    }
+
+    /// Count distinct `(instance_id, dp_rank)` workers that hold at least one indexed block.
+    pub fn effective_worker_dps(&self) -> FxHashSet<(String, DpRank)> {
+        let mut dps: FxHashSet<(String, DpRank)> = FxHashSet::default();
+        for (wk, lookup) in self.lookups.read().iter() {
+            if !lookup.is_empty() {
+                dps.insert((wk.instance_id.clone(), wk.dp_rank));
+            }
+        }
+        for wk in self.cpu_tiers.worker_keys() {
+            dps.insert((wk.instance_id, wk.dp_rank));
+        }
+        for wk in self.disk_tiers.worker_keys() {
+            dps.insert((wk.instance_id, wk.dp_rank));
+        }
+        dps
     }
 
     /// Get all registered worker keys.
@@ -993,11 +1026,24 @@ impl Indexer {
         token_ids: &[i64],
         block_size: u32,
     ) -> Result<QueryResponse, KvConductorError> {
+        self.query_profiled(model_name, tenant_id, token_ids, block_size)
+            .0
+    }
+
+    /// Profiled variant of [`Self::query`] returning stage durations and hit observations.
+    pub fn query_profiled(
+        &self,
+        model_name: &str,
+        tenant_id: &str,
+        token_ids: &[i64],
+        block_size: u32,
+    ) -> (Result<QueryResponse, KvConductorError>, QueryObservation) {
         let t0 = std::time::Instant::now();
 
         let t_hash = std::time::Instant::now();
         let block_hashes = compute_block_hash_for_seq(token_ids, block_size);
-        let hash_us = t_hash.elapsed().as_micros();
+        let hash_elapsed = t_hash.elapsed();
+        let hash_us = hash_elapsed.as_micros();
         let head16: Vec<i64> = token_ids.iter().copied().take(16).collect();
         let first_hash = block_hashes.first().map(|h| h.0);
         tracing::debug!(
@@ -1010,13 +1056,27 @@ impl Indexer {
             "conductor query tokens"
         );
 
-        let entry = self
-            .get(model_name, tenant_id)
-            .ok_or_else(|| KvConductorError::NoIndexer {
-                model_name: model_name.to_string(),
-                tenant_id: tenant_id.to_string(),
-            })?;
+        let mut obs = QueryObservation {
+            hash_secs: hash_elapsed.as_secs_f64(),
+            query_tokens: token_ids.len() as u64,
+            ..Default::default()
+        };
+
+        let Some(entry) = self.get(model_name, tenant_id) else {
+            return (
+                Err(KvConductorError::NoIndexer {
+                    model_name: model_name.to_string(),
+                    tenant_id: tenant_id.to_string(),
+                }),
+                obs,
+            );
+        };
+
+        let t_match = std::time::Instant::now();
         let (overlap, medium_ends) = entry.find_matches_with_coverage(&block_hashes);
+        let match_elapsed = t_match.elapsed();
+        obs.match_secs = match_elapsed.as_secs_f64();
+
         tracing::debug!(
             num_tokens = token_ids.len(),
             block_size,
@@ -1027,13 +1087,30 @@ impl Indexer {
         );
         let t_tree = t0.elapsed();
 
+        let t_build = std::time::Instant::now();
         let resp = self.build_response(&overlap, &medium_ends, model_name, tenant_id, block_size);
+        obs.build_secs = t_build.elapsed().as_secs_f64();
         let total = t0.elapsed();
 
         // Longest per-medium coverage across workers, in blocks.
         let npu_blocks = medium_ends.values().map(|m| m.npu).max().unwrap_or(0);
         let cpu_blocks = medium_ends.values().map(|m| m.cpu).max().unwrap_or(0);
         let disk_blocks = medium_ends.values().map(|m| m.disk).max().unwrap_or(0);
+        let any_blocks = medium_ends
+            .values()
+            .map(|m| m.npu.max(m.cpu).max(m.disk))
+            .max()
+            .unwrap_or(0);
+        let bs = u64::from(block_size);
+        let q_tokens = token_ids.len() as u64;
+        obs.best_hbm_blocks = u64::from(npu_blocks);
+        obs.best_cpu_blocks = u64::from(cpu_blocks);
+        obs.best_disk_blocks = u64::from(disk_blocks);
+        obs.best_any_blocks = u64::from(any_blocks);
+        obs.best_hbm_tokens = obs.best_hbm_blocks.saturating_mul(bs).min(q_tokens);
+        obs.best_cpu_tokens = obs.best_cpu_blocks.saturating_mul(bs).min(q_tokens);
+        obs.best_disk_tokens = obs.best_disk_blocks.saturating_mul(bs).min(q_tokens);
+        obs.best_any_tokens = obs.best_any_blocks.saturating_mul(bs).min(q_tokens);
 
         tracing::debug!(
             num_tokens = token_ids.len(),
@@ -1046,7 +1123,7 @@ impl Indexer {
             disk_blocks,
             "query profile"
         );
-        resp
+        (resp, obs)
     }
 
     /// Query matched block counts using pre-computed `LocalBlockHash` values.
@@ -1056,17 +1133,98 @@ impl Indexer {
         tenant_id: &str,
         block_hashes: &[LocalBlockHash],
     ) -> Result<QueryResponse, KvConductorError> {
-        let entry = self
-            .get(model_name, tenant_id)
-            .ok_or_else(|| KvConductorError::NoIndexer {
-                model_name: model_name.to_string(),
-                tenant_id: tenant_id.to_string(),
-            })?;
+        self.query_by_hash_profiled(model_name, tenant_id, block_hashes)
+            .0
+    }
 
+    /// Profiled variant of [`Self::query_by_hash`] returning stage durations and hit observations.
+    pub fn query_by_hash_profiled(
+        &self,
+        model_name: &str,
+        tenant_id: &str,
+        block_hashes: &[LocalBlockHash],
+    ) -> (Result<QueryResponse, KvConductorError>, QueryObservation) {
+        let mut obs = QueryObservation {
+            query_tokens: block_hashes.len() as u64,
+            ..Default::default()
+        };
+
+        let Some(entry) = self.get(model_name, tenant_id) else {
+            return (
+                Err(KvConductorError::NoIndexer {
+                    model_name: model_name.to_string(),
+                    tenant_id: tenant_id.to_string(),
+                }),
+                obs,
+            );
+        };
+
+        let t_match = std::time::Instant::now();
         let (overlap, medium_ends) = entry.find_matches_with_coverage(block_hashes);
+        obs.match_secs = t_match.elapsed().as_secs_f64();
+
+        let t_build = std::time::Instant::now();
         // Default to 1 token per hash (no scaling) since we don't know the
         // original block_size from the hash alone.
-        self.build_response(&overlap, &medium_ends, model_name, tenant_id, 1)
+        let resp = self.build_response(&overlap, &medium_ends, model_name, tenant_id, 1);
+        obs.build_secs = t_build.elapsed().as_secs_f64();
+
+        let npu_blocks = medium_ends.values().map(|m| m.npu).max().unwrap_or(0);
+        let cpu_blocks = medium_ends.values().map(|m| m.cpu).max().unwrap_or(0);
+        let disk_blocks = medium_ends.values().map(|m| m.disk).max().unwrap_or(0);
+        let any_blocks = medium_ends
+            .values()
+            .map(|m| m.npu.max(m.cpu).max(m.disk))
+            .max()
+            .unwrap_or(0);
+        let q_len = block_hashes.len() as u64;
+        obs.best_hbm_blocks = u64::from(npu_blocks);
+        obs.best_cpu_blocks = u64::from(cpu_blocks);
+        obs.best_disk_blocks = u64::from(disk_blocks);
+        obs.best_any_blocks = u64::from(any_blocks);
+        obs.best_hbm_tokens = obs.best_hbm_blocks.min(q_len);
+        obs.best_cpu_tokens = obs.best_cpu_blocks.min(q_len);
+        obs.best_disk_tokens = obs.best_disk_blocks.min(q_len);
+        obs.best_any_tokens = obs.best_any_blocks.min(q_len);
+
+        (resp, obs)
+    }
+
+    /// Snapshot indexer-wide block, cache, and active-worker counts for Prometheus gauges.
+    pub fn metrics_snapshot(&self) -> (usize, usize, usize, usize, usize, usize, usize, usize) {
+        let mut index_entries = 0usize;
+        let mut hbm_blocks = 0usize;
+        let mut cpu_blocks = 0usize;
+        let mut disk_blocks = 0usize;
+        let mut offload_entries = 0usize;
+        let mut content_entries = 0usize;
+        let mut pending_pool_entries = 0usize;
+        let mut effective_dps: FxHashSet<(String, DpRank)> = FxHashSet::default();
+
+        for entry in self.entries.iter() {
+            index_entries += 1;
+            let value = entry.value();
+            let (hbm, cpu, disk) = value.tier_block_counts();
+            hbm_blocks += hbm;
+            cpu_blocks += cpu;
+            disk_blocks += disk;
+            let (offload, content, pending) = value.offload_cache_counts();
+            offload_entries += offload;
+            content_entries += content;
+            pending_pool_entries += pending;
+            effective_dps.extend(value.effective_worker_dps());
+        }
+
+        (
+            index_entries,
+            effective_dps.len(),
+            hbm_blocks,
+            cpu_blocks,
+            disk_blocks,
+            offload_entries,
+            content_entries,
+            pending_pool_entries,
+        )
     }
 
     /// Build a `QueryResponse` from per-DP absolute medium ends.

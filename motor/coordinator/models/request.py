@@ -33,20 +33,20 @@ class RequestType(Enum):
 
 
 class ReqState(Enum):
-    ARRIVE = 'Arrive'  # Request arrive
-    E_SCHEDULING = 'E_Scheduling'  # Currently scheduling E instance
-    E_ALLOCATED = 'E_Allocated'  # Allocated E instance
-    P_SCHEDULING = 'P_Scheduling'  # Currently scheduling P instance
-    P_ALLOCATED = 'P_Allocated'  # Allocated P instance
-    PREFILL_END = 'Prefill End'  # Prefill completed
+    ARRIVE = "Arrive"  # Request arrive
+    E_SCHEDULING = "E_Scheduling"  # Currently scheduling E instance
+    E_ALLOCATED = "E_Allocated"  # Allocated E instance
+    P_SCHEDULING = "P_Scheduling"  # Currently scheduling P instance
+    P_ALLOCATED = "P_Allocated"  # Allocated P instance
+    PREFILL_END = "Prefill End"  # Prefill completed
     FIRST_TOKEN_FINISH = "First Token Finish"  # nosec B105 -- request lifecycle state label, not a credential
-    D_SCHEDULING = 'D_Scheduling'  # Currently scheduling D instance
-    D_ALLOCATED = 'D_Allocated'  # Allocated D instance
-    DECODE_END = 'Decode End'  # Decode completed
-    INVALID = 'Invalid'  # Invalid state
-    TIMEOUT = 'Timeout'  # Request timeout
-    EXCEPTION = 'Exception'  # Request exception
-    RECOMPUTE = 'Recompute'  # Recomputation
+    D_SCHEDULING = "D_Scheduling"  # Currently scheduling D instance
+    D_ALLOCATED = "D_Allocated"  # Allocated D instance
+    DECODE_END = "Decode End"  # Decode completed
+    INVALID = "Invalid"  # Invalid state
+    TIMEOUT = "Timeout"  # Request timeout
+    EXCEPTION = "Exception"  # Request exception
+    RECOMPUTE = "Recompute"  # Recomputation
 
 
 class RequestInfo(BaseModel):
@@ -117,6 +117,9 @@ class RequestInfo(BaseModel):
     _hint_block_offsets_attached: bool = PrivateAttr(default=False)
     # Request lifecycle tracker attached by RequestLifecycleMiddleware for reconciliation.
     _lifecycle_tracker: object | None = PrivateAttr(default=None)
+    # KV cache selection context and idempotent attribution guard for scheduling observability.
+    _kv_obs_context: dict | None = PrivateAttr(default=None)
+    _kv_obs_recorded: bool = PrivateAttr(default=False)
     prompt_tokens_details: dict = Field(default={}, description="prefill prompt_tokens_details")
     prompt_token_ids: list = Field(default=[], description="prefill prompt_token_ids")
     cached_token_ids: list = Field(default=[], description="Cached token_ids")

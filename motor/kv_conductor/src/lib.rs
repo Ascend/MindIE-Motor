@@ -22,6 +22,7 @@ pub mod events;
 pub mod hashing;
 pub mod indexer;
 pub mod lower_tier;
+pub mod metrics;
 pub mod protocols;
 pub mod registry;
 pub mod server;

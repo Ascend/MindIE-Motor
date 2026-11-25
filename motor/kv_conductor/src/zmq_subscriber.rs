@@ -25,6 +25,7 @@ use crate::backend::MatchMode;
 use crate::error::KvConductorError;
 use crate::events::{self, PoolEvent};
 use crate::indexer::Indexer;
+use crate::metrics::{ConductorMetrics, MetricEventSource, MetricEventStatus};
 use crate::protocols::{HbmIpIndex, StorageMedium};
 
 /// Wire format emitted by the publisher connected to a subscriber.
@@ -67,6 +68,13 @@ pub struct ZmqSubscriber {
     stopped: Arc<AtomicBool>,
 }
 
+fn metric_source_for(event_source: EventSource) -> MetricEventSource {
+    match event_source {
+        EventSource::Engine => MetricEventSource::ZmqEngine,
+        EventSource::Pool => MetricEventSource::ZmqPool,
+    }
+}
+
 impl ZmqSubscriber {
     /// Create a new ZMQ subscriber and spawn a background task.
     #[allow(clippy::too_many_arguments)]
@@ -82,6 +90,38 @@ impl ZmqSubscriber {
         event_source: EventSource,
         match_mode: MatchMode,
         hbm_ip_index: Option<crate::protocols::HbmIpIndex>,
+    ) -> Result<Self, KvConductorError> {
+        Self::connect_with_metrics(
+            endpoint,
+            model_name,
+            tenant_id,
+            indexer,
+            block_size,
+            backend_id,
+            dp_rank,
+            default_media,
+            event_source,
+            match_mode,
+            hbm_ip_index,
+            None,
+        )
+    }
+
+    /// Create a new ZMQ subscriber with optional metrics reporting.
+    #[allow(clippy::too_many_arguments)]
+    pub fn connect_with_metrics(
+        endpoint: String,
+        model_name: String,
+        tenant_id: String,
+        indexer: Arc<Indexer>,
+        block_size: u32,
+        backend_id: String,
+        dp_rank: u32,
+        default_media: Vec<StorageMedium>,
+        event_source: EventSource,
+        match_mode: MatchMode,
+        hbm_ip_index: Option<crate::protocols::HbmIpIndex>,
+        metrics: Option<Arc<ConductorMetrics>>,
     ) -> Result<Self, KvConductorError> {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
@@ -108,12 +148,18 @@ impl ZmqSubscriber {
                 event_source,
                 match_mode,
                 hbm_ip_index,
+                metrics,
                 cancel_clone,
             );
             stopped_clone.store(true, Ordering::Release);
         });
 
         Ok(Self { cancel, stopped })
+    }
+
+    /// Whether the background ZMQ subscriber loop is still running.
+    pub fn is_running(&self) -> bool {
+        !self.stopped.load(Ordering::Acquire)
     }
 
     /// Cancel the subscriber and wait for its background task to exit.
@@ -188,10 +234,12 @@ fn subscriber_loop_with_reconnect(
     event_source: EventSource,
     match_mode: MatchMode,
     hbm_ip_index: Option<crate::protocols::HbmIpIndex>,
+    metrics: Option<Arc<ConductorMetrics>>,
     cancel: CancellationToken,
 ) {
     let mut retry_delay = INITIAL_RETRY_DELAY;
     let ctx = zmq::Context::new();
+    let metric_source = metric_source_for(event_source);
 
     loop {
         if cancel.is_cancelled() {
@@ -215,6 +263,7 @@ fn subscriber_loop_with_reconnect(
                     event_source,
                     match_mode,
                     hbm_ip_index.clone(),
+                    metrics.clone(),
                     cancel.clone(),
                 );
 
@@ -229,6 +278,10 @@ fn subscriber_loop_with_reconnect(
 
         if cancel.is_cancelled() {
             break;
+        }
+
+        if let Some(ref m) = metrics {
+            m.record_zmq_reconnect(metric_source);
         }
 
         tracing::warn!(
@@ -257,11 +310,14 @@ fn subscriber_loop(
     event_source: EventSource,
     match_mode: MatchMode,
     hbm_ip_index: Option<crate::protocols::HbmIpIndex>,
+    metrics: Option<Arc<ConductorMetrics>>,
     cancel: CancellationToken,
 ) {
     let mut batch_count: u64 = 0;
     let mut event_count: u64 = 0;
     let mut parse_errors: u64 = 0;
+    let mut last_seq: Option<u64> = None;
+    let metric_source = metric_source_for(event_source);
 
     loop {
         if cancel.is_cancelled() {
@@ -289,6 +345,9 @@ fn subscriber_loop(
         };
 
         if parts.len() < 3 {
+            if let Some(ref m) = metrics {
+                m.record_event(metric_source, MetricEventStatus::Dropped, 1);
+            }
             tracing::warn!(
                 %backend_id, dp_rank,
                 part_count = parts.len(),
@@ -296,6 +355,15 @@ fn subscriber_loop(
                 parts.len()
             );
             continue;
+        }
+
+        if parts[1].len() == 8 {
+            if let Some(ref m) = metrics {
+                if let Ok(seq_arr) = <[u8; 8]>::try_from(parts[1].as_slice()) {
+                    let seq = u64::from_be_bytes(seq_arr);
+                    m.observe_sequence(metric_source, &mut last_seq, seq);
+                }
+            }
         }
 
         process_payload(
@@ -310,6 +378,8 @@ fn subscriber_loop(
             event_source,
             match_mode,
             &hbm_ip_index,
+            metrics.as_deref(),
+            metric_source,
             &mut batch_count,
             &mut event_count,
             &mut parse_errors,
@@ -331,6 +401,8 @@ fn process_payload(
     event_source: EventSource,
     match_mode: MatchMode,
     hbm_ip_index: &Option<crate::protocols::HbmIpIndex>,
+    metrics: Option<&ConductorMetrics>,
+    metric_source: MetricEventSource,
     batch_count: &mut u64,
     event_count: &mut u64,
     parse_errors: &mut u64,
@@ -367,6 +439,14 @@ fn process_payload(
         // Format 3 — Memcache KvEvent batch: {"events": [PoolEvent, ...]}
         if let Ok(batch) = rmp_serde::from_slice::<events::MemcacheEventBatch>(payload_bytes) {
             *batch_count += 1;
+            let mut batch_had_error = false;
+            if let Some(m) = metrics {
+                m.record_event(
+                    metric_source,
+                    MetricEventStatus::Received,
+                    batch.events.len() as u64,
+                );
+            }
             tracing::debug!(
                 %backend_id, dp_rank,
                 num_events = batch.events.len(),
@@ -400,17 +480,38 @@ fn process_payload(
                     hbm_ip_index,
                 ) {
                     *parse_errors += 1;
+                    batch_had_error = true;
+                    if let Some(m) = metrics {
+                        m.record_event(metric_source, MetricEventStatus::ApplyError, 1);
+                    }
                     tracing::warn!(%backend_id, dp_rank, event_id = zmq_event.event_id, "{e}");
+                } else if let Some(m) = metrics {
+                    m.record_event(metric_source, MetricEventStatus::Applied, 1);
                 }
+            }
+            if let Some(m) = metrics {
+                m.record_event_batch(metric_source, !batch_had_error);
             }
         } else {
             *parse_errors += 1;
+            if let Some(m) = metrics {
+                m.record_event(metric_source, MetricEventStatus::ParseError, 1);
+                m.record_event_batch(metric_source, false);
+            }
             log_unparsed_payload(backend_id, dp_rank, payload_bytes, "kv_event dropped");
         }
     } else if event_source == EventSource::Engine {
         // Format 1 — vLLM msgspec batch: [ts, events: [...], dp_rank]
         if let Some((vllm_events, _bdp)) = events::parse_vllm_batch(payload_bytes) {
             *batch_count += 1;
+            let mut batch_had_error = false;
+            if let Some(m) = metrics {
+                m.record_event(
+                    metric_source,
+                    MetricEventStatus::Received,
+                    vllm_events.len() as u64,
+                );
+            }
             for vllm_event in &vllm_events {
                 *event_count += 1;
                 if let Err(e) = events::apply_vllm_event(
@@ -426,11 +527,24 @@ fn process_payload(
                     block_size,
                 ) {
                     *parse_errors += 1;
+                    batch_had_error = true;
+                    if let Some(m) = metrics {
+                        m.record_event(metric_source, MetricEventStatus::ApplyError, 1);
+                    }
                     tracing::warn!(%backend_id, dp_rank, "kv_event apply_error backend=vllm: {e}");
+                } else if let Some(m) = metrics {
+                    m.record_event(metric_source, MetricEventStatus::Applied, 1);
                 }
+            }
+            if let Some(m) = metrics {
+                m.record_event_batch(metric_source, !batch_had_error);
             }
         } else {
             *parse_errors += 1;
+            if let Some(m) = metrics {
+                m.record_event(metric_source, MetricEventStatus::ParseError, 1);
+                m.record_event_batch(metric_source, false);
+            }
             log_unparsed_payload(
                 backend_id,
                 dp_rank,
@@ -444,6 +558,14 @@ fn process_payload(
             rmp_serde::from_slice::<(i64, Vec<PoolEvent>, u32)>(payload_bytes)
         {
             *batch_count += 1;
+            let mut batch_had_error = false;
+            if let Some(m) = metrics {
+                m.record_event(
+                    metric_source,
+                    MetricEventStatus::Received,
+                    events_vec.len() as u64,
+                );
+            }
             tracing::debug!(
                 %backend_id, dp_rank, bdp,
                 num_events = events_vec.len(),
@@ -463,13 +585,26 @@ fn process_payload(
                     hbm_ip_index,
                 ) {
                     *parse_errors += 1;
+                    batch_had_error = true;
+                    if let Some(m) = metrics {
+                        m.record_event(metric_source, MetricEventStatus::ApplyError, 1);
+                    }
                     tracing::warn!(%backend_id, dp_rank, event_id = zmq_event.event_id, "{e}");
+                } else if let Some(m) = metrics {
+                    m.record_event(metric_source, MetricEventStatus::Applied, 1);
                 }
+            }
+            if let Some(m) = metrics {
+                m.record_event_batch(metric_source, !batch_had_error);
             }
         }
         // All array formats rejected
         else {
             *parse_errors += 1;
+            if let Some(m) = metrics {
+                m.record_event(metric_source, MetricEventStatus::ParseError, 1);
+                m.record_event_batch(metric_source, false);
+            }
             log_unparsed_payload(backend_id, dp_rank, payload_bytes, "kv_event dropped");
         }
     }
@@ -551,6 +686,34 @@ pub fn replay_events(
     match_mode: MatchMode,
     hbm_ip_index: &Option<HbmIpIndex>,
 ) {
+    replay_events_with_metrics(
+        replay_endpoint,
+        model_name,
+        tenant_id,
+        _block_size,
+        indexer,
+        backend_id,
+        event_source,
+        match_mode,
+        hbm_ip_index,
+        None,
+    );
+}
+
+/// Replay buffered KV events with optional metrics reporting.
+#[allow(clippy::too_many_arguments)]
+pub fn replay_events_with_metrics(
+    replay_endpoint: &str,
+    model_name: &str,
+    tenant_id: &str,
+    _block_size: u32,
+    indexer: &Indexer,
+    backend_id: &str,
+    event_source: EventSource,
+    match_mode: MatchMode,
+    hbm_ip_index: &Option<HbmIpIndex>,
+    metrics: Option<&ConductorMetrics>,
+) {
     let ctx = zmq::Context::new();
     let socket = match ctx.socket(zmq::DEALER) {
         Ok(s) => s,
@@ -576,6 +739,7 @@ pub fn replay_events(
 
     let mut batch_count: u64 = 0;
     let mut event_count: u64 = 0;
+    let mut last_seq: Option<u64> = None;
     loop {
         let delim = match socket.recv_msg(0) {
             Ok(m) => m,
@@ -593,6 +757,9 @@ pub fn replay_events(
 
         let seq_bytes: &[u8] = &seq_msg;
         if seq_bytes.len() != 8 {
+            if let Some(m) = metrics {
+                m.record_event(MetricEventSource::Replay, MetricEventStatus::Dropped, 1);
+            }
             tracing::warn!(%replay_endpoint, "replay: bad seq len {}", seq_bytes.len());
             break;
         }
@@ -601,6 +768,9 @@ pub fn replay_events(
             tracing::info!(%replay_endpoint, batches = batch_count, events = event_count,
                            "replay: complete");
             break;
+        }
+        if let Some(m) = metrics {
+            m.observe_sequence(MetricEventSource::Replay, &mut last_seq, seq);
         }
 
         let payload_bytes: &[u8] = &payload_msg;
@@ -621,6 +791,8 @@ pub fn replay_events(
                 event_source,
                 match_mode,
                 hbm_ip_index,
+                metrics,
+                MetricEventSource::Replay,
                 &mut batch_count,
                 &mut event_count,
                 &mut parse_errors,
@@ -631,6 +803,14 @@ pub fn replay_events(
         // Engine replay: vLLM first, then the legacy pool batch fallback.
         if let Some((vllm_events, bdp)) = events::parse_vllm_batch(payload_bytes) {
             batch_count += 1;
+            let mut batch_had_error = false;
+            if let Some(m) = metrics {
+                m.record_event(
+                    MetricEventSource::Replay,
+                    MetricEventStatus::Received,
+                    vllm_events.len() as u64,
+                );
+            }
             for vllm_event in &vllm_events {
                 event_count += 1;
                 if let Err(e) = events::apply_vllm_event(
@@ -645,13 +825,30 @@ pub fn replay_events(
                     hbm_ip_index,
                     _block_size,
                 ) {
+                    batch_had_error = true;
+                    if let Some(m) = metrics {
+                        m.record_event(MetricEventSource::Replay, MetricEventStatus::ApplyError, 1);
+                    }
                     tracing::warn!(%replay_endpoint, "replay vLLM event apply error: {e}");
+                } else if let Some(m) = metrics {
+                    m.record_event(MetricEventSource::Replay, MetricEventStatus::Applied, 1);
                 }
+            }
+            if let Some(m) = metrics {
+                m.record_event_batch(MetricEventSource::Replay, !batch_had_error);
             }
         } else if let Ok((_ts, events_vec, bdp)) =
             rmp_serde::from_slice::<(i64, Vec<PoolEvent>, u32)>(payload_bytes)
         {
             batch_count += 1;
+            let mut batch_had_error = false;
+            if let Some(m) = metrics {
+                m.record_event(
+                    MetricEventSource::Replay,
+                    MetricEventStatus::Received,
+                    events_vec.len() as u64,
+                );
+            }
             for zmq_event in &events_vec {
                 event_count += 1;
                 if let Err(e) = events::apply_pool_event(
@@ -665,11 +862,24 @@ pub fn replay_events(
                     match_mode,
                     hbm_ip_index,
                 ) {
+                    batch_had_error = true;
+                    if let Some(m) = metrics {
+                        m.record_event(MetricEventSource::Replay, MetricEventStatus::ApplyError, 1);
+                    }
                     tracing::warn!(%replay_endpoint, event_id = zmq_event.event_id,
                                    "replay apply error: {e}");
+                } else if let Some(m) = metrics {
+                    m.record_event(MetricEventSource::Replay, MetricEventStatus::Applied, 1);
                 }
             }
+            if let Some(m) = metrics {
+                m.record_event_batch(MetricEventSource::Replay, !batch_had_error);
+            }
         } else {
+            if let Some(m) = metrics {
+                m.record_event(MetricEventSource::Replay, MetricEventStatus::ParseError, 1);
+                m.record_event_batch(MetricEventSource::Replay, false);
+            }
             tracing::warn!(%replay_endpoint, "replay msgpack parse error: unknown format");
         }
     }

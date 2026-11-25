@@ -23,6 +23,10 @@ from motor.common.http.http_client import HTTPClientPool
 from motor.common.http.security_utils import sanitize_error_message
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.models.request import ReqState
+from motor.coordinator.scheduler.runtime.scheduling_obs_metrics import (
+    classify_and_record_kv_attribution,
+    mark_kv_cache_load_failed,
+)
 from motor.coordinator.render.models import TokenizedRequest
 from motor.coordinator.render.streaming_response import StreamingRenderSession
 from motor.coordinator.render.vllm_render_client import VLLMRenderClient
@@ -270,7 +274,7 @@ class PDHybridRouter(BaseRouter):
         )
 
     async def _report_cb(self, event: str) -> None:
-        iid = getattr(self, '_cb_iid', None)
+        iid = getattr(self, "_cb_iid", None)
         if iid is not None:
             await self._scheduler.report_cb_event(iid, event)
 
@@ -442,7 +446,12 @@ class PDHybridRouter(BaseRouter):
                     on_response_ready=ready_cb,
                 )
 
+            stream_usage: dict[str, Any] | None = None
             async for chunk in response_stream:
+                if b"usage" in chunk:
+                    chunk_json = adapters.parse_stream_chunk_json(chunk, self.logger)
+                    if isinstance(chunk_json, dict) and isinstance(chunk_json.get("usage"), dict):
+                        stream_usage = chunk_json["usage"]
                 yield self._process_stream_chunk_for_client(
                     chunk,
                     sampling_state=None if tokenized_requests else sampling_state,
@@ -450,6 +459,7 @@ class PDHybridRouter(BaseRouter):
                     rescheduler=(self.rescheduler if reschedule_enabled and len(tokenized_requests) <= 1 else None),
                 )
 
+            classify_and_record_kv_attribution(self.req_info, usage=stream_usage)
             self.req_info.update_state(ReqState.DECODE_END)
             await self._maybe_submit_hybrid_sample(resource, sampling_state)
             self.logger.info(trace_obj.set_end_and_ttft_tpot())
@@ -620,6 +630,8 @@ class PDHybridRouter(BaseRouter):
                             get_request_lifecycle_metrics().record_retry_duration(
                                 "pd_hybrid", time.perf_counter() - retry_started_at
                             )
+                        mark_kv_cache_load_failed(self.req_info, str(e))
+                        classify_and_record_kv_attribution(self.req_info)
                         trace_obj.set_trace_error_message(f"Streaming request failed: {e}")
                         trace_obj.set_trace_error_message(f"Streaming request failed: {e}", is_meta=True)
                         trace_obj.set_trace_prompt(req_data)
@@ -823,6 +835,10 @@ class PDHybridRouter(BaseRouter):
                             body = response.json()
 
                         self.req_info.update_state(ReqState.DECODE_END)
+                        classify_and_record_kv_attribution(
+                            self.req_info,
+                            usage=body.get("usage") if isinstance(body, dict) else None,
+                        )
 
                         if "chat" in self.req_info.effective_entry_api() and body.get("object") == "text_completion":
                             adapt_completion_nonstream_to_chat(body, req_id=self.req_info.req_id)
@@ -923,6 +939,8 @@ class PDHybridRouter(BaseRouter):
                             get_request_lifecycle_metrics().record_retry_duration(
                                 "pd_hybrid", time.perf_counter() - retry_started_at
                             )
+                        mark_kv_cache_load_failed(self.req_info, str(e))
+                        classify_and_record_kv_attribution(self.req_info)
                         self.req_info.update_state(ReqState.EXCEPTION)
                         raise
                     if isinstance(e, (UpstreamHTTPError, httpx.RequestError)) and not is_retryable_upstream_error(e):
@@ -930,6 +948,8 @@ class PDHybridRouter(BaseRouter):
                             get_request_lifecycle_metrics().record_retry_duration(
                                 "pd_hybrid", time.perf_counter() - retry_started_at
                             )
+                        mark_kv_cache_load_failed(self.req_info, str(e))
+                        classify_and_record_kv_attribution(self.req_info)
                         self.req_info.update_state(ReqState.EXCEPTION)
                         raise
                     if attempt >= max_retries - 1:
@@ -937,6 +957,8 @@ class PDHybridRouter(BaseRouter):
                             get_request_lifecycle_metrics().record_retry_duration(
                                 "pd_hybrid", time.perf_counter() - retry_started_at
                             )
+                        mark_kv_cache_load_failed(self.req_info, str(e))
+                        classify_and_record_kv_attribution(self.req_info)
                         self.logger.error("All retries failed for non-streaming decode request.")
                         self.req_info.update_state(ReqState.EXCEPTION)
                         if is_cb_reportable_failure(e):

@@ -70,6 +70,10 @@ from motor.coordinator.scheduler.runtime.agent_hint_lifecycle import (
 )
 from motor.coordinator.scheduler.runtime.builtin_endpoint_policy import get_builtin_endpoint_policy
 from motor.coordinator.scheduler.runtime.dp_stats import DpStatsLogger
+from motor.coordinator.scheduler.runtime.scheduling_obs_metrics import (
+    get_scheduling_obs_metrics,
+    record_selection_kv_context,
+)
 from motor.coordinator.scheduler.runtime.kv_usage import (
     KvUsageShmReader,
     get_endpoint_kv_cache_usage,
@@ -1644,6 +1648,9 @@ class AsyncSchedulerClient:
         )
 
         role_str = role.value if role is not None else (getattr(PDRole.ROLE_U, "value", "union"))
+        t_select_start = time.perf_counter()
+        obs_collector = get_scheduling_obs_metrics()
+        configured_policy = self._scheduler_type_for_role(role)
         await self._refresh_cache_from_workload_reader(role)
         if self._workload_reader is None or self._workload_reader.native is None:
             logger.error(
@@ -1651,6 +1658,7 @@ class AsyncSchedulerClient:
                 role_str,
                 req_info.req_id,
             )
+            obs_collector.record_select(role, configured_policy, "error", time.perf_counter() - t_select_start)
             return None
 
         builtin_policy = get_builtin_endpoint_policy(self._scheduler_type_for_role(role))
@@ -1754,6 +1762,9 @@ class AsyncSchedulerClient:
                         affinity_session_id,
                         req_info.req_id,
                     )
+                    obs_collector.record_degradation(
+                        role, "session_affinity_fallback", time.perf_counter() - t_select_start
+                    )
             elif decision.outcome in ("stale", "epoch"):
                 logger.info(
                     "session affinity %s session_id=%s req_id=%s; fallback to policy",
@@ -1761,10 +1772,14 @@ class AsyncSchedulerClient:
                     affinity_session_id,
                     req_info.req_id,
                 )
+                obs_collector.record_degradation(
+                    role, "session_affinity_fallback", time.perf_counter() - t_select_start
+                )
 
         plugin_choice = None
         plugin_runner = self._policy_runners.get(role_str)
         if _use_plugin and plugin_runner is not None and target_instance_id is None:
+            t_plugin = time.perf_counter()
             plugin_choice = await self._try_rank_external_policy(
                 role,
                 req_info,
@@ -1773,6 +1788,8 @@ class AsyncSchedulerClient:
                 set(),
                 0,
             )
+            if plugin_choice is None:
+                obs_collector.record_degradation(role, "plugin_fallback", time.perf_counter() - t_plugin)
         plugin_active = plugin_choice is not None
         if plugin_active:
             proposed_instance, proposed_endpoint, _ = plugin_choice[:3]
@@ -1796,6 +1813,7 @@ class AsyncSchedulerClient:
                     role_str,
                     req_info.req_id,
                 )
+                obs_collector.record_select(role, "pinned", "empty", time.perf_counter() - t_select_start)
                 return None
             endpoint = None
             # Review 194528817: multi-endpoint (DP) instances cache per endpoint,
@@ -1815,6 +1833,7 @@ class AsyncSchedulerClient:
                         logger.warning(
                             "Required endpoint_id=%s unavailable on instance=%s", pinned_endpoint_id, instance.id
                         )
+                        obs_collector.record_select(role, "pinned", "empty", time.perf_counter() - t_select_start)
                         return None
                     logger.info(
                         "pinned endpoint_id=%s no longer available on instance=%s; re-picking by load",
@@ -1835,6 +1854,7 @@ class AsyncSchedulerClient:
                     role_str,
                     req_info.req_id,
                 )
+                obs_collector.record_select(role, "pinned", "empty", time.perf_counter() - t_select_start)
                 return None
             candidate_policy = self._scheduler_type_for_role(role)
             candidate_endpoints = [{"instance_id": instance.id, "endpoint_id": endpoint.id}]
@@ -1848,6 +1868,7 @@ class AsyncSchedulerClient:
                 required_dispatch_capability=normalized_dispatch_capability or None,
             )
             if not candidates:
+                obs_collector.record_select(role, candidate_policy, "empty", time.perf_counter() - t_select_start)
                 return None
             proposed_instance, proposed_endpoint, _ = candidates[0]
             candidate_endpoints, global_affinity = get_builtin_endpoint_policy(candidate_policy).prepare_candidates(
@@ -1858,6 +1879,14 @@ class AsyncSchedulerClient:
                 normalized_engine_type or None,
                 normalized_dispatch_capability or None,
             )
+
+        obs_collector.record_select(
+            role,
+            "pinned" if (target_instance_id is not None and not plugin_active) else candidate_policy,
+            "ok",
+            time.perf_counter() - t_select_start,
+        )
+        t_alloc_start = time.perf_counter()
 
         demand = (
             calculate_demand_workload(role, req_info)
@@ -1887,11 +1916,13 @@ class AsyncSchedulerClient:
         use_authoritative = candidate_policy == CANDIDATE_POLICY_LOAD_BALANCE and target_instance_id is None
         native = self._workload_reader.native
         if native is None:
+            obs_collector.record_allocate(role, "failed", time.perf_counter() - t_alloc_start)
             return None
 
         for _attempt in range(_MAX_CAS_ALLOCATE_ATTEMPTS):
             # First attempt reuses the candidate-selection refresh above; later retries re-read.
             if _attempt > 0:
+                obs_collector.record_allocate(role, "retry")
                 await self._refresh_cache_from_workload_reader(role)
             if plugin_active and _attempt > 0:
                 plugin_choice = None
@@ -1907,6 +1938,7 @@ class AsyncSchedulerClient:
                 if plugin_choice is None:
                     if _attempt >= 3:
                         plugin_runner.record_fallback("cas_retry_limit")
+                    obs_collector.record_degradation(role, "plugin_fallback", time.perf_counter() - t_alloc_start)
                     logger.debug(
                         "Scheduling plugin reselect failed name=%s role=%s; using built-in strategy req_id=%s",
                         plugin_runner.config.name,
@@ -1981,6 +2013,7 @@ class AsyncSchedulerClient:
                     )
                     use_authoritative = True
             if selected is None:
+                obs_collector.record_allocate(role, "failed", time.perf_counter() - t_alloc_start)
                 return None
             out_instance, out_endpoint, selected_score = selected
             pair = (out_instance.id, out_endpoint.id)
@@ -1990,6 +2023,7 @@ class AsyncSchedulerClient:
                     target_instance_id,
                     strict_endpoint_id,
                 )
+                obs_collector.record_allocate(role, "failed", time.perf_counter() - t_alloc_start)
                 return None
             if pair in excluded:
                 use_authoritative = True
@@ -2086,6 +2120,14 @@ class AsyncSchedulerClient:
                     # binding — after the pin exists, so the promise can be written
                     # onto the shared slot (design §2.1; review 194528478).
                     self._record_cache_declaration(hint_info, affinity_session_id, getattr(role, "value", ""))
+                obs_collector.record_allocate(role, "ok", time.perf_counter() - t_alloc_start)
+                if role in (PDRole.ROLE_P, PDRole.ROLE_U):
+                    record_selection_kv_context(
+                        req_info,
+                        selected_instance_id=out_instance.id,
+                        selected_endpoint_id=out_endpoint.id,
+                        candidate_policy=candidate_policy,
+                    )
                 return (out_instance, out_endpoint, committed)
             if status == STATUS_CHANGED:
                 use_authoritative = True
@@ -2100,12 +2142,14 @@ class AsyncSchedulerClient:
                 role_str,
                 req_info.req_id,
             )
+            obs_collector.record_allocate(role, "failed", time.perf_counter() - t_alloc_start)
             return None
         logger.warning(
             "select_and_allocate exhausted CAS retries role=%s req_id=%s",
             role_str,
             req_info.req_id,
         )
+        obs_collector.record_allocate(role, "failed", time.perf_counter() - t_alloc_start)
         return None
 
     async def claim_sample(

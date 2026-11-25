@@ -329,6 +329,39 @@ _VLLM_METRIC_REGISTRY: dict[str, MetricSemanticConfig] = {
     "motor:coordinator_resource_release_duration_seconds": MetricSemanticConfig(
         semantic=MetricSemantic.HISTOGRAM_LATENCY,
     ),
+    "motor:scheduler_select_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:scheduler_select_duration_seconds": MetricSemanticConfig(
+        semantic=MetricSemantic.HISTOGRAM_LATENCY,
+    ),
+    "motor:scheduler_allocate_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:scheduler_allocate_duration_seconds": MetricSemanticConfig(
+        semantic=MetricSemantic.HISTOGRAM_LATENCY,
+    ),
+    "motor:scheduler_degradation_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:scheduler_degradation_duration_seconds": MetricSemanticConfig(
+        semantic=MetricSemantic.HISTOGRAM_LATENCY,
+    ),
+    "motor:kv_cache_miss_attribution_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:kv_cache_predicted_cached_tokens_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:kv_cache_actual_cached_tokens_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:kv_cache_actual_recompute_tokens_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
+    "motor:kv_conductor_query_timeouts_total": MetricSemanticConfig(
+        semantic=MetricSemantic.COUNTER,
+    ),
 }
 
 # Ratio pairs: derived during post-processing

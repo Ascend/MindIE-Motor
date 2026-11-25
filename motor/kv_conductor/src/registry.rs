@@ -21,6 +21,9 @@ use parking_lot::RwLock as ParkingRwLock;
 use crate::backend::{MatchMode, StoreBackend};
 use crate::error::KvConductorError;
 use crate::indexer::{CacheMaintenanceConfig, Indexer, IndexerKey};
+use crate::metrics::{
+    ConductorGaugeSnapshot, ConductorMetrics, MetricEventSource, MetricEventStatus, QueryEndpoint,
+};
 use crate::protocols::*;
 
 /// Extract the IP/host portion from a ZMQ endpoint URL.
@@ -151,6 +154,8 @@ pub struct WorkerRegistry {
     /// Built from HBM endpoint registrations; consumed by the pool subscriber
     /// to map `backend_id` in events to the correct DP(s).
     hbm_ip_index: HbmIpIndex,
+    /// Lock-free Prometheus metrics for this conductor instance.
+    metrics: Arc<ConductorMetrics>,
 }
 
 impl WorkerRegistry {
@@ -205,6 +210,7 @@ impl WorkerRegistry {
             indexer: Arc::new(Indexer::with_config(config)),
             zmq_subscribers: tokio::sync::RwLock::new(HashMap::new()),
             hbm_ip_index: Arc::new(ParkingRwLock::new(HashMap::new())),
+            metrics: Arc::new(ConductorMetrics::new()),
         }
     }
 
@@ -324,7 +330,7 @@ impl WorkerRegistry {
                 // Engine publishers expose HBM/NPU events; CPU and Disk
                 // endpoints are pool publishers and use PoolEvent wire data.
                 let event_source = crate::zmq_subscriber::event_source_for_media(default_media);
-                let sub = crate::zmq_subscriber::ZmqSubscriber::connect(
+                let sub = crate::zmq_subscriber::ZmqSubscriber::connect_with_metrics(
                     ep_url.clone(),
                     req.modelname.clone(),
                     req.tenant_id.clone(),
@@ -336,6 +342,7 @@ impl WorkerRegistry {
                     event_source,
                     match_mode,
                     ip_index.clone(),
+                    Some(Arc::clone(&self.metrics)),
                 )?;
                 subs.push((ep_url.clone(), sub));
             }
@@ -399,11 +406,12 @@ impl WorkerRegistry {
                 let indexer = Arc::clone(&self.indexer);
                 let replay_backend_id = backend_id.clone();
                 let ip_index = ip_index.clone();
+                let replay_metrics = Arc::clone(&self.metrics);
 
                 // Offload blocking ZMQ I/O to a dedicated thread so the
                 // tokio runtime worker is not starved during replay.
                 tokio::task::spawn_blocking(move || {
-                    crate::zmq_subscriber::replay_events(
+                    crate::zmq_subscriber::replay_events_with_metrics(
                         &replay_ep,
                         &modelname,
                         &tenant_id,
@@ -417,6 +425,7 @@ impl WorkerRegistry {
                         },
                         match_mode,
                         &ip_index,
+                        Some(replay_metrics.as_ref()),
                     );
                 });
             }
@@ -504,8 +513,14 @@ impl WorkerRegistry {
 
     /// Query KV cache overlap for a token sequence.
     pub async fn query(&self, req: &QueryRequest) -> Result<QueryResponse, KvConductorError> {
-        self.indexer
-            .query(&req.model, &req.tenant_id, &req.token_ids, req.block_size)
+        let (result, obs) =
+            self.indexer
+                .query_profiled(&req.model, &req.tenant_id, &req.token_ids, req.block_size);
+        if result.is_ok() {
+            self.metrics
+                .record_query_observation(QueryEndpoint::Query, &obs);
+        }
+        result
     }
 
     /// Query KV cache overlap using pre-computed block hashes.
@@ -513,13 +528,22 @@ impl WorkerRegistry {
         &self,
         req: &QueryByHashRequest,
     ) -> Result<QueryResponse, KvConductorError> {
+        let t_hash = std::time::Instant::now();
         let hashes: Vec<LocalBlockHash> = req
             .block_hashes
             .iter()
             .map(|&h| LocalBlockHash(h))
             .collect();
-        self.indexer
-            .query_by_hash(&req.model, &req.tenant_id, &hashes)
+        let hash_secs = t_hash.elapsed().as_secs_f64();
+        let (result, mut obs) =
+            self.indexer
+                .query_by_hash_profiled(&req.model, &req.tenant_id, &hashes);
+        obs.hash_secs = hash_secs;
+        if result.is_ok() {
+            self.metrics
+                .record_query_observation(QueryEndpoint::QueryByHash, &obs);
+        }
+        result
     }
 
     /// Apply a batch of KV cache events (engine-style, HTTP POST /events).
@@ -557,6 +581,11 @@ impl WorkerRegistry {
         let indexer_entry = self.indexer.get_or_create(&model_name, &tenant_id);
 
         let mut applied = 0;
+        self.metrics.record_event(
+            MetricEventSource::Http,
+            MetricEventStatus::Received,
+            events.len() as u64,
+        );
         for event in events {
             let (canonical, medium_str, backend_id_opt) = event.data.normalize();
 
@@ -590,7 +619,16 @@ impl WorkerRegistry {
                 medium,
             };
 
-            indexer_entry.apply_event(&worker, &canonical)?;
+            if let Err(err) = indexer_entry.apply_event(&worker, &canonical) {
+                self.metrics.record_event(
+                    MetricEventSource::Http,
+                    MetricEventStatus::ApplyError,
+                    1,
+                );
+                return Err(err);
+            }
+            self.metrics
+                .record_event(MetricEventSource::Http, MetricEventStatus::Applied, 1);
             applied += 1;
         }
 
@@ -620,6 +658,63 @@ impl WorkerRegistry {
     /// Access the underlying indexer (for advanced use).
     pub fn indexer(&self) -> &Arc<Indexer> {
         &self.indexer
+    }
+
+    /// Access the conductor's Prometheus metrics container.
+    pub fn metrics(&self) -> &Arc<ConductorMetrics> {
+        &self.metrics
+    }
+
+    /// Render current metrics in Prometheus text exposition format 0.0.4.
+    pub async fn render_metrics(&self) -> String {
+        let registered_workers: usize = {
+            let instances = self.instances.read().await;
+            instances.values().map(|e| e.endpoints.len()).sum()
+        };
+        let active_sub_workers: usize = {
+            let subs = self.zmq_subscribers.read().await;
+            let mut active: rustc_hash::FxHashSet<(&str, DpRank)> =
+                rustc_hash::FxHashSet::default();
+            for ((iid, dp, _), sub) in subs.iter() {
+                if sub.is_running() {
+                    active.insert((iid.as_str(), *dp));
+                }
+            }
+            active.len()
+        };
+        let (
+            index_entries,
+            indexed_workers,
+            hbm_blocks,
+            cpu_blocks,
+            disk_blocks,
+            offload_entries,
+            content_entries,
+            pending_pool_entries,
+        ) = {
+            // The snapshot walks every index entry. Keep that off the async
+            // worker so a Prometheus scrape cannot stall /query.
+            let indexer = Arc::clone(&self.indexer);
+            tokio::task::spawn_blocking(move || indexer.metrics_snapshot())
+                .await
+                .unwrap_or_default()
+        };
+
+        let effective_workers = indexed_workers.max(active_sub_workers);
+        let total_blocks = hbm_blocks + cpu_blocks + disk_blocks;
+        let snapshot = ConductorGaugeSnapshot {
+            registered_workers,
+            effective_workers,
+            index_entries,
+            hbm_blocks,
+            cpu_blocks,
+            disk_blocks,
+            offload_entries,
+            content_entries,
+            pending_pool_entries,
+            index_valid: total_blocks > 0 && effective_workers > 0,
+        };
+        self.metrics.render(&snapshot)
     }
 
     /// Sweep stale caches and reclaim indexers which have no active registration.
@@ -789,5 +884,20 @@ mod tests {
         assert_eq!(extract_ip_from_endpoint("invalid"), None);
         assert_eq!(extract_ip_from_endpoint("tcp://"), None);
         assert_eq!(extract_ip_from_endpoint("tcp://[:5557"), None);
+    }
+
+    #[tokio::test]
+    async fn query_without_indexer_does_not_count_tier_miss() {
+        let registry = WorkerRegistry::new();
+        let req = QueryRequest {
+            model: "missing-model".into(),
+            block_size: 4,
+            token_ids: vec![1, 2, 3, 4],
+            tenant_id: "tenant".into(),
+        };
+        assert!(registry.query(&req).await.is_err());
+        let text = registry.metrics.render(&ConductorGaugeSnapshot::default());
+        assert!(text.contains("kv_conductor_tier_queries_total{tier=\"hbm\",result=\"miss\"} 0"));
+        assert!(text.contains("kv_conductor_tier_queries_total{tier=\"any\",result=\"miss\"} 0"));
     }
 }

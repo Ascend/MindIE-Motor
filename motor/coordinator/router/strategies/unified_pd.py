@@ -33,6 +33,11 @@ from motor.coordinator.domain import (
 )
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import RequestInfo, ReqState
+from motor.coordinator.scheduler.runtime.scheduling_obs_metrics import (
+    classify_and_record_kv_attribution,
+    is_cache_load_failure_signal,
+    mark_kv_cache_load_failed,
+)
 from motor.coordinator.render.models import TokenizedRequest
 from motor.coordinator.render.streaming_response import StreamingDerenderProcessor, StreamingRenderSession
 from motor.coordinator.render.vllm_render_client import VLLMRenderClient
@@ -281,6 +286,13 @@ class UnifiedPDRouter(BaseRouter):
 
     def _record_prefill_complete(self, body: dict[str, Any]) -> None:
         self._capture_prompt_tokens_details(body)
+        usage = body.get("usage") if isinstance(body, dict) else None
+        if not isinstance(usage, dict) and isinstance(body, dict) and isinstance(body.get("payload"), dict):
+            usage = body["payload"].get("usage")
+        details = usage.get("prompt_tokens_details") if isinstance(usage, dict) else None
+        cached = details.get("cached_tokens") if isinstance(details, dict) else None
+        if isinstance(cached, int) and not isinstance(cached, bool):
+            classify_and_record_kv_attribution(self.req_info, usage=usage)
         self.req_info.update_state(ReqState.PREFILL_END)
 
     def _record_bootstrap_prefill_response(
@@ -599,8 +611,13 @@ class UnifiedPDRouter(BaseRouter):
                                 self._resource_label(attempt.decode_resource),
                             )
                         attempt.transition(AttemptState.DISPATCHING)
+                        stream_usage: dict[str, Any] | None = None
                         async with aclosing(self._run_stream_attempt(attempt, coordination_mode)) as attempt_stream:
                             async for chunk in attempt_stream:
+                                if isinstance(chunk, (bytes, bytearray)) and b"usage" in chunk:
+                                    chunk_json = parse_stream_chunk_json(chunk, self.logger)
+                                    if isinstance(chunk_json, dict) and isinstance(chunk_json.get("usage"), dict):
+                                        stream_usage = chunk_json["usage"]
                                 render_attempt_visible = True
                                 attempt.transition(AttemptState.FIRST_VISIBLE)
                                 yield chunk
@@ -618,6 +635,7 @@ class UnifiedPDRouter(BaseRouter):
                             get_request_lifecycle_metrics().record_retry_recovered(
                                 "unified_pd", time.perf_counter() - retry_started_at
                             )
+                        classify_and_record_kv_attribution(self.req_info, usage=stream_usage)
                         if render_session is not None:
                             render_session.finish_attempt(True)
                         self.logger.info(trace_obj.set_end_and_ttft_tpot())
@@ -726,6 +744,10 @@ class UnifiedPDRouter(BaseRouter):
                                 "unified_pd", time.perf_counter() - retry_started_at
                             )
                         self._merge_prompt_tokens_details(body)
+                        classify_and_record_kv_attribution(
+                            self.req_info,
+                            usage=body.get("usage") if isinstance(body, dict) else None,
+                        )
                         if "chat" in self.req_info.effective_entry_api() and is_completion_like_body(body):
                             adapt_completion_nonstream_to_chat(body, req_id=self.req_info.req_id)
                         self._strip_native_internal_fields_from_body(body, attempt)
@@ -790,12 +812,15 @@ class UnifiedPDRouter(BaseRouter):
         else:
             reason = AttemptStopReason.PEER_FAILED
             reason_str = str(error)
+            mark_kv_cache_load_failed(self.req_info, reason_str)
             retry = allow_retry and attempt_index < max_retry - 1
             if isinstance(error, (HTTPException, MissingMessagesPrefillKVError)):
                 retry = False
             elif isinstance(error, (UpstreamHTTPError, httpx.RequestError)):
                 retry = retry and is_retryable_upstream_error(error)
             label = f"Unified PD exception {attempt_index}/{max_retry}"
+        if not retry:
+            classify_and_record_kv_attribution(self.req_info)
 
         if attempt:
             error_msg = str(
@@ -2520,6 +2545,8 @@ class UnifiedPDRouter(BaseRouter):
             except asyncio.CancelledError:  # pylint: disable=try-except-raise
                 raise
             except Exception as e:
+                if is_cache_load_failure_signal(e):
+                    classify_and_record_kv_attribution(self.req_info, cache_load_failed=True)
                 if is_cb_reportable_failure(e):
                     await self._scheduler.report_cb_event(p_instance_id, "failure")
                 raise

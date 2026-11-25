@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 import msgspec
+import requests
 
 from motor.common.logger import get_logger
 from motor.common.resources.instance import Instance, Endpoint, PDRole
@@ -725,6 +726,10 @@ class ConductorApiClient:
                 cls._query_failures = 0  # reset on success
                 return parsed
         except Exception as e:
+            if isinstance(e.__cause__, requests.exceptions.Timeout):
+                from motor.coordinator.scheduler.runtime.scheduling_obs_metrics import get_scheduling_obs_metrics
+
+                get_scheduling_obs_metrics().record_conductor_query_timeout()
             cls._query_failures += 1
             if cls._query_failures >= cls._QUERY_CB_THRESHOLD:
                 cls._query_cool_until = time.time() + cls._QUERY_CB_COOLDOWN

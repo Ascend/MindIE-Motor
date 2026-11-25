@@ -75,6 +75,10 @@ from motor.coordinator.metrics.request_lifecycle_metrics import (
     RequestLifecycleMiddleware,
     get_request_lifecycle_metrics,
 )
+from motor.coordinator.scheduler.runtime.scheduling_obs_metrics import (
+    DEFAULT_SCHED_OBS_SHM_NAME,
+    get_scheduling_obs_metrics,
+)
 from motor.coordinator.tracer.tracing import TracerManager
 
 logger = get_logger(__name__)
@@ -394,6 +398,7 @@ class InferenceServer(BaseCoordinatorServer):
                 self._kvc_metrics_writer = None
         get_request_lifecycle_metrics().attach_shm_writer(f"{DEFAULT_REQ_LIFECYCLE_SHM_NAME}_{worker_index}")
         self._inference_app.add_middleware(RequestLifecycleMiddleware)
+        get_scheduling_obs_metrics().attach_shm_writer(f"{DEFAULT_SCHED_OBS_SHM_NAME}_{worker_index}")
         self._register_routes()
 
     @property
@@ -551,6 +556,7 @@ class InferenceServer(BaseCoordinatorServer):
                     logger.warning("KVC metrics shm close failed: %s", e)
                 self._kvc_metrics_writer = None
             get_request_lifecycle_metrics().detach_shm_writer()
+            get_scheduling_obs_metrics().detach_shm_writer()
             await self._scheduler_connection.disconnect()
 
     def verify_api_key(self, request: Request) -> None:
@@ -586,7 +592,7 @@ class InferenceServer(BaseCoordinatorServer):
         if rate_limit_config.provider == "olc":
             try:
                 path = rate_limit_config.olc_config_path
-                os.environ['OLC_CONFIG_PATH'] = path
+                os.environ["OLC_CONFIG_PATH"] = path
                 from olc.adapters.fastapi import OlcAdapterConfig, OlcFastAPIAdapter
 
                 adapter_config = OlcAdapterConfig(tag_extractor=self._extract_tags_from_request)

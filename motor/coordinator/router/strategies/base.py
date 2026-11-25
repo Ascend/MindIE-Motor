@@ -62,6 +62,7 @@ from motor.coordinator.domain.scheduling import InstanceReadiness
 from motor.coordinator.metrics.request_lifecycle_metrics import (
     get_request_lifecycle_metrics,
 )
+from motor.coordinator.scheduler.runtime.scheduling_obs_metrics import classify_and_record_kv_attribution
 
 logger = get_logger(__name__)
 
@@ -253,6 +254,12 @@ class BaseRouter(ABC):
         try:
             yield
         finally:
+            try:
+                classify_and_record_kv_attribution(self.req_info)
+            except Exception as e:
+                self.logger.warning(
+                    "KV attribution failed during request cleanup req_id=%s: %s", self.req_info.req_id, e
+                )
             with CancelScope(shield=True):
                 await self._reclaim_residual_workloads()
                 await self._request_manager.del_req_info(self.req_info.req_id)
@@ -581,7 +588,7 @@ class BaseRouter(ABC):
         on_response_ready: Callable[[], None] | None = None,
     ) -> AsyncGenerator[str, None]:
         trace_obj = self.req_info.trace_obj
-        headers = {'Content-Type': 'application/json', 'X-Request-Id': self._forward_request_id(req_data)}
+        headers = {"Content-Type": "application/json", "X-Request-Id": self._forward_request_id(req_data)}
         trace_obj.set_trace_attribute("server.path", api, self.is_meta)
         headers.update(trace_obj.get_trace_headers_dict(self.is_meta))
 
