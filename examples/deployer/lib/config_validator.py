@@ -21,7 +21,6 @@ from lib.generator.infer_service import get_infer_role, _find_infer_service_set_
 from lib.generator.k8s_utils import get_accelerator_type_from_cluster, get_deploy_mode_from_config
 from lib.update_config_whitelist import collect_changed_paths
 
-
 PD_SEPARATION_DEPLOY_KEYS = {
     C.P_INSTANCES_NUM,
     C.D_INSTANCES_NUM,
@@ -198,7 +197,7 @@ def validate_pd_hybrid_infer_service_template(user_config, infer_service_templat
     """Require union role in InferServiceSet template when PD hybrid uses CRD deploy mode."""
     deploy_config = user_config.get(C.MOTOR_DEPLOY_CONFIG, {})
     deploy_mode = deploy_config.get(C.DEPLOY_MODE_CONFIG_KEY, C.DEPLOY_MODE_INFER_SERVICE_SET)
-    if deploy_mode == C.DEPLOY_MODE_MULTI_DEPLOYMENT_YAML:
+    if deploy_mode in (C.DEPLOY_MODE_MULTI_DEPLOYMENT_YAML, C.DEPLOY_MODE_RBG):
         return
     if not os.path.exists(infer_service_template_path):
         raise FileNotFoundError(

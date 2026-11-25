@@ -8,6 +8,22 @@ if [[ -z "$NAMESPACE" ]]; then
   exit 1
 fi
 
+if [[ "${MOTOR_DEPLOY_MODE:-}" == "rbg" ]]; then
+  SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  WORKDIR=${WORKDIR:-"$SCRIPT_DIR/../deployer"}
+  (
+    cd "$WORKDIR"
+    python3 - "$NAMESPACE" <<'PY'
+import sys
+from lib.rbg.lifecycle import cleanup_rbg
+
+cleanup_rbg(sys.argv[1])
+PY
+  )
+  echo "RBG cleanup completed for namespace: $NAMESPACE"
+  exit 0
+fi
+
 echo "Cleaning resources in namespace: $NAMESPACE"
 
 kubectl delete configmap motor-config -n "$NAMESPACE" --ignore-not-found=true

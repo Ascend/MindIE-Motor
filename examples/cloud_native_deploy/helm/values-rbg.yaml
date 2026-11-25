@@ -1,0 +1,83 @@
+operation: deploy
+userConfig: |
+  {
+    "version": "v2.0",
+    "motor_deploy_config": {
+      "p_instances_num": 1,
+      "d_instances_num": 1,
+      "single_p_instance_pod_num": 1,
+      "single_d_instance_pod_num": 1,
+      "p_pod_npu_num": 16,
+      "d_pod_npu_num": 16,
+      "image_name": "",
+      "job_id": "mindie",
+      "hardware_type": "800I_A3",
+      "deploy_mode": "rbg",
+      "weight_mount_path": "/mnt/weight/",
+      "scheduling_queue": "default",
+      "coordinator_service_name": "mindie-motor-coordinator-infer",
+      "coordinator_infer_node_port": "-",
+      "controller_node_selector": {},
+      "coordinator_node_selector": {},
+      "encode_node_selector": {},
+      "prefill_node_selector": {
+        "node-role.kubernetes.io/prefill": "true"
+      },
+      "decode_node_selector": {
+        "node-role.kubernetes.io/decode": "true"
+      },
+      "kv_pool_node_selector": {},
+      "kv_conductor_node_selector": {},
+      "rbg_config": {
+        "name": "vllm",
+        "logical_service_name": "vllm",
+        "gang_scheduling": true,
+        "scheduler_name": "volcano"
+      }
+    },
+    "motor_controller_config": {},
+    "motor_coordinator_config": {},
+    "motor_engine_prefill_config": {
+      "engine_type": "vllm",
+      "motor_nodemanger_config": {},
+      "enable_multi_endpoints": true,
+      "model_config": {
+        "model_name": "qwen3-8B",
+        "model_path": "/mnt/weight/qwen3_8B",
+        "npu_mem_utils": 0.9,
+        "parallel_config": {
+          "dp_size": 1,
+          "tp_size": 2,
+          "pp_size": 1,
+          "enable_ep": false,
+          "dp_rpc_port": 9000,
+          "world_size": 4
+        }
+      },
+      "engine_config": {
+        "enforce-eager": true,
+        "max_model_len": 2048
+      }
+    },
+    "motor_engine_decode_config": {
+      "engine_type": "vllm",
+      "motor_nodemanger_config": {},
+      "enable_multi_endpoints": true,
+      "model_config": {
+        "model_name": "qwen3-8B",
+        "model_path": "/mnt/weight/qwen3_8B",
+        "npu_mem_utils": 0.9,
+        "parallel_config": {
+          "dp_size": 1,
+          "tp_size": 2,
+          "pp_size": 1,
+          "enable_ep": false,
+          "dp_rpc_port": 9000,
+          "world_size": 4
+        }
+      },
+      "engine_config": {
+        "max_model_len": 2048
+      }
+    }
+  }

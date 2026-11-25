@@ -470,7 +470,7 @@ def get_rbg_scaling_current(rbg: dict) -> dict:
         raise ValueError("RBG scaling snapshot requires a managed RBG")
 
     def query(resource: str, object_name: str | None = None) -> dict | list[dict] | None:
-        args = ["kubectl", f"--request-timeout={C.RBG_KUBECTL_REQUEST_TIMEOUT}", "get", resource]
+        args = ["kubectl", "get", resource]
         if object_name:
             args.extend([object_name, "--ignore-not-found=true"])
         output = run_cmd_get_output([*args, "-n", namespace, "-o", "json"])

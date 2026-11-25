@@ -29,6 +29,8 @@ import time
 
 from tqdm import tqdm
 
+import lib.constant as C
+
 
 def _detect_cmd(name: str, fallback: str) -> str:
     """Return the absolute path of *name*, falling back if not on PATH."""
@@ -299,16 +301,56 @@ def engine_pod_name_pattern(service: str = "") -> str:
     return "vllm-"
 
 
-def shell_get_pod(name_space: str):
-    """Get list of Running engine pods in *name_space*.
+def engine_pods(namespace: str, rbg_name: str) -> dict[str, str]:
+    """Return Running engine Pod names and UIDs; API failures remain errors."""
+    import json
+
+    executable = shutil.which("kubectl")
+    if executable is None:
+        raise FileNotFoundError("kubectl is required for RBG Pod discovery")
+    result = subprocess.run(
+        [
+            executable,
+            "get",
+            "pods",
+            "-n",
+            namespace,
+            "-l",
+            f"{C.RBG_GROUP_LABEL}={rbg_name}",
+            "-o",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+    )
+    records = {}
+    for pod in json.loads(result.stdout)["items"]:
+        meta = pod["metadata"]
+        if (
+            meta.get("labels", {}).get(C.RBG_ROLE_LABEL) in {"prefill", "decode", "encode", "union"}
+            and not meta.get("deletionTimestamp")
+            and pod.get("status", {}).get("phase") == "Running"
+        ):
+            records[meta["name"]] = meta["uid"]
+    return records
+
+
+def shell_get_pod(name_space: str, rbg_name: str | None = None):
+    """Get list of Running vLLM engine pods in *name_space*.
 
     Returns:
-        List of pod names, or ``None`` on error.
+        List of pod names, or ``None`` on query error. An empty RBG name is invalid.
     """
     from lib.service_identity import service_name  # pylint: disable=import-outside-toplevel
 
     name_pattern = engine_pod_name_pattern(service_name())
+    if rbg_name is not None and not rbg_name.strip():
+        raise ValueError("rbg_name must be nonempty; use None for legacy Pod discovery")
     try:
+        if rbg_name is not None:
+            return list(engine_pods(name_space, rbg_name))
         with (
             subprocess.Popen(
                 [CMD_KUBECTL, 'get', 'pods', '-n', name_space],
@@ -350,7 +392,7 @@ def update_log_display(len_list_pod: int, pod_num: int) -> None:
 # ------------------------------------------------------------------
 
 
-def start_monitor(name_space: str, pod_num: int) -> None:
+def start_monitor(name_space: str, pod_num: int, rbg_name: str | None = None) -> None:
     """Wait for pods to be ready, then start tqdm-based progress monitoring.
 
     Continuously checks for Running vLLM pods until the expected count is
@@ -360,7 +402,7 @@ def start_monitor(name_space: str, pod_num: int) -> None:
     print("━" * SEPARATOR_WIDTH)
     while True:
         time.sleep(1)
-        list_pod = shell_get_pod(name_space)
+        list_pod = shell_get_pod(name_space, rbg_name) if rbg_name is not None else shell_get_pod(name_space)
         if list_pod is None:
             continue
         update_log_display(len(list_pod), pod_num)

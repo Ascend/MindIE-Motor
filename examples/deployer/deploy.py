@@ -70,11 +70,8 @@ from lib.config_validator import (
     validate_template_spec,
 )
 from lib.container_snapshot import resolve_infer_service_template, validate_container_snapshot_config
+from lib.runtime_env import apply_decode_timeout
 
-_MOONCAKE_ABORT_TIMEOUT_ENV = "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT"
-_PREFILL_ENV_SECTION = "motor_engine_prefill_env"
-_EXCEPTION_CONFIG = "exception_config"
-_DECODE_STREAM_TIMEOUT_KEY = "decode_first_token_timeout"
 _DEPLOYMENT_PRECHECK_MESSAGE = (
     "Deployment pre-check requires attention.\n"
     "The following items are not configured:\n"
@@ -109,45 +106,17 @@ def sync_decode_first_token_timeout_from_env(user_config: dict, env_config_path:
         return
 
     env_config = read_json(env_config_path)
-    common_env = env_config.get(C.MOTOR_COMMON_ENV, {})
-    prefill_env = env_config.get(_PREFILL_ENV_SECTION, {})
-    if not isinstance(common_env, dict) or not isinstance(prefill_env, dict):
-        return
-    if _MOONCAKE_ABORT_TIMEOUT_ENV in prefill_env:
-        source_section = _PREFILL_ENV_SECTION
-        raw_timeout = prefill_env[_MOONCAKE_ABORT_TIMEOUT_ENV]
-    elif _MOONCAKE_ABORT_TIMEOUT_ENV in common_env:
-        source_section = C.MOTOR_COMMON_ENV
-        raw_timeout = common_env[_MOONCAKE_ABORT_TIMEOUT_ENV]
-    else:
-        return
-
-    if isinstance(raw_timeout, bool):
-        raise ValueError(f"{source_section}.{_MOONCAKE_ABORT_TIMEOUT_ENV} must be a positive integer")
-    try:
-        timeout = int(raw_timeout)
-    except (TypeError, ValueError) as error:
-        raise ValueError(f"{source_section}.{_MOONCAKE_ABORT_TIMEOUT_ENV} must be a positive integer") from error
-    if timeout <= 0 or str(raw_timeout).strip() != str(timeout):
-        raise ValueError(f"{source_section}.{_MOONCAKE_ABORT_TIMEOUT_ENV} must be a positive integer")
-
-    coordinator_config = user_config.setdefault(C.MOTOR_COORDINATOR_CONFIG, {})
-    exception_config = coordinator_config.setdefault(_EXCEPTION_CONFIG, {})
-    exception_config[_DECODE_STREAM_TIMEOUT_KEY] = timeout
-    logger.info(
-        "Set %s.%s.%s to %s from %s.%s",
-        C.MOTOR_COORDINATOR_CONFIG,
-        _EXCEPTION_CONFIG,
-        _DECODE_STREAM_TIMEOUT_KEY,
-        timeout,
-        source_section,
-        _MOONCAKE_ABORT_TIMEOUT_ENV,
-    )
+    apply_decode_timeout(user_config, env_config)
 
 
 def handle_update_config(user_config):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
-    baseline_config = get_baseline_config_from_configmap(deploy_config[C.CONFIG_JOB_ID])
+    if resolve_deploy_mode_for_services(deploy_config) == C.DEPLOY_MODE_RBG:
+        from lib.rbg.lifecycle import get_rbg_baseline_config
+
+        baseline_config = get_rbg_baseline_config(user_config)
+    else:
+        baseline_config = get_baseline_config_from_configmap(deploy_config[C.CONFIG_JOB_ID])
     if baseline_config is None:
         raise FileNotFoundError(
             "ConfigMap motor-config not found or has no user_config in cluster. "
@@ -172,17 +141,27 @@ def handle_update_config(user_config):
     user_config = apply_whitelist_update(user_config, baseline_config)
 
     effective_mode = resolve_deploy_mode_for_services(baseline_deploy)
-    create_motor_config_configmap(
-        deploy_config[C.CONFIG_JOB_ID],
-        user_config=user_config,
-        effective_deploy_mode=effective_mode,
-    )
+    if effective_mode == C.DEPLOY_MODE_RBG:
+        from lib.rbg.lifecycle import update_rbg_runtime_config  # pylint: disable=no-name-in-module
+
+        update_rbg_runtime_config(user_config, baseline_config)
+    else:
+        create_motor_config_configmap(
+            deploy_config[C.CONFIG_JOB_ID],
+            user_config=user_config,
+            effective_deploy_mode=effective_mode,
+        )
     logger.info("Configmap refreshed.")
 
 
 def handle_update_instance_num(user_config, env_config_path=None):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
-    baseline_config = get_baseline_config_from_configmap(deploy_config[C.CONFIG_JOB_ID])
+    if resolve_deploy_mode_for_services(deploy_config) == C.DEPLOY_MODE_RBG:
+        from lib.rbg.lifecycle import get_rbg_baseline_config
+
+        baseline_config = get_rbg_baseline_config(user_config)
+    else:
+        baseline_config = get_baseline_config_from_configmap(deploy_config[C.CONFIG_JOB_ID])
     if baseline_config is None:
         raise FileNotFoundError("ConfigMap motor-config not found. Please deploy once before scaling.")
     sync_decode_first_token_timeout_from_env(user_config, env_config_path)
@@ -205,11 +184,18 @@ def handle_update_instance_num(user_config, env_config_path=None):
     update_engine_base_name(user_config)
     update_a5_host_nic_overlay_from_env(env_config_path)
     update_host_ipc_from_env(env_config_path)
-    set_env_to_shell(user_config, env_config_path, deploy_mode_arg)
+    if deploy_mode_arg != C.DEPLOY_MODE_RBG:
+        set_env_to_shell(user_config, env_config_path, deploy_mode_arg)
 
     k8s_utils.g_generate_yaml_list = []
     paths = get_deploy_paths()
 
+    if deploy_mode_arg == C.DEPLOY_MODE_RBG:
+        from lib.rbg.lifecycle import update_rbg_instance_num  # pylint: disable=no-name-in-module
+
+        update_rbg_instance_num(user_config, baseline_config)
+        logger.info("instance num update end.")
+        return
     if deploy_mode_arg == C.DEPLOY_MODE_SINGLE_CONTAINER:
         generate_yaml_single_container(
             paths["single_container_input_yaml"], paths["single_container_output_yaml"], user_config
@@ -396,9 +382,9 @@ def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collec
     update_host_ipc_from_env(env_config_path)
 
     deploy_mode_arg = resolve_deploy_mode_for_services(deploy_config)
-    if not dry_run:
+    if not dry_run and deploy_mode_arg != C.DEPLOY_MODE_RBG:
         set_env_to_shell(user_config, env_config_path, deploy_mode_arg)
-    else:
+    elif dry_run:
         logger.info("dry-run: skip set_env_to_shell")
 
     if deploy_mode_arg != C.DEPLOY_MODE_SINGLE_CONTAINER and not dry_run:
@@ -411,6 +397,10 @@ def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collec
         deploy_services_single_container(paths, user_config, dry_run=dry_run)
     elif deploy_mode_arg == C.DEPLOY_MODE_INFER_SERVICE_SET:
         deploy_services_infer_service_set(paths, user_config, dry_run=dry_run)
+    elif deploy_mode_arg == C.DEPLOY_MODE_RBG:
+        from lib.rbg.lifecycle import deploy_services_rbg  # pylint: disable=no-name-in-module
+
+        deploy_services_rbg(user_config, env_config_path, dry_run=dry_run)
     else:
         deploy_services_multi_yaml(paths, user_config, dry_run=dry_run)
 
@@ -423,7 +413,7 @@ def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collec
                 [paths["single_container_output_yaml"]],
                 dry_run=True,
             )
-        else:
+        elif deploy_mode_arg != C.DEPLOY_MODE_RBG:
             resolve_nodeports_for_yaml_files(
                 deploy_config,
                 k8s_utils.g_generate_yaml_list,
@@ -608,7 +598,13 @@ def start_monitoring(user_config):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     name_space = deploy_config[C.CONFIG_JOB_ID]
     pod_cnt = calculate_pod_count(deploy_config)
-    start_monitor(name_space, pod_cnt)
+    if resolve_deploy_mode_for_services(deploy_config) == C.DEPLOY_MODE_RBG:
+        from lib.rbg.config import deployment_settings
+
+        settings = deployment_settings(user_config)
+        start_monitor(name_space, pod_cnt, rbg_name=settings["rbg_name"])
+    else:
+        start_monitor(name_space, pod_cnt)
 
 
 def main():
@@ -622,7 +618,11 @@ def main():
         return
 
     if args.update_scaling_policy:
-        update_scaling_policy(args.update_scaling_policy)
+        update_scaling_policy(
+            args.update_scaling_policy,
+            dry_run=args.dry_run,
+            other_update=args.update_config or args.update_instance_num,
+        )
         return
 
     # No configuration at all → launch TUI directly (undeployed mode)
@@ -654,6 +654,11 @@ def main():
             f"Invalid user config {user_config_path}: expected a JSON object, got {type(user_config).__name__}"
         )
         sys.exit(1)
+    if user_config.get(C.MOTOR_DEPLOY_CONFIG, {}).get(C.DEPLOY_MODE_CONFIG_KEY) == C.DEPLOY_MODE_RBG:
+        if args.update_config and args.update_instance_num:
+            raise ValueError("RBG requires selecting only one update operation")
+        if args.dry_run and (args.update_config or args.update_instance_num):
+            raise ValueError("RBG --dry-run supports the deployment command only")
     if not args.skip_check and not is_security_configured(user_config):
         print(_DEPLOYMENT_PRECHECK_MESSAGE, file=sys.stderr)
         sys.exit(1)
@@ -668,8 +673,9 @@ def main():
     validate_container_snapshot_config(user_config)
     if C.HYBRID_INSTANCES_NUM in user_config.get(C.MOTOR_DEPLOY_CONFIG, {}):
         validate_pd_hybrid_config(user_config)
-        paths = get_deploy_paths()
-        validate_pd_hybrid_infer_service_template(user_config, resolve_infer_service_template(paths, user_config))
+        if resolve_deploy_mode_for_services(user_config[C.MOTOR_DEPLOY_CONFIG]) == C.DEPLOY_MODE_INFER_SERVICE_SET:
+            paths = get_deploy_paths()
+            validate_pd_hybrid_infer_service_template(user_config, resolve_infer_service_template(paths, user_config))
     validate_instance_nums(user_config)
 
     if args.update_config:

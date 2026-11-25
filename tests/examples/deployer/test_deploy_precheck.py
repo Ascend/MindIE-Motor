@@ -110,7 +110,7 @@ def test_main_updates_scaling_policy_without_deploy_config(monkeypatch):
         "argv",
         ["deploy.py", "--update_scaling_policy", "policy.json"],
     )
-    monkeypatch.setattr(deploy_module, "update_scaling_policy", updated.append)
+    monkeypatch.setattr(deploy_module, "update_scaling_policy", lambda path, **options: updated.append(path))
 
     deploy_module.main()
 

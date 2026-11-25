@@ -732,7 +732,7 @@ def check_rbg_nodeports(services: list[dict], *, current: dict[str, dict]) -> No
         return
     try:
         result = subprocess.run(
-            [_KUBECTL, f"--request-timeout={C.RBG_KUBECTL_REQUEST_TIMEOUT}", "get", "services", "-A", "-o", "json"],
+            [_KUBECTL, "get", "services", "-A", "-o", "json"],
             capture_output=True,
             text=True,
             check=False,

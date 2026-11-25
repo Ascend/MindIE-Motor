@@ -14,6 +14,17 @@ if [ "$ROLE" != "encode" ] && [ "$ROLE" != "prefill" ] && [ "$ROLE" != "decode" 
     exit 1
 fi
 
+# RBG uses a Downward API RI ordinal; fail before starting an incorrectly grouped member.
+if [ "${MOTOR_DEPLOY_MODE:-}" = "rbg" ]; then
+    case "${INSTANCE_INDEX:-}" in
+        ''|*[!0-9]*) echo "Error: RBG requires a numeric INSTANCE_INDEX" >&2; exit 1 ;;
+    esac
+    if [ "${INFER_SERVICE_INDEX:-}" != "0" ] || [ "${INSTANCE_ROLE:-}" != "$ROLE" ] || [ -z "${JOB_NAME:-}" ]; then
+        echo "Error: invalid RBG Motor instance identity" >&2
+        exit 1
+    fi
+fi
+
 # set up kv store backend
 case "${KV_STORE_BACKEND:-}" in
     mooncake) gen_kv_store_config ;;

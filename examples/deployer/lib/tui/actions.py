@@ -48,6 +48,17 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
     # Pod re-scan (picks up pods that appear after initial discovery)
     # ------------------------------------------------------------------
 
+    def _rbg_pods(self) -> dict[str, str] | None:
+        if self.user_config.get(C.MOTOR_DEPLOY_CONFIG, {}).get("deploy_mode") != C.DEPLOY_MODE_RBG:
+            return None
+
+        from lib.rbg.config import deployment_settings
+
+        from .step import engine_pods
+
+        settings = deployment_settings(self.user_config)
+        return engine_pods(self.namespace, settings["rbg_name"])
+
     @staticmethod
     def _pod_prefix(pod_name: str) -> str:
         """Return the role prefix of a Kubernetes pod name.
@@ -69,6 +80,16 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
         """
         from .step import shell_get_pod  # pylint: disable=import-outside-toplevel
 
+        try:
+            records = self._rbg_pods()
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            self._set_status(f"RBG Pod discovery failed: {exc}", 3.0)
+            return
+        if records is not None:
+            if records != getattr(self, "_rbg_pod_uids", {}):
+                # Cancel and join old tails before starting a same-name replacement Pod.
+                self._start_progress_monitor()
+            return
         new_pods = shell_get_pod(self.namespace)
         if not new_pods:
             return
@@ -218,15 +239,32 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
         if self._ctx is None:
             return
 
+        # Keep the current monitors alive if discovery is temporarily unavailable.
+        try:
+            records = self._rbg_pods()
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            self._set_status(f"RBG Pod discovery failed: {exc}", 3.0)
+            return
+
         # Wipe stale state from any previous run.
         # _cleanup_monitors SETS the cancel event to stop old threads;
         # clear it AFTER so new threads start with a fresh event.
+        if records is not None:
+            old_threads = list(self._monitor_threads)
+            if hasattr(self, "_progress_monitor"):
+                self._progress_monitor.cancel()
         self._cleanup_monitors()
+        if records is not None and any(thread.is_alive() for thread in old_threads):
+            self._monitor_threads.extend(thread for thread in old_threads if thread.is_alive())
+            self._set_status("Waiting for previous Pod log monitors to stop", 2.0)
+            return
         self._cancel_event.clear()
 
-        list_pod = shell_get_pod(self.namespace)
+        if records is not None:
+            self._rbg_pod_uids = records
+        list_pod = list(records) if records is not None else shell_get_pod(self.namespace)
 
-        if not list_pod:
+        if not list_pod and records is None:
             self._set_status(
                 f"{C.Style.RED}✗ No pods found in {self.namespace}.{C.Style.RESET}",
                 2.0,
@@ -560,12 +598,18 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
 
         captured_log: str = ""
         try:
-            from lib.utils import read_json
-            from lib.config_validator import resolve_config_paths, validate_pd_hybrid_config
-            from lib.config_validator import validate_pd_hybrid_infer_service_template
-            from lib.container_snapshot import resolve_infer_service_template, validate_container_snapshot_config
+            from lib.config_validator import (
+                resolve_config_paths,
+                validate_pd_hybrid_config,
+                validate_pd_hybrid_infer_service_template,
+            )
+            from lib.container_snapshot import (
+                resolve_infer_service_template,
+                validate_container_snapshot_config,
+            )
             from lib.generator.engine import validate_instance_nums
-            from lib.generator.k8s_utils import set_user_config_path
+            from lib.generator.k8s_utils import get_deploy_mode_from_config, set_user_config_path
+            from lib.utils import read_json
 
             user_config_path, env_config_path = resolve_config_paths(config_dir, None, None)
             set_user_config_path(user_config_path)
@@ -578,10 +622,11 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
                 from lib.utils import get_deploy_paths
 
                 validate_pd_hybrid_config(user_config)
-                paths = get_deploy_paths()
-                validate_pd_hybrid_infer_service_template(
-                    user_config, resolve_infer_service_template(paths, user_config)
-                )
+                if get_deploy_mode_from_config(user_config[C.MOTOR_DEPLOY_CONFIG]) != C.DEPLOY_MODE_RBG:
+                    paths = get_deploy_paths()
+                    validate_pd_hybrid_infer_service_template(
+                        user_config, resolve_infer_service_template(paths, user_config)
+                    )
             validate_instance_nums(user_config)
 
             # Deploy
@@ -659,8 +704,8 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
         config_dir = config_dir.strip()
 
         try:
-            from lib.utils import read_json
             from lib.config_validator import resolve_config_paths
+            from lib.utils import read_json
 
             user_config_path, _ = resolve_config_paths(config_dir, None, None)
             user_config = read_json(user_config_path)
@@ -746,6 +791,16 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
 
     def _exec_delete(self, ns: str) -> None:
         """Run the delete.sh script and stream its output live below the box."""
+        if self.user_config.get(C.MOTOR_DEPLOY_CONFIG, {}).get("deploy_mode") == C.DEPLOY_MODE_RBG:
+            try:
+                from lib.rbg.lifecycle import delete_rbg
+
+                delete_rbg(self.user_config)
+            except (ImportError, OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                self._set_status(f"RBG deletion failed: {exc}", 3.0)
+                return
+            self._reset_after_delete()
+            return
         ctx = self._ctx
         delete_sh = os.path.join(self.deployer_dir, "delete.sh")
         if not os.path.exists(delete_sh):
@@ -841,7 +896,10 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
                 3.0,
             )
 
-        # After delete, reset to undeployed state and return to menu
+        self._reset_after_delete()
+
+    def _reset_after_delete(self) -> None:
+        """Clear the local deployment state and restore the deployment menu."""
         self._stop_progress_monitor()
         self._stop_pod_watcher()
         self._deployed = False

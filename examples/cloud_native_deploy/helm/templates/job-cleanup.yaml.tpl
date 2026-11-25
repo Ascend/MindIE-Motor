@@ -34,4 +34,9 @@ spec:
           env:
             - name: NAMESPACE
               value: {{ include "mindie-motor.targetNamespace" . | quote }}
+            {{- $config := include "mindie-motor.userConfig" . | fromJson }}
+            {{- if eq (dig "motor_deploy_config" "deploy_mode" "" $config) "rbg" }}
+            - name: MOTOR_DEPLOY_MODE
+              value: rbg
+            {{- end }}
 {{- end }}

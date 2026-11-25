@@ -18,3 +18,6 @@ spec:
           env:
             - name: NAMESPACE
               value: mindie
+            # Set to "rbg" when cleaning an RBG deployment; empty preserves legacy cleanup.
+            - name: MOTOR_DEPLOY_MODE
+              value: ""
