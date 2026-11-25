@@ -46,8 +46,7 @@ from motor.controller.fault_tolerance.strategy.strategy import (
 )
 from motor.controller.fault_tolerance.strategy.nm_suicide import NmSuicideStrategy
 from motor.controller.fault_tolerance.strategy.scale_p2d import ScaleP2DStrategy
-from motor.controller.fault_tolerance.strategy.engine_relaunch import EngineRelaunchStrategy
-from motor.controller.fault_tolerance.strategy.fast_recovery import EngineFastRecoveryStrategy
+from motor.controller.fault_tolerance.strategy.engine_ft.engine_relaunch import EngineRelaunchStrategy
 from motor.config.controller import ControllerConfig
 
 
@@ -134,18 +133,10 @@ def test_general_l0_strategy_returns_none_for_any_fault_code(fault_code, mock_co
 
 
 # L2 Strategy Tests
-@pytest.mark.parametrize(
-    "fault_code,expected",
-    [
-        (0x00F1FEF5, None),
-        (0x08520003, None),
-        (0, None),
-    ],
-)
-def test_level2_strategy_returns_correct_class(fault_code, expected, mock_config, mock_instance_manager):
-    """L2 link faults use fast recovery; obsolete and unknown codes have no strategy"""
-    mock_instance_manager.return_value.get_instance.return_value = Mock(role="decode")
-    assert level2_strategy(fault_code, 1, mock_config) is expected
+@pytest.mark.parametrize("fault_code", [0x00F1FEF5, 0x08520003, 0])
+def test_level2_hardware_codes_wait_for_common_planning(mock_config, fault_code):
+    """A hardware code alone cannot start the removed Token placeholder."""
+    assert generate_strategy_map()[FaultLevel.L2](fault_code, 1, mock_config) is None
 
 
 # L3 Strategy Tests
@@ -209,18 +200,6 @@ def test_strategy_map_level_returns_none_for_l0_l1_and_l3(level, mock_config):
 
     assert callable(strategy_func)
     assert strategy_func(0x0000, 1, mock_config) is None
-
-
-def test_strategy_map_l2_does_not_admit_hardware_fast_recovery(mock_config, mock_instance_manager):
-    """Hardware codes no longer select fast recovery."""
-    strategies = generate_strategy_map()
-    mock_instance_manager.return_value.get_instance.return_value = Mock(role="decode")
-    l2_func = strategies[2]
-
-    assert callable(l2_func)
-    assert l2_func(0x00F1FEF5, 1, mock_config) is None
-    assert l2_func(0x08520003, 1, mock_config) is None
-    assert l2_func(0, 1, mock_config) is None
 
 
 def test_strategy_map_l4_returns_scale_p2d_for_decode_role(mock_instance_manager, decode_instance, mock_config):
@@ -448,7 +427,7 @@ def test_lingqu_companion_does_not_independently_select_fast_recovery(mock_confi
 
 def test_strategy_base_failed_semantics():
     """mark_failed/is_failed round-trip; finished stays independent."""
-    strategy = EngineFastRecoveryStrategy()
+    strategy = EngineRelaunchStrategy()
     assert not strategy.is_failed()
     strategy.mark_failed()
     assert strategy.is_failed()

@@ -36,10 +36,11 @@ def level2_strategy(fault_code: int, instance_id: int, config: ControllerConfig)
     }:
         if not config.fault_tolerance_config.enable_engine_relaunch:
             return None
-        from motor.controller.fault_tolerance.strategy.engine_relaunch import EngineRelaunchStrategy
+        from motor.controller.fault_tolerance.strategy.engine_ft.engine_relaunch import EngineRelaunchStrategy
 
         return EngineRelaunchStrategy
 
+    # Hardware recovery causes are selected by the common recovery planner after FT collection.
     return None
 
 

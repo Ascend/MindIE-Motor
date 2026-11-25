@@ -963,6 +963,8 @@ def test_config_engine_relaunch_defaults():
     assert ft.hbm_uce_clearance_timeout_sec == 60
     assert ft.recovery_round_timeout_sec == 60
     assert ft.recovery_poll_interval_sec == 1.0
+    assert ft.recovery_request_timeout_sec == 11.0
+    assert ft.recovery_preparation_poll_interval_sec == 1.0
     assert ft.engine_relaunch_stability_sec == 60
     assert ft.engine_relaunch_complete_timeout_sec == 600
     assert ft.engine_relaunch_poll_interval_sec == 5.0
@@ -981,9 +983,35 @@ def test_config_dp_scale_down_defaults_are_conservative():
     assert ft.dp_scale_down_config.execution_deadline_sec == 30.0
 
 
+def test_common_recovery_parameters_are_independent_from_scale_down(_temp_json_file):
+    with open(_temp_json_file, "w", encoding="utf-8") as stream:
+        json.dump(
+            {
+                "fault_tolerance_config": {
+                    "recovery_request_timeout_sec": 7,
+                    "recovery_preparation_poll_interval_sec": 0.25,
+                    "dp_scale_down_config": {"request_timeout_sec": 3, "poll_interval_sec": 0.5},
+                }
+            },
+            stream,
+        )
+    config = ControllerConfig.from_json(_temp_json_file)
+    ft = config.fault_tolerance_config
+    assert ft.recovery_request_timeout_sec == 7
+    assert ft.recovery_preparation_poll_interval_sec == 0.25
+    assert ft.dp_scale_down_config.request_timeout_sec == 3
+    assert ft.dp_scale_down_config.poll_interval_sec == 0.5
+
+
 @pytest.mark.parametrize(
     "attr,value,expected",
     [
+        ("recovery_request_timeout_sec", 0, "recovery_request_timeout_sec must be in range (0, 60]"),
+        (
+            "recovery_preparation_poll_interval_sec",
+            0,
+            "recovery_preparation_poll_interval_sec must be in range (0, 60]",
+        ),
         ("engine_relaunch_stability_sec", 0, "engine_relaunch_stability_sec must be in range 1-3600"),
         (
             "engine_relaunch_complete_timeout_sec",

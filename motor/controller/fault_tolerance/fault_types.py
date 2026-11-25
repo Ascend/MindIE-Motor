@@ -25,6 +25,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from motor.controller.fault_tolerance.engine_recovery.contracts import RecoveryResult, legacy_recovery_result
+
 
 class FaultCategory(str, Enum):
     """Fault category to distinguish hardware and software faults."""
@@ -213,6 +215,18 @@ def hardware_fault_storage_key(fault: FaultInfo) -> str:
 def hardware_fault_identity(node_name: str, fault: FaultInfo) -> str:
     """Return the cluster-unique identity of one hardware fault observation."""
     return "%s:%s" % (node_name, hardware_fault_storage_key(fault))
+
+
+def software_evidence_signature(fault: FaultInfo) -> tuple:
+    """Timestamp and repeated diagnostic text do not create another recovery episode."""
+    return (
+        fault.instance_id,
+        fault.engine_id,
+        fault.engine_status,
+        fault.fault_code,
+        fault.fault_level,
+        fault.exception_type,
+    )
 
 
 def software_fault_storage_key(fault: FaultInfo) -> str:
@@ -505,6 +519,8 @@ class InstanceMetadata(BaseModel):
         default_factory=dict,
         description="Instance-scoped software faults keyed by reporter/engine identity",
     )
+    software_fault_versions: dict[int | str, int] = Field(default_factory=dict, exclude=True)
+    evidence_sequence: int = Field(default=0, exclude=True)
     fault_level: FaultLevel = Field(default=FaultLevel.HEALTHY, description="Current instance fault level")
     fault_code: int = Field(default=0x0, description="Fault code that trigger the current strategy")
     strategy_fault_level: FaultLevel = Field(
@@ -517,6 +533,7 @@ class InstanceMetadata(BaseModel):
     prev_strategy_failed: bool = Field(default=False, description="Last strategy failed to recover")
     prev_strategy_name: str = Field(default="", description="Last completed recovery strategy")
     prev_strategy_fallback: str = Field(default="", description="Original fallback after scale-down failure")
+    prev_recovery_result: RecoveryResult | None = None
     relaunch_relapse_guard: bool = Field(
         default=False, description="Reconfigure on relapse after a fast-recovery fallback relaunch"
     )
@@ -529,6 +546,8 @@ class InstanceMetadata(BaseModel):
         default=None,
         description="Wall-clock time when the current software FT status round started",
     )
+    fault_collection_deadline: float | None = Field(default=None, exclude=True)
+    hardware_correlation_deadline: float | None = Field(default=None, exclude=True)
     hardware_fault_observed_at: float | None = Field(
         default=None,
         description="Wall-clock time when actionable hardware evidence opened the recovery session",
@@ -551,15 +570,13 @@ class InstanceMetadata(BaseModel):
         default_factory=set,
         description="Hardware fault identities already present before the instance became ready",
     )
-    recovery_plan_source: str = Field(default="", description="Evidence source frozen for current recovery round")
-    recovery_plan_strategy: str = Field(default="", description="Primary strategy frozen for current recovery round")
-    recovery_plan_fallback: str = Field(default="", description="Fallback frozen for current recovery round")
 
     # Non-serializable fields (excluded from serialization)
     lock: Any = Field(default=None, exclude=True)
     # StrategyBase instance, using Any to avoid requiring arbitrary_types_allowed
     strategy: Any = Field(default=None, exclude=True)
     strategy_future: Any = Field(default=None, exclude=True)
+    strategy_settling: bool = Field(default=False, exclude=True)
     strategy_preempted: bool = Field(
         default=False,
         exclude=True,
@@ -572,6 +589,13 @@ class InstanceMetadata(BaseModel):
         if self.lock is None:
             self.lock = threading.RLock()
         return self
+
+    @property
+    def failure_result(self) -> RecoveryResult:
+        """Prefer the persisted contract; decode old name-only records at the boundary."""
+        if self.prev_recovery_result is not None:
+            return self.prev_recovery_result
+        return legacy_recovery_result(self.prev_strategy_name, self.prev_strategy_fallback)
 
     def model_dump(self, **kwargs) -> dict:
         """Override model_dump to exclude non-serializable fields"""

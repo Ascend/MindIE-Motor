@@ -14,23 +14,24 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient
 from motor.common.logger import get_logger
 from motor.common.resources.instance import DEFAULT_ACTIVE_HEARTBEAT_TIMEOUT
 from motor.common.utils.net import format_address
-from motor.controller.fault_tolerance.dp_scale_down import (
-    FtPhase,
-    FtRuntime,
-    GateSnapshot,
-    ScaleDownContext,
-    TopologyResolver,
-    get_ft_runtime_store,
-)
+from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, FtRuntime, get_ft_runtime_store
+from motor.controller.fault_tolerance.strategy.engine_ft.dp_scaling.context import ScaleDownContext
+from motor.controller.fault_tolerance.strategy.engine_ft.dp_scaling.topology import TopologyResolver
 from motor.controller.fault_tolerance.pod_lifecycle import PodLifecycle
-from motor.controller.fault_tolerance.serving_overlay import ServingOverlay
+from motor.controller.fault_tolerance.engine_recovery.serving import ServingOverlay
+
+# Planner loads concrete strategies only inside decision functions.
+from motor.controller.fault_tolerance.engine_recovery.planner import (  # pylint: disable=cyclic-import
+    scale_down_gate,
+)
+from motor.controller.fault_tolerance.engine_recovery.contracts import FailurePolicy, SoftwareFaultEvidence
 from motor.controller.fault_tolerance.strategy.base import StrategyBase
 
 logger = get_logger(__name__)
@@ -108,10 +109,22 @@ class _EngineFtStrategyBase(StrategyBase):
 class DpScaleDownStrategy(_EngineFtStrategyBase):
     """Apply one cumulative DP rank removal round to every surviving engine."""
 
+    recovery_action = "SCALE_DOWN"
+    failure_policy = FailurePolicy.IN_PLACE
+    runs_under_recovery_owner = True
+    requires_recovery_preparation = True
+
     # One cluster-wide scale-up at a time. The round restores every dead pod
     # of the instance; success is one Coordinator SET of the full topology.
     # A second instance waits. Failure still whole-instance reconfigure.
     _SCALE_UP_LOCK = threading.Lock()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.context_provider: Callable[[], ScaleDownContext] | None = None
+        self.evidence_provider: Callable[[], SoftwareFaultEvidence] | None = None
+        self.readiness_deadline = None
+        self._guard_renew_at = 0.0
 
     @property
     def scale_down_context(self) -> ScaleDownContext:
@@ -119,12 +132,42 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
             raise RuntimeError("scale-down fault context is not bound")
         return self._strategy_context
 
+    def evaluate_update(self, context: ScaleDownContext) -> None:
+        initial = self.strategy_context
+        if not self.mutation_started or self.event.is_set() or not isinstance(initial, ScaleDownContext):
+            return
+        new_dead = set(context.pending_removed_ranks) - set(initial.pending_removed_ranks)
+        new_keys = set(context.fault_keys) - set(initial.fault_keys)
+        new_versions = bool(initial.hardware_evidence_versions) and (
+            set(context.hardware_evidence_versions) - set(initial.hardware_evidence_versions)
+        )
+        if new_dead or new_keys or new_versions:
+            self.invalidated = True
+            self.stop()
+
     def execute(self, instance_id: int) -> None:
         config = self.ft_config
         scale_down_config = config.dp_scale_down_config
         context = self.scale_down_context
         store = get_ft_runtime_store()
+        instance = _get_instance(instance_id)
+        if instance is None:
+            self._finish(True, "instance not found")
+            return
+        gate = self._gate(config, instance)
+        if not gate.allowed:
+            self._finish(True, "scale-down gate rejected: %s" % ",".join(gate.reason_codes))
+            return
+        self.readiness_deadline = context.readiness_deadline or (
+            time.monotonic() + config.fault_collection_timeout_seconds
+        )
         previous_runtime = store.get_or_create(instance_id)
+        logger.info(
+            "Instance %d recovery decision evidence: stage=scale_down_selected, recovery_id=%s, context=%s",
+            instance_id,
+            self.recovery_id,
+            context,
+        )
         context_ranks = set(context.pending_removed_ranks)
         if context_ranks and context_ranks.issubset(set(previous_runtime.dead_committed)):
             if previous_runtime.phase == FtPhase.SCALED_DOWN_RUNNING:
@@ -133,29 +176,19 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
             self._finish(True, "duplicate scale-down fault arrived outside scaled-down running state")
             return
         request_id = "scale-down-%s" % uuid.uuid4().hex
-        runtime = store.transition(
+        runtime = self._transition(
             instance_id,
-            phase=FtPhase.DECIDING,
+            phase=FtPhase.WAITING_ENGINE_FAULT,
             request_id=request_id,
             fallback_strategy=context.fallback_strategy,
             last_error=None,
         )
-
-        instance = _get_instance(instance_id)
-        if instance is None:
-            self._fail(runtime, "instance not found")
-            return
-        gate = self._gate(config, instance)
-        runtime = store.transition(instance_id, gate=gate)
-        if not gate.allowed:
-            self._fail(runtime, "scale-down gate rejected: %s" % ",".join(gate.reason_codes))
-            return
         try:
             original_dp_ranks = TopologyResolver.original_dp_ranks(instance)
         except ValueError as e:
             self._fail(runtime, str(e))
             return
-        runtime = store.transition(instance_id, original_dp_ranks=original_dp_ranks)
+        runtime = self._transition(instance_id, original_dp_ranks=original_dp_ranks)
 
         pending_candidates = context_ranks
         invalid_candidates = pending_candidates - set(original_dp_ranks)
@@ -176,7 +209,7 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
             self._fail(runtime, str(e))
             return
         survivor_groups = [group for group in groups if group.survivor_endpoint_ids]
-        runtime = store.transition(instance_id, pending_removed_ranks=pending)
+        runtime = self._transition(instance_id, pending_removed_ranks=pending)
         if not survivors:
             self._fail(runtime, "no surviving rank")
             return
@@ -188,7 +221,7 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(groups))
         try:
             try:
-                self._guard_node_managers(groups, request_id, self._guard_lease_sec(config), timeout, executor)
+                self._renew_guard(groups, request_id, config, executor, deadline=self.readiness_deadline)
             except Exception as e:
                 self._fail(runtime, "failed to guard NodeManager FT transaction: %s" % e)
                 return
@@ -196,8 +229,9 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
             if ready_plan is None:
                 return
             runtime, groups, survivor_groups, survivors = ready_plan
+            self.bind_context(replace(self.scale_down_context, pending_removed_ranks=tuple(sorted(dead_ranks))))
             try:
-                withdrawn = ServingOverlay.withdraw(instance)
+                withdrawn = ServingOverlay.pause_for_recovery(instance)
             except Exception as e:
                 self._fail(runtime, "failed to confirm serving withdrawal before scale-down: %s" % e)
                 return
@@ -222,7 +256,7 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
                 removed_for_engine = sorted(int(x) for x in (dead_ranks - previous_dead))
             else:
                 removed_for_engine = sorted(int(x) for x in dead_ranks)
-            runtime = store.transition(instance_id, **scale_down_fields)
+            runtime = self._transition(instance_id, **scale_down_fields)
             logger.info(
                 "Instance %d: engine scale-down removed_dp_ranks=%s stored_dead=%s",
                 instance_id,
@@ -234,130 +268,333 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
                 "dp_master_ip": new_master.ip,
                 "dp_master_rank": new_master.id,
             }
-            try:
-                self._apply_via_node_managers(survivor_groups, params, request_id, timeout, executor=executor)
-            except Exception as e:
-                self._fail(runtime, str(e))
+            deadline = self._apply_scale_down(runtime, dead_ranks, groups, survivor_groups, params, config, executor)
+            if deadline is None:
                 return
-
-            deadline = time.monotonic() + scale_down_config.execution_deadline_sec
-            while not self.event.is_set() and time.monotonic() < deadline:
-                try:
-                    survivor_statuses = self._query_via_node_managers(survivor_groups, timeout, executor)
-                except Exception as e:
-                    self._fail(runtime, "scale-down status query failed: %s" % e)
-                    return
-                runtime = store.transition(instance_id, engine_statuses=survivor_statuses)
-                outcome, failed_status = self._scale_down_outcome(
-                    survivor_statuses,
-                    wait_for_store_migration=bool(getattr(config, "enable_dp_scale_up", False)),
-                )
-                if outcome == "failed":
-                    self._fail(
-                        runtime,
-                        self._status_failure("surviving engine reported scale-down failure", failed_status),
-                    )
-                    return
-                if outcome == "succeeded":
-                    try:
-                        self._finalize_node_managers(
-                            groups, dead_ranks, request_id, True, new_master.id, timeout, executor
-                        )
-                    except Exception as e:
-                        self._fail(runtime, "failed to commit NodeManager FT transaction: %s" % e)
-                        return
-                    committed = True
-                    runtime = store.transition(
-                        instance_id,
-                        dead_committed=sorted(dead_ranks),
-                        pending_removed_ranks=[],
-                        phase=FtPhase.POST_SCALE_CLEANUP,
-                    )
-                    # User recover only: recycle empty shells then scale-up.
-                    # Fault-triggered scale-down stays scaled-down until user calls recover.
-                    do_recycle_and_up = getattr(context, "source", "") == "user"
-                    recyclable = TopologyResolver.recyclable_pods(instance, dead_ranks)
-                    survivors = set(int(x) for x in original_dp_ranks) - set(int(x) for x in dead_ranks)
-                    if do_recycle_and_up and recyclable:
-                        # Do not recycle on the first healthy tick: wait until
-                        # survivors stay *live*-healthy before stopping empty shells.
-                        if not self._wait_survivors_healthy_before_recycle(
-                            instance_id,
-                            survivors,
-                            config,
-                            empty_shell_ips=list(recyclable),
-                        ):
-                            self._fail(
-                                runtime,
-                                "survivors not stably healthy before empty-shell recycle",
-                            )
-                            return
-                        instance = _get_instance(instance_id)
-                        if instance is None:
-                            self._fail(runtime, "instance disappeared before recycle")
-                            return
-                        PodLifecycle.stop_recyclable_pods(instance, recyclable)
-                        store.transition(
-                            instance_id,
-                            dead_committed=[],
-                            pending_removed_ranks=[],
-                        )
-                    store.transition(instance_id, phase=FtPhase.SCALED_DOWN_RUNNING)
-                    try:
-                        published = ServingOverlay.publish(instance)
-                    except Exception as e:
-                        published = False
-                        publication_error = "ServingOverlay publication pending: %s" % e
-                    else:
-                        publication_error = None if published else "ServingOverlay publication pending"
-                    store.transition(
-                        instance_id,
-                        serving_published=published,
-                        last_error=publication_error,
-                    )
-                    surviving_ids = sorted(set(int(x) for x in original_dp_ranks) - set(int(x) for x in dead_ranks))
-                    log_args = (
-                        self.name,
-                        instance_id,
-                        request_id,
-                        sorted(dead_ranks),
-                        surviving_ids,
-                        new_master.id,
-                    )
-                    if published:
-                        logger.info(
-                            "%s succeeded: instance_id=%d, request_id=%s, removed_dp_ranks=%s, "
-                            "surviving_dp_ranks=%s, new_master_rank=%d",
-                            *log_args,
-                        )
-                    else:
-                        logger.warning(
-                            "%s committed but serving publication is pending: instance_id=%d, request_id=%s, "
-                            "removed_dp_ranks=%s, surviving_dp_ranks=%s, new_master_rank=%d",
-                            *log_args,
-                        )
-                    if do_recycle_and_up and recyclable:
-                        # WARMING_UP is entered inside _auto_scale_up (blocks reconfig).
-                        # A failure here is the same as a scale-down failure: mark
-                        # the strategy failed so the next round reconfigures.
-                        if not self._auto_scale_up(
-                            instance_id,
-                            original_dp_ranks,
-                            config,
-                            survivor_rank_ids=survivors,
-                        ):
-                            self._fail(runtime, "DP scale-up failed")
-                            return
-                    self._finish(False)
-                    return
-                self.event.wait(scale_down_config.poll_interval_sec)
-            self._fail(runtime, "DP scale-down recovery deadline exceeded")
+            completed_runtime = self._wait_scale_down_result(
+                runtime, groups, survivor_groups, config, deadline, executor
+            )
+            if completed_runtime is None:
+                return
+            runtime = completed_runtime
+            if not self._commit_scale_down(runtime, groups, dead_ranks, new_master.id, config, deadline, executor):
+                return
+            committed = True
+            self._after_scale_down_commit(runtime, instance, context, original_dp_ranks, dead_ranks, new_master, config)
         finally:
             try:
                 if not committed:
-                    self._finalize_node_managers(groups, dead_ranks, request_id, False, None, timeout, executor)
+                    try:
+                        self._finalize_node_managers(groups, dead_ranks, request_id, False, None, timeout, executor)
+                    except Exception as error:
+                        self.cleanup_failed = True
+                        self._fail(runtime, "NodeManager cleanup failed: %s" % error)
             finally:
                 executor.shutdown(wait=True)
+
+    def _apply_scale_down(
+        self,
+        runtime: FtRuntime,
+        dead_ranks: set[int],
+        groups: list[_NodeManagerFtGroup],
+        survivor_groups: list[_NodeManagerFtGroup],
+        params: dict[str, Any],
+        config: Any,
+        executor: concurrent.futures.ThreadPoolExecutor,
+    ) -> float | None:
+        """Dispatch apply and return the shared execution deadline, or mark failure."""
+        instance_id, request_id = runtime.instance_id, runtime.request_id
+        scale_down_config = config.dp_scale_down_config
+        timeout = scale_down_config.request_timeout_sec
+        if self.event.is_set():
+            self._fail(runtime, "scale-down cancelled before apply")
+            return None
+        if self.evidence_provider is not None:
+            self.consumed_evidence = {
+                key: observed
+                for key, observed in self.evidence_provider().items()
+                if observed[1].engine_status != 1 or observed[1].engine_id in dead_ranks
+            }
+        deadline = time.monotonic() + scale_down_config.execution_deadline_sec
+        self._transition(instance_id, stage="applying")
+        try:
+            self._renew_guard(groups, request_id, config, executor, deadline=deadline)
+            if self.event.is_set():
+                self._fail(runtime, "scale-down cancelled during pre-apply guard renewal")
+                return None
+            apply_timeout = self._remaining_timeout(deadline, timeout)
+            self.mutation_started = True
+            self._apply_via_node_managers(survivor_groups, params, request_id, apply_timeout, executor=executor)
+        except Exception as e:
+            self._fail(runtime, str(e))
+            return None
+        return deadline
+
+    def _wait_scale_down_result(
+        self,
+        runtime: FtRuntime,
+        groups: list[_NodeManagerFtGroup],
+        survivor_groups: list[_NodeManagerFtGroup],
+        config: Any,
+        deadline: float,
+        executor: concurrent.futures.ThreadPoolExecutor,
+    ) -> FtRuntime | None:
+        """Poll engine completion under the same owner, guard and deadline."""
+        instance_id, request_id = runtime.instance_id, runtime.request_id
+        scale_down_config = config.dp_scale_down_config
+        timeout = scale_down_config.request_timeout_sec
+        self._transition(instance_id, stage="polling")
+        while not self.event.is_set() and time.monotonic() < deadline:
+            try:
+                self._renew_guard(groups, request_id, config, executor, deadline=deadline)
+                survivor_statuses = self._query_via_node_managers(
+                    survivor_groups, self._remaining_timeout(deadline, timeout), executor
+                )
+            except Exception as e:
+                self._fail(runtime, "scale-down status query failed: %s" % e)
+                return None
+            # Recheck ownership after the engine query returns.
+            runtime = self._transition(instance_id)
+            outcome, failed_status = self._scale_down_outcome(
+                survivor_statuses,
+                wait_for_store_migration=bool(getattr(config, "enable_dp_scale_up", False)),
+            )
+            if outcome == "failed":
+                self._fail(
+                    runtime,
+                    self._status_failure("surviving engine reported scale-down failure", failed_status),
+                )
+                return None
+            if outcome == "succeeded":
+                return runtime
+            self.event.wait(min(scale_down_config.poll_interval_sec, max(0.0, deadline - time.monotonic())))
+        self._fail(runtime, "DP scale-down recovery deadline exceeded")
+        return None
+
+    def _commit_scale_down(
+        self,
+        runtime: FtRuntime,
+        groups: list[_NodeManagerFtGroup],
+        dead_ranks: set[int],
+        new_master_rank: int,
+        config: Any,
+        deadline: float,
+        executor: concurrent.futures.ThreadPoolExecutor,
+    ) -> bool:
+        """Commit NodeManagers and confirm cancellation/deadline before accepting it."""
+        request_id = runtime.request_id
+        timeout = config.dp_scale_down_config.request_timeout_sec
+        if self.event.is_set() or time.monotonic() >= deadline:
+            self._fail(runtime, "scale-down deadline or cancellation before commit")
+            return False
+        try:
+            self._finalize_node_managers(
+                groups,
+                dead_ranks,
+                request_id,
+                True,
+                new_master_rank,
+                self._remaining_timeout(deadline, timeout),
+                executor,
+            )
+        except Exception as e:
+            self._fail(runtime, "failed to commit NodeManager FT transaction: %s" % e)
+            return False
+        if time.monotonic() > deadline or self.event.is_set():
+            self._fail(runtime, "scale-down deadline or cancellation during commit")
+            return False
+        return True
+
+    def _after_scale_down_commit(
+        self,
+        runtime: FtRuntime,
+        instance: Any,
+        context: ScaleDownContext,
+        original_dp_ranks: list[int],
+        dead_ranks: set[int],
+        new_master: Any,
+        config: Any,
+    ) -> None:
+        """Publish committed topology and continue user-requested recycle/scale-up."""
+        instance_id, request_id = runtime.instance_id, runtime.request_id
+        runtime = self._transition(
+            instance_id,
+            dead_committed=sorted(dead_ranks),
+            pending_removed_ranks=[],
+            phase=FtPhase.POST_SCALE_CLEANUP,
+        )
+        # User recover only: recycle empty shells then scale-up.
+        # Fault-triggered scale-down stays scaled-down until user calls recover.
+        do_recycle_and_up = getattr(context, "source", "") == "user"
+        recyclable = TopologyResolver.recyclable_pods(instance, dead_ranks)
+        survivors = set(int(x) for x in original_dp_ranks) - set(int(x) for x in dead_ranks)
+        if do_recycle_and_up and recyclable:
+            # Do not recycle on the first healthy tick: wait until
+            # survivors stay *live*-healthy before stopping empty shells.
+            if not self._wait_survivors_healthy_before_recycle(
+                instance_id,
+                survivors,
+                config,
+                empty_shell_ips=list(recyclable),
+            ):
+                self._fail(
+                    runtime,
+                    "survivors not stably healthy before empty-shell recycle",
+                )
+                return
+            instance = _get_instance(instance_id)
+            if instance is None:
+                self._fail(runtime, "instance disappeared before recycle")
+                return
+            PodLifecycle.stop_recyclable_pods(instance, recyclable)
+            self._transition(
+                instance_id,
+                dead_committed=[],
+                pending_removed_ranks=[],
+            )
+        self._transition(instance_id, phase=FtPhase.SCALED_DOWN_RUNNING)
+        try:
+            published = ServingOverlay.publish(instance, cancelled=self.event.is_set)
+        except Exception as e:
+            published = False
+            publication_error = "ServingOverlay publication pending: %s" % e
+        else:
+            publication_error = None if published else "ServingOverlay publication pending"
+        self._transition(
+            instance_id,
+            serving_published=published,
+            last_error=publication_error,
+        )
+        surviving_ids = sorted(set(int(x) for x in original_dp_ranks) - set(int(x) for x in dead_ranks))
+        log_args = (
+            self.name,
+            instance_id,
+            request_id,
+            sorted(dead_ranks),
+            surviving_ids,
+            new_master.id,
+        )
+        if published:
+            logger.info(
+                "%s succeeded: instance_id=%d, request_id=%s, removed_dp_ranks=%s, "
+                "surviving_dp_ranks=%s, new_master_rank=%d",
+                *log_args,
+            )
+        else:
+            logger.warning(
+                "%s committed but serving publication is pending: instance_id=%d, request_id=%s, "
+                "removed_dp_ranks=%s, surviving_dp_ranks=%s, new_master_rank=%d",
+                *log_args,
+            )
+        if do_recycle_and_up and recyclable:
+            # WARMING_UP is entered inside _auto_scale_up (blocks reconfig).
+            # A failure here is the same as a scale-down failure: mark
+            # the strategy failed so the next round reconfigures.
+            if not self._auto_scale_up(
+                instance_id,
+                original_dp_ranks,
+                config,
+                survivor_rank_ids=survivors,
+            ):
+                self._fail(runtime, "DP scale-up failed")
+                return
+        self._transition(instance_id, stage="completed" if published else "publication_pending")
+        self._finish(False)
+
+    def _wait_until_apply_ready(
+        self,
+        runtime: Any,
+        instance: Any,
+        dead_ranks: set[int],
+        groups: list[Any],
+        config: Any,
+        executor: Any,
+    ) -> (
+        tuple[
+            Any,
+            list[Any],
+            list[Any],
+            list[Any],
+        ]
+        | None
+    ):
+        scale_down_config = config.dp_scale_down_config
+        deadline = self.readiness_deadline
+        self._transition(runtime.instance_id, stage="readiness")
+        while not self.event.is_set() and time.monotonic() < deadline:
+            if self.context_provider is not None:
+                latest = self.context_provider()
+                reported_dead = set(latest.pending_removed_ranks)
+                if reported_dead - dead_ranks:
+                    dead_ranks.update(reported_dead)
+                    runtime = self._transition(
+                        runtime.instance_id, pending_removed_ranks=sorted(dead_ranks - set(runtime.dead_committed))
+                    )
+                if latest.hardware_fault_observed and (
+                    not latest.hardware_mapping_complete or set(latest.hardware_affected_ranks) - dead_ranks
+                ):
+                    self.invalidated = True
+                    self._fail(runtime, "hardware evidence invalidated scale-down preparation")
+                    return None
+                self.bind_context(replace(latest, pending_removed_ranks=tuple(sorted(dead_ranks))))
+                groups = self._build_node_manager_groups(instance, dead_ranks)
+            survivor_groups = [group for group in groups if group.survivor_endpoint_ids]
+            try:
+                self._renew_guard(groups, runtime.request_id, config, executor, deadline=deadline)
+                statuses = self._query_via_node_managers(
+                    survivor_groups, self._remaining_timeout(deadline, scale_down_config.request_timeout_sec), executor
+                )
+            except Exception as e:
+                self._fail(runtime, "pre-scale-down status query failed: %s" % e)
+                return None
+            # Recheck ownership after the engine query returns.
+            runtime = self._transition(runtime.instance_id)
+            newly_dead = {
+                rank for rank, status in statuses.items() if status.get("status") == "dead" and rank not in dead_ranks
+            }
+            if newly_dead:
+                dead_ranks.update(newly_dead)
+                runtime = self._transition(
+                    runtime.instance_id,
+                    pending_removed_ranks=sorted(dead_ranks - set(runtime.dead_committed)),
+                )
+            survivors = [
+                endpoint
+                for endpoint in instance.get_all_endpoints(include_headless=False)
+                if endpoint.id not in dead_ranks
+            ]
+            if not survivors:
+                self._fail(runtime, "no surviving rank")
+                return None
+            if newly_dead:
+                try:
+                    groups = self._build_node_manager_groups(instance, dead_ranks)
+                except RuntimeError as e:
+                    self._fail(runtime, str(e))
+                    return None
+                survivor_groups = [group for group in groups if group.survivor_endpoint_ids]
+                logger.info(
+                    "Instance %d adds newly DEAD ranks %s before scale-down apply",
+                    runtime.instance_id,
+                    sorted(newly_dead),
+                )
+            survivor_statuses = {rank: status for rank, status in statuses.items() if rank not in dead_ranks}
+            readiness, failed_status = self._apply_readiness(survivor_statuses)
+            if readiness == "failed":
+                self._fail(
+                    runtime,
+                    self._status_failure("surviving engine is not eligible for scale-down", failed_status),
+                )
+                return None
+            # A failed collective makes this a domain-level fault.  vLLM
+            # accepts FT commands only while the engine is unhealthy, so all
+            # surviving ranks must first observe the fault.
+            if readiness == "ready":
+                return runtime, groups, survivor_groups, survivors
+            runtime = self._transition(runtime.instance_id, phase=FtPhase.WAITING_ENGINE_FAULT)
+            self.event.wait(min(scale_down_config.poll_interval_sec, max(0.0, deadline - time.monotonic())))
+        self._fail(runtime, "surviving engine did not become apply-ready before deadline")
+        return None
 
     def _trigger_scale_elastic_ep(
         self,
@@ -923,8 +1160,6 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
             if engine_fault:
                 logger.error("DP scale-up aborted: %s", engine_fault)
                 return False
-            if statuses:
-                store.transition(instance_id, engine_statuses=statuses)
             if ready:
                 logger.info(
                     "DP scale-up ranks healthy for instance %d: %s; publishing restored view",
@@ -1071,7 +1306,7 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
         )
         return True
 
-    def _recycle_empty_shells_then_scale_up(
+    def run_scale_up_recovery(
         self,
         instance_id: int,
         original_dp_ranks: list[int],
@@ -1349,9 +1584,6 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
         need = _SURVIVOR_HEALTHY_STABLE_POLLS
         if deadline is None:
             deadline = time.monotonic() + wait_sec
-        store = get_ft_runtime_store()
-        # Drop commit-time statuses so we cannot accidentally treat them as fresh.
-        store.transition(instance_id, engine_statuses={})
         stable = 0
         shell_ips = [str(x) for x in (empty_shell_ips or []) if x]
         logger.info(
@@ -1371,7 +1603,6 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
                 return False
             try:
                 statuses = self._query_survivor_ft_statuses_live(instance, survivors, min(10.0, req_timeout))
-                store.transition(instance_id, engine_statuses=statuses)
             except Exception as e:
                 stable = 0
                 logger.info(
@@ -1599,80 +1830,10 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
         timeout: float,
         prefer_rank: int | None = None,
     ) -> None:
-        """POST one short completion at a single surviving rank.
+        """Compatibility entry for expansion's temporary probe in common collection."""
+        from motor.controller.fault_tolerance.engine_recovery.runner import probe_recovery_rank
 
-        A killed rank's API server just hangs, so the request must land on a
-        survivor: its DP step hits the dead peers and the completion comes back
-        aborted, which starts native scale-down. Failure here does not abort
-        recovery — ``_wait_native_scale_down`` is the gate.
-
-        Exactly one POST: UNHEALTHY ``prefer_rank`` if given, otherwise the
-        lowest rank on another Pod than ``expanded_ranks``, else the lowest
-        remaining survivor.
-        """
-        import json as _json
-        import urllib.error
-        import urllib.request
-
-        endpoints = list(self._iter_raw_endpoints(instance))
-        skip = {int(rank) for rank in expanded_ranks}
-        target = None
-        if prefer_rank is not None:
-            for ep in endpoints:
-                if int(ep.id) == int(prefer_rank):
-                    target = ep
-                    break
-        if target is None:
-            targets = [ep for ep in endpoints if int(ep.id) not in skip]
-            if not targets:
-                logger.error(
-                    "survivor probe has no endpoint outside killed ranks %s",
-                    sorted(skip),
-                )
-                return
-            dead_ips = {ep.ip for ep in endpoints if int(ep.id) in skip}
-            other_pod = [ep for ep in targets if ep.ip not in dead_ips]
-            target = min(other_pod or targets, key=lambda ep: int(ep.id))
-        model_name = getattr(instance, "model_name", None) or "model"
-        body = _json.dumps(
-            {
-                "model": str(model_name),
-                "messages": [{"role": "user", "content": "hi"}],
-                "max_tokens": 1,
-                "stream": False,
-            }
-        ).encode()
-        url = _engine_http_url(target, "/v1/chat/completions")
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=max(10.0, float(timeout))) as resp:
-                payload = resp.read()[:300]
-                logger.debug(
-                    "survivor probe rank=%s %s -> %s %r",
-                    target.id,
-                    url,
-                    resp.status,
-                    payload,
-                )
-        except urllib.error.HTTPError as e:
-            logger.debug(
-                "survivor probe rank=%s %s -> HTTP %s",
-                target.id,
-                url,
-                e.code,
-            )
-        except Exception as e:
-            logger.warning(
-                "survivor probe rank=%s %s failed: %s",
-                target.id,
-                url,
-                e,
-            )
+        probe_recovery_rank(instance, expanded_ranks, timeout, prefer_rank)
 
     def _kill_problem_pod_workers(self, instance: Any, expanded_ranks: set[int]) -> None:
         """Fan out kill-workers to NodeManagers that own the problem-Pod ranks."""
@@ -1736,83 +1897,6 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
             if status.get("ft_state") in ("recovering", "failed"):
                 return False, statuses
         return True, statuses
-
-    def _wait_until_apply_ready(
-        self,
-        runtime: FtRuntime,
-        instance: Any,
-        dead_ranks: set[int],
-        groups: list[_NodeManagerFtGroup],
-        config: Any,
-        executor: concurrent.futures.ThreadPoolExecutor,
-    ) -> (
-        tuple[
-            FtRuntime,
-            list[_NodeManagerFtGroup],
-            list[_NodeManagerFtGroup],
-            list[Any],
-        ]
-        | None
-    ):
-        store = get_ft_runtime_store()
-        scale_down_config = config.dp_scale_down_config
-        deadline = time.monotonic() + scale_down_config.execution_deadline_sec
-        while not self.event.is_set() and time.monotonic() < deadline:
-            survivor_groups = [group for group in groups if group.survivor_endpoint_ids]
-            try:
-                statuses = self._query_via_node_managers(
-                    survivor_groups, scale_down_config.request_timeout_sec, executor
-                )
-            except Exception as e:
-                self._fail(runtime, "pre-scale-down status query failed: %s" % e)
-                return None
-            runtime = store.transition(runtime.instance_id, engine_statuses=statuses)
-            newly_dead = {
-                rank for rank, status in statuses.items() if status.get("status") == "dead" and rank not in dead_ranks
-            }
-            if newly_dead:
-                dead_ranks.update(newly_dead)
-                runtime = store.transition(
-                    runtime.instance_id,
-                    pending_removed_ranks=sorted(dead_ranks - set(runtime.dead_committed)),
-                )
-            survivors = [
-                endpoint
-                for endpoint in instance.get_all_endpoints(include_headless=False)
-                if endpoint.id not in dead_ranks
-            ]
-            if not survivors:
-                self._fail(runtime, "no surviving rank")
-                return None
-            if newly_dead:
-                try:
-                    groups = self._build_node_manager_groups(instance, dead_ranks)
-                except RuntimeError as e:
-                    self._fail(runtime, str(e))
-                    return None
-                survivor_groups = [group for group in groups if group.survivor_endpoint_ids]
-                logger.info(
-                    "Instance %d adds newly DEAD ranks %s before scale-down apply",
-                    runtime.instance_id,
-                    sorted(newly_dead),
-                )
-            survivor_statuses = {rank: status for rank, status in statuses.items() if rank not in dead_ranks}
-            readiness, failed_status = self._apply_readiness(survivor_statuses)
-            if readiness == "failed":
-                self._fail(
-                    runtime,
-                    self._status_failure("surviving engine is not eligible for scale-down", failed_status),
-                )
-                return None
-            # A failed collective makes this a domain-level fault.  vLLM
-            # accepts FT commands only while the engine is unhealthy, so all
-            # surviving ranks must first observe the fault.
-            if readiness == "ready":
-                return runtime, groups, survivor_groups, survivors
-            runtime = store.transition(runtime.instance_id, phase=FtPhase.WAITING_ENGINE_FAULT)
-            self.event.wait(scale_down_config.poll_interval_sec)
-        self._fail(runtime, "surviving engine did not become apply-ready before deadline")
-        return None
 
     @staticmethod
     def _build_node_manager_groups(instance, dead_ranks: set[int]) -> list[_NodeManagerFtGroup]:
@@ -1925,7 +2009,7 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
                 )
                 if first_error is None:
                     first_error = error
-        if first_error is not None and commit:
+        if first_error is not None:
             raise first_error
 
     @staticmethod
@@ -1948,10 +2032,16 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
     @staticmethod
     def _guard_lease_sec(config) -> float:
         scale_down_config = config.dp_scale_down_config
-        return (
-            2 * scale_down_config.execution_deadline_sec
-            + 4 * scale_down_config.request_timeout_sec
-            + max(5.0, scale_down_config.poll_interval_sec)
+        # Keep the existing NodeManager 300s limit; longer transactions renew the same owner.
+        return min(
+            300.0,
+            max(
+                3 * (scale_down_config.request_timeout_sec + scale_down_config.poll_interval_sec),
+                getattr(config, "fault_collection_timeout_seconds", 60.0)
+                + scale_down_config.execution_deadline_sec
+                + 4 * scale_down_config.request_timeout_sec
+                + 5.0,
+            ),
         )
 
     @staticmethod
@@ -2020,33 +2110,28 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
             status.get("ft_state"),
         )
 
-    @staticmethod
-    def _gate(config, instance) -> GateSnapshot:
-        reasons = []
-        if not config.enable_dp_scale_down:
-            reasons.append("FEATURE_DISABLED")
-        capability = instance.ft_capability
-        if not capability.enabled:
-            reasons.append("ENGINE_FT_REQUIRED")
-        if not capability.external_lb:
-            reasons.append("EXTERNAL_LB_REQUIRED")
-        if capability.auto_recovery:
-            reasons.append("AUTO_RECOVERY_CONFLICT")
-        if not capability.scale_down_supported:
-            reasons.append("ENGINE_SCALE_DOWN_UNSUPPORTED")
-        if not capability.eplb_enabled:
-            reasons.append("EPLB_REQUIRED")
-        if capability.num_redundant_experts <= 0:
-            reasons.append("EXPERT_REDUNDANCY_REQUIRED")
-        return GateSnapshot(allowed=not reasons, reason_codes=reasons)
+    _gate = staticmethod(scale_down_gate)
+
+    def _transition(self, instance_id: int, **changes: Any) -> FtRuntime:
+        return get_ft_runtime_store().transition(instance_id, expected_recovery_id=self.recovery_id or None, **changes)
+
+    def _renew_guard(self, groups, request_id, config, executor, *, deadline: float | None = None) -> None:
+        if time.monotonic() < getattr(self, "_guard_renew_at", 0.0):
+            return
+        lease = self._guard_lease_sec(config)
+        timeout = config.dp_scale_down_config.request_timeout_sec
+        if deadline is not None:
+            timeout = self._remaining_timeout(deadline, timeout)
+        self._guard_node_managers(groups, request_id, lease, timeout, executor)
+        self._guard_renew_at = time.monotonic() + lease / 3
 
     def _fail(self, runtime: FtRuntime, error: str) -> None:
-        get_ft_runtime_store().transition(
+        self._transition(
             runtime.instance_id,
-            phase=FtPhase.RECONFIGURING,
+            phase=FtPhase.RECONFIGURING if self.mutation_started else FtPhase.WAITING_ENGINE_FAULT,
+            stage="failed",
+            action="RECONFIGURE" if self.mutation_started else "SCALE_DOWN",
             reconfiguration_dispatched=False,
             last_error=error,
-            dp_master_rank=None,
-            dp_master_ip=None,
         )
         self._finish(True, error)

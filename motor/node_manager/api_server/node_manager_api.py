@@ -77,7 +77,11 @@ def _require_ft_proxy(action: str) -> tuple[Any, NodeManagerConfig]:
     try:
         daemon = Daemon()
         config = daemon.config
-        if not config.fault_tolerance_config.enable_dp_scale_down_proxy:
+        if not (
+            config.fault_tolerance_config.enable_dp_scale_down_proxy
+            or config.fault_tolerance_config.enable_fast_recovery_proxy
+            or (action == "status query" and config.basic_config.ft_capability.enabled)
+        ):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="DP scale-down proxy is disabled")
         return daemon.engine_ft_manager, config
     except HTTPException:

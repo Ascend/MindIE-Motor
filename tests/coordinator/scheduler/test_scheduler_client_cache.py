@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from motor.common.resources.endpoint import Endpoint, EndpointStatus
-from motor.common.resources.instance import Instance, PDRole
+from motor.common.resources.instance import Instance, PDRole, InsStatus
 from motor.coordinator.domain.instance_status import _summarize_instance
 from motor.coordinator.scheduler.runtime.scheduler_client import (
     AsyncSchedulerClient,
@@ -42,9 +42,19 @@ async def test_retry_pause_blocks_scheduling_but_preserves_http_endpoint():
     assert _summarize_instance(instance, pool="available")["healthy"] is False
     assert _summarize_instance(instance, pool="available")["recovery_paused"] is True
     assert _collect_active_endpoints_from_cache(client._cache) == [(endpoint.ip, "8000")]
+    endpoint.status = EndpointStatus.ABNORMAL
+    assert _collect_active_endpoints_from_cache(client._cache) == [(endpoint.ip, "8000")]
+    endpoint.headless = True
+    assert not _collect_active_endpoints_from_cache(client._cache)
+    endpoint.headless = False
+    endpoint.status = EndpointStatus.NORMAL
     instance.recovery_paused = False
     await client._cache.apply_add([instance])
     assert not client.is_instance_blocked(1)
+    instance.status = InsStatus.ACTIVE
+    endpoint.status = EndpointStatus.ABNORMAL
+    assert _collect_active_endpoints_from_cache(client._cache) == [(endpoint.ip, "8000")]
+    endpoint.status = EndpointStatus.NORMAL
     client._cb_blocked_instances.add(1)
     assert client.is_instance_blocked(1)
     await client._cache.apply_remove([instance])

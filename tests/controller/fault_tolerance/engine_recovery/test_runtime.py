@@ -11,13 +11,10 @@
 
 from unittest.mock import Mock
 
-from motor.controller.fault_tolerance.dp_scale_down import (
-    FtPhase,
-    FtRuntime,
-    FaultNormalizer,
-    FtRuntimeStore,
-    TopologyResolver,
-)
+import pytest
+
+from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, FtRuntime, FtRuntimeStore
+from motor.controller.fault_tolerance.strategy.engine_ft.dp_scaling.topology import FaultNormalizer, TopologyResolver
 from motor.common.resources.endpoint import DeviceInfo, Endpoint
 from motor.common.resources.instance import Instance, ParallelConfig
 
@@ -54,6 +51,8 @@ def test_runtime_store_returns_defensive_copies():
 
     fetched = store.get(7)
     fetched["pending_removed_ranks"].append(3)
+    listed = store.list()
+    listed[0]["pending_removed_ranks"].append(4)
 
     assert store.get(7)["pending_removed_ranks"] == [2]
 
@@ -73,12 +72,42 @@ def test_runtime_transition_updates_only_selected_fields():
     assert store.get(7)["serving_published"] is False
 
 
+@pytest.mark.parametrize("owner", ["current", "new", None])
+def test_owner_cleanup_does_not_recreate_or_modify_obsolete_runtime(owner):
+    store = FtRuntimeStore()
+    if owner is not None:
+        store.transition(7, recovery_id=owner)
+    updated = store.transition_if_owned(7, expected_recovery_id="current", last_error="failure")
+    store.settle_recovery(7, "current", failed=True)
+    runtime = store.get(7)
+    if owner == "current":
+        assert updated is not None
+        assert (runtime["stage"], runtime["last_error"]) == ("failed", "failure")
+    elif owner is None:
+        assert updated is None
+        assert runtime is None
+    else:
+        assert updated is None
+        assert (runtime["stage"], runtime["last_error"]) == ("idle", None)
+
+
+@pytest.mark.parametrize(
+    "dispatched,published,stage",
+    [(False, True, "completed"), (True, False, "dispatched"), (False, False, "publication_pending")],
+)
+def test_settlement_uses_current_publication_state(dispatched, published, stage):
+    store = FtRuntimeStore()
+    store.transition(7, recovery_id="current", reconfiguration_dispatched=dispatched, serving_published=published)
+    store.settle_recovery(7, "current", failed=False)
+    assert store.get(7)["stage"] == stage
+
+
 def test_runtime_persistence_contains_only_durable_fields_and_skips_observations():
     store = FtRuntimeStore()
     persist = Mock(return_value=True)
     store.set_persist_callback(persist)
 
-    store.transition(7, engine_statuses={0: {"status": "recovering"}})
+    store.transition(7, stage="polling")
     persist.assert_not_called()
     store.transition(
         7,
@@ -96,10 +125,22 @@ def test_runtime_persistence_contains_only_durable_fields_and_skips_observations
         "fallback_strategy": "EngineRelaunchStrategy",
         "reconfiguration_dispatched": False,
     }
+    saved = store.persistent_data()
     assert store.remove(7) is True
     assert store.get(7) is None
     assert store.persistent_data() == {}
+    for create in (
+        lambda: store.transition(7, phase=FtPhase.WAITING_ENGINE_FAULT),
+        lambda: store.get_or_create(7),
+        lambda: store.put(FtRuntime(instance_id=7)),
+    ):
+        with pytest.raises(RuntimeError, match="removed instance"):
+            create()
     assert persist.call_count == 2
+    assert store.restore_persistent_data(saved) == {}
+    assert store.list() == []
+    store.clear()
+    assert store.restore_persistent_data(saved) == {7: "EngineRelaunchStrategy"}
 
 
 def test_runtime_restore_resumes_committed_view_and_fails_interrupted_attempt():
@@ -133,6 +174,9 @@ def test_runtime_restore_resumes_committed_view_and_fails_interrupted_attempt():
     assert store.get(7)["phase"] == FtPhase.SCALED_DOWN_RUNNING.value
     assert "generation" not in store.get(7)
     assert store.get(7)["serving_published"] is False
+    assert store.get(7)["stage"] == "publication_pending"
+    store.mark_serving_published({7})
+    assert store.get(7)["stage"] == "completed"
     assert store.get(8)["phase"] == FtPhase.RECONFIGURING.value
     assert store.get(8)["pending_removed_ranks"] == []
     assert store.get(9)["phase"] == FtPhase.RECONFIGURING.value
@@ -195,7 +239,7 @@ def test_mark_serving_published_completes_normal_reconfiguration_republication()
     assert status["can_serve"] is True
 
 
-def test_engine_relaunch_restores_last_committed_scale_down_view():
+def test_engine_relaunch_restores_full_dp_view():
     store = FtRuntimeStore()
     store.put(
         FtRuntime(
@@ -211,8 +255,8 @@ def test_engine_relaunch_restores_last_committed_scale_down_view():
     store.prepare_after_engine_relaunch(7)
 
     status = store.get(7)
-    assert status["phase"] == FtPhase.SCALED_DOWN_RUNNING.value
-    assert status["dead_committed"] == [1]
+    assert status["phase"] == FtPhase.NORMAL.value
+    assert status["dead_committed"] == []
     assert status["pending_removed_ranks"] == []
     assert status["serving_published"] is False
     assert status["last_error"] is None
@@ -307,3 +351,50 @@ def test_node_fault_affects_every_instance_on_node():
     fault = type("HardwareFault", (), {"npu_name": ""})()
 
     assert FaultNormalizer.hardware_fault_affects_instance(instance, "192.0.2.10", fault)
+
+
+def test_stale_owner_cannot_commit_or_acknowledge_new_recovery():
+    store = FtRuntimeStore()
+    store.transition(1, recovery_id="old", phase=FtPhase.SCALED_DOWN_RUNNING, serving_published=False)
+    store.transition(1, recovery_id="new", dead_committed=[1])
+    with pytest.raises(RuntimeError, match="stale recovery owner"):
+        store.transition(1, expected_recovery_id="old", dead_committed=[2])
+    store.mark_serving_published({1}, {1: "old"})
+    assert store.get(1)["dead_committed"] == [1]
+    assert store.get(1)["serving_published"] is False
+    store.mark_serving_published({1}, {1: "new"})
+    assert store.get(1)["serving_published"] is True
+
+
+def test_stale_owner_does_not_recreate_removed_runtime_or_resume_new_owner():
+    store = FtRuntimeStore()
+    with pytest.raises(RuntimeError, match="stale recovery owner"):
+        store.transition(1, expected_recovery_id="removed", dead_committed=[1])
+    assert store.get(1) is None
+    store.transition(1, recovery_id="new", phase=FtPhase.DECIDING)
+    store.prepare_after_engine_relaunch(1, "old")
+    assert store.get(1)["phase"] == FtPhase.DECIDING
+    with pytest.raises(RuntimeError, match="stale recovery owner"):
+        store.mark_instance_reconfiguration_dispatched(1, "old")
+    assert store.get(1)["reconfiguration_dispatched"] is False
+
+
+def test_relaunch_phase_preserves_protection_and_restart_identity():
+    from motor.controller.fault_tolerance.engine_recovery.runtime import get_ft_runtime_store, partial_loss_policy
+
+    phase = FtPhase("RELAUNCHING")
+    store = get_ft_runtime_store()
+    store.set_persist_callback(None)
+    store.clear()
+    try:
+        store.transition(7, phase=phase, action="RELAUNCH", serving_published=False)
+        assert partial_loss_policy(7).protect_transaction
+        saved = store.persistent_data()
+        assert saved["7"]["action"] == "RELAUNCH"
+        restored = FtRuntimeStore()
+        assert restored.restore_persistent_data(saved) == {7: "InstanceReconfigurationStrategy"}
+        assert "engine relaunch" in restored.get(7)["last_error"]
+        store.prepare_after_engine_relaunch(7)
+        assert store.get(7)["phase"] == FtPhase.NORMAL
+    finally:
+        store.clear()

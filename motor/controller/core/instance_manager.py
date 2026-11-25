@@ -29,7 +29,7 @@ from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.config.controller import ControllerConfig
 from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient
 from motor.controller.core import Observer, ObserverEvent
-from motor.controller.fault_tolerance.dp_scale_down import (
+from motor.controller.fault_tolerance.engine_recovery.runtime import (
     committed_dp_ranks,
     partial_loss_policy,
     get_ft_runtime_store,
@@ -497,10 +497,12 @@ class InstanceManager(ThreadSafeSingleton):
                 # bringing it back to ACTIVE.
                 with self.ins_lock:
                     self.forced_separated_instances.add(instance.id)
+                    was_recovery_paused = self.instances[instance.id].recovery_paused
+                    self.instances[instance.id].set_recovery_paused(False)
 
                 # Only transition ACTIVE -> INACTIVE and notify to avoid status flapping
                 # (e.g., INITIAL -> INACTIVE -> INITIAL) and noisy logs.
-                if instance.status == InsStatus.ACTIVE:
+                if instance.status == InsStatus.ACTIVE or was_recovery_paused:
                     old_status = instance.status
                     instance.update_instance_status(InsStatus.INACTIVE)
                     self.notify(instance, ObserverEvent.INSTANCE_SEPARATED)
@@ -678,10 +680,9 @@ class InstanceManager(ThreadSafeSingleton):
             return partial_loss_policy(instance_id)
         if self.enable_fast_recovery:
             runtime = get_ft_runtime_store().get(instance_id)
-            if (
-                runtime
-                and runtime["phase"] == FtPhase.WAITING_ENGINE_FAULT.value
-                and runtime["preserve_recovery_streams"]
+            if runtime and (
+                runtime.get("recovery_paused")
+                or (runtime["phase"] == FtPhase.WAITING_ENGINE_FAULT.value and runtime["preserve_recovery_streams"])
             ):
                 return partial_loss_policy(instance_id)
         return None
@@ -728,6 +729,9 @@ class InstanceManager(ThreadSafeSingleton):
     def _handle_active(self, from_state: InsStatus, condition_event: InsConditionEvent, instance: Instance) -> None:
         if from_state == InsStatus.ACTIVE:
             return
+        # The recovery task's overlay owns any remaining pause. A heartbeat-only
+        # episode that self-cleared must not leave the authoritative instance paused.
+        instance.set_recovery_paused(False)
         # The instance recovered (or a new one with this id was assembled) —
         # allow the shutdown dispatch again for a future loss episode.
         self._partial_loss_shutdown_sent.discard(instance.id)
@@ -746,6 +750,15 @@ class InstanceManager(ThreadSafeSingleton):
             return
 
         if condition_event == InsConditionEvent.INSTANCE_ABNORMAL:
+            # The NM is alive and reporting an engine failure. Preserve streams
+            # before FT evidence arrives; explicit separation follows its own DEL path.
+            if (
+                from_state == InsStatus.ACTIVE
+                and self.enable_dp_scale_down
+                and instance.ft_capability.enabled
+                and instance.is_all_endpoints_heartbeat_fresh(ignored_endpoint_ids=committed_dp_ranks(instance.id))
+            ):
+                instance.set_recovery_paused(True)
             instance.update_instance_status(InsStatus.INACTIVE)
             self.notify(instance, ObserverEvent.INSTANCE_SEPARATED)
             return

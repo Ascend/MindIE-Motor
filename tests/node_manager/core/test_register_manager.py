@@ -172,9 +172,6 @@ class TestRegisterManager:
             enabled=True,
             scale_down_supported=True,
             external_lb=True,
-            fused_mc2_enabled=True,
-            eplb_enabled=True,
-            num_redundant_experts=1,
         )
         register_manager._config.basic_config.job_name = "test_job"
         register_manager._config.basic_config.model_name = "test_model"

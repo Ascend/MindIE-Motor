@@ -15,15 +15,11 @@ from unittest.mock import Mock, patch
 import pytest
 
 from motor.common.resources.instance import InsStatus, NodeManagerInfo
-from motor.controller.fault_tolerance.strategy.engine_relaunch import (
+from motor.controller.fault_tolerance.strategy.engine_ft.engine_relaunch import (
     EngineRelaunchStrategy,
     RelaunchState,
 )
-from motor.controller.fault_tolerance.dp_scale_down import (
-    FtPhase,
-    FtRuntime,
-    get_ft_runtime_store,
-)
+from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, FtRuntime, get_ft_runtime_store
 
 # pylint: disable=redefined-outer-name
 
@@ -51,8 +47,11 @@ def _apply_patch():
     """Mock InstanceManager, the client and the FaultManager config singleton."""
     with (
         patch("motor.controller.core.instance_manager.InstanceManager") as mock_im_cls,
-        patch("motor.controller.fault_tolerance.strategy.engine_relaunch.NodeManagerApiClient") as mock_client,
+        patch(
+            "motor.controller.fault_tolerance.strategy.engine_ft.engine_relaunch.NodeManagerApiClient"
+        ) as mock_client,
         patch("motor.controller.fault_tolerance.fault_manager.FaultManager") as mock_fm_cls,
+        patch("motor.controller.fault_tolerance.engine_recovery.serving.ServingOverlay.publish", return_value=True),
     ):
         ft_config = Mock()
         ft_config.engine_relaunch_complete_timeout_sec = 600
@@ -218,19 +217,62 @@ def test_execute_instance_deleted_finishes_without_fallback(nm_a):
     assert not strategy.is_failed()
 
 
-def test_stop_sets_event_and_aborts(nm_a):
-    """stop() interrupts the wait and unfreezes the NodeManagers."""
+def test_stop_only_signals_and_worker_aborts_before_return(nm_a):
+    """Cancellation cleanup stays in the managed worker; no detached abort crosses handoff."""
     instance = _make_instance([nm_a])
     with _apply_patch() as (mock_im_cls, mock_client):
         mock_im_cls.return_value.get_instance.return_value = instance
-        mock_client.query_status.return_value = {"status": False}
-
         strategy = _new_strategy()
-        strategy.context = Mock(instance_id=1, node_managers=[nm_a])
         strategy.stop()
-
-        import time
-
-        time.sleep(0.2)  # fire-and-forget abort thread
+        mock_client.restart_engine.assert_not_called()
+        strategy.execute(1)
         abort_calls = [c for c in mock_client.restart_engine.call_args_list if c.kwargs.get("action") == "abort"]
         assert len(abort_calls) == 1
+        assert strategy.is_failed()
+        assert strategy.is_finished()
+
+
+def test_relaunch_failure_exposes_error_in_runtime():
+    store = get_ft_runtime_store()
+    store.clear()
+    store.transition(
+        1,
+        phase=FtPhase.RELAUNCHING,
+        recovery_id="relaunch",
+        action="RELAUNCH",
+        fallback_reason="scale-down readiness timed out",
+        serving_published=False,
+    )
+    with _apply_patch() as (mock_im, _mock_client):
+        mock_im.return_value.get_instance.return_value = None
+        strategy = _new_strategy()
+        strategy.recovery_id = "relaunch"
+        strategy.execute(1)
+    status = store.get(1)
+    assert strategy.is_failed()
+    assert status["stage"] == "failed"
+    assert status["last_error"] == "instance not found"
+    assert status["fallback_reason"] == "scale-down readiness timed out"
+    store.clear()
+
+
+def test_native_relaunch_keeps_relaxed_polling_without_coordinator_dependency(nm_a):
+    """Model loading and Coordinator availability must retain native relaunch semantics."""
+    instance = _make_instance([nm_a])
+    instance.is_all_endpoints_ready.return_value = False
+    instance.is_all_endpoints_heartbeat_fresh.return_value = False
+    with (
+        _apply_patch() as (mock_im, client),
+        patch(
+            "motor.controller.fault_tolerance.engine_recovery.serving.ServingOverlay.publish", return_value=False
+        ) as publish,
+    ):
+        mock_im.return_value.get_instance.return_value = instance
+        client.query_status.return_value = {"status": True}
+        strategy = _new_strategy()
+        strategy.engine_relaunch_complete_timeout_sec = 0.02
+        strategy.execute(1)
+    assert not strategy.is_failed()
+    assert strategy.context.current_state == RelaunchState.SUCCESS
+    publish.assert_not_called()
+    assert any(call.kwargs.get("relaxed") is True for call in client.query_status.call_args_list)

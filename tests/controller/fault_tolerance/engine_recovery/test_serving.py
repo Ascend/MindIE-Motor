@@ -16,12 +16,8 @@ import pytest
 
 from motor.common.resources import EventType, Instance, ReadOnlyInstance
 from motor.common.resources.endpoint import Endpoint, EndpointStatus
-from motor.controller.fault_tolerance.dp_scale_down import (
-    FtPhase,
-    FtRuntime,
-    get_ft_runtime_store,
-)
-from motor.controller.fault_tolerance.serving_overlay import ServingOverlay
+from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, FtRuntime, get_ft_runtime_store
+from motor.controller.fault_tolerance.engine_recovery.serving import ServingOverlay
 
 
 @pytest.fixture(autouse=True)
@@ -44,20 +40,16 @@ def _instance() -> Instance:
     return instance
 
 
-def test_transient_phase_withdraws_instance_from_serving_view():
-    instance = _instance()
-    get_ft_runtime_store().put(FtRuntime(instance_id=7, phase=FtPhase.SCALING_DOWN))
-
-    assert ServingOverlay.project(ReadOnlyInstance(instance)) is None
-
-
-@patch("motor.controller.fault_tolerance.serving_overlay.CoordinatorApiClient.send_instance_refresh", return_value=True)
+@patch(
+    "motor.controller.fault_tolerance.engine_recovery.serving.CoordinatorApiClient.send_instance_refresh",
+    return_value=True,
+)
 def test_recovery_pause_survives_set_and_resumes_without_mutating_topology(mock_refresh):
     instance = _instance()
     original = ServingOverlay.fingerprint([instance])
     assert ServingOverlay.pause_for_recovery(ReadOnlyInstance(instance))
     event = mock_refresh.call_args.args[0]
-    assert event.event == EventType.ADD
+    assert event.event == EventType.SET
     assert event.instances[0].recovery_paused
     projected = ServingOverlay.project_many([ReadOnlyInstance(instance)])
     assert projected[0].recovery_paused
@@ -65,14 +57,24 @@ def test_recovery_pause_survives_set_and_resumes_without_mutating_topology(mock_
     assert not instance.recovery_paused
     assert ReadOnlyInstance(projected[0]).to_instance().recovery_paused
     get_ft_runtime_store().resume_after_fault_clear(instance.id)
+    assert ServingOverlay.publish(instance)
+    assert not ServingOverlay.project(instance).recovery_paused
+    # A later abnormal heartbeat must pause even after the previous task completed.
+    assert get_ft_runtime_store().get(instance.id)["stage"] == "completed"
+    instance.recovery_paused = True
+    assert ServingOverlay.project(instance).recovery_paused
+    instance.recovery_paused = False
     assert not ServingOverlay.project(instance).recovery_paused
 
 
-@pytest.mark.parametrize("phase", [FtPhase.SCALING_DOWN, FtPhase.RECONFIGURING])
-def test_non_fast_recovery_never_keeps_streams(phase):
+@pytest.mark.parametrize(
+    "phase,preserve_streams",
+    [(FtPhase.RELAUNCHING, False), (FtPhase.RELAUNCHING, True), (FtPhase.RECONFIGURING, True)],
+)
+def test_whole_instance_recovery_never_keeps_streams(phase, preserve_streams):
     instance = _instance()
-    get_ft_runtime_store().transition(instance.id, phase=phase, preserve_recovery_streams=True)
-    assert ServingOverlay.project(instance) is None
+    get_ft_runtime_store().transition(instance.id, phase=phase, preserve_recovery_streams=preserve_streams)
+    assert ServingOverlay.project(ReadOnlyInstance(instance)) is None
 
 
 def test_scaled_down_view_filters_dead_rank_without_mutating_authoritative_topology():
@@ -89,8 +91,8 @@ def test_scaled_down_view_filters_dead_rank_without_mutating_authoritative_topol
     assert list(projected.endpoints) == ["192.0.2.1"]
 
 
-@patch("motor.controller.fault_tolerance.serving_overlay.CoordinatorApiClient.send_instance_refresh")
-def test_withdraw_uses_full_del_and_publish_uses_filtered_add(mock_refresh):
+@patch("motor.controller.fault_tolerance.engine_recovery.serving.CoordinatorApiClient.send_instance_refresh")
+def test_withdraw_uses_full_del_and_publish_uses_filtered_set(mock_refresh):
     mock_refresh.return_value = True
     instance = _instance()
 
@@ -102,11 +104,11 @@ def test_withdraw_uses_full_del_and_publish_uses_filtered_add(mock_refresh):
     publish_msg = mock_refresh.call_args_list[1].args[0]
     assert withdraw_msg.event == EventType.DEL
     assert sorted(endpoint.id for endpoint in withdraw_msg.instances[0].get_all_endpoints(True)) == [0, 1]
-    assert publish_msg.event == EventType.ADD
+    assert publish_msg.event == EventType.SET
     assert [endpoint.id for endpoint in publish_msg.instances[0].get_all_endpoints(True)] == [0]
 
 
-@patch("motor.controller.fault_tolerance.serving_overlay.CoordinatorApiClient.send_instance_refresh")
+@patch("motor.controller.fault_tolerance.engine_recovery.serving.CoordinatorApiClient.send_instance_refresh")
 def test_consecutive_scale_down_withdraws_previous_published_view(mock_refresh):
     mock_refresh.return_value = True
     instance = _instance()
@@ -178,7 +180,7 @@ def test_warming_up_view_keeps_survivor_ranks_when_joiner_status_is_normal():
 
 
 @patch("motor.controller.core.instance_manager.InstanceManager.get_instances", return_value=[])
-@patch("motor.controller.fault_tolerance.serving_overlay.CoordinatorApiClient.send_instance_refresh")
+@patch("motor.controller.fault_tolerance.engine_recovery.serving.CoordinatorApiClient.send_instance_refresh")
 def test_publish_restored_sends_full_roster_after_warmup(mock_refresh, _instances):
     mock_refresh.return_value = True
     instance = _warming_instance()
@@ -205,7 +207,7 @@ def test_publish_restored_sends_full_roster_after_warmup(mock_refresh, _instance
 
 
 @patch("motor.controller.core.instance_manager.InstanceManager.get_instances")
-@patch("motor.controller.fault_tolerance.serving_overlay.CoordinatorApiClient.send_instance_refresh")
+@patch("motor.controller.fault_tolerance.engine_recovery.serving.CoordinatorApiClient.send_instance_refresh")
 def test_publish_restored_keeps_other_warming_instance_on_survivors(mock_refresh, mock_get_instances):
     """A cut-over SET must not advertise another instance's joiners.
 
@@ -232,7 +234,7 @@ def test_publish_restored_keeps_other_warming_instance_on_survivors(mock_refresh
 
 
 @patch("motor.controller.core.instance_manager.InstanceManager.get_instances", return_value=[])
-@patch("motor.controller.fault_tolerance.serving_overlay.CoordinatorApiClient.send_instance_refresh")
+@patch("motor.controller.fault_tolerance.engine_recovery.serving.CoordinatorApiClient.send_instance_refresh")
 def test_publish_restored_waits_for_in_flight_set(mock_refresh, _instances):
     """A second SET cannot construct its roster until the first POST returns."""
     order = []
@@ -274,3 +276,150 @@ def test_publish_restored_waits_for_in_flight_set(mock_refresh, _instances):
     assert order == ["send", "send", "second_done"]
     assert get_ft_runtime_store().get(11)["phase"] == FtPhase.NORMAL.value
     assert get_ft_runtime_store().get(12)["phase"] == FtPhase.NORMAL.value
+
+
+@pytest.mark.parametrize("phase", [FtPhase.WAITING_ENGINE_FAULT, FtPhase.FAST_RECOVERING, FtPhase.SCALING_DOWN])
+def test_recovery_phases_preserve_instance_and_pause_new_scheduling(phase):
+    instance = _instance()
+    get_ft_runtime_store().transition(7, phase=phase, dead_committed=[1])
+    projected = ServingOverlay.project(instance)
+    assert projected.recovery_paused
+    assert [ep.id for ep in projected.get_all_endpoints(True)] == [0]
+    assert not instance.recovery_paused
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+@patch("motor.controller.core.instance_manager.InstanceManager.get_instances", return_value=[])
+def test_topology_update_is_confirmed_while_paused_before_unpause(_instances, read_only):
+    instance = _instance()
+    instance.recovery_paused = True
+    store = get_ft_runtime_store()
+    store.transition(
+        7,
+        recovery_id="owner",
+        phase=FtPhase.SCALED_DOWN_RUNNING,
+        dead_committed=[1],
+        recovery_paused=True,
+        serving_published=False,
+        last_error="ServingOverlay publication pending; engine cleanup failed",
+    )
+    sent = []
+    with patch(
+        "motor.controller.fault_tolerance.engine_recovery.serving.CoordinatorApiClient.send_instance_refresh",
+        side_effect=lambda event: sent.append(event) or True,
+    ):
+        assert ServingOverlay.publish(ReadOnlyInstance(instance) if read_only else instance)
+    assert [event.instances[0].recovery_paused for event in sent] == [True, False]
+    assert all([ep.id for ep in event.instances[0].get_all_endpoints(True)] == [0] for event in sent)
+    assert store.get(7)["serving_published"]
+    assert not store.get(7)["recovery_paused"]
+    assert store.get(7)["stage"] == "completed"
+    assert store.get(7)["last_error"] == "engine cleanup failed"
+    assert not instance.recovery_paused
+    assert not ServingOverlay.project(instance).recovery_paused
+
+
+@pytest.mark.parametrize("owner", ["", "owner"])
+@patch("motor.controller.core.instance_manager.InstanceManager.get_instances", return_value=[])
+def test_owner_change_at_publication_commit_preserves_new_recovery(_instances, owner):
+    instance = _instance()
+    instance.recovery_paused = True
+    store = get_ft_runtime_store()
+    store.transition(7, recovery_id=owner, phase=FtPhase.NORMAL, recovery_paused=True, serving_published=False)
+    acknowledge = store.mark_serving_published
+    new_runtime = {}
+
+    def switch_owner(*args, **kwargs):
+        store.transition(
+            7,
+            recovery_id="new-owner",
+            stage="publication_pending",
+            last_error="ServingOverlay publication pending; new recovery error",
+        )
+        new_runtime.update(store.get(7))
+        return acknowledge(*args, **kwargs)
+
+    with (
+        patch.object(store, "mark_serving_published", side_effect=switch_owner),
+        patch(
+            "motor.controller.fault_tolerance.engine_recovery.serving.CoordinatorApiClient.send_instance_refresh",
+            return_value=True,
+        ),
+    ):
+        assert not ServingOverlay.publish(instance)
+    assert store.get(7) == new_runtime
+    assert instance.recovery_paused
+
+
+@pytest.mark.parametrize("interrupt", ["topology-change", "cancelled", "http-failure", "new-pause", "late-pause"])
+@patch("motor.controller.core.instance_manager.InstanceManager.get_instances", return_value=[])
+def test_interrupted_publication_never_releases_recovery_pause(_instances, interrupt):
+    instance = _instance()
+    instance.recovery_paused = True
+    store = get_ft_runtime_store()
+    store.transition(
+        7,
+        recovery_id="owner",
+        phase=FtPhase.SCALED_DOWN_RUNNING,
+        recovery_paused=True,
+        serving_published=interrupt == "cancelled",
+    )
+    cancelled = [False]
+
+    def send(event):
+        if interrupt == "http-failure":
+            return False
+        if interrupt == "topology-change":
+            store.transition(7, dead_committed=[1])
+        elif interrupt == "cancelled":
+            cancelled[0] = True
+        elif interrupt == "new-pause" and not event.instances[0].recovery_paused:
+            instance.set_recovery_paused(True)
+        return True
+
+    finish = Instance.finish_recovery_pause
+
+    def finish_after_pause(source, token, confirm):
+        if interrupt == "late-pause":
+            source.set_recovery_paused(True)
+        return finish(source, token, confirm)
+
+    with (
+        patch(
+            "motor.controller.fault_tolerance.engine_recovery.serving.CoordinatorApiClient.send_instance_refresh",
+            side_effect=send,
+        ) as refresh,
+        patch.object(Instance, "finish_recovery_pause", new=finish_after_pause),
+    ):
+        assert not ServingOverlay.publish(instance, cancelled=lambda: cancelled[0])
+    assert refresh.call_count == (2 if interrupt in {"new-pause", "late-pause"} else 1)
+    assert instance.recovery_paused
+    assert store.get(7)["recovery_paused"]
+    if interrupt == "topology-change":
+        assert not store.get(7)["serving_published"]
+
+
+@patch("motor.controller.core.instance_manager.InstanceManager.get_instances", return_value=[])
+def test_periodic_paused_ack_retries_pending_topology_release(_instances):
+    instance = _instance()
+    store = get_ft_runtime_store()
+    store.transition(
+        7,
+        recovery_id="owner",
+        phase=FtPhase.SCALED_DOWN_RUNNING,
+        dead_committed=[1],
+        recovery_paused=True,
+        serving_published=False,
+        stage="publication_pending",
+    )
+    pending = ServingOverlay.project(instance)
+    with (
+        patch("motor.controller.core.instance_manager.InstanceManager.get_instance", return_value=instance),
+        patch(
+            "motor.controller.fault_tolerance.engine_recovery.serving.CoordinatorApiClient.send_instance_refresh",
+            return_value=True,
+        ),
+    ):
+        ServingOverlay.mark_published([pending], {7: "owner"})
+    assert not store.get(7)["recovery_paused"]
+    assert store.get(7)["serving_published"]

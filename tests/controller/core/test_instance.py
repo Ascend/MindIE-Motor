@@ -116,7 +116,8 @@ def test_readonly_instance_delegation() -> None:
     assert readonly_instance.get_endpoints_num() == 0
 
 
-def test_readonly_instance_modification_blocking() -> None:
+@pytest.mark.parametrize("method", ["update_instance_status", "set_recovery_paused", "finish_recovery_pause"])
+def test_readonly_instance_modification_blocking(method) -> None:
     """Test ReadOnlyInstance blocks modification methods"""
     # Create an instance
     instance = Instance(job_name="test_blocking", model_name="test_model", id=1, role="prefill")
@@ -125,11 +126,8 @@ def test_readonly_instance_modification_blocking() -> None:
     readonly_instance = ReadOnlyInstance(instance)
 
     # Test that modification methods are blocked
-    try:
-        readonly_instance.update_instance_status("inactive")
-        assert False, "Should have raised AttributeError"
-    except AttributeError as e:
-        assert "does not allow modification method 'update_instance_status'" in str(e)
+    with pytest.raises(AttributeError, match="does not allow modification"):
+        getattr(readonly_instance, method)
 
 
 def test_readonly_instance_to_instance() -> None:

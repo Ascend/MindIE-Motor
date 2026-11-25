@@ -22,6 +22,9 @@ from fastapi.responses import PlainTextResponse
 
 from motor.common.resources import (
     RegisterMsg,
+    InsStatus,
+    Instance,
+    ReadOnlyInstance,
     ReregisterMsg,
     HeartbeatMsg,
     TerminateInstanceMsg,
@@ -42,8 +45,9 @@ from motor.config.controller import ControllerConfig
 from motor.controller.observability.observability import Observability
 from motor.controller.core.instance_assembler import InstanceAssembler
 from motor.controller.core.instance_manager import InstanceManager
+from motor.controller.fault_tolerance.engine_recovery.serving import ServingOverlay
 from motor.controller.fault_tolerance.fault_manager import FaultManager
-from motor.controller.fault_tolerance.dp_scale_down import FtPhase, FtRuntime, get_ft_runtime_store
+from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, FtRuntime, get_ft_runtime_store
 from motor.controller.fault_tolerance.fault_types import FaultInfo
 from motor.controller.core.recovery_service import (
     complete_precision_pd_group_recovery,
@@ -295,44 +299,74 @@ class ControllerAPI:
         return app
 
     async def _get_fault_tolerance_status(self, request: Request) -> dict:
-        """Return all DP scale-down runtimes or one selected instance."""
+        """Return read-only summaries of instance recovery and serving state."""
         raw_instance_id = request.query_params.get("instance_id")
-        if not self.enable_fault_tolerance or not self.enable_dp_scale_down:
+        if not self.enable_fault_tolerance:
             return format_success_response(data={"phase": FtPhase.DISABLED.value, "instances": []})
-
-        store = get_ft_runtime_store()
-        if raw_instance_id is None:
-            statuses = {status["instance_id"]: status for status in store.list()}
-            for instance in InstanceManager().get_active_instances():
-                if instance.id in statuses:
-                    continue
-                statuses[instance.id] = FtRuntime(
-                    instance_id=instance.id,
-                    original_dp_ranks=sorted(
-                        endpoint.id for endpoint in instance.get_all_endpoints(include_headless=False)
-                    ),
-                ).to_dict()
-            return format_success_response(data={"instances": [statuses[key] for key in sorted(statuses)]})
         try:
-            instance_id = int(raw_instance_id)
+            instance_id = int(raw_instance_id) if raw_instance_id is not None else None
         except (TypeError, ValueError) as e:
             raise HTTPException(status_code=400, detail="instance_id must be an integer") from e
 
+        store = get_ft_runtime_store()
+        manager = InstanceManager()
+        instances = {instance.id: instance for instance in manager.get_instances()}
+        instances.update({instance.id: instance for instance in manager.get_active_instances()})
+        if raw_instance_id is None:
+            statuses = {status["instance_id"]: status for status in store.list()}
+            for instance_id in instances:
+                statuses.setdefault(instance_id, FtRuntime(instance_id=instance_id).to_dict())
+            return format_success_response(
+                data={
+                    "instances": [
+                        self._project_fault_tolerance_status(
+                            statuses[key], manager.get_instance(key) or instances.get(key)
+                        )
+                        for key in sorted(statuses)
+                    ]
+                }
+            )
         runtime = store.get(instance_id)
         if runtime is None:
-            instance = next(
-                (candidate for candidate in InstanceManager().get_active_instances() if candidate.id == instance_id),
-                None,
-            )
-            if instance is None:
+            if instance_id not in instances:
                 raise HTTPException(status_code=404, detail="fault-tolerance runtime not found")
-            runtime = FtRuntime(
-                instance_id=instance.id,
-                original_dp_ranks=sorted(
-                    endpoint.id for endpoint in instance.get_all_endpoints(include_headless=False)
-                ),
-            ).to_dict()
-        return format_success_response(data=runtime)
+            runtime = FtRuntime(instance_id=instance_id).to_dict()
+        return format_success_response(
+            data=self._project_fault_tolerance_status(
+                runtime, manager.get_instance(instance_id) or instances.get(instance_id)
+            )
+        )
+
+    @staticmethod
+    def _project_fault_tolerance_status(
+        runtime: dict[str, Any], instance: Instance | ReadOnlyInstance | None
+    ) -> dict[str, Any]:
+        """Project the summary; alive ranks describe topology, not live health."""
+        phase = runtime["phase"]
+        ranks = set(runtime["original_dp_ranks"])
+        if not ranks and instance is not None and not runtime["reconfiguration_dispatched"]:
+            ranks = {endpoint.id for endpoint in instance.get_all_endpoints(include_headless=False)}
+        retired = set(runtime["dead_committed"])
+        ignored = set(retired)
+        if phase == FtPhase.WARMING_UP and runtime["serving_dp_ranks"]:
+            ignored.update(ranks - set(runtime["serving_dp_ranks"]))
+        can_serve = bool(
+            runtime["can_serve"]
+            and instance is not None
+            and instance.status == InsStatus.ACTIVE
+            and ranks - ignored
+            and instance.is_all_endpoints_ready(ignored_endpoint_ids=ignored)
+            and instance.is_all_endpoints_heartbeat_fresh(ignored_endpoint_ids=ignored)
+            and ServingOverlay.project(instance) is not None
+        )
+        return {
+            "instance_id": runtime["instance_id"],
+            "phase": phase,
+            "can_serve": can_serve,
+            "alive_dp_ranks": sorted(ranks - retired - set(runtime["pending_removed_ranks"])),
+            "dead_dp_ranks": list(runtime["dead_committed"]),
+            "last_error": runtime["last_error"],
+        }
 
     def _require_dp_scale_down(self) -> None:
         if not self.enable_fault_tolerance or not self.enable_dp_scale_down:

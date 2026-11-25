@@ -778,6 +778,40 @@ class InstanceManager:
         if not to_remove and not to_add:
             logger.debug("SET: no diff, instance set unchanged")
             return pause_changed, removed_ids
+        replacements = {instance.id: instance for instance in to_add}
+        in_place = []
+        for old in to_remove:
+            new = replacements.get(old.id)
+            if (
+                new is not None
+                and old.id in self._available_pool
+                and old.job_name == new.job_name
+                and old.role == new.role
+                and not self._instance_needs_update(old, new.model_copy(update={"endpoints": old.endpoints}))
+            ):
+                # Keep the instance and survivor endpoint objects: active requests and
+                # token release still refer to these objects during a topology update.
+                previous = {ep.id: ep for ep in old.get_all_endpoints(True)}
+                endpoints = {}
+                for pod_ip, pod_endpoints in new.endpoints.items():
+                    endpoints[pod_ip] = {}
+                    for key, endpoint in pod_endpoints.items():
+                        prior = previous.get(endpoint.id)
+                        endpoints[pod_ip][key] = (
+                            prior
+                            if prior is not None
+                            and (prior.ip, prior.business_port, prior.kv_events_port, prior.kv_replay_port)
+                            == (endpoint.ip, endpoint.business_port, endpoint.kv_events_port, endpoint.kv_replay_port)
+                            else endpoint
+                        )
+                self._register_kv_instance([old], False)
+                old.endpoints = endpoints
+                old.recovery_paused = new.recovery_paused
+                self._endpoint_id_cache.pop(old.id, None)
+                self._register_kv_instance([old])
+                in_place.append(old.id)
+        to_remove = [instance for instance in to_remove if instance.id not in in_place]
+        to_add = [instance for instance in to_add if instance.id not in in_place]
         if to_remove:
             logger.info("SET: removing %d instance(s), adding %d", len(to_remove), len(to_add))
             self._delete_instances(to_remove)

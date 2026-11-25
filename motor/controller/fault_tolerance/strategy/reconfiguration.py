@@ -10,10 +10,8 @@
 """Bridge failed fast recovery to Motor's existing whole-instance recovery flow."""
 
 from motor.common.logger import get_logger
-from motor.controller.fault_tolerance.dp_scale_down import (
-    FtPhase,
-    get_ft_runtime_store,
-)
+from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, get_ft_runtime_store
+from motor.controller.fault_tolerance.engine_recovery.contracts import FailurePolicy, RecoveryAdvice
 from motor.controller.fault_tolerance.strategy.base import StrategyBase
 
 logger = get_logger(__name__)
@@ -22,10 +20,17 @@ logger = get_logger(__name__)
 class InstanceReconfigurationStrategy(StrategyBase):
     """Isolate an instance and stop all of its Pods through the original recovery service."""
 
+    recovery_action = "RECONFIGURE"
+    failure_policy = FailurePolicy.RECONFIGURATION
+    recovery_target = RecoveryAdvice.RECONFIGURE
+
     def execute(self, instance_id: int) -> None:
         get_ft_runtime_store().transition(
             instance_id,
+            expected_recovery_id=self.recovery_id or None,
             phase=FtPhase.RECONFIGURING,
+            action="RECONFIGURE",
+            stage="dispatching",
             serving_published=False,
             reconfiguration_dispatched=False,
             dp_master_rank=None,
@@ -53,7 +58,7 @@ class InstanceReconfigurationStrategy(StrategyBase):
             )
             return
 
-        get_ft_runtime_store().mark_instance_reconfiguration_dispatched(instance_id)
+        get_ft_runtime_store().mark_instance_reconfiguration_dispatched(instance_id, self.recovery_id or None)
         self._finish(instance_id, failed=False)
 
     def stop(self) -> None:
@@ -69,7 +74,9 @@ class InstanceReconfigurationStrategy(StrategyBase):
         if failed:
             get_ft_runtime_store().transition(
                 instance_id,
+                expected_recovery_id=self.recovery_id or None,
                 phase=FtPhase.RECONFIGURING,
+                stage="failed",
                 serving_published=False,
                 last_error=error,
             )

@@ -11,11 +11,7 @@
 
 from unittest.mock import patch
 
-from motor.controller.fault_tolerance.dp_scale_down import (
-    FtPhase,
-    FtRuntime,
-    get_ft_runtime_store,
-)
+from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, FtRuntime, get_ft_runtime_store
 from motor.controller.fault_tolerance.strategy.reconfiguration import (
     InstanceReconfigurationStrategy,
 )
@@ -49,7 +45,6 @@ def test_success_reuses_original_recovery_and_marks_dispatch_without_declaring_n
     assert strategy.is_finished() is True
     assert strategy.is_failed() is False
     assert runtime["original_dp_ranks"] == []
-    assert runtime["gate"] == {"allowed": False, "reason_codes": []}
     assert runtime["phase"] == FtPhase.RECONFIGURING.value
     assert runtime["reconfiguration_dispatched"] is True
     assert runtime["dead_committed"] == []

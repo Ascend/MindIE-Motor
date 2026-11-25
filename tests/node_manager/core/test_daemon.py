@@ -130,6 +130,7 @@ class TestDaemon:
     def test_engine_ft_manager_starts_only_after_engines_are_ready(self, daemon, endpoints):
         engine = daemon._services[SERVICE_ENGINE]
         daemon._engine_ft_manager = MagicMock()
+        daemon._engine_ft_manager.is_fast_recovery_guard_active.return_value = False
         engine.wait_ready = MagicMock(return_value=True)
 
         daemon._wait_engines_ready(endpoints, instance_id=7)
@@ -141,6 +142,7 @@ class TestDaemon:
     def test_engine_ft_manager_does_not_start_when_engine_readiness_times_out(self, daemon, endpoints):
         engine = daemon._services[SERVICE_ENGINE]
         daemon._engine_ft_manager = MagicMock()
+        daemon._engine_ft_manager.is_fast_recovery_guard_active.return_value = False
         engine.wait_ready = MagicMock(return_value=False)
 
         daemon._wait_engines_ready(endpoints, instance_id=7)
@@ -152,6 +154,7 @@ class TestDaemon:
     def test_engine_ft_manager_does_not_start_when_engine_readiness_raises(self, daemon, endpoints):
         engine = daemon._services[SERVICE_ENGINE]
         daemon._engine_ft_manager = MagicMock()
+        daemon._engine_ft_manager.is_fast_recovery_guard_active.return_value = False
         engine.wait_ready = MagicMock(side_effect=RuntimeError("probe failed"))
 
         daemon._wait_engines_ready(endpoints, instance_id=7)
@@ -959,3 +962,27 @@ def test_ft_excludes_headless_and_retired_endpoints(daemon, endpoints, explicit)
             daemon.apply_fault_tolerance({"instruction": "retry", "params": {"scope": "all_local_endpoints"}})
             apply.assert_called_once()
             assert apply.call_args.args[0] == endpoints[0]
+
+
+@pytest.mark.parametrize("previous_shrink", [False, True])
+def test_restart_restores_retired_endpoints_and_invalidates_old_guard(daemon, previous_shrink):
+    params = _restart_params()
+    daemon._services["engine"] = MagicMock()
+    daemon._retired_endpoint_ids = {1} if previous_shrink else set()
+    daemon._engine_ft_transaction_id = "old-shrink" if previous_shrink else None
+    daemon._engine_ft_manager = MagicMock()
+    daemon._engine_ft_manager.is_fast_recovery_guard_active.return_value = False
+    with (
+        _patch_restart_params(params),
+        patch("motor.node_manager.core.daemon.HeartbeatManager") as hb,
+        patch("motor.node_manager.core.daemon.threading.Thread"),
+    ):
+        daemon.restart_engine(1)
+    assert daemon._retired_endpoint_ids == set()
+    assert daemon._engine_ft_transaction_id is None
+    if previous_shrink:
+        hb.return_value.reset_after_engine_restart.assert_called_once_with(params["endpoints"])
+        daemon._engine_ft_manager.reset_retired_endpoints.assert_called_once()
+    else:
+        hb.return_value.reset_after_engine_restart.assert_not_called()
+        daemon._engine_ft_manager.reset_retired_endpoints.assert_not_called()

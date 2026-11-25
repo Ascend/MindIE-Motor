@@ -19,7 +19,8 @@ import threading
 from motor.common.logger import get_logger
 from motor.common.etcd.persistent_state import PersistentState
 from motor.controller.fault_tolerance.fault_types import InstanceMetadata, NodeMetadata
-from motor.controller.fault_tolerance.dp_scale_down import get_ft_runtime_store
+from motor.controller.fault_tolerance.engine_recovery.runtime import get_ft_runtime_store
+from motor.controller.fault_tolerance.engine_recovery.contracts import legacy_recovery_result
 
 logger = get_logger(__name__)
 
@@ -147,6 +148,9 @@ class _PersistenceMixin:
                 instances_data = persistent_state.data.get("instances", {})
                 for ins_id_str, ins_dict in instances_data.items():
                     ins_metadata = InstanceMetadata.model_validate(ins_dict)
+                    # Migrate name-only records once at the persistence boundary.
+                    if ins_metadata.prev_recovery_result is None:
+                        ins_metadata.prev_recovery_result = ins_metadata.failure_result
                     self.instances[ins_metadata.instance_id] = ins_metadata
                     logger.debug("Restored instance %s", ins_id_str)
 
@@ -158,8 +162,16 @@ class _PersistenceMixin:
                     if metadata is None:
                         continue
                     metadata.prev_strategy_failed = True
-                    metadata.prev_strategy_name = "DpScaleDownStrategy"
+                    raw_runtime = persistent_state.data.get("ft_runtime", {}).get(str(instance_id), {})
+                    metadata.prev_strategy_name = (
+                        "EngineRelaunchStrategy"
+                        if raw_runtime.get("action") == "RELAUNCH" or raw_runtime.get("phase") == "RELAUNCHING"
+                        else "EngineFastRecoveryStrategy"
+                        if raw_runtime.get("action") == "FAST_RECOVERY" or raw_runtime.get("phase") == "FAST_RECOVERING"
+                        else "DpScaleDownStrategy"
+                    )
                     metadata.prev_strategy_fallback = fallback
+                    metadata.prev_recovery_result = legacy_recovery_result(metadata.prev_strategy_name, fallback)
 
             logger.info(
                 "Successfully restored fault manager data: %d nodes, %d instances",

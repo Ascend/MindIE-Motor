@@ -237,6 +237,19 @@ class Daemon(ThreadSafeSingleton):
                 raise EngineRestartParamError("no engine start recorded")
             if instance_id is not None and instance_id != restart_params["instance_id"]:
                 raise EngineRestartParamError("instance id mismatch")
+            # Stop old FT transactions from finalizing against the new process group.
+            with self._engine_ft_transaction_lock:
+                restore_full_membership = self._engine_ft_transaction_id is not None
+                self._engine_ft_transaction_id = None
+            with self._retired_endpoint_lock:
+                restore_full_membership = restore_full_membership or bool(self._retired_endpoint_ids)
+                self._retired_endpoint_ids.clear()
+            if restore_full_membership:
+                self._engine_ft_manager.reset_retired_endpoints()
+                self._reported_dead_pids.clear()
+                self._seen_normal_ep_ids.clear()
+                self._reported_abnormal_ep_ids.clear()
+                self._engine_ready.clear()
             for endpoint in restart_params["endpoints"]:
                 endpoint.engine_rank = None
             with self.config_lock:
@@ -262,6 +275,10 @@ class Daemon(ThreadSafeSingleton):
                 node_rank=restart_params["node_rank"],
             )
 
+            # A prior shrink's monitor roster must include every restarted DP again.
+            if restore_full_membership:
+                HeartbeatManager().reset_after_engine_restart(restart_params["endpoints"])
+
             # Phase 3: keep runtime FT polling paused until model readiness.
             # The API returns immediately while this handoff runs in the
             # background, matching the normal cold-start lifecycle.
@@ -285,6 +302,7 @@ class Daemon(ThreadSafeSingleton):
         """Resume FT polling only after every relaunched engine is ready."""
         try:
             if engine.wait_ready(endpoints):
+                self._engine_ready.set()
                 self._engine_ft_manager.resume()
                 with self._suicide_lock:
                     # A successful relaunch ends the previous fault episode.

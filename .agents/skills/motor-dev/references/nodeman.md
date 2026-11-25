@@ -207,11 +207,10 @@ Lifecycle:
      POST /controller/register (with instance metadata, capabilities)
 
    For vLLM, `NodeManagerConfig` normalizes a deployment-level `FtCapabilitySnapshot` from the selected native
-   engine section and registration/re-registration carries it to Controller. The snapshot contains FT/apply support,
-   external-LB and auto-recovery flags plus the official engine-native `additional_config.enable_fused_mc2`,
-   `enable_eplb`, and `eplb_config.num_redundant_experts` settings. It deliberately excludes EPLB's live expert
-   placement and does not infer a removable-DP budget from the redundant-expert count; Controller rejects
-   inconsistent snapshots from Pods belonging to the same instance.
+   engine section and registration/re-registration carries it to Controller. The snapshot contains FT/apply support
+   and the external-LB flag. EPLB, redundant experts and MC2 execution prerequisites are validated by the engine;
+   NodeManager does not parse or report them as Motor capabilities. Controller rejects inconsistent protocol/routing
+   snapshots from Pods belonging to the same instance.
      → 200: registration accepted, break
      → failure: retry indefinitely with exponential backoff (2, 4, 8, 16, 32s cap)
      (registration failure never terminates NodeManager)

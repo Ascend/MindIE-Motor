@@ -808,49 +808,10 @@ class NodeManagerConfig:
         external_lb = any(
             native.get(key) in (True, 1) for key in ("data_parallel_external_lb", "data-parallel-external-lb")
         )
-        ft_config = native.get("fault_tolerance_config", native.get("fault-tolerance-config", {}))
-        if isinstance(ft_config, str):
-            try:
-                ft_config = json.loads(ft_config)
-            except json.JSONDecodeError:
-                ft_config = {}
-        auto_recovery = isinstance(ft_config, dict) and ft_config.get(
-            "auto_recovery", ft_config.get("auto-recovery", False)
-        ) in (True, 1)
-        additional_config = native.get("additional_config", native.get("additional-config", {}))
-        if isinstance(additional_config, str):
-            try:
-                additional_config = json.loads(additional_config)
-            except json.JSONDecodeError:
-                additional_config = {}
-        fused_mc2_enabled = isinstance(additional_config, dict) and additional_config.get(
-            "enable_fused_mc2", additional_config.get("enable-fused-mc2", 0)
-        ) in (True, 1)
-        eplb_enabled = any(native.get(key) in (True, 1) for key in ("enable_eplb", "enable-eplb"))
-        eplb_config = native.get("eplb_config", native.get("eplb-config", {}))
-        if isinstance(eplb_config, str):
-            try:
-                eplb_config = json.loads(eplb_config)
-            except json.JSONDecodeError:
-                eplb_config = {}
-        raw_redundancy = (
-            eplb_config.get("num_redundant_experts", eplb_config.get("num-redundant-experts", 0))
-            if isinstance(eplb_config, dict)
-            else 0
-        )
-        try:
-            num_redundant_experts = int(raw_redundancy)
-        except (TypeError, ValueError):
-            num_redundant_experts = 0
-        num_redundant_experts = max(0, num_redundant_experts)
         return FtCapabilitySnapshot(
             enabled=enabled,
             scale_down_supported=engine_type == ENGINE_TYPE_VLLM and enabled,
             external_lb=external_lb,
-            auto_recovery=auto_recovery,
-            fused_mc2_enabled=fused_mc2_enabled,
-            eplb_enabled=eplb_enabled,
-            num_redundant_experts=num_redundant_experts,
         )
 
     @classmethod

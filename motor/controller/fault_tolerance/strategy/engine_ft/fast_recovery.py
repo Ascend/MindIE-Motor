@@ -22,12 +22,13 @@ from motor.common.constants import (
     ENGINE_STATUS_UNHEALTHY,
 )
 from motor.common.logger import get_logger
-from motor.common.resources import Endpoint, InsStatus, NodeManagerInfo
+from motor.common.resources import Endpoint, NodeManagerInfo
 from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient
-from motor.controller.fault_tolerance.dp_scale_down import get_ft_runtime_store
+from motor.controller.fault_tolerance.engine_recovery.runtime import get_ft_runtime_store
 from motor.controller.fault_tolerance.fault_types import FaultLevel, RecoveryCause
 from motor.config.controller import ControllerConfig
-from motor.controller.fault_tolerance.serving_overlay import ServingOverlay
+from motor.controller.fault_tolerance.engine_recovery.serving import ServingOverlay
+from motor.controller.fault_tolerance.engine_recovery.contracts import FailurePolicy
 from motor.controller.fault_tolerance.strategy.base import StrategyBase
 
 logger = get_logger(__name__)
@@ -81,6 +82,9 @@ class FastRecoveryRunContext:
 class EngineFastRecoveryStrategy(StrategyBase):
     """Orchestrate engine fast recovery; subclasses define rounds and completion."""
 
+    recovery_action = "FAST_RECOVERY"
+    failure_policy = FailurePolicy.FAST_RECOVERY
+    runs_under_recovery_owner = True
     abort_rounds: tuple[bool, ...] = ()
     failure_fallback: str = "InstanceReconfigurationStrategy"
     recovery_cause = RecoveryCause.SOFTWARE
@@ -94,6 +98,7 @@ class EngineFastRecoveryStrategy(StrategyBase):
     def __init__(self) -> None:
         super().__init__()
         self.context: FastRecoveryRunContext | None = None
+        self._round_deadline: float | None = None
         self.round_timeout_sec = self._resolve_config("recovery_round_timeout_sec", 60)
         self.poll_interval_sec = self._resolve_config("recovery_poll_interval_sec", 1.0)
 
@@ -125,6 +130,16 @@ class EngineFastRecoveryStrategy(StrategyBase):
             if instance is None or not ServingOverlay.pause_for_recovery(instance):
                 self._finish(FastRecoveryState.FAILED, "failed to pause new scheduling before fast recovery")
                 return
+            from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase
+
+            get_ft_runtime_store().transition(
+                instance_id,
+                expected_recovery_id=self.recovery_id or None,
+                phase=FtPhase.FAST_RECOVERING,
+                action=self.recovery_action,
+                stage="executing",
+                serving_published=False,
+            )
             targets = self._check_unhealthy_targets(instance_id)
             if not targets:
                 return
@@ -139,6 +154,7 @@ class EngineFastRecoveryStrategy(StrategyBase):
             )
             self.context.targets = targets
             for attempt, abort in enumerate(self.abort_rounds):
+                self._round_deadline = time.monotonic() + float(self.round_timeout_sec)
                 self.context.attempt = attempt + 1
                 self.context.all_ranks_failed = False
                 self.context.current_state = FastRecoveryState.DISPATCHING
@@ -189,14 +205,23 @@ class EngineFastRecoveryStrategy(StrategyBase):
 
     def _can_recover_instance(self, instance_id: int) -> bool:
         instance = self._get_instance_manager().get_instance(instance_id)
+        runtime = get_ft_runtime_store().get(instance_id) or {}
         if (
             instance is None
-            or instance.status != InsStatus.ACTIVE
-            or get_ft_runtime_store().is_reconfiguration_dispatched(instance_id)
+            or (self.recovery_id and runtime.get("recovery_id") != self.recovery_id)
+            or not self._recovery_eligible(instance_id)
+            or (get_ft_runtime_store().get(instance_id) or {}).get("reconfiguration_dispatched", False)
         ):
             self._finish(FastRecoveryState.FAILED, "instance is no longer eligible for in-place fast recovery")
             return False
         return True
+
+    @staticmethod
+    def _recovery_eligible(instance_id: int) -> bool:
+        from motor.controller.fault_tolerance.fault_manager import FaultManager
+
+        context = FaultManager()._build_scale_down_context(instance_id)
+        return context.engine_recovery_eligible and context.fast_recovery_allowed
 
     def _check_unhealthy_targets(self, instance_id: int) -> list[FastRecoveryTarget]:
         instance = self._get_instance_manager().get_instance(instance_id)
@@ -228,6 +253,8 @@ class EngineFastRecoveryStrategy(StrategyBase):
 
     @staticmethod
     def _expected_endpoint_keys(instance) -> set[tuple[str, int]]:
+        if instance is None:
+            return set()
         runtime = get_ft_runtime_store().get(instance.id)
         retired = set(runtime["dead_committed"]) if runtime else set()
         keys: set[tuple[str, int]] = set()
@@ -243,11 +270,22 @@ class EngineFastRecoveryStrategy(StrategyBase):
         target_keys = {(target.node_manager.pod_ip, target.engine_id) for target in targets}
         return expected_keys.issubset(target_keys)
 
+    def _query_targets(self, node_mgr: NodeManagerInfo) -> dict:
+        instance = self._get_instance_manager().get_instance(self.context.instance_id)
+        ids = sorted(rank for ip, rank in self._expected_endpoint_keys(instance) if ip == node_mgr.pod_ip)
+        if not ids:
+            return {"engines": []}
+        timeout = min(10.0, float(self.round_timeout_sec))
+        if self._round_deadline is not None and self.context.current_state != FastRecoveryState.WAITING_CLEARANCE:
+            timeout = self._remaining_timeout(self._round_deadline, timeout)
+        entries = NodeManagerApiClient.query_engine_ft_entries(node_mgr, ids, timeout)
+        return {"engines": [{"engine_id": rank, "engines": [entry]} for rank, entry in entries.items()]}
+
     def _targets_from_node_managers(self, node_managers: list[NodeManagerInfo]) -> list[FastRecoveryTarget]:
         targets: list[FastRecoveryTarget] = []
         seen: set[tuple[str, int]] = set()
         for node_mgr in node_managers:
-            payload = NodeManagerApiClient.query_fault_tolerance_status(node_mgr)
+            payload = self._query_targets(node_mgr)
             for entry in payload.get("engines") or []:
                 if not isinstance(entry, dict) or entry.get("engine_id") is None:
                     continue
@@ -303,7 +341,24 @@ class EngineFastRecoveryStrategy(StrategyBase):
         )
 
         def _apply(node_mgr: NodeManagerInfo) -> tuple[NodeManagerInfo, bool]:
-            return node_mgr, NodeManagerApiClient.apply_fault_tolerance(node_mgr, payload)
+            if self.event.is_set():
+                return node_mgr, False
+            command = dict(payload)
+            command["params"] = dict(payload["params"])
+            command["params"].pop("scope", None)
+            command["params"]["endpoint_ids"] = sorted(
+                target.engine_id for target in targets if target.node_manager.pod_ip == node_mgr.pod_ip
+            )
+            NodeManagerApiClient.apply_engine_ft_instructions(
+                node_mgr,
+                command["params"].pop("endpoint_ids"),
+                "retry",
+                command["params"],
+                command["request_id"],
+                self._remaining_timeout(self._round_deadline, float(self.round_timeout_sec)),
+            )
+            self.mutation_started = True
+            return node_mgr, True
 
         max_workers = min(16, len(node_managers))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -332,7 +387,7 @@ class EngineFastRecoveryStrategy(StrategyBase):
             len(targets),
             self.round_timeout_sec,
         )
-        deadline = time.monotonic() + float(self.round_timeout_sec)
+        deadline = self._round_deadline or (time.monotonic() + float(self.round_timeout_sec))
         last_pending_count: int | None = None
         while time.monotonic() < deadline:
             if self.event.is_set():
@@ -399,7 +454,7 @@ class EngineFastRecoveryStrategy(StrategyBase):
         assert self.context is not None
         snapshots: dict[tuple[str, int], dict] = {}
         for node_mgr in self._node_managers_from_targets(targets):
-            payload = NodeManagerApiClient.query_fault_tolerance_status(node_mgr)
+            payload = self._query_targets(node_mgr)
             for entry in payload.get("engines") or []:
                 if isinstance(entry, dict) and entry.get("engine_id") is not None:
                     snapshots[(node_mgr.pod_ip, int(entry["engine_id"]))] = entry
@@ -467,6 +522,22 @@ class EngineFastRecoveryStrategy(StrategyBase):
         if self.context is not None:
             self.context.current_state = state
             self.context.last_error = error
+        if state == FastRecoveryState.SUCCESS and self.context is not None:
+            store = get_ft_runtime_store()
+            runtime = store.get(self.context.instance_id) or {}
+            from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase
+
+            store.transition(
+                self.context.instance_id,
+                expected_recovery_id=self.recovery_id or None,
+                phase=FtPhase.SCALED_DOWN_RUNNING if runtime.get("dead_committed") else FtPhase.NORMAL,
+                stage="publication_pending",
+                serving_published=False,
+            )
+            instance = self._get_instance_manager().get_instance(self.context.instance_id)
+            if instance is None or not ServingOverlay.publish(instance, cancelled=self.event.is_set):
+                state, error = FastRecoveryState.FAILED, "fast recovery topology publication failed"
+                self.context.current_state, self.context.last_error = state, error
         if state == FastRecoveryState.FAILED:
             self.mark_failed()
             logger.error(
@@ -490,6 +561,7 @@ class EngineFastRecoveryStrategy(StrategyBase):
 class GenericFastRecoveryStrategy(EngineFastRecoveryStrategy):
     """Software fallback: resume first, then abort after unanimous failure."""
 
+    protect_relaunch = True
     abort_rounds = (False, True)
 
     def _complete_recovery(self, instance_id: int, error: str | None) -> None:

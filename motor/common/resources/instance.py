@@ -11,6 +11,7 @@
 import time
 import threading
 import copy
+from collections.abc import Callable
 from enum import Enum
 from types import MappingProxyType
 from pydantic import BaseModel, Field
@@ -121,17 +122,6 @@ class FtCapabilitySnapshot(BaseModel):
     enabled: bool = Field(default=False, description="Whether engine FT is enabled")
     scale_down_supported: bool = Field(default=False, description="Whether the engine exposes scale_down execution")
     external_lb: bool = Field(default=False, description="Whether vLLM uses external LB mode")
-    auto_recovery: bool = Field(default=False, description="Whether engine auto recovery is enabled")
-    fused_mc2_enabled: bool = Field(
-        default=False,
-        description="Whether vLLM-Ascend fused MC2 is enabled; reported only and not gated by Motor",
-    )
-    eplb_enabled: bool = Field(default=False, description="Whether vLLM EPLB is enabled")
-    num_redundant_experts: int = Field(
-        default=0,
-        ge=0,
-        description="Static redundant expert count configured for EPLB",
-    )
 
 
 class ParallelConfig(BaseModel):
@@ -250,6 +240,7 @@ class Instance(BaseModel):
     def __init__(self, **data) -> None:
         super().__init__(**data)
         self._lock = threading.RLock()  # Use RLock to allow reentrant locking
+        self._recovery_pause_token = object()
         # Cache for get_all_endpoints() to avoid repeated tuple creation.
         # Version counter tracks structural changes (add/del); O(1) check vs O(n) hashing.
         self._endpoints_version: int = 0  # Incremented when endpoints structure changes
@@ -536,6 +527,7 @@ class Instance(BaseModel):
         self,
         timeout: float = DEFAULT_ACTIVE_HEARTBEAT_TIMEOUT,
         ignored_endpoint_ids: set[int] | None = None,
+        not_before: float | None = None,
     ) -> bool:
         """True when every endpoint's last heartbeat is within ``timeout`` seconds.
 
@@ -551,7 +543,9 @@ class Instance(BaseModel):
                 for endpoint in pod_endpoints.values():
                     if endpoint.id in ignored_endpoint_ids:
                         continue
-                    if not endpoint.is_alive(now, timeout):
+                    if not endpoint.is_alive(now, timeout) or (
+                        not_before is not None and endpoint.hb_timestamp < not_before
+                    ):
                         return False
             return True
 
@@ -763,6 +757,26 @@ class Instance(BaseModel):
             self.status = status
         logger.info("Instance %s(id:%s) status updated to %s", self.job_name, self.id, status)
 
+    def set_recovery_paused(self, paused: bool) -> None:
+        """Record a new pause decision, even when its boolean value is unchanged."""
+        with self._lock:
+            self._recovery_pause_token = object()
+            self.recovery_paused = paused
+
+    def finish_recovery_pause(self, expected_token: object, confirm: Callable[[], bool]) -> bool:
+        """Confirm publication and clear only the pause observed before it began.
+
+        The callback must not acquire InstanceManager or FaultManager locks.
+        Holding the instance lock prevents a new heartbeat pause from being
+        overwritten between publication acknowledgement and instance cleanup.
+        """
+        with self._lock:
+            if self._recovery_pause_token is not expected_token or not confirm():
+                return False
+            self.recovery_paused = False
+            self._recovery_pause_token = object()
+            return True
+
     def _get_expected_endpoint_count(self) -> int:
         """Get expected endpoint count based on enable_multi_endpoints flag.
         When enable_multi_endpoints is True:
@@ -785,6 +799,12 @@ class Instance(BaseModel):
                 logger.warning("device_num_per_node is %d", device_num_per_node)
                 return 0
             return (self.parallel_config.world_size + device_num_per_node - 1) // device_num_per_node
+
+    @property
+    def recovery_pause_token(self) -> object:
+        """Identity of the current instance-local pause decision; never serialized."""
+        with self._lock:
+            return self._recovery_pause_token
 
 
 class ReadOnlyInstance:
@@ -809,6 +829,8 @@ class ReadOnlyInstance:
             "del_endpoints",
             "update_heartbeat",
             "update_instance_status",
+            "set_recovery_paused",
+            "finish_recovery_pause",
         }
 
         if name in modification_methods:

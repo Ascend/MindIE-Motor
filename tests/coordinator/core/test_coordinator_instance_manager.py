@@ -102,6 +102,31 @@ class TestInstanceManager:
         await manager.refresh_instances(EventType.DEL, [instance])
         assert not manager.get_available_instances(role)
 
+    @pytest.mark.asyncio
+    async def test_paused_topology_shrink_preserves_survivor_workload_and_full_restore(self):
+        manager = self.instance_manager
+        instance = self.decode_instance
+        survivor = self.endpoint
+        removed = Endpoint(id=2, ip=survivor.ip, business_port="8081")
+        instance.endpoints = {survivor.ip: {1: survivor, 2: removed}}
+        instance.recovery_paused = True
+        await manager.refresh_instances(EventType.ADD, [instance])
+        survivor.workload.active_tokens = 123
+        smaller = Instance.model_validate(instance.model_dump())
+        smaller.endpoints[survivor.ip].pop(2)
+        changed, deleted = await manager.refresh_instances(EventType.SET, [smaller])
+        assert changed and deleted == []
+        live = manager.get_available_instances()[instance.id]
+        assert live is instance
+        assert live.endpoints[survivor.ip][1] is survivor
+        assert survivor.workload.active_tokens == 123
+        assert live.recovery_paused
+        full = Instance.model_validate(smaller.model_dump())
+        full.endpoints[survivor.ip][2] = removed
+        await manager.refresh_instances(EventType.SET, [full])
+        assert set(live.endpoints[survivor.ip]) == {1, 2}
+        assert survivor.workload.active_tokens == 123
+
     def test_has_required_instances_from_role_topology(self):
         """Readiness is inferred from roles instead of a configured deploy mode."""
         assert self.instance_manager.has_required_instances() is False

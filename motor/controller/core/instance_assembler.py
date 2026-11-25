@@ -675,7 +675,7 @@ class InstanceAssembler(ThreadSafeSingleton):
             logger.info("Pod %s already registered in node_managers, skip duplicate registration.", msg.pod_ip)
             return 0
 
-        from motor.controller.fault_tolerance.dp_scale_down import FtPhase, get_ft_runtime_store
+        from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, get_ft_runtime_store
 
         runtime = get_ft_runtime_store().get(instance.id)
         if runtime is None or runtime.get("phase") not in {
@@ -895,7 +895,7 @@ class InstanceAssembler(ThreadSafeSingleton):
         scale-down recorded DP master so later joiners/rounds do not re-elect.
         """
         from motor.common.resources.endpoint import EndpointStatus
-        from motor.controller.fault_tolerance.dp_scale_down import get_ft_runtime_store
+        from motor.controller.fault_tolerance.engine_recovery.runtime import get_ft_runtime_store
 
         pod_ip = msg.pod_ip
         node_mgr = next((nm for nm in instance.get_node_managers() if nm.pod_ip == pod_ip), None)
@@ -1041,7 +1041,7 @@ class InstanceAssembler(ThreadSafeSingleton):
         # Whole-instance start (cold start or reconfig): engines re-elect from
         # rank 0 / snapshot is_master. Drop any scale-down recorded DP master.
         if self.enable_dp_scale_up:
-            from motor.controller.fault_tolerance.dp_scale_down import get_ft_runtime_store
+            from motor.controller.fault_tolerance.engine_recovery.runtime import get_ft_runtime_store
 
             get_ft_runtime_store().clear_dp_master(metadata.instance.id)
 

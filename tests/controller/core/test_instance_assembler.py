@@ -490,9 +490,6 @@ def test_register_rejects_inconsistent_ft_capability(instance_assembler, test_co
         enabled=True,
         scale_down_supported=True,
         external_lb=True,
-        fused_mc2_enabled=True,
-        eplb_enabled=True,
-        num_redundant_experts=1,
     )
     first = create_register_msg(
         "test_job",
@@ -517,7 +514,7 @@ def test_register_rejects_inconsistent_ft_capability(instance_assembler, test_co
 
 def _seed_scaled_down_instance(test_config: dict, capability: FtCapabilitySnapshot) -> Instance:
     """ACTIVE instance missing the high DP ranks, ready for a replacement pod."""
-    from motor.controller.fault_tolerance.dp_scale_down import FtPhase, get_ft_runtime_store
+    from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, get_ft_runtime_store
 
     instance = Instance(
         job_name="test_job",
@@ -637,7 +634,7 @@ def test_recovery_roster_survives_controller_restart(instance_assembler, test_co
     import json
 
     from motor.common.resources.endpoint import EndpointStatus
-    from motor.controller.fault_tolerance.dp_scale_down import FtPhase, get_ft_runtime_store
+    from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, get_ft_runtime_store
     from motor.controller.fault_tolerance.pod_lifecycle import PodLifecycle
 
     class MemoryEtcd:
@@ -3451,7 +3448,7 @@ def test_send_start_command_fails_when_cross_node_partial_endpoints(instance_ass
 @pytest.mark.parametrize("physical_ids", [["4", "5", "6", "7"], ["14", "15", "6", "7"]])
 def test_registration_preserves_physical_ownership(instance_assembler, test_config, physical_ids):
     """Hardware faults must match the actual DP devices, also after re-registration."""
-    from motor.controller.fault_tolerance.dp_scale_down import FaultNormalizer
+    from motor.controller.fault_tolerance.strategy.engine_ft.dp_scaling.topology import FaultNormalizer
     from motor.controller.fault_tolerance.fault_types import FaultInfo
 
     msg = create_register_msg("decode", test_config["pod_ip1"], test_config, physical_device_ids=physical_ids)

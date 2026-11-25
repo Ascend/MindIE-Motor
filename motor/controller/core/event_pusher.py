@@ -38,7 +38,7 @@ _HA_SET_RETRY_DELAY_SEC = 1.0
 def _get_serving_overlay():
     # Import after motor.controller.core finishes initialization to avoid the
     # fault_tolerance package importing InstanceManager through FaultManager.
-    from motor.controller.fault_tolerance.serving_overlay import ServingOverlay
+    from motor.controller.fault_tolerance.engine_recovery.serving import ServingOverlay
 
     return ServingOverlay
 
@@ -188,14 +188,18 @@ class EventPusher(Observer):
             logger.info("Instance ready: %s", instance.job_name)
         elif event == ObserverEvent.INSTANCE_SEPARATED:
             with self.lock:
-                if instance.job_name in self.instances:
-                    del self.instances[instance.job_name]
-                else:
-                    # When instance abnormal in initial stage, we ignore this event
+                if instance.job_name not in self.instances:
                     return
-            # Deep copy the instance to ensure data consistency during async HTTP sending
-            event = Event(EventType.DEL, instance.to_instance())
-            logger.info("Instance removed: %s", instance.job_name)
+                if self.enable_dp_scale_down and instance.recovery_paused:
+                    self.instances[instance.job_name] = instance
+                    projected = self._project_instance(instance)
+                    if projected is None:
+                        return
+                    event = Event(EventType.ADD, projected)
+                else:
+                    del self.instances[instance.job_name]
+                    event = Event(EventType.DEL, instance.to_instance())
+            logger.info("Instance serving state changed: %s", instance.job_name)
         elif event == ObserverEvent.INSTANCE_PAUSED:
             with self.lock:
                 if instance.job_name in self.instances:
@@ -216,19 +220,21 @@ class EventPusher(Observer):
         elif event == ObserverEvent.INSTANCE_REMOVED:
             with self.lock:
                 live = self.instances.get(instance.job_name)
-            live_id = getattr(live, "id", None) if live is not None else None
-            removed_id = getattr(instance, "id", None)
-            # A newer READY instance already occupies this job_name. Coordinator
-            # keys by instance id, so DEL of the zombie is a no-op; skip it so a
-            # future job-name-based unregister cannot drop the live instance.
-            if isinstance(live_id, int) and isinstance(removed_id, int) and live_id > removed_id:
-                logger.info(
-                    "Skip Coordinator DEL for superseded instance. job_name=%s, removed_id=%d, current_id=%d",
-                    instance.job_name,
-                    removed_id,
-                    live_id,
-                )
-                return
+                live_id = getattr(live, "id", None) if live is not None else None
+                removed_id = getattr(instance, "id", None)
+                # A newer READY instance already occupies this job_name. Coordinator
+                # keys by instance id, so DEL of the zombie is a no-op; skip it so a
+                # future job-name-based unregister cannot drop the live instance.
+                if isinstance(live_id, int) and isinstance(removed_id, int) and live_id > removed_id:
+                    logger.info(
+                        "Skip Coordinator DEL for superseded instance. job_name=%s, removed_id=%d, current_id=%d",
+                        instance.job_name,
+                        removed_id,
+                        live_id,
+                    )
+                    return
+                # Full SETs must not replay an instance after its DEL.
+                self.instances.pop(instance.job_name, None)
             event = Event(EventType.DEL, instance.to_instance())
             logger.info("Instance removed: %s", instance.job_name)
         else:
@@ -263,14 +269,29 @@ class EventPusher(Observer):
                     _get_serving_overlay().publish_lock() if event_type == EventType.SET else contextlib.nullcontext()
                 )
                 with send_lock:
+                    publication_owners = (
+                        _get_serving_overlay().publication_owners() if self.enable_dp_scale_down else None
+                    )
                     if event_type == EventType.ADD:
-                        event_msg = InsEventMsg(event=event_type, instances=[event.instance])
+                        projected = (
+                            _get_serving_overlay().project(event.instance)
+                            if self.enable_dp_scale_down
+                            else event.instance
+                        )
+                        if projected is not None:
+                            event_msg = InsEventMsg(event=event_type, instances=[projected])
                     elif event_type == EventType.DEL:
                         event_msg = InsEventMsg(event=event_type, instances=[event.instance])
                     elif event_type == EventType.PAUSE:
                         event_msg = InsEventMsg(event=event_type, instances=[event.instance])
                     elif event_type == EventType.RESUME:
-                        event_msg = InsEventMsg(event=event_type, instances=[event.instance])
+                        projected = (
+                            _get_serving_overlay().project(event.instance)
+                            if self.enable_dp_scale_down
+                            else event.instance
+                        )
+                        if projected is not None:
+                            event_msg = InsEventMsg(event=event_type, instances=[projected])
                     elif event_type == EventType.SET:
                         instances, set_fingerprint = self._serving_snapshot()
                         if instances:
@@ -318,7 +339,7 @@ class EventPusher(Observer):
                     self.is_coordinator_reset = False
                     self._resync_after_hb_loss = False
                 if self.enable_dp_scale_down and event_type in {EventType.ADD, EventType.RESUME, EventType.SET}:
-                    _get_serving_overlay().mark_published(event_msg.instances)
+                    _get_serving_overlay().mark_published(event_msg.instances, publication_owners)
 
     def notify_coordinator_failover(self, master_host: str | None = None) -> None:
         """Push all instances after a Coordinator reported it became master.

@@ -21,10 +21,12 @@ Motor负责故障收集、缩容门禁（FtGate）、向 NodeManager 下发 FT �
 | 推理引擎 | 仅 **vLLM** 在开启引擎侧 `enable_fault_tolerance` 时具备DP域缩容执行能力；SGLang不支持。**Prefill 角色不支持**本特性。引擎侧 `user_config` / `env.json` 及版本组合等，详细约束请参见[引擎使用约束](#引擎使用约束)。 |
 | Motor 开关 | `motor_controller_config.fault_tolerance_config.enable_fault_tolerance` 与 `enable_dp_scale_down` 须同时为`true`；关闭总FT开关时DP缩容不执行。 |
 | 部署方式 | 推荐 K8s + Infer Operator / InferServiceSet。启用 DP 缩容且 Decode/Union 开启引擎 FT 时，Deployer 为推理 Pod 生成 `fault-scheduling: external-force-pod-failed` 与 `pod-rescheduling: on`，详见[实例重调度](./instance_rescheduling.md)。 |
-| 特性互斥 | 与[容器快照](../scaling_deployment/container_snapshot.md)不可叠加；引擎 `fault_tolerance_config.auto_recovery` 须为 false（与 DP 缩容互斥，FtGate 校验）。 |
+| 特性互斥 | 与[容器快照](../scaling_deployment/container_snapshot.md)不可叠加。 |
 | 业务连续性 | 缩容执行期间实例会短暂摘流；成功后以较小 DP 规模继续服务，需评估可接受的最小 DP 数与专家冗余。 |
 
 #### 引擎使用约束
+
+以下 EPLB、冗余专家及通信算子条件由引擎根据生效配置和运行时状态校验，Motor 不解析或上报这些内部配置作为准入条件。Motor 只检查容错开关、FT/缩容协议能力和 external LB 路由条件，并负责故障收集与任务编排。
 
 下表为Decode/Union引擎及配套`env.json`须满足的条件。
 
@@ -122,9 +124,6 @@ DP 域缩容的 Controller 开关集中在 `motor_controller_config.fault_tolera
     "cpu_distributed_timeout_seconds": 30,
     "additional_config": {
       "ft_communication_abort_timeout": 30
-    },
-    "fault_tolerance_config": {
-      "auto_recovery": false
     }
   }
 }
@@ -178,7 +177,7 @@ kubectl get pod -n {namespace} \
     curl "http://{controller-ip}:{port}/controller/fault_tolerance/status?instance_id={id}"
     ```
 
-    响应中的`phase`会经历`DECIDING`、`SCALING_DOWN`、`POST_SCALE_CLEANUP`、`SCALED_DOWN_RUNNING`等状态；`enable_dp_scale_down`为false时返回`DISABLED`。
+    响应中的 `phase` 在准备期间保持 `WAITING_ENGINE_FAULT`，下发后进入 `SCALING_DOWN`，完成后为 `SCALED_DOWN_RUNNING`；失败可回退到 `RELAUNCHING` 或 `RECONFIGURING`。Controller 总开关 `enable_fault_tolerance` 为 false 时返回 `DISABLED`，单独关闭缩容不禁用状态查询。
 
 4. 观察Controller/NodeManager日志中`DpScaleDownStrategy`与`scale-down`相关记录，确认`removed_dp_ranks`与幸存rank符合预期。
 5. 缩容完成后向Coordinator发送推理请求，确认实例在较小DP规模下仍可服务；若启用[虚推健康探测](sim_inference.md)，NodeManager会在DP master变更后迁移虚推monitor。
@@ -194,10 +193,7 @@ kubectl get pod -n {namespace} \
 | FEATURE_DISABLED | Controller 未开启 `enable_dp_scale_down` 或总 FT 关闭 | 检查 `motor_controller_config.fault_tolerance_config`。 |
 | ENGINE_FT_REQUIRED | 实例未声明引擎 FT 能力 | 在对应角色 `engine_config` 中开启 `enable_fault_tolerance` 并重新部署。 |
 | EXTERNAL_LB_REQUIRED | 未开启 external-lb | 设置 `data_parallel_external_lb` / `data-parallel-external-lb` 为 true。 |
-| AUTO_RECOVERY_CONFLICT | 引擎 FT 自动恢复与 DP 缩容互斥 | 将引擎 `fault_tolerance_config.auto_recovery` 设为 false。 |
 | ENGINE_SCALE_DOWN_UNSUPPORTED | 非 vLLM 或未开启 FT | 确认 `engine_type` 为 vLLM 且 FT 已启用。 |
-| EPLB_REQUIRED | 未开启 EPLB | 设置 `enable_eplb` 并配置 `eplb_config`。 |
-| EXPERT_REDUNDANCY_REQUIRED | 专家冗余数为 0 | 将 `eplb_config.num_redundant_experts` 设为大于 0。 |
 
 ### 缩容超时或回退整实例恢复
 

@@ -976,36 +976,27 @@ def test_sglang_infers_concurrent_capability():
 
 
 @pytest.mark.parametrize(
-    "native,expected_auto_recovery",
+    "native",
     [
-        (
-            {
-                "enable_fault_tolerance": True,
-                "data_parallel_external_lb": True,
-                "enable_eplb": True,
-                "eplb_config": {"num_redundant_experts": 2},
-                "additional_config": {"enable_fused_mc2": 1},
-                "fault_tolerance_config": {},
-            },
-            False,
-        ),
-        (
-            {
-                "enable-fault-tolerance": True,
-                "data-parallel-external-lb": True,
-                "enable-eplb": True,
-                "eplb-config": '{"num-redundant-experts": 2}',
-                "additional-config": '{"enable-fused-mc2": 1}',
-                "fault-tolerance-config": '{"auto-recovery": true}',
-            },
-            True,
-        ),
+        {
+            "enable_fault_tolerance": True,
+            "data_parallel_external_lb": True,
+            "enable_eplb": True,
+            "eplb_config": {"num_redundant_experts": 2},
+            "additional_config": {"enable_fused_mc2": 1},
+            "fault_tolerance_config": {"auto_recovery": True},
+        },
+        {
+            "enable-fault-tolerance": True,
+            "data-parallel-external-lb": True,
+            "enable-eplb": True,
+            "eplb-config": '{"num-redundant-experts": 2}',
+            "additional-config": '{"enable-fused-mc2": 1}',
+            "fault-tolerance-config": '{"auto-recovery": true}',
+        },
     ],
 )
-def test_vllm_ft_capability_is_inferred_from_official_engine_config(
-    native,
-    expected_auto_recovery,
-):
+def test_vllm_ft_capability_is_inferred_from_official_engine_config(native):
     capability = NodeManagerConfig._infer_ft_capability(
         {
             "engine_type": "vllm",
@@ -1013,15 +1004,7 @@ def test_vllm_ft_capability_is_inferred_from_official_engine_config(
         }
     )
 
-    assert capability == FtCapabilitySnapshot(
-        enabled=True,
-        scale_down_supported=True,
-        external_lb=True,
-        auto_recovery=expected_auto_recovery,
-        fused_mc2_enabled=True,
-        eplb_enabled=True,
-        num_redundant_experts=2,
-    )
+    assert capability.model_dump() == {"enabled": True, "scale_down_supported": True, "external_lb": True}
 
 
 def test_non_vllm_does_not_advertise_scale_down_support():
@@ -1447,6 +1430,14 @@ def test_kv_config_memcache_ignores_mooncake_fields():
     assert kcfg.global_segment_size == ""
 
 
+def _recovery_budget(ft, instance=None):
+    from motor.config.config_utils import fast_recovery_budget
+
+    return fast_recovery_budget(
+        {"motor_controller_config": {"fault_tolerance_config": ft, "instance_config": instance}}
+    )
+
+
 @patch.dict("os.environ", {"ROLE": "prefill"})
 def test_fast_recovery_budget_is_derived_from_two_attempts_and_reassembly():
     user_config = {
@@ -1465,22 +1456,15 @@ def test_fast_recovery_budget_is_derived_from_two_attempts_and_reassembly():
 
 @pytest.mark.parametrize("enabled,expected", [(False, 0), (True, 84)])
 def test_fast_recovery_budget_covers_custom_controller_deadlines(enabled, expected):
-    from motor.config.config_utils import fast_recovery_budget
-
-    config = {
-        "motor_controller_config": {
-            "fault_tolerance_config": {
-                "enable_fault_tolerance": enabled,
-                "enable_fast_recovery": True,
-                "fault_collection_timeout_seconds": 3,
-                "recovery_round_timeout_sec": 7.5,
-                "hbm_uce_clearance_timeout_sec": 7.5,
-                "engine_relaunch_complete_timeout_sec": 36,
-            },
-            "instance_config": {"instance_assemble_timeout": 36},
-        }
+    ft = {
+        "enable_fault_tolerance": enabled,
+        "enable_fast_recovery": True,
+        "fault_collection_timeout_seconds": 3,
+        "recovery_round_timeout_sec": 7.5,
+        "hbm_uce_clearance_timeout_sec": 7.5,
+        "engine_relaunch_complete_timeout_sec": 36,
     }
-    assert fast_recovery_budget(config) == expected
+    assert _recovery_budget(ft, {"instance_assemble_timeout": 36}) == expected
 
 
 @pytest.mark.parametrize("controller", [None, {"fault_tolerance_config": None}])
@@ -1492,19 +1476,7 @@ def test_fast_recovery_budget_accepts_null_optional_sections(controller):
 
 @pytest.mark.parametrize("instance", [None, {"instance_assemble_timeout": None}])
 def test_fast_recovery_budget_uses_default_for_null_assembly(instance):
-    from motor.config.config_utils import fast_recovery_budget
-
-    assert (
-        fast_recovery_budget(
-            {
-                "motor_controller_config": {
-                    "fault_tolerance_config": {"enable_fast_recovery": True, "recovery_round_timeout_sec": None},
-                    "instance_config": instance,
-                }
-            }
-        )
-        == 870
-    )
+    assert _recovery_budget({"enable_fast_recovery": True, "recovery_round_timeout_sec": None}, instance) == 870
 
 
 @pytest.mark.parametrize(
@@ -1540,8 +1512,6 @@ def test_native_fast_recovery_budget_rejects_invalid_policy_explicitly(value):
     ],
 )
 def test_fast_recovery_budget_covers_only_enabled_policies(hbm, no_fault_code, token, clearance, expected):
-    from motor.config.config_utils import fast_recovery_budget
-
     ft = {
         "enable_fast_recovery": True,
         "enable_hbm_uce_recovery": hbm,
@@ -1549,13 +1519,11 @@ def test_fast_recovery_budget_covers_only_enabled_policies(hbm, no_fault_code, t
         "enable_token_reinference": token,
         "hbm_uce_clearance_timeout_sec": clearance,
     }
-    assert fast_recovery_budget({"motor_controller_config": {"fault_tolerance_config": ft}}) == expected
+    assert _recovery_budget(ft) == expected
 
 
 @pytest.mark.parametrize("policy", ["enable_no_fault_code_recovery", "enable_token_reinference"])
 def test_fast_recovery_budget_includes_relaunch_without_hbm(policy):
-    from motor.config.config_utils import fast_recovery_budget
-
     ft = {
         "enable_fast_recovery": True,
         "enable_hbm_uce_recovery": False,
@@ -1564,12 +1532,11 @@ def test_fast_recovery_budget_includes_relaunch_without_hbm(policy):
         "engine_relaunch_complete_timeout_sec": 1200,
         policy: True,
     }
-    config = {"motor_controller_config": {"fault_tolerance_config": ft}}
-    assert fast_recovery_budget(config) == 1470
+    assert _recovery_budget(ft) == 1470
     ft["enable_engine_relaunch"] = False
-    assert fast_recovery_budget(config) == 870
+    assert _recovery_budget(ft) == 870
     ft[policy] = False
-    assert fast_recovery_budget(config) == 0
+    assert _recovery_budget(ft) == 0
 
 
 def test_fast_recovery_budget_uses_controller_default_timeouts(monkeypatch):

@@ -31,7 +31,6 @@ returns to ACTIVE automatically once the engines report NORMAL again
 (``INACTIVE + INSTANCE_NORMAL -> ACTIVE`` in the instance state machine).
 """
 
-import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -39,6 +38,7 @@ from enum import Enum
 from motor.common.logger import get_logger
 from motor.common.resources import InsStatus
 from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient
+from motor.controller.fault_tolerance.engine_recovery.contracts import FailurePolicy, RecoveryAdvice
 from motor.controller.fault_tolerance.strategy.base import StrategyBase
 
 logger = get_logger(__name__)
@@ -78,6 +78,10 @@ class EngineRelaunchStrategy(StrategyBase):
     (ENGINE_DEAD L2 fault) or (b) any previous strategy finished with
     ``mark_failed()`` (see ``fault_manager._process_instance_strategy``).
     """
+
+    recovery_action = "RELAUNCH"
+    failure_policy = FailurePolicy.RELAUNCH
+    recovery_target = RecoveryAdvice.RELAUNCH
 
     DISPATCH_RETRY_BACKOFF_SEC = 2.0
 
@@ -125,18 +129,27 @@ class EngineRelaunchStrategy(StrategyBase):
                 return
 
             if not self._phase_relaunch_engine(instance_id):
+                if self.event.is_set():
+                    self._finish(RelaunchState.FAILED, "relaunch cancelled")
+                    return
                 self._phase_restart_container()
                 return
 
-            from motor.controller.fault_tolerance.dp_scale_down import (
-                get_ft_runtime_store,
-            )
+            from motor.controller.fault_tolerance.engine_recovery.runtime import get_ft_runtime_store
 
-            get_ft_runtime_store().prepare_after_engine_relaunch(instance_id)
+            get_ft_runtime_store().prepare_after_engine_relaunch(instance_id, self.recovery_id or None)
             self._finish(RelaunchState.SUCCESS)
         except Exception as e:
             logger.exception("Engine relaunch failed for instance %d", instance_id)
             self._finish(RelaunchState.FAILED, str(e))
+        finally:
+            if self.event.is_set() and self.context is not None:
+                for node_mgr in list(self.context.node_managers):
+                    try:
+                        NodeManagerApiClient.restart_engine(node_mgr, action="abort", instance_id=instance_id)
+                    except Exception as error:
+                        self.cleanup_failed = True
+                        logger.warning("Failed to abort relaunch on %s: %s", node_mgr.pod_ip, error)
 
     def _phase_relaunch_engine(self, instance_id: int) -> bool:
         """Phase 1: probe all NodeManagers, dispatch restart, poll recovery.
@@ -326,6 +339,16 @@ class EngineRelaunchStrategy(StrategyBase):
             self.context.current_state = state
             self.context.last_error = error
         if state == RelaunchState.FAILED:
+            from motor.controller.fault_tolerance.engine_recovery.runtime import get_ft_runtime_store
+
+            if self.context is not None:
+                get_ft_runtime_store().transition(
+                    self.context.instance_id,
+                    expected_recovery_id=self.recovery_id or None,
+                    stage="failed",
+                    last_error=error,
+                    serving_published=False,
+                )
             self.mark_failed()
             logger.error(
                 "Engine relaunch failed for instance %s after %.1fs: %s",
@@ -351,15 +374,3 @@ class EngineRelaunchStrategy(StrategyBase):
         """
         logger.info("Engine relaunch strategy stopped.")
         self.event.set()
-        if self.context is None:
-            return
-        node_managers = list(self.context.node_managers)
-
-        def _unfreeze_async() -> None:
-            for node_mgr in node_managers:
-                try:
-                    NodeManagerApiClient.restart_engine(node_mgr, action="abort", instance_id=self.context.instance_id)
-                except Exception as e:
-                    logger.warning("Failed to abort relaunch on %s: %s", node_mgr.pod_ip, e)
-
-        threading.Thread(target=_unfreeze_async, daemon=True, name="engine_relaunch_abort").start()

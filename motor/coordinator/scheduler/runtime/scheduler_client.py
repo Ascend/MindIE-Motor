@@ -24,7 +24,7 @@ import zmq
 from motor.common.http.http_client import HTTPClientPool
 from motor.common.logger import get_logger
 from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction
-from motor.common.resources.instance import Instance, PDRole
+from motor.common.resources.instance import Instance, PDRole, InsStatus
 from motor.config.coordinator import (
     KV_AFFINITY_MODE_UNIFIED,
     KV_AFFINITY_MODES,
@@ -131,8 +131,8 @@ def _collect_active_endpoints_from_cache(
     cache: "_SchedulerInstanceCache",
 ) -> list[tuple[str, str]]:
     """
-    Extract status=normal (ip, business_port) from SchedulerInstanceCache.
-    Keeps endpoints whose status is normal.
+    Extract HTTP client membership from SchedulerInstanceCache.
+    Preserve active/paused members through delayed health updates after retry.
     """
     endpoints: list[tuple[str, str]] = []
     for role in (PDRole.ROLE_E, PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U):
@@ -141,8 +141,12 @@ def _collect_active_endpoints_from_cache(
                 continue
             for pod_eps in (inst.endpoints or {}).values():
                 for ep in (pod_eps or {}).values():
+                    if ep.headless:
+                        continue
                     status_val = ep.status.value if hasattr(ep.status, "value") else str(ep.status)
-                    if status_val == "normal":
+                    # Retain clients for a live member even if its health heartbeat
+                    # lags a successful retry. Scheduling readiness is a separate gate.
+                    if inst.recovery_paused or inst.status == InsStatus.ACTIVE or status_val == "normal":
                         endpoints.append((ep.ip, str(ep.business_port)))
     return endpoints
 

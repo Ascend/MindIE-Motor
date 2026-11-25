@@ -16,6 +16,9 @@ readiness stayed instances_status=unknown forever.
 """
 
 import copy
+from unittest.mock import patch
+
+from motor.common.resources.endpoint import Endpoint
 
 from motor.common.resources.instance import Instance, PDRole, ReadOnlyInstance
 
@@ -70,3 +73,15 @@ def test_deepcopy_preserves_dispatch_fields():
     assert duplicated.dispatch_capabilities == ["concurrent_engine_sync"]
     assert duplicated.engine_type == "vllm"
     assert duplicated.enable_multi_endpoints is False
+
+
+def test_heartbeat_before_relaunch_ack_cannot_satisfy_full_restart_readiness():
+    instance = Instance(job_name="decode", model_name="model", id=7, role="decode")
+    endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="8000")
+    endpoint.hb_timestamp = 100.0
+    instance.add_endpoints(endpoint.ip, {0: endpoint})
+    with patch("motor.common.resources.instance.time.time", return_value=101.0):
+        assert instance.is_all_endpoints_heartbeat_fresh()
+        assert not instance.is_all_endpoints_heartbeat_fresh(not_before=100.5)
+        endpoint.hb_timestamp = 100.6
+        assert instance.is_all_endpoints_heartbeat_fresh(not_before=100.5)

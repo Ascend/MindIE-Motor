@@ -45,31 +45,35 @@ def _ft_config(enabled=True, scale_up=False, fast_recovery=False):
             engine_restart_freeze_sec=30,
         ),
         basic_config=SimpleNamespace(
+            ft_capability=SimpleNamespace(enabled=False),
             parallel_config=SimpleNamespace(dp_master_port=29500),
             coord_store_port=29510,
         ),
     )
 
 
-def test_engine_ft_status_routes_explicit_endpoints(client):
+@pytest.mark.parametrize("proxy", [False, True])
+@pytest.mark.parametrize("engine_ft", [False, True])
+def test_engine_ft_status_routes_explicit_endpoints(client, proxy, engine_ft):
+    config = _ft_config(proxy)
+    config.basic_config.ft_capability.enabled = engine_ft
     with patch("motor.node_manager.api_server.node_manager_api.Daemon") as daemon:
-        daemon.return_value.config = _ft_config()
-        query = daemon.return_value.engine_ft_manager.query
-        query.return_value = {1: {"status": "unhealthy"}}
+        daemon.return_value.config = config
+        manager = daemon.return_value.engine_ft_manager
+        manager.query.return_value = {1: {"status": "unhealthy"}}
         response = client.post("/node-manager/fault-tolerance/status", json={"endpoint_ids": [1]})
-
-    assert response.status_code == 200
-    query.assert_called_once_with([1], 3)
-
-
-def test_engine_ft_proxy_is_unavailable_when_controller_switch_is_off(client):
-    with patch("motor.node_manager.api_server.node_manager_api.Daemon") as daemon:
-        daemon.return_value.config = _ft_config(False)
-        query = daemon.return_value.engine_ft_manager.query
-        response = client.post("/node-manager/fault-tolerance/status", json={"endpoint_ids": [1]})
-
-    assert response.status_code == 404
-    query.assert_not_called()
+        if not proxy:
+            apply_response = client.post(
+                "/node-manager/fault-tolerance/apply",
+                json={"endpoint_ids": [1], "instruction": "retry", "params": {}, "request_id": "blocked"},
+            )
+            assert apply_response.status_code == 404
+    assert response.status_code == (200 if proxy or engine_ft else 404)
+    if proxy or engine_ft:
+        manager.query.assert_called_once_with([1], 3)
+    else:
+        manager.query.assert_not_called()
+    manager.apply.assert_not_called()
 
 
 def test_disabled_engine_ft_guard_rejects_before_parsing_payload(client):
@@ -353,3 +357,21 @@ def test_fast_recovery_and_status_feature_gates(client, fast_recovery, scale_dow
             daemon.return_value.apply_fault_tolerance.assert_not_called()
         if not (fast_recovery or scale_down):
             daemon.return_value.query_fault_tolerance_status.assert_not_called()
+
+
+def test_fast_only_proxy_uses_rank_scoped_retry_without_enabling_shrink(client):
+    config = _ft_config(False)
+    config.fault_tolerance_config.enable_fast_recovery_proxy = True
+    with patch("motor.node_manager.api_server.node_manager_api.Daemon") as daemon:
+        daemon.return_value.config = config
+        response = client.post(
+            "/node-manager/fault-tolerance/apply",
+            json={
+                "endpoint_ids": [1],
+                "instruction": "retry",
+                "params": {"abort": True},
+                "request_id": "retry",
+            },
+        )
+    assert response.status_code == 200
+    daemon.return_value.engine_ft_manager.apply.assert_called_once()

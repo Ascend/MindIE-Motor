@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from motor.common.logger import get_logger
 from motor.common.alarm.scale_p2d_event import ScaleP2DEvent, ScaleP2DReason
+from motor.controller.fault_tolerance.engine_recovery.contracts import RecoveryAdvice
 from motor.controller.fault_tolerance.strategy.base import StrategyBase
 from motor.controller.core.instance_manager import InstanceManager
 from motor.common.resources import Instance, PDRole, InsStatus
@@ -64,6 +65,8 @@ class ScaleP2DStrategy(StrategyBase):
     3. Select Prefill instances to stop (selection algorithm is pluggable).
     4. Stop selected Prefill instances via NodeManager and release their nodes.
     """
+
+    recovery_target = RecoveryAdvice.SCALE_P2D
 
     CHECK_D_INSTANCE_STATUS_INTERVAL = 3  # seconds between D-instance status polls
 

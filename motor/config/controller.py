@@ -150,6 +150,9 @@ class FaultToleranceConfig:
     hbm_uce_clearance_timeout_sec: int = 60  # Independent clearance stage, including after a failed recovery round
     #: Polling interval for recovery-round completion.
     recovery_poll_interval_sec: float = 1.0
+    # Common evidence collection is independent from strategy-specific transaction tuning.
+    recovery_request_timeout_sec: float = 11.0
+    recovery_preparation_poll_interval_sec: float = 1.0
     engine_relaunch_stability_sec: int = 60  # Continuous healthy time before releasing relaunch relapse protection
     scale_p2d_d_instance_reinit_wait_timeout: int = 60  # seconds to wait for D instance re-init before ScaleP2D
 
@@ -414,6 +417,11 @@ class ControllerConfig:
 
         if not (0.1 <= ft_config.recovery_poll_interval_sec <= 60):
             errors.append("recovery_poll_interval_sec must be in range 0.1-60")
+
+        if not (0 < ft_config.recovery_request_timeout_sec <= 60):
+            errors.append("recovery_request_timeout_sec must be in range (0, 60]")
+        if not (0 < ft_config.recovery_preparation_poll_interval_sec <= 60):
+            errors.append("recovery_preparation_poll_interval_sec must be in range (0, 60]")
 
         if not (0 < scale_down_config.request_timeout_sec <= 60):
             errors.append("dp_scale_down_config.request_timeout_sec must be in range (0, 60]")

@@ -12,6 +12,7 @@
 from motor.common.logger import get_logger
 from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient, NodeManagerStopStatus
 from motor.controller.core.instance_manager import InstanceManager
+from motor.controller.fault_tolerance.engine_recovery.contracts import RecoveryAdvice
 from motor.controller.fault_tolerance.strategy.base import StrategyBase
 
 logger = get_logger(__name__)
@@ -25,6 +26,8 @@ class NmSuicideStrategy(StrategyBase):
     HTTP 5xx and other dispatch errors call ``mark_failed`` so the strategy
     center can retry or escalate. A superseded instance id is a no-op.
     """
+
+    recovery_target = RecoveryAdvice.STOP_INSTANCE
 
     def execute(self, instance_id: int) -> None:
         try:

@@ -18,11 +18,7 @@ from motor.common.resources.instance import Instance, ReadOnlyInstance
 from motor.common.resources.endpoint import Endpoint, EndpointStatus
 from motor.controller.core.observer import ObserverEvent
 from motor.common.resources.http_msg_spec import EventType
-from motor.controller.fault_tolerance.dp_scale_down import (
-    FtPhase,
-    FtRuntime,
-    get_ft_runtime_store,
-)
+from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, FtRuntime, get_ft_runtime_store
 
 
 @pytest.fixture
@@ -256,7 +252,13 @@ def test_event_consumer_set_projects_scaled_down_view_without_mutating_source(ev
             "get",
             side_effect=[Event(event_type=EventType.SET, instance=None), StopIteration],
         ):
-            with pytest.raises(StopIteration):
+            with (
+                patch(
+                    "motor.controller.core.instance_manager.InstanceManager.get_instance",
+                    return_value=ReadOnlyInstance(test_instance),
+                ),
+                pytest.raises(StopIteration),
+            ):
                 event_pusher._event_consumer()
 
         event_msg = mock_http_client.call_args.args[0]
@@ -576,6 +578,8 @@ def test_update_remove_instance(event_pusher):
     event = event_pusher.event_queue.get()
     assert event.event_type == EventType.DEL
     assert event.instance.job_name == readonly_instance.job_name
+    assert readonly_instance.job_name not in event_pusher.instances
+    assert event_pusher._serving_snapshot()[0] == []
 
 
 def test_update_remove_skips_del_for_superseded_instance(event_pusher):
@@ -587,6 +591,8 @@ def test_update_remove_skips_del_for_superseded_instance(event_pusher):
     event_pusher.update(stale, ObserverEvent.INSTANCE_REMOVED)
 
     assert event_pusher.event_queue.empty()
+    assert event_pusher.instances[live.job_name].id == live.id
+    assert [instance.id for instance in event_pusher._serving_snapshot()[0]] == [live.id]
 
 
 def test_update_seperated_instance(event_pusher):
@@ -746,3 +752,79 @@ def test_update_config():
         # Verify config was updated
         assert event_pusher.coordinator_heartbeat_interval == 20.0
         assert event_pusher.coordinator_heartbeat_interval != original_coordinator_heartbeat_interval
+
+
+def test_publication_ack_does_not_complete_new_recovery_owner(event_pusher):
+    config = ControllerConfig()
+    config.fault_tolerance_config.enable_dp_scale_down = True
+    event_pusher.update_config(config)
+    instance = Instance(job_name="owner-race", model_name="model", id=7002, role="decode")
+    instance.add_endpoints("192.0.2.1", {0: Endpoint(id=0, ip="192.0.2.1", business_port="8000")})
+    store = get_ft_runtime_store()
+    store.clear()
+    store.transition(instance.id, recovery_id="old", phase=FtPhase.SCALED_DOWN_RUNNING, serving_published=False)
+    event_pusher.event_queue.put(Event(EventType.ADD, instance))
+
+    def send(_event):
+        store.transition(instance.id, recovery_id="new", serving_published=False)
+        event_pusher.stop_event.set()
+        return True
+
+    try:
+        with patch("motor.controller.core.event_pusher.CoordinatorApiClient.send_instance_refresh", side_effect=send):
+            event_pusher._event_consumer()
+        assert store.get(instance.id)["serving_published"] is False
+        assert store.get(instance.id)["recovery_id"] == "new"
+    finally:
+        store.clear()
+
+
+def test_queued_add_is_rechecked_after_recovery_withdraws_instance(event_pusher):
+    config = ControllerConfig()
+    config.fault_tolerance_config.enable_dp_scale_down = True
+    event_pusher.update_config(config)
+    instance = Instance(job_name="queued-before-fault", model_name="model", id=7003, role="decode")
+    store = get_ft_runtime_store()
+    store.clear()
+    store.transition(instance.id, phase=FtPhase.WAITING_ENGINE_FAULT)
+
+    def queued(*args, **kwargs):
+        event_pusher.stop_event.set()
+        return Event(EventType.ADD, instance)
+
+    try:
+        with (
+            patch.object(event_pusher.event_queue, "get", side_effect=queued),
+            patch("motor.controller.core.event_pusher.CoordinatorApiClient.send_instance_refresh") as send,
+        ):
+            event_pusher._event_consumer()
+        send.assert_not_called()
+    finally:
+        store.clear()
+
+
+@pytest.mark.parametrize("completed_runtime", [False, True])
+def test_engine_abnormal_pause_keeps_roster_and_request_endpoint(event_pusher, completed_runtime, request):
+    config = ControllerConfig()
+    config.fault_tolerance_config.enable_fast_recovery = True
+    event_pusher.update_config(config)
+    instance = Instance(job_name="pause-before-ft", model_name="model", id=991, role="decode", recovery_paused=True)
+    if completed_runtime:
+        store = get_ft_runtime_store()
+        store.transition(instance.id, stage="completed", recovery_paused=False)
+        request.addfinalizer(lambda: store.remove(instance.id))
+    endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="8000", status=EndpointStatus.NORMAL)
+    instance.add_endpoints(endpoint.ip, {0: endpoint})
+    readonly = ReadOnlyInstance(instance)
+    event_pusher.instances[instance.job_name] = readonly
+    event_pusher.update(readonly, ObserverEvent.INSTANCE_SEPARATED)
+    event = event_pusher.event_queue.get_nowait()
+    assert event.event_type == EventType.ADD
+    assert event.instance.recovery_paused
+    assert instance.job_name in event_pusher.instances
+    assert event.instance.get_all_endpoints()[0].business_port == "8000"
+
+    event_pusher.update(readonly, ObserverEvent.INSTANCE_REMOVED)
+    assert event_pusher.event_queue.get_nowait().event_type == EventType.DEL
+    assert instance.job_name not in event_pusher.instances
+    assert event_pusher._serving_snapshot()[0] == []

@@ -104,6 +104,17 @@ class TestHeartBeatManager:
             mock_report_heartbeat.return_value = None
             yield mock_report_heartbeat
 
+    def test_full_restart_starts_new_heartbeat_generation(self, heart_beat_manager):
+        manager = heart_beat_manager
+        endpoint = Endpoint(id=1, ip="10.0.0.1", business_port="8000", status=EndpointStatus.NORMAL)
+        manager._retired_endpoint_ids = {1}
+        generation = manager.endpoints_generation()
+        manager.reset_after_engine_restart([endpoint])
+        assert manager.endpoints_generation() == generation + 1
+        assert [ep.id for ep in manager.get_active_endpoints()] == [1]
+        assert not manager.check_all_endpoints_normal()
+        assert endpoint.status == EndpointStatus.NORMAL
+
     @patch('motor.config.node_manager.safe_open')
     @patch.dict(
         'os.environ',

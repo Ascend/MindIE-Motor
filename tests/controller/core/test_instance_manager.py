@@ -29,7 +29,7 @@ from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.config.controller import ControllerConfig
 from motor.controller.core import ObserverEvent
 from motor.controller.core.event_pusher import EventPusher
-from motor.controller.fault_tolerance.dp_scale_down import FtPhase, FtRuntime, get_ft_runtime_store
+from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, FtRuntime, get_ft_runtime_store
 
 
 # Helper functions
@@ -1519,7 +1519,7 @@ def test_abnormal_heartbeat_is_deferred_while_collecting_engine_ft_status(fast_r
     next(iter(instance.get_all_endpoints())).status = EndpointStatus.ABNORMAL
     store = get_ft_runtime_store()
     store.clear()
-    store.transition(instance.id, phase=FtPhase.WAITING_ENGINE_FAULT, preserve_recovery_streams=fast_recovery_only)
+    store.transition(instance.id, phase=FtPhase.WAITING_ENGINE_FAULT, recovery_paused=fast_recovery_only)
 
     try:
         assert manager._handle_state_transition(instance) is True
@@ -1529,6 +1529,8 @@ def test_abnormal_heartbeat_is_deferred_while_collecting_engine_ft_status(fast_r
 
 
 def test_scaled_down_heartbeat_ignores_only_committed_ranks():
+    from motor.controller.fault_tolerance.engine_recovery.serving import ServingOverlay
+
     manager = create_instance_manager_with_config()
     manager.enable_fault_tolerance = True
     manager.enable_dp_scale_down = True
@@ -1538,6 +1540,7 @@ def test_scaled_down_heartbeat_ignores_only_committed_ranks():
         job_name="test_effective_topology",
         model_name="test_model",
         role="decode",
+        parallel_config=ParallelConfig(dp_size=2),
         endpoints={
             "192.168.1.1": {
                 0: Endpoint(id=0, ip="192.168.1.1", business_port="8000", hb_timestamp=now),
@@ -1547,6 +1550,8 @@ def test_scaled_down_heartbeat_ignores_only_committed_ranks():
             },
         },
     )
+    manager.add_instance(instance)
+    instance.endpoints["192.168.1.2"][1].hb_timestamp = 0
     instance.update_instance_status(InsStatus.ACTIVE)
     store = get_ft_runtime_store()
     store.clear()
@@ -1556,6 +1561,14 @@ def test_scaled_down_heartbeat_ignores_only_committed_ranks():
         assert manager._is_effective_heartbeat_complete(instance) is True
         instance.endpoints["192.168.1.1"][0].hb_timestamp = 0
         assert manager._is_effective_heartbeat_complete(instance) is False
+        instance.status = InsStatus.INACTIVE
+        instance.recovery_paused = True
+        with patch.object(manager, "notify"):
+            assert manager.handle_heartbeat(get_mock_heartbeat_msg(instance.job_name, instance.id, "192.168.1.1"))[0]
+        assert instance.status == InsStatus.ACTIVE
+        projected = ServingOverlay.project(instance)
+        assert not projected.recovery_paused
+        assert [endpoint.id for endpoint in projected.get_all_endpoints(True)] == [0]
     finally:
         store.clear()
 
@@ -1595,3 +1608,38 @@ def test_disabled_dp_scale_down_bypasses_all_partial_loss_runtime_hooks():
 
     policy.assert_not_called()
     mock_client_cls.stop.assert_called_once_with(reachable[0])
+
+
+def test_abnormal_before_ft_pauses_previously_ready_instance_without_forced_isolation():
+    manager = create_instance_manager_with_config()
+    manager.enable_dp_scale_down = True
+    instance = create_test_instance(992, "pause-before-ft", ["10.0.0.1"])
+    instance.status = InsStatus.ACTIVE
+    instance.ft_capability.enabled = True
+    manager._handle_inactive(InsStatus.ACTIVE, InsConditionEvent.INSTANCE_ABNORMAL, instance)
+    assert instance.status == InsStatus.INACTIVE
+    assert instance.recovery_paused
+    assert instance.id not in manager.forced_separated_instances
+
+
+def test_heartbeat_only_pause_self_clear_does_not_leave_instance_blocked():
+    manager = create_instance_manager_with_config()
+    instance = create_test_instance(993, "self-clear-pause", ["10.0.0.1"])
+    instance.status = InsStatus.INACTIVE
+    instance.recovery_paused = True
+    manager._handle_active(InsStatus.INACTIVE, InsConditionEvent.INSTANCE_NORMAL, instance)
+    assert not instance.recovery_paused
+
+
+def test_forced_separation_of_already_inactive_recovery_still_notifies_del():
+    manager = create_instance_manager_with_config()
+    instance = create_test_instance(994, "isolate-paused", ["10.0.0.1"])
+    instance.status = InsStatus.INACTIVE
+    instance.recovery_paused = True
+    manager.add_instance(instance)
+    with patch.object(manager, "notify") as notify:
+        manager.separate_instance(instance.id)
+    assert instance.id in manager.forced_separated_instances
+    assert not instance.recovery_paused
+    notify.assert_called_once()
+    assert notify.call_args.args[1] == ObserverEvent.INSTANCE_SEPARATED

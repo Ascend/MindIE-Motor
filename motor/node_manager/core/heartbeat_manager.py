@@ -113,6 +113,18 @@ class HeartbeatManager(ThreadSafeSingleton):
         if self._thread_started:
             self._engine_status_thread_start_time = time.time()
 
+    def reset_after_engine_restart(self, endpoints: list[Endpoint]) -> None:
+        """Start a fresh heartbeat generation for the complete launch topology."""
+        with self._endpoint_lock:
+            self._retired_endpoint_ids.clear()
+            self._endpoints = [endpoint.model_copy(deep=True) for endpoint in endpoints]
+            for endpoint in self._endpoints:
+                endpoint.status = EndpointStatus.INITIAL
+                endpoint.engine_rank = None
+            self._endpoints_generation += 1
+            self._is_within_grace_period = True
+            self._engine_status_thread_start_time = time.time()
+
     def has_abnormal_endpoints(self) -> bool:
         """True when any managed endpoint is ABNORMAL.
 
