@@ -122,6 +122,7 @@ class FaultInfo(BaseModel):
 | `FreeRestartNPU` | **L4** | 空闲时重启 NPU |
 | `RestartNPU` | **L5** | 立即重启 NPU → 触发实例隔离 |
 | `SeparateNPU` | **L6** | 隔离 NPU（致命）→ 触发实例隔离 |
+| `SeparateDPU` | **L6** | 隔离 DPU，与 `SeparateNPU` 相同 → 触发实例隔离 |
 | `PreSeparateNPU` | **L6** (静态) | 预隔离 NPU，**运行时动态降级**（见下文） |
 
 #### PreSeparateNPU 动态等级调整

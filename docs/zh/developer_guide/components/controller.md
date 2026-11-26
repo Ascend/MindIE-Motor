@@ -312,7 +312,7 @@ sequenceDiagram
     participant FM as FaultManager
     participant IM as InstanceManager
 
-    K8s->>RM: Watch 到 ConfigMap 变更<br/>(DeviceInfoCfg: NPU 卡故障)
+    K8s->>RM: Watch 到 ConfigMap 变更<br/>(DeviceInfoCfg: NPU 卡故障，或 DpuInfoCfg: SeparateDPU)
     RM->>FM: 回调：_handle_fault_info_update(node_name, fault_infos)
     FM->>FM: _refresh_instance_fault_level(ins_id)<br/>评估: 最高故障等级 L4
     alt fault_level > L2
@@ -506,7 +506,8 @@ Controller 从三个独立来源感知故障，融合后统一评估：
 ```mermaid
 flowchart LR
     subgraph HW[硬件故障感知]
-        CM["K8s ConfigMap<br/>mindx-dl-deviceinfo-&#123;node&#125;"] -->|Watch| RM_HW[ResourceMonitor]
+        CMN["NPU ConfigMap<br/>configmap_prefix + node"] -->|Watch| RM_HW[ResourceMonitor]
+        CMD["DPU ConfigMap<br/>dpuinfo- + node"] -->|Watch| RM_HW
     end
     subgraph Node[Node 状态感知]
         K8sNode[K8s Node 状态] -->|Watch| RM_Node[ResourceMonitor]
@@ -523,7 +524,7 @@ flowchart LR
 
 | 通路 | 故障类型 | 感知方式 | 数据结构 |
 |------|----------|----------|----------|
-| ConfigMap Watch | NPU 卡故障 (`CardUnhealthy`)<br/>卡间网络故障 (`CardNetworkUnhealthy`)<br/>交换机故障 | K8s Watch API，每个 Node 一个 ResourceMonitor | `FaultInfo` → `NodeMetadata.hardware_fault_infos` |
+| ConfigMap Watch | NPU：`DeviceInfoCfg` 的卡故障 (`CardUnhealthy`)、卡间网络故障 (`CardNetworkUnhealthy`)，以及 `SwitchInfoCfg` 交换机故障。对象名 `<configmap_namespace>/<configmap_prefix><node>`，前缀默认 `mindx-dl-deviceinfo-`。<br/>DPU：`DpuInfoCfg` 中的 `SeparateDPU`，映射为 L6。对象名 `<configmap_namespace>/dpuinfo-<node>`，前缀固定 `dpuinfo-`。两份对象的命名空间都是 `configmap_namespace`，默认 `kube-system`。快照分开保存后合并；缺少 DPU ConfigMap 不阻塞 NPU | K8s Watch API，每个 Node 一个 ResourceMonitor，NPU 与 DPU 各一条 ConfigMap watch | `FaultInfo` → `NodeMetadata.hardware_fault_infos` |
 | Node Watch | 节点重启 / NotReady | K8s Watch API | `NODE_REBOOT` (fault_code: `0x0000001`) → L6 |
 | 软件故障上报 | Engine DEAD/UNHEALTHY | 原生引擎 `/fault_tolerance/status` → NodeManager EngineFtManager → HTTP | `FaultInfo` → `NodeMetadata.software_fault_infos` |
 
@@ -542,7 +543,7 @@ flowchart LR
 | **L3** | RestartBusiness | 无法自动恢复 | 人工介入 | — |
 | **L4** | FreeRestartNPU | 需 NPU 隔离 | 缩P保D | `enable_scale_p2d` + Decode 角色 |
 | **L5** | RestartNPU | 需 NPU 重启 | 委托 L4 策略 | 同 L4 |
-| **L6** | SeparateNPU/PreSeparateNPU/ManuallySeparateNPU | 需 NPU 隔离/节点重启 | 委托 L4 策略 | 同 L4 |
+| **L6** | SeparateNPU/SeparateDPU/PreSeparateNPU/ManuallySeparateNPU | 需 NPU 或 DPU 隔离/节点重启 | 委托 L4 策略 | 同 L4 |
 
 **实例故障等级计算逻辑**（_refresh_instance_fault_level()）
 

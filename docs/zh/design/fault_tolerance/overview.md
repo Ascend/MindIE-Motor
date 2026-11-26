@@ -6,7 +6,7 @@ MindIE Motor 提供多层级的可靠性保障机制，覆盖硬件故障感知�
 
 | 能力 | 说明 | 核心模块 |
 |------|------|----------|
-| 实例故障隔离 | 硬件故障（NPU/网络）+ 软件故障（节点重启）感知与隔离 | `FaultManager` + `ResourceMonitor` |
+| 实例故障隔离 | 硬件故障（NPU/DPU/网络）+ 软件故障（节点重启）感知与隔离 | `FaultManager` + `ResourceMonitor` |
 | 自动重拉起注册 | Pod 重启后 NodeManager 自动重新注册，Controller 组装实例并拉起引擎 | `InstanceAssembler` + `InstanceManager` |
 | 缩P保D（Scale P2D） | Decode 实例故障时，释放 Prefill 节点以恢复 Decode | `ScaleP2DStrategy` |
 | 引擎快恢 | 按 HBM / 灵衢 / 无故障码快恢区分，共用快恢编排与调度暂停 | `EngineFastRecoveryStrategy` |
@@ -16,9 +16,11 @@ MindIE Motor 提供多层级的可靠性保障机制，覆盖硬件故障感知�
 
 ### 故障感知
 
-`FaultManager` 作为单例观察者，通过 `ResourceMonitor` 对每个 K8s Node 启动双重 Watch：
+`FaultManager` 作为单例观察者，通过 `ResourceMonitor` 对每个 K8s Node 启动 Watch。NPU 与 DPU 使用同一套 ConfigMap 监听逻辑，命名空间都是 `fault_tolerance_config.configmap_namespace`，默认 `kube-system`。每个节点各有一条设备 ConfigMap watch 和一条 `dpuinfo-<node>` watch。
 
-- **ConfigMap 监控**：监听 `kube-system` 命名空间下 `mindx-dl-deviceinfo-{node_name}` ConfigMap。当驱动/固件上报硬件故障时，ConfigMap 数据更新，`ResourceMonitor` 捕获变更后解析其中的 `DeviceInfoCfg`（NPU 卡故障 `CardUnhealthy`、卡间网络故障 `CardNetworkUnhealthy`）和 `SwitchInfoCfg`（交换机故障），生成对应的 `FaultInfo` 并通过回调通知 `FaultManager`。
+- **NPU ConfigMap**：对象名是 `<configmap_namespace>/<configmap_prefix><node>`，`configmap_prefix` 默认 `mindx-dl-deviceinfo-`。驱动或固件更新 ConfigMap 后，`ResourceMonitor` 解析 `DeviceInfoCfg`（NPU 卡故障 `CardUnhealthy`、卡间网络故障 `CardNetworkUnhealthy`）和 `SwitchInfoCfg`（交换机故障），生成 `FaultInfo`。
+- **DPU ConfigMap**：对象名是 `<configmap_namespace>/dpuinfo-<node>`。名字前缀固定为 `dpuinfo-`，不跟随 `configmap_prefix`。`ResourceMonitor` 解析 `DpuInfoCfg`，只保留 `SeparateDPU`，并按 `SeparateNPU` 映射为 L6。`SubHealthFault` 以及其他等级跳过，不生成故障。`DpuInfoCfg` 无法解析时保留已有 DPU 快照。集群里没有 `dpuinfo-<node>` 时，LIST 得到空列表，watch 继续等待，不阻塞 NPU 故障上报。
+- **合并**：NPU 与 DPU 快照分开保存，合并后再回调 `FaultManager`。删除事件只清空对应来源。
 - **Node 状态监控**：通过 K8s Watch API 监听 Node 的 Ready/NotReady 状态变化。当 Node 变为 NotReady 时，`FaultManager` 注入 `NODE_REBOOT` 故障（fault_code: `0x0000001`，等级 L6）；Node 恢复 Ready 后自动清除该故障。
 
 ### 故障等级
@@ -33,7 +35,7 @@ MindIE Motor 提供多层级的可靠性保障机制，覆盖硬件故障感知�
 | 3 | `L3` | `RestartBusiness` | 无法自动处理 |
 | 4 | `L4` | `FreeRestartNPU` | 需隔离并触发恢复策略（缩P保D） |
 | 5 | `L5` | `RestartNPU` | 需 NPU 重启 |
-| 6 | `L6` | `SeparateNPU` / `PreSeparateNPU` | 需 NPU 分离 / 节点重启 |
+| 6 | `L6` | `SeparateNPU` / `SeparateDPU` / `PreSeparateNPU` | 需 NPU 或 DPU 分离 / 节点重启 |
 
 ### 隔离与恢复机制
 
