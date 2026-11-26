@@ -1,13 +1,13 @@
 # 业务拓扑与服务部署方式
 
-MindIE Motor支持两种业务拓扑结构和三种服务部署方式，本文档将对相关内容进行说明，避免用户混淆。
+MindIE Motor支持两种业务拓扑结构和四种服务部署方式，本文档将对相关内容进行说明，避免用户混淆。
 
-**表 1** 业务拓扑与服务部署方式说明
+**表 1**  业务拓扑与服务部署方式说明
 
 | 分类 | 选项 | 说明 |
 |------|------|--------------|
 | 业务拓扑 | <ul><li>PD分离</li><li>PD混部</li></ul> | 决定Prefill/Decode是否拆分部署，对推理的性能有一定的影响。 |
-| 服务部署方式 | <ul><li>infer_service_set</li><li>multi_deployment</li><li>single_container</li></ul> | 仅影响服务资源如何创建，部署方式对服务功能无影响，本文仅介绍工作原理，一般情况下无需关注该字段。未显式配置时默认使用infer_service_set部署方式。 |
+| 服务部署方式 | <ul><li>infer_service_set</li><li>rbg</li><li>multi_deployment</li><li>single_container</li></ul> | 影响服务资源的创建、生命周期与扩缩容控制面。未显式配置时默认使用infer_service_set部署方式。 |
 
 ## 业务拓扑
 
@@ -37,12 +37,13 @@ Prefill与Decode由同一类实例（union）承载，适用于快速验证与�
 }
 ```
 
-**表 2** deploy_mode参数说明
+**表 2** 配置选项参数解释
 
 | 取值 | 说明 |
 |------|------|
-| infer_service_set | 默认方式，生成单个infer_service.yaml文件，由CRD controller统一拉起controller、coordinator、prefill、decode（PD分离）或 union（PD混部）等Pod。|
+| infer_service_set | 默认方式。生成单个infer_service.yaml文件，由CRD controller统一拉起controller、coordinator、prefill、decode（PD分离）或 union（PD混部）等Pod。|
+| rbg | 生成RoleBasedGroup、业务Service及配套RBAC，由RBG控制器创建RoleInstance和Pod。支持RBG手动扩缩容及通过RoleBasedGroupScalingAdapter对接HPA。按业务拓扑和推理引擎参见[PD混部](./pd_aggregation_deployment.md#使用rbg方式部署)、[vLLM PD分离](./pd_disaggregation_deployment.md#使用rbg方式部署)或[SGLang PD分离](./pd_disaggregation_sglang.md#使用rbg方式部署)。|
 | multi_deployment | 生成controller、coordinator、engine、kv_pool等多个独立的YAML文件，分别创建Pod。|
-| single_container | 单容器方式,将P/D合并到单个容器中运行，适用于小规模或测试场景。 |
+| single_container | 单容器方式。将P/D合并到单个容器中运行，适用于小规模或测试场景。 |
 
 如需了解user_config.json文件的其余配置字段，请参考[user_config.json配置文件全量参数说明](../../configuration/config_reference.md)。

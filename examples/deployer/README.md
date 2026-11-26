@@ -78,7 +78,8 @@ flowchart TD
 
 ### deploy_mode 与 YAML 应用顺序
 
-`deploy_mode` 接受以下四种值，省略时默认为 `infer_service_set`；`rbg` 需配套 RBG 适配代码已合入。
+配套 RBG 实现合入后，`deploy_mode` 支持以下四种值；省略时默认为 `infer_service_set`。
+使用 `rbg` 前需确认代码、模板及部署 RBAC 已配套集成，不能只修改配置中的模式名称。
 所有输出文件均位于 `output_yamls/`，模板与生成路径由 `lib/constant.py`、`lib/utils.py:get_deploy_paths()` 定义。
 建议始终通过 `deploy.py` 部署，由它创建 ConfigMap 并按下表顺序应用 YAML：
 
@@ -113,7 +114,9 @@ KV Store、KV Conductor、MF Store 之前；`infer_service_set` 的动态 PVC �
 
 ### RBG（RoleBasedGroup）模式
 
-本节以 RBG 适配代码、模板及云原生示例已合入，且 deployer 镜像包含对应实现为前提。
+本节以 RBG 适配代码、模板、云原生示例及部署 RBAC 已配套合入，且 deployer 镜像包含对应实现为前提。
+Motor、RBG 和 Ascend Volcano 的分析基线见 [RBG 详细说明](lib/rbg/README.md)；所用分支未集成时，
+应先准备配套源码和镜像，不能仅增加 `deploy_mode: rbg`。
 
 `deploy_mode` 设为 `rbg` 时，`deploy.py` 使用 `yaml_template/rbg_template.yaml` 渲染一个
 `workloads.x-k8s.io/v1alpha2` 的 `RoleBasedGroup`，角色固定为 controller、coordinator、encode、
@@ -130,6 +133,10 @@ prefill、decode、union、kv-store、kv-conductor、mf-store；未启用的角�
 | `restart_policy_by_role` | 按引擎角色指定重启策略；通常默认 `RecreateRoleInstanceOnPodRestart`，满足 DP 降级条件的 Decode/Union 默认 `None`，此时显式配置也只能为 `None` |
 | `coordinated_policy` | 自定义跨角色协调策略；首次省略时生成默认的 `engine-scaling`，配置方式见 [RBG 详细说明](lib/rbg/README.md#协调策略) |
 
+六个顶层字段的完整 JSON 示例、类型、默认值和更新方式见
+[完整 rbg_config 示例](lib/rbg/README.md#完整-rbg_config-示例)。`scheduling_queue` 位于
+`motor_deploy_config`，HPA 的 `scaling_policy` 位于 `user_config.json` 顶层，均不放入 `rbg_config`。
+
 实例数与副本的对应关系：`p_instances_num`、`d_instances_num`、`e_instances_num`、`hybrid_instances_num`
 对应 `spec.roles[].replicas`；`single_p_instance_pod_num`、`single_d_instance_pod_num`、
 `single_e_instance_pod_num`、`single_hybrid_instance_pod_num` 对应每个实例的 Pod 数。
@@ -142,16 +149,17 @@ RBG 产物写入 `output_yamls/<namespace>/<rbg_name>/`，包含 `prerequisites.
 前置条件：
 
 Volcano 和 RBG v0.8.0 控制器需在部署 Motor 前单独安装，安装命令、版本要求和验证方法见
-[RBG 前置组件安装](lib/rbg/README.md#前置组件安装)。最小步骤如下：
+[RBG 前置组件安装](lib/rbg/README.md#前置组件安装)。以下命令从 Motor 源码根目录执行，
+`RBG_SOURCE_DIR` 使用尚未存在的绝对目录，安装过程不切换当前目录：
 
 ```bash
 # Volcano：按 MindCluster Volcano 安装指导准备软件包和镜像，然后执行
 kubectl apply -f volcano-v{version}.yaml
 
 # RBG v0.8.0
-git clone https://github.com/sgl-project/rbg.git
-cd rbg && git checkout v0.8.0
-helm upgrade --install rbgs deploy/helm/rbgs \
+RBG_SOURCE_DIR=/tmp/rbg-v0.8.0
+git clone --branch v0.8.0 --single-branch https://github.com/sgl-project/rbg.git "$RBG_SOURCE_DIR"
+helm upgrade --install rbgs "$RBG_SOURCE_DIR/deploy/helm/rbgs" \
   --create-namespace --namespace rbgs-system \
   --set controller.features.gangScheduling.schedulerName=volcano --wait
 ```
@@ -164,14 +172,18 @@ helm upgrade --install rbgs deploy/helm/rbgs \
   RBG Helm 配置为 `controller.features.gangScheduling.schedulerName=volcano`，其默认值为 `scheduler-plugins`。
   Motor 的 `rbg_config.scheduler_name` 也需为 `volcano`。
 - 部署账号需完整具备 RBG、CoordinatedPolicy、Adapter、HPA 及运行时资源权限；
-  旧版 RBAC 不包含 RBG 规则，不能仅补一项 `list`，详见 [部署账号 RBAC](lib/rbg/README.md#部署账号-rbac)。
-- RAS（`ras_monitor`）当前覆盖整实例重建；`kubectl delete pod` 只补建单个 Pod，不能替代整实例重建，
-  详见 [ras_monitor 说明](../features/fault_tolerance/ras_monitor/readme.md)。
+  应检查与 deployer 镜像配套的实际 RBAC，不能假定所用分支已包含规则，也不能仅补一项 `list`，
+  详见 [部署账号 RBAC](lib/rbg/README.md#部署账号-rbac)。
+- RBG 的实例联动重建由 `restartPolicy` 实现。`ras_monitor` 仍通过旧 `delete.sh` 删除并重新部署整套服务，
+  不具备 RBG 专用清理流程的数据 PVC 保留语义，不推荐作为 RBG 的实例恢复入口；`kubectl delete pod`
+  只补建单个 Pod，也不能替代整实例重建，详见
+  [ras_monitor 说明](../features/fault_tolerance/ras_monitor/readme.md)。
 
-以下命令在 `examples/deployer/` 下执行。将 `CONFIG_DIR` 替换为包含已配置好的
+以下部署命令从 Motor 源码根目录开始，先进入 `examples/deployer/`。将 `CONFIG_DIR` 替换为包含已配置好的
 `user_config.json` 和 `env.json` 的目录，`NAMESPACE` 与其中的 `job_id` 保持一致：
 
 ```bash
+cd examples/deployer
 CONFIG_DIR=/path/to/rbg-config
 NAMESPACE=mindie
 
@@ -205,12 +217,18 @@ MOTOR_DEPLOY_MODE=rbg bash ../cloud_native_deploy/cleanup.sh "$NAMESPACE"
 
 限制：
 
-- 不支持 InferServiceSet 的 `huawei.com/schedule_policy: *-sp` 超节点亲和策略，关闭组调度也会被拒绝。
-- 默认组调度不支持带硬件调度注解的活动角色使用不同的 `(sp-block, huawei.com/schedule_policy)` 组合；
-  A3/A5 的默认 `sp-block` 为每实例 Pod 数乘以每 Pod NPU 数，P/D 典配可能因此无法直接迁移。
+- 当前 Motor RBG 适配器拒绝 `huawei.com/schedule_policy: *-sp`，关闭组调度也会被拒绝；
+  这不代表 MindCluster 不支持 A3/A5 超节点调度。
+- 默认组调度不支持带硬件调度注解的活动角色使用不同的 `(sp-block, huawei.com/schedule_policy)` 组合。
+  DeepSeek-V4.1-Flash A3/A5 的 P/D 均为单 Pod，`sp-block` 分别为 `16/16`、`8/8`，默认组调度下
+  硬件策略一致；其他典配（例如 DeepSeek-V3.1 A3 的 P=1、D=2，`sp-block` 为 `16/32`）可能不一致。
+  A3 的 `sp-block` 定义逻辑超节点块，A5 默认的 `chip8-node8` 是节点内互联策略；
+  P/D 注解一致不能证明组级硬件策略已经生效。若需 P/D 位于同一指定超节点，可以用相同的真实
+  成员标签限制 `prefill_node_selector` / `decode_node_selector`，但静态选择不能补齐调度接入。
   规格与源码依据见 [调度规格限制](lib/rbg/README.md#调度规格限制)。
-- 当前 `scheduling_queue` 写入的注解与 RBG v0.8.0 读取组队列的键不同，不能保证其控制 RBG 组队列，
-  详见上述调度限制。
+- `motor_deploy_config.scheduling_queue` 会写入 RBG v0.8.0 读取的组队列注解
+  `rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-queue`，启用组调度时控制 RBG 组级 PodGroup 的队列。
+  使用前仍需确认目标 Volcano 队列存在，且 `scheduler_name` 为 `volcano`；该字段不允许在线修改。
 - 同一 namespace 只部署一套 RBG（运行时 ConfigMap 固定为 `motor-config`）。
 - 不支持 P2D；显式设置 `enable_scale_p2d=true` 会报错，省略或关闭时落实为 `false`。
 - 不支持容器快照；设置 `motor_container_snapshot_config.enable_snapshot=true` 会报错。
@@ -219,8 +237,16 @@ MOTOR_DEPLOY_MODE=rbg bash ../cloud_native_deploy/cleanup.sh "$NAMESPACE"
   需要先清理原部署，再按新配置部署；这些变更不能通过两个更新参数完成。
 
 A2/A3/A5 的 `user_config.json` 修改位置、现有典配数值及生成器自动处理的硬件字段，见
-[硬件配置调整](lib/rbg/README.md#a2a3a5-配置调整)。其中 A3 典配的 P/D `sp-block` 可能不一致，
-不能将“增加 RBG 配置字段”等同于该典配已支持默认组调度。
+[硬件配置调整](lib/rbg/README.md#a2a3a5-配置调整)。DeepSeek-V4.1-Flash A3 的 P/D `sp-block` 一致（`16/16`），
+只说明不会触发 Motor 的 P/D 策略不一致校验；仍需核实组级 NPU 识别和硬件注解传递。
+A2 多 Pod 实例还存在 RBG v0.8.0 组成员计数限制；A3 Prefill 必须先修正
+[MultiConnector 层级](lib/rbg/README.md#a3-deepseek-v41-flash-的-multiconnector-检查)，不能仅改部署模式就视为可用。
+A5 DeepSeek-V4.1-Flash 应使用 `model_configs/vllm/models/deepseek_v4.1_flash/A5/` 的完整典配：
+`Ascend950`、P/D 各 1 实例、每实例 1 Pod、每 Pod 8 NPU，P/D 的 DP×TP×PP 均为 8×1×1，
+KV 为 memcache inprocess，P/D 的 `HCCL_OP_EXPANSION_MODE` 均为 `CCU_SCHED`。
+完整引擎、量化、KV 端口及环境参数见 [A5 部署参数](lib/rbg/README.md#a5-deepseek-v41-flash-部署参数)，
+不能只修改 A3 示例的 `hardware_type`。资源提交后还需按
+[部署后验收](lib/rbg/README.md#部署后验收)确认工作负载就绪和实际推理成功。
 
 ### 安全预检
 

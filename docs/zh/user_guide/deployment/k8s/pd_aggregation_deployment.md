@@ -8,7 +8,7 @@
 
 PD混部将Prefill与Decode实例部署在同一类原生引擎实例中。部署时不再分别拉起prefill、decode两类角色，而是由union角色承载完整推理能力；Coordinator以single_node调度模式将请求分发到可用的union实例。
 
-与[PD分离服务部署](./pd_disaggregation_deployment.md)相比，PD混部减少了P/D角色拆分和KV跨角色传输配置，适用于快速验证、中小规模服务、资源规模较小或暂不需要独立规划P/D实例比例的场景。若业务需要针对Prefill、Decode两阶段分别规划资源、独立扩缩容或使用PD分离相关能力，建议使用PD分离服务部署。
+与[PD服务分离部署](../README.md#k8s-pd-disaggregation)相比，PD混部减少了P/D角色拆分和KV跨角色传输配置，适用于快速验证、中小规模服务、资源规模较小或暂不需要独立规划P/D实例比例的场景。若业务需要针对Prefill、Decode两阶段分别规划资源、独立扩缩容或使用PD分离相关能力，建议使用PD分离服务部署。
 
 ### 部署入口与流程
 
@@ -16,12 +16,13 @@ PD混部将Prefill与Decode实例部署在同一类原生引擎实例中。部�
 
 - user_config.json配置文件：部署与业务的总配置，PD混部重点配置hybrid_*、motor_engine_union_config字段以及Coordinator的single_node调度模式。
 - env.json配置文件：各组件环境变量，PD混部的原生引擎环境变量配置在motor_engine_union_env字段中。
-- deploy.py部署脚本：读取user_config.json和env.json配置文件，生成K8s YAML文件、更新启动脚本、创建ConfigMap并执行`kubectl apply`命令。
+- deploy.py部署脚本：读取user_config.json和env.json配置文件，生成K8s YAML文件、更新启动脚本、创建ConfigMap并执行"kubectl apply"。
 
 **部署方式**：
 
 - （推荐）CRD方式（infer_service_set）：PD混部默认使用CRD方式（infer_service_set），由InferServiceSet中的union角色拉起混部实例。
-- 多YAML Deployment方式：在motor_deploy_config.deploy_mode字段中显式配置为`multi_deployment`。
+- RBG方式（rbg）：由RoleBasedGroup中的union角色拉起混部实例，并支持通过RoleBasedGroupScalingAdapter对接HPA。
+- 多YAML Deployment方式：在motor_deploy_config.deploy_mode字段中显式配置为"multi_deployment"。
 
 ### 限制与约束
 
@@ -30,10 +31,12 @@ PD混部将Prefill与Decode实例部署在同一类原生引擎实例中。部�
 - hybrid_instances_num表示union实例数，扩缩容时仅允许修改该字段。
 - hybrid_pod_npu_num、并行参数和模型路径需与实际硬件资源、模型权重路径保持一致。
 - CRD方式需集群预先安装MindCluster InferServiceSet CRD及对应controller。
+- RBG方式需集群预先安装RoleBasedGroup、RoleInstanceSet、RoleInstance、RoleBasedGroupScalingAdapter和CoordinatedPolicy CRD及对应controller，具体准备参见[RBG部署说明](../../../../../examples/deployer/lib/rbg/README.md)。
+- RBG方式不支持ScaleP2D和容器快照；自动扩缩容与union角色的手动扩缩容不能同时使用。完整限制参见[RBG部署说明](../../../../../examples/deployer/lib/rbg/README.md)。
 
 ### 硬件环境
 
-PD混部部署支持的硬件环境如下所示：
+PD混部部署支持的硬件环境如下所示。
 
 **表 1** PD混部部署支持的硬件列表
 
@@ -56,7 +59,7 @@ PD混部部署支持的硬件环境如下所示：
   进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框输入`motor`，单击“mindie-motor”卡片，在“镜像下载”页签根据设备型号下载对应的MindIE Motor镜像。
 - 方式二：在已有镜像中安装MindIE Motor
 
-  基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[自行制作mindie-motor镜像](../../maintenance/build_motor_image_from_vllm_ascend.md#自行制作mindie-motor镜像) 额外安装MindIE Motor。
+  基础镜像已安装CANN、vLLM、vLLM Ascend等组件，请参考[基于vllm-ascend/sglang镜像安装MindIE Motor](../../maintenance/build_motor_image_from_vllm_ascend.md#自行制作mindie-motor镜像) 额外安装MindIE Motor。
 
 获取镜像后，请使用以下命令将镜像加载至服务器：
 
@@ -82,7 +85,7 @@ PD混部部署支持的硬件环境如下所示：
 
 - 从容器镜像获取：若无完整代码仓，但已拉取MindIE Motor推理镜像，可使用镜像内预置的示例目录，路径为：/tmp/motor/examples（目录结构与仓库中的examples一致）。
 
-  在已拉取镜像的机器上执行以下命令（将`IMAGE`替换为实际镜像名或镜像ID，可与user_config.json配置文件中motor_deploy_config.image_name字段值保持一致）：
+  在已拉取镜像的机器上执行以下命令（将`IMAGE`替换为实际镜像名或镜像ID，可与user_config.json配置文件中motor_deploy_config.image_name字段值保持一致。）：
 
   ```bash
   # 自定义一个存镜像名或镜像ID的变量IMAGE
@@ -110,12 +113,12 @@ examples/
 │   ├── startup/               # 启动脚本
 │   ├── log_collect/           # 日志采集
 │   └── output_yamls/          # 生成的 YAML 输出目录
-model_configs/
-└── vllm/
-    └── pd_hybrid/
-        ├── user_config.json   # PD 混部用户配置示例
-        ├── env.json           # PD 混部环境变量配置示例
-        └── README.md          # 示例说明
+└── model_configs/
+    └── vllm/
+        └── pd_hybrid/
+            ├── user_config.json   # PD 混部用户配置示例
+            ├── env.json           # PD 混部环境变量配置示例
+            └── README.md          # 示例说明
 ```
 
 - PD混部示例配置请参考[PD混部部署示例](../../../../../model_configs/vllm/pd_hybrid/README.md)。
@@ -149,13 +152,64 @@ motor_deploy_config字段下的参数主要用于部署与资源相关配置，�
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
 | deploy_mode | string | 部署方式，未配置时默认为：infer_service_set。<br>PD混部推荐使用infer_service_set方式。 |
-| hybrid_instances_num | int | union实例个数，取值范围：[1,16]。 |
+| hybrid_instances_num | int | union实例个数。InferServiceSet / multi_deployment取值范围为[1,16]；RBG初次部署允许为0，手动扩缩容后至少为1。 |
 | single_hybrid_instance_pod_num | int | 单个union实例对应的Pod数，取值范围：大于等于1。 |
 | hybrid_pod_npu_num | int | 单个union Pod占用的NPU卡数。 |
 | image_name | string | 推理镜像名，需包含MindIE Motor与推理引擎运行环境。 |
 | job_id | string | 部署任务名，同时作为K8s命名空间使用，如：mindie-motor。|
-| hardware_type | string | 硬件类型，取值为800I_A2或800I_A3。 |
+| hardware_type | string | 硬件类型，取值为800I_A2、800I_A3或Ascend950。 |
 | weight_mount_path | string | 宿主机上模型权重挂载路径，容器内model需与此挂载路径一致。 |
+
+#### 使用RBG方式部署
+
+使用RBG方式时，将`deploy_mode`改为`rbg`，并增加`rbg_config`。其余PD混部配置保持不变：
+
+```json
+"motor_deploy_config": {
+  "deploy_mode": "rbg",
+  "job_id": "mindie-motor",
+  "rbg_config": {
+    "name": "vllm",
+    "logical_service_name": "vllm",
+    "gang_scheduling": true,
+    "scheduler_name": "volcano",
+    "restart_policy_by_role": {
+      "union": "RecreateRoleInstanceOnPodRestart"
+    },
+    "coordinated_policy": {
+      "policies": [
+        {
+          "name": "engine-scaling",
+          "roles": ["union"],
+          "strategy": {
+            "scaling": {
+              "maxSkew": "100%",
+              "progression": "OrderReady"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+`rbg_config`字段说明（完整配置参见[配置参数说明](../../configuration/config_reference.md#motor_deploy_config)）：
+
+| 字段 | 含义 |
+|------|------|
+| `name` | RoleBasedGroup资源名；未配置时使用`logical_service_name`，两者均未配置时最终使用`vllm`。 |
+| `logical_service_name` | 业务Service的逻辑名称，默认`vllm`。这两个名称均须为不超过63字符的Kubernetes DNS label。 |
+| `restart_policy_by_role` | 按引擎Role（此处为`union`）设置Pod重启时是否重建整个RoleInstance；可选`None`或`RecreateRoleInstanceOnPodRestart`。开启DP域缩容的Role必须使用`None`。 |
+| `gang_scheduling` | 是否启用组级Gang Scheduling；首次部署默认`true`，启用时须使用Volcano。 |
+| `scheduler_name` | Pod调度器名称；首次部署默认`volcano`。仅在关闭Gang Scheduling且没有昇腾硬件调度注解时可用`default-scheduler`。 |
+| `coordinated_policy` | 可选的Role协调扩缩容/滚动更新策略；首次部署省略时生成默认同名CoordinatedPolicy。HPA自动扩缩容另由顶层`scaling_policy`配置。 |
+
+这里只叠加RBG专属字段。必须保留原配置中的`hardware_type`、`hybrid_pod_npu_num`、`single_hybrid_instance_pod_num`及引擎并行参数，不能统一改成示例值。省略`gang_scheduling`和`scheduler_name`时，首次部署默认启用Volcano Gang Scheduling。
+
+使用A3（`800I_A3`）或A5（`Ascend950`）时，RBG会生成`sp-block`硬件调度注解，必须使用`scheduler_name: volcano`。当前不支持选择超节点亲和调度策略，Union角色也不提供自定义`nodeSelector`配置入口。A2可使用默认Volcano；如集群不使用Gang Scheduling，可显式配置`gang_scheduling: false`和`scheduler_name: default-scheduler`。
+
+`rbg_config.name`和`logical_service_name`必须是长度不超过63的Kubernetes DNS label，未配置时默认使用`vllm`。`hybrid_instances_num`映射为union Role的`replicas`，`single_hybrid_instance_pod_num`表示每个RoleInstance包含的Pod数量。
 
 **motor_coordinator_config**
 
@@ -167,9 +221,9 @@ PD混部场景不需要配置Coordinator调度模式。Coordinator会根据运�
 "motor_coordinator_config": {}
 ```
 
-**配置示例（KV Cache性调度，可选）**：
+**配置示例（KV Cache亲和调度，可选）**：
 
-启用KV Cache亲和性调度时，在model_configs/vllm/pd_hybrid/user_config.json配置文件中按以下示例修改motor_coordinator_config、motor_engine_union_config字段，并增加kv_conductor_config字段即可。详情请参考[KV Cache亲和性调度](../../features/inference_scheduling/kvcache_affinity.md)。
+启用KV Cache亲和调度时，在 model_configs/vllm/pd_hybrid/user_config.json配置文件中按以下示例修改motor_coordinator_config、motor_engine_union_config字段，并增加 kv_conductor_config字段即可。详情请参考[KV Cache亲和性调度](../../features/inference_scheduling/kvcache_affinity.md)。
 
 ```json
 "motor_coordinator_config": {
@@ -183,11 +237,11 @@ PD混部场景不需要配置Coordinator调度模式。Coordinator会根据运�
 }
 ```
 
-**表 3** KV Cache亲和性调度参数说明
+**表 3** KV Cache亲和调度参数说明
 
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
-| scheduler_config.scheduler_type | string | 调度类型，默认值为load_balance。<br>启用 KV Cache亲和性调度时配置为kv_cache_affinity。|
+| scheduler_config.scheduler_type | string | 调度类型，默认值为load_balance。<br>启用 KV Cache亲和调度时配置为kv_cache_affinity。|
 | scheduler_config.kv_affinity.mode | string | KV亲和子策略。<ul><li>unified（默认值）</li><li>load_gated</li></ul>|
 | scheduler_config.kv_affinity.load_weight | float | unified模式下负载权重，默认值为：1.0。 |
 | scheduler_config.kv_affinity.overlap_credit | float | 缓存前缀对prefill成本的折扣系数，默认值为：1.0。 |
@@ -198,7 +252,7 @@ PD混部场景不需要配置Coordinator调度模式。Coordinator会根据运�
 
 **motor_engine_union_config**
 
-motor_engine_union_config字段用于配置PD混部原生引擎。其结构与PD分离中的motor_engine_prefill_config/motor_engine_decode_config字段类似，但无需分别配置P/D两套引擎，也无需配置kv_transfer_config字段的producer/consumer角色，配置示例如下所示。
+motor_engine_union_config字段用于配置PD混部原生引擎。其结构与PD分离中的 motor_engine_prefill_config/motor_engine_decode_config字段类似，但无需分别配置P/D两套引擎，也无需配置kv_transfer_config字段的producer/consumer角色，配置示例如下所示。
 
 ```json
 "motor_engine_union_config": {
@@ -229,16 +283,16 @@ motor_engine_union_config字段用于配置PD混部原生引擎。其结构与PD
 | engine_config.gpu_memory_utilization | float | NPU内存使用占比上限，取值范围：[0,1]。 |
 | engine_config.data_parallel_size | int | 数据并行大小。 |
 | engine_config.tensor_parallel_size | int | 张量并行大小。 |
-| engine_config.pipeline_parallel_size | int | 流水线并行大小。 |
-| engine_config.enable_expert_parallel | bool | 是否启用专家并行（EP）。 |
-| engine_config.data_parallel_rpc_port | int | 数据并行（DP）侧RPC端口。 |
+| engine_config.pipeline_parallel_size | int | 流水并行大小。 |
+| engine_config.enable_expert_parallel | bool | 是否启用EP。 |
+| engine_config.data_parallel_rpc_port | int | DP侧RPC端口。 |
 | engine_config.max_model_len | int | 最大模型上下文长度。 |
-| engine_config.kv-events-config | object | 启用KV Cache亲和性调度时配置KV事件发布（请参考[KV Cache亲和性调度](../../features/inference_scheduling/kvcache_affinity.md)）。 |
-| engine_config.enable-prefix-caching | bool | 启用KV Cache亲和性调度时建议开启前缀缓存。 |
-| 其他键 | - | 引擎原生参数，按所选引擎文档直接填写。 |
+| engine_config.kv-events-config | object | 启用KV Cache亲和时配置KV事件发布（请参考[KV Cache 亲和部署](../../features/inference_scheduling/kvcache_affinity.md)）。 |
+| engine_config.enable-prefix-caching | bool | 启用KV Cache亲和时建议开启前缀缓存。 |
+| 其它键 | - | 引擎原生参数，按所选引擎文档直接填写。 |
 
 >[!NOTE] 说明
->启用KV Cache亲和性调度时，Coordinator会从motor_engine_union_config.engine_config.kv-events-config字段中自动合并prefill_kv_event_config，无需再配置motor_engine_prefill_config字段。同时需在user_config.json配置文件根节点中配置kv_conductor_config字段（其中至少包含http_server_port参数）。
+>启用KV Cache亲和调度时，Coordinator会从motor_engine_union_config.engine_config.kv-events-config字段中自动合并prefill_kv_event_config，无需再配置 motor_engine_prefill_config字段。同时需在user_config.json配置文件根节点中配置 kv_conductor_config字段（其中至少包含http_server_port参数）。
 
 ### 配置env.json文件
 
@@ -281,7 +335,13 @@ PD混部可直接参考代码仓model_configs/vllm/pd_hybrid/env.json文件进�
 
 ### 前置条件
 
-- 已按照[环境准备](../../environment_preparation.md)章节完成Kubernetes、MindCluster、NPU驱动和固件的安装。
+- 已按照[环境准备](../../environment_preparation.md)章节完成Kubernetes、MindCluster、NPU驱动和固件。
+- 使用RBG后端时，已安装`RoleBasedGroup`、`RoleInstanceSet`、`RoleInstance`、`RoleBasedGroupScalingAdapter`和`CoordinatedPolicy` CRD及对应controller；启用默认Gang Scheduling时还须安装Volcano。具体预先安装准备参见[RBG部署说明](../../../../../examples/deployer/lib/rbg/README.md)。可执行以下命令确认资源已注册：
+
+  ```bash
+  kubectl api-resources | grep -E 'rolebasedgroup|roleinstanceset|roleinstance|coordinatedpolic'
+  ```
+
 - 已创建与`job_id`同名的命名空间，示例如下：
 
   ```bash
@@ -293,7 +353,7 @@ PD混部可直接参考代码仓model_configs/vllm/pd_hybrid/env.json文件进�
 
 ### 部署命令
 
-在/examples/deployer目录下执行以下命令，支持两种指定配置的方式：
+在/examples/deployer目录下执行以下命令，支持两种指定配置的方式。
 
 - 方式一：指定配置目录（推荐）
 
@@ -312,7 +372,7 @@ PD混部可直接参考代码仓model_configs/vllm/pd_hybrid/env.json文件进�
   >`deploy.py`部署脚本会依次执行以下步骤：
   >
   >1. 读取user_config.json和env.json配置文件。
-  >2. 根据motor_deploy_config生成Controller、Coordinator和union实例的K8s资源。
+  >2. 根据motor_deploy_config生成Controller、Coordinator和union实例的K8s资源；`deploy_mode=rbg`时生成RoleBasedGroup、业务Service、CoordinatedPolicy及配套资源。
   >3. 将motor_engine_union_env等环境变量写入启动脚本。
   >4. 创建或更新motor-config ConfigMap。
   >5. 执行kubectl apply启动服务。
@@ -331,13 +391,27 @@ PD混部可直接参考代码仓model_configs/vllm/pd_hybrid/env.json文件进�
 
 ### 查看集群状态与日志
 
-- **查看Pod列表**
+- **查看Pod列表**：
 
   ```bash
   kubectl get pods -n <job_id>
   ```
 
-  在CRD默认方式下，InferServiceSet会拉起Controller、Coordinator和union角色对应的Pod。Pod状态为Running仅表示已成功调度并启动，业务是否就绪仍需结合日志进一步确认。
+  在CRD默认方式下，InferServiceSet会拉起controller、coordinator和union角色对应的Pod。Pod状态为Running仅表示已成功调度并启动，是否业务就绪仍需结合日志进一步确认。
+
+  RBG方式下还应检查RoleBasedGroup、RoleInstance、Service和协调策略：
+
+  ```bash
+  kubectl get rolebasedgroup,roleinstance,coordinatedpolicy -n <job_id>
+  kubectl get pods,svc -n <job_id> -o wide
+  kubectl describe rolebasedgroup vllm -n <job_id>
+  ```
+
+  若配置了顶层`scaling_policy`，还应检查HPA及ScalingAdapter：
+
+  ```bash
+  kubectl get rolebasedgroupscalingadapter,hpa -n <job_id>
+  ```
 
 - **查看容器输出**
 
@@ -380,7 +454,7 @@ PD混部可直接参考代码仓model_configs/vllm/pd_hybrid/env.json文件进�
 
 ## 发送推理请求
 
-服务就绪后，可通过/v1/chat/completions接口测试服务是否正常拉起。推理入口为Coordinator对外暴露的端口（默认为31015）。请将`<IP>`替换为实际访问地址，将`model`替换为user_config.json配置文件中motor_engine_union_config字段下`served_model_name`参数配置的模型名称。
+服务就绪后，可通过/v1/chat/completions接口测试服务是否拉起正常。推理入口为Coordinator对外暴露的端口（默认为31015）。请将`<IP>`替换为实际访问地址，将`model`替换为user_config.json配置文件中motor_engine_union_config字段下`served_model_name`参数配置的模型名称。
 
 ```bash
 curl -X POST http://<IP>:31015/v1/chat/completions \
@@ -414,12 +488,21 @@ python3 deploy.py --config_dir ../../model_configs/vllm/pd_hybrid --update_insta
 
 >[!NOTE] 说明
 >
->- hybrid_instances_num参数的取值范围必须为：[0,16]。
+>- hybrid_instances_num参数的取值范围必须为：(0,16]。
 >- 扩缩容基线来自集群ConfigMap motor-config。
 >- 只能修改user_config.json配置文件中motor_deploy_config字段下hybrid_instances_num参数，不允许同时修改其他参数。
->- CRD默认方式下，脚本更新infer_service.yaml中union角色的replicas后执行apply，由CRD controller完成扩缩容。
+>- CRD默认方式下，脚本更新infer_service.yaml中union角色的replicas后执行apply，由 CRD controller完成扩缩容。
+>- RBG方式下，脚本更新在线RoleBasedGroup中union角色的`replicas`。详细机制、验证方法和故障处理参见[手动扩缩容](../../features/scaling_deployment/manual_scaling.md)。
 
 手动扩缩容更多详细说明请参考[手动扩缩容](../../features/scaling_deployment/manual_scaling.md)。
+
+RBG方式需要自动扩缩容时，在`user_config.json`顶层的`scaling_policy`中配置union角色的HPA策略。union角色没有默认指标，必须显式配置`metric`。完整配置与停用方法参见[自动弹性扩缩容](../../features/scaling_deployment/auto_scaling.md#rbg自动扩缩容)。部署后使用以下命令检查资源和外部指标：
+
+```bash
+kubectl get rolebasedgroupscalingadapter,hpa -n <job_id>
+kubectl describe hpa -n <job_id>
+kubectl get --raw '/apis/external.metrics.k8s.io/v1beta1'
+```
 
 ## 卸载
 
@@ -442,4 +525,4 @@ bash delete.sh mindie-motor
 
 - **镜像与权重**：确保image_name在集群内可正常拉取；weight_mount_path在宿主机上存在，且engine_config.model指向容器内正确路径。
 - **实例角色错误**：PD混部需确保部署产生union角色实例；Coordinator会自动识别，无需额外调度模式配置。
-- **Prefix Cache特性对性能测试的影响**：Prefix Cache默认开启，若期望获取推理服务的基线性能数据，可在vLLM的engine_config中增加`"no-enable-prefix-caching": true`。
+- **Prefix Cache 特性对性能测试的影响**：Prefix Cache默认开启，若期望获取推理服务的基线性能数据，可在vLLM的engine_config中增加"no-enable-prefix-caching": true。

@@ -55,31 +55,49 @@ Controller、Coordinator、Engine、KV Pool 和 KV Conductor 等运行时资源�
    [RBG 配置说明](../../deployer/lib/rbg/README.md#前置条件)。
 
    Volcano 和 RBG v0.8.0 控制器的安装命令、版本要求和验证步骤见
-   [RBG 前置组件安装](../../deployer/lib/rbg/README.md#前置组件安装)。最小步骤如下：
+   [RBG 前置组件安装](../../deployer/lib/rbg/README.md#前置组件安装)。以下命令从 Motor 源码根目录执行，
+   `RBG_SOURCE_DIR` 使用尚未存在的绝对目录，安装过程不切换当前目录：
 
    ```bash
    # Volcano：按 MindCluster Volcano 安装指导准备软件包和镜像，然后执行
    kubectl apply -f volcano-v{version}.yaml
 
    # RBG v0.8.0
-   git clone https://github.com/sgl-project/rbg.git
-   cd rbg && git checkout v0.8.0
-   helm upgrade --install rbgs deploy/helm/rbgs \
+   RBG_SOURCE_DIR=/tmp/rbg-v0.8.0
+   git clone --branch v0.8.0 --single-branch https://github.com/sgl-project/rbg.git "$RBG_SOURCE_DIR"
+   helm upgrade --install rbgs "$RBG_SOURCE_DIR/deploy/helm/rbgs" \
      --create-namespace --namespace rbgs-system \
      --set controller.features.gangScheduling.schedulerName=volcano --wait
    ```
 
    更完整的安装包准备、单机 `useClusterInfoManager=false` 配置和验证命令见上述链接。
 
-   同一 namespace 只部署一套 RBG。RAS（`ras_monitor`）当前按整实例重建处理；`kubectl delete pod`
-   只补建单个 Pod，不能替代整实例重建。详见
+   同一 namespace 只部署一套 RBG。实例联动重建由 RBG 的 `restartPolicy` 实现；RAS（`ras_monitor`）
+   仍通过旧 `delete.sh` 删除并重新部署整套服务，不具备 RBG 清理流程的数据 PVC 保留语义，
+   不推荐作为 RBG 的实例恢复入口。`kubectl delete pod` 只补建单个 Pod，也不能替代整实例重建。详见
    [ras_monitor 说明](../../features/fault_tolerance/ras_monitor/readme.md)。
 
    该 RBG 示例为 A3（`800I_A3`），P/D 均为每实例单 Pod、每 Pod 16 NPU。
+   该 A3 示例不是 A5 DeepSeek-V4.1-Flash 配置。使用 A5 时应采用
+   `model_configs/vllm/models/deepseek_v4.1_flash/A5/`：`hardware_type: Ascend950`、P/D 1/1、
+   每实例单 Pod、每 Pod 8 NPU、P/D 的 DP×TP×PP 为 8×1×1、KV memcache inprocess、P/D
+   `HCCL_OP_EXPANSION_MODE=CCU_SCHED`，不能只把 A3 示例的 `hardware_type` 改成 A5。
    使用 A2/A5 或其他模型时，在 `userConfig` JSON 字符串中替换相应典配，并配置对应的 `envConfig`，
-   具体字段见 [A2/A3/A5 配置调整](../../deployer/lib/rbg/README.md#a2a3a5-配置调整)。
+   具体字段见 [A2/A3/A5 配置调整](../../deployer/lib/rbg/README.md#a2a3a5-配置调整)与
+   [A5 参数表](../../deployer/lib/rbg/README.md#a5-deepseek-v41-flash-部署参数)。
    迁移前需检查 [调度规格限制](../../deployer/lib/rbg/README.md#调度规格限制)：`*-sp` 超节点亲和会被拒绝，
-   默认组调度也不支持活动角色使用不同的硬件调度策略组合；该节同时说明 `scheduling_queue` 的注解适配差异。
+   默认组调度也不支持活动角色使用不同的硬件调度策略组合。MindCluster 支持 A3/A5 超节点调度，
+   上述限制属于当前 Motor RBG 适配器。A3 的 `sp-block` 定义逻辑超节点块，A5 默认 `chip8-node8`
+   则是节点内互联策略；P/D 注解一致不能证明硬件调度已经生效。相同的真实超节点成员 selector
+   可以限制节点范围，但不能补齐调度接入。还需按 [硬件配置调整](../../deployer/lib/rbg/README.md#a2a3a5-配置调整)
+   核对 A2 多 Pod 实例的 Gang 计数和 A3 MultiConnector 配置问题。
+   `motor_deploy_config.scheduling_queue` 会写入 RBG 注解
+   `rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-queue`，与 RBG v0.8.0 读取的键一致，
+   启用组调度时作用于 RBG 组队列；使用前需确认队列存在且 `scheduler_name` 为 `volcano`，
+   更改 RBG 队列需要清理后重新部署。
+   RBG 还不支持 P2D 和容器快照；各字段、默认值和更新限制见
+   [完整 rbg_config 示例](../../deployer/lib/rbg/README.md#完整-rbg_config-示例)，资源提交后还需按
+   [部署后验收](../../deployer/lib/rbg/README.md#部署后验收)确认工作负载就绪和实际推理成功。
 
    部署前须在 `userConfig` 中配置推理 TLS 与管理面 API Key，并保留安全预检，
    具体字段见 [安全预检说明](../../deployer/README.md#安全预检)。
@@ -186,9 +204,10 @@ CoordinatedPolicy。Job 从 `userConfig.motor_deploy_config.job_id` 获取部署
   `operation=deploy` 配置 `scalingPolicy` 创建，不能通过此更新入口新增。`policyUpdate.roles` 仅支持
   `prefill` 和 `decode`，不能修改 `scaleTargetRef`。
 
-Chart 的 RBAC 和 `k8s/clusterrole.yaml` 需随 RBG 实现同步更新。旧版不含 RBG 和 HPA 规则，
-不能仅补 RBG `list`；部署与策略更新前，应按 [部署账号 RBAC](../../deployer/lib/rbg/README.md#部署账号-rbac)
-核对 RBG、CoordinatedPolicy、Adapter、HPA 及运行时资源的完整权限。
+Chart RBAC 或 `k8s/clusterrole.yaml` 应与 deployer 镜像使用同一配套 RBG 实现版本，并按
+[部署账号 RBAC](../../deployer/lib/rbg/README.md#部署账号-rbac)核对完整权限；不能假定所用分支已包含
+RBG 和 HPA 规则，也不能仅补 RBG `list`。部署与策略更新前，应核对 RBG、CoordinatedPolicy、Adapter、
+HPA 及运行时资源的完整权限。
 
 只开启 P/D 扩容：
 

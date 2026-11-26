@@ -2,18 +2,18 @@
 
 ## 特性介绍
 
-手动扩缩容特性通过修改`user_config.json`中的实例数并执行`--update_instance_num`，在已全量部署的集群上调整engine实例数量，实现扩容（增加实例）或缩容（减少实例）。
+手动扩缩容特性通过修改`user_config.json`中的实例数并执行`--update_instance_num`，在已全量部署的集群上调整engine实例数量，实现扩容（增加实例）或缩容（减少实例）。deployer会根据首次部署时保存到ConfigMap `motor-config`中的`deploy_mode`，选择InferServiceSet / multi_deployment或RoleBasedGroup（RBG）扩缩容后端，不能通过本命令切换部署后端。
 
 ### 约束与限制
 
 | 约束维度 | 要求 |
 |----------|------|
 | 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li></ul>手动扩缩容无额外硬件限制，与已部署服务使用的机型一致。 |
-| 部署场景 | 支持PD分离（修改`p_instances_num`、`d_instances_num`）和PD混部（修改`hybrid_instances_num`）。 |
+| 部署场景 | 支持PD分离（修改`p_instances_num`、`d_instances_num`）、PD混部（修改`hybrid_instances_num`）；RBG还支持已创建Encode Role的拓扑（修改`e_instances_num`）。 |
 | 特性互斥 | 静态扩缩容与动态扩缩容互斥，不能叠加使用。 |
 | 引擎 | 支持vLLM和SGLang；扩缩容不切换引擎，须与已部署服务的`engine_type`保持一致。 |
 | 软件依赖 | 需要K8s集群管理员的kubectl权限，且集群内已存在全量部署生成的ConfigMap `motor-config`。 |
-| 其他限制 | <ul><li>扩缩容时仅允许修改`motor_deploy_config.p_instances_num`、`motor_deploy_config.d_instances_num`、`motor_deploy_config.hybrid_instances_num`字段；</li><li>实例数须大于0且不超过16，否则部署或扩缩容时会报错；</li><li>扩缩容只影响engine实例，controller / coordinator不会在扩缩容路径中更新；</li><li>如需修改镜像、挂载路径等非实例数配置，请进行重新部署；</li><li>缩容会从高index开始删除实例，并同步删除`output/deployment/`下对应的engine YAML文件；</li><li>已部署配置的基线为集群内ConfigMap（motor-config）中的user_config；</li><li>Prefix Cache特性默认开启，该特性会复用已计算好的KV Cache。新扩容的实例没有KV Cache缓存，该实例的推理性能可能出现小幅度劣化并在一段时间后恢复。</li></ul> |
+| 其他限制 | <ul><li>扩缩容时仅允许修改`motor_deploy_config.p_instances_num`、`motor_deploy_config.d_instances_num`、`motor_deploy_config.hybrid_instances_num`、`motor_deploy_config.e_instances_num`中已在基线配置且对应Role已存在的实例数；</li><li>InferServiceSet / multi_deployment模式的实例数范围为[1, 16]；RBG手动扩缩容允许Decode缩容到0，Prefill、Encode、Union至少保留1个实例；RBG初次部署的副本数可为0。副本上限由集群资源和自动扩缩容策略约束；</li><li>扩缩容只影响engine实例，controller / coordinator不会在扩缩容路径中更新；</li><li>如需修改镜像、挂载路径等非实例数配置，请进行重新部署；</li><li>已部署配置的基线为集群内ConfigMap（motor-config）中的user_config；</li><li>Prefix Cache特性默认开启，该特性会复用已计算好的KV Cache。新扩容的实例没有KV Cache缓存，该实例的推理性能可能出现小幅度劣化并在一段时间后恢复。</li></ul> |
 
 ## 特性使用
 
@@ -33,7 +33,16 @@
 
 适用于Prefill和Decode混合部署的场景，通过修改`hybrid_instances_num`调整union实例数。
 
+含Encode角色的RBG拓扑可通过修改`e_instances_num`调整Encode实例数；该角色必须已在首次部署时创建。
+
 ### 使用样例
+
+#### 扩缩容后端说明
+
+- **InferServiceSet / multi_deployment**：deployer创建或删除对应高index的engine工作负载；缩容时同步清理`output/deployment/`下对应的engine YAML文件。InferServiceSet模式可通过`InferServiceSet`资源核对角色副本数。
+- **RBG**：deployer读取在线`RoleBasedGroup`，以带UID、resourceVersion和角色名校验的JSON Patch更新对应Role的`replicas`；成功后再更新ConfigMap `motor-config`中的配置基线。RBG资源名称取`motor_deploy_config.rbg_config.name`；未配置时继承`logical_service_name`，两者均未配置时为`vllm`。
+
+两种后端使用相同的配置字段和`--update_instance_num`命令。RBG角色一旦由HPA或`RoleBasedGroupScalingAdapter`托管，不能再对同一角色执行手动扩缩容；应先按[自动弹性扩缩容特性](auto_scaling.md)停用该角色的自动策略，再执行本节操作。
 
 #### 场景一：PD分离
 
@@ -64,8 +73,8 @@
 
    | 配置项 | 类型 | 取值范围 | 必填 | 默认值 | 说明 |
    |--------|------|----------|------|--------|------|
-   | motor_deploy_config.p_instances_num | int | [1, 16] | 是 | 1 | Prefill实例个数。 |
-   | motor_deploy_config.d_instances_num | int | [1, 16] | 是 | 1 | Decode实例个数。 |
+   | motor_deploy_config.p_instances_num | int | InferServiceSet / multi_deployment: [1, 16]；RBG: 手动扩缩容≥1 | 是 | 1 | Prefill实例个数。 |
+   | motor_deploy_config.d_instances_num | int | InferServiceSet / multi_deployment: [1, 16]；RBG: 手动扩缩容≥0 | 是 | 1 | Decode实例个数。 |
 
    配置示例（将P实例从1扩到2，D实例保持1）：
 
@@ -129,7 +138,7 @@
 
    | 配置项 | 类型 | 取值范围 | 必填 | 默认值 | 说明 |
    |--------|------|----------|------|--------|------|
-   | motor_deploy_config.hybrid_instances_num | int | [1, 16] | 是（混部场景） | 无 | union实例个数。未配置该字段时不是PD混部。 |
+    | motor_deploy_config.hybrid_instances_num | int | InferServiceSet / multi_deployment: [1, 16]；RBG: 手动扩缩容≥1 | 是（混部场景） | 无 | union实例个数。未配置该字段时不是PD混部。 |
 
    配置示例（将union实例从1扩到2）：
 
@@ -223,7 +232,9 @@
    vllm-0-prefill-1-0           1/1     Terminating   0          1m
    ```
 
-4. 检查InferServiceSet角色副本数是否与配置一致。
+4. 根据部署后端检查角色副本数是否与配置一致。
+
+   **InferServiceSet模式**
 
    ```bash
    kubectl get inferserviceset vllm -n {namespace} -o jsonpath='{range .spec.template.roles[*]}{.name} replicas={.replicas}{"\n"}{end}'
@@ -242,6 +253,24 @@
    prefill replicas=1
    decode replicas=1
    ```
+
+   **RBG模式**
+
+   `{rbg-name}`取`motor_deploy_config.rbg_config.name`；未配置时继承`logical_service_name`，两者均未配置时使用`vllm`。
+
+   ```bash
+   kubectl get rolebasedgroup {rbg-name} -n {namespace} -o jsonpath='{range .spec.roles[*]}{.name} replicas={.replicas}{"\n"}{end}'
+   kubectl get roleinstance -n {namespace} -l rbg.workloads.x-k8s.io/group-name={rbg-name}
+   ```
+
+   PD分离扩容后，第一条命令回显示例如下：
+
+   ```text
+   prefill replicas=2
+   decode replicas=1
+   ```
+
+   缩容后`prefill replicas`恢复为1。同时确认新增或保留的RoleInstance及其Pod进入Ready / Running状态。RBG缩容由控制器回收RoleInstance，不依赖本地`output/deployment/`中的高index YAML文件。
 
    PD混部场景将上述检查中的`p_instances_num` / `prefill`替换为`hybrid_instances_num` / `union`即可。
 
@@ -287,3 +316,40 @@
    ```
 
 3. 如需修改非实例数配置，请进行全量重新部署，不要使用`--update_instance_num`。
+
+### RBG角色不能手动扩缩容
+
+**问题描述**
+
+RBG模式执行扩缩容时出现`cannot be scaled manually`。
+
+**原因分析**
+
+目标角色已被HPA或`RoleBasedGroupScalingAdapter`托管。为避免手动命令与控制器同时写入副本数，deployer会拒绝本次操作。
+
+**解决步骤**
+
+1. 查看目标角色对应的HPA和ScalingAdapter。
+
+   ```bash
+   kubectl get hpa,rolebasedgroupscalingadapter -n {namespace}
+   ```
+
+2. 在`user_config.json`中停用该角色的`scaling_policy`并通过原部署入口应用变更，确认相关HPA / ScalingAdapter不再托管该角色。
+3. 再执行`--update_instance_num`。不要仅临时删除HPA后立即手动扩缩容，否则重新应用原配置时自动策略可能被再次创建。
+
+### RBG副本已更新但配置基线更新失败
+
+**问题描述**
+
+命令提示RBG已更新，但`configuration baseline was not updated`。
+
+**原因分析**
+
+RoleBasedGroup Patch已成功，随后更新ConfigMap `motor-config`失败。此时在线副本数与配置基线可能不一致。
+
+**解决步骤**
+
+1. 分别检查RoleBasedGroup角色副本数与ConfigMap中的实例数。
+2. 先排除ConfigMap权限、资源版本冲突等问题，再使用与在线副本数一致的`user_config.json`修复配置基线。
+3. 未核对在线状态前不要反复执行相同扩缩容命令。

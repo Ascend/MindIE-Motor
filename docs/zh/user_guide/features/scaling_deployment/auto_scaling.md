@@ -2,55 +2,66 @@
 
 ## 特性介绍
 
-自动弹性扩缩容功能支持根据推理实例的实时负载自动调整 Prefill 和 Decode 实例数量。当请求量上升时自动扩容，当负载回落时自动缩容，在保障服务 SLA 的同时提升资源利用率。
+自动弹性扩缩容功能支持根据推理实例的实时负载自动调整Prefill、Decode、Encode或union实例数量。当请求量上升时自动扩容，当负载回落时自动缩容，在保障服务SLA的同时提升资源利用率。MindIE Motor支持Infer Operator和RoleBasedGroup（RBG）两种自动扩缩容后端，两者共用指标链路，但资源对象和配置入口不同。
 
 ### 工作原理
 
-Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，HPA 通过 External Metrics Adaptor 或 Prometheus + Prometheus Adapter 获取 MindIE Motor 汇聚的引擎级负载指标（如排队请求数、TPS、KV Cache 使用率等），按用户配置的扩缩容阈值自动调整实例副本数。
+HPA（Horizontal Pod Autoscaler）通过External Metrics Adaptor或Prometheus + Prometheus Adapter获取MindIE Motor汇聚的引擎级负载指标（如排队请求数、TPS、KV Cache使用率等），按用户配置的扩缩容阈值调整实例副本数：
+
+- Infer Operator后端：`HPA → Infer Operator管理的角色工作负载 → Engine Pods`。
+- RBG后端：`HPA → RoleBasedGroupScalingAdapter → RoleBasedGroup Role → RoleInstance / Engine Pods`。
 
 ```text
-┌──────────────────────────────────────────────────────────────────┐
-│                         K8s Cluster                              │
-│                                                                  │
-│   ┌────────────┐     ┌───────────┐     ┌───────────────────┐     │
-│   │    HPA     │     │  Infer    │     │    Engine Pods    │     │
-│   │(autoscaler)|────>│ Operator  │────>│ (Prefill / Decode)│     │
-│   └────────────┘     └───────────┘     └─────────┬─────────┘     │
-│         ^                                        │               │
-│         │                                        │               │
-│         │        ┌──────────────────┐            │               │
-│         │        │   MindIE Motor   │            │               │
-│         └────────│   Coordinator    │<───────────┘               │
-│   (External      │ (aggregation/TPS)│   /metrics                 │
-│    Metrics API)  └──────────────────┘                            │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                             K8s Cluster                                │
+│                                                                        │
+│  Engine Pods（Prefill / Decode / Encode / union）                      │
+│        │ /metrics                                                      │
+│        ▼                                                               │
+│  MindIE Motor Coordinator                                              │
+│        │                                                               │
+│        ▼                                                               │
+│  External Metrics Adaptor 或 Prometheus + Prometheus Adapter           │
+│        │ External Metrics API                                          │
+│        ▼                                                               │
+│       HPA                                                              │
+│        │                                                               │
+│        ├── infer_service_set ──> Infer Operator ──> Engine Pods         │
+│        │                                                               │
+│        └── rbg ──> RoleBasedGroupScalingAdapter                        │
+│                         │                                              │
+│                         ▼                                              │
+│                  RoleBasedGroup Role                                   │
+│                         │                                              │
+│                         ▼                                              │
+│                  RoleInstance / Engine Pods                            │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 1. MindIE Motor Coordinator 从所有引擎 Pod 采集 Prometheus 指标，按语义聚合后通过 /metrics 端点暴露。
 2. 指标接入组件将 Coordinator 指标转换为 Kubernetes External Metrics API：External Metrics Adaptor 直连 Coordinator；或经 Prometheus 抓取后再由 Prometheus Adapter 注册为 External 指标。
 3. HPA 从 External Metrics API 获取负载数据，与用户配置的目标阈值对比。
-4. 当指标持续超出阈值时，HPA 通知 Infer Operator 增加副本；低于阈值时减少副本。
+4. 当指标持续超出阈值时，HPA通过Infer Operator或RBG ScalingAdapter增加副本；低于阈值时减少副本。
 
 ### 约束与限制
 
 | 约束维度 | 要求 |
 |----------|------|
 | 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li></ul> |
-| 部署场景 | 自动扩缩容要求 `infer_service_set` 部署模式（由 Infer Operator 创建 HPA）。<ul><li>PD 分离：为 `prefill`、`decode` 角色分别配置 `scalingPolicy`；</li><li>PD 混部：为 `union` 角色配置，且**必须显式指定 `metric`**——该角色没有默认指标，缺失时配置生成直接报错；</li><li>`multi_deployment`、`single_container`：不支持本文自动扩缩容，实例数仅可手动调整。</li></ul>Controller、Coordinator 不在本例的扩缩容范围内。 |
+| 部署场景 | 支持`infer_service_set`和`rbg`部署模式。<ul><li>Infer Operator：在角色模板中配置`scalingPolicy`，或使用`user_config.json`顶层的`scaling_policy`；</li><li>RBG：使用`user_config.json`顶层的`scaling_policy`，deployer生成HPA和CoordinatedPolicy，并启用对应Role的ScalingAdapter；</li><li>PD分离：为`prefill`、`decode`角色分别配置；含Encode角色的RBG拓扑也可为`encode`配置；</li><li>PD混部：为`union`角色配置，且必须显式指定`metric`；`encode`同样没有默认指标，启用时必须显式指定`metric`；</li><li>`multi_deployment`、`single_container`不支持本文自动扩缩容。</li></ul>Controller、Coordinator不在扩缩容范围内。 |
 | 特性互斥 | 静态扩缩容与动态扩缩容互斥，不能叠加使用。 |
-| 软件依赖 | Infer Operator ≥ 26.1.0，且须支持角色级 `scalingPolicy`；指标接入可选择 External Metrics Adaptor 或 Prometheus + Prometheus Adapter。 |
+| 软件依赖 | Infer Operator后端要求Infer Operator ≥ 26.1.0并支持角色级`scalingPolicy`；RBG后端要求集群已安装`workloads.x-k8s.io/v1alpha2`相关CRD及控制器，具体前置条件参见[RBG部署说明](../../../../../examples/deployer/lib/rbg/README.md)。两种后端的指标接入均可选择External Metrics Adaptor或Prometheus + Prometheus Adapter。 |
 | 其他限制 | <ul><li>缩容存在稳定窗口（默认 5 分钟），避免负载短暂波动导致频繁扩缩；</li><li>扩容的新实例没有 KV Cache 缓存，Prefix Cache 特性会逐步重建缓存，因此新实例的推理性能可能出现小幅度劣化并在一段时间后恢复；</li><li>建议 `minReplicas` 至少设为 1，避免缩容到 0 导致服务完全不可用；</li><li>Counter 类型指标（如 token 总数）不会因 /metrics 请求而重置，建议优先使用 Gauge 类型指标或 MindIE Motor 计算的 TPS 指标作为扩缩容依据；</li><li>若使用不带 `type` 参数的 /metrics 端点（默认 `full`），HPA 获取到的是全局聚合值；按 Prefill/Decode 角色独立扩缩容时，External Metrics Adaptor 需分别请求 `type=role` 视图，Prometheus 路径需在抓取或 PromQL 中按角色聚合。</li></ul> |
 
 ## 特性使用
 
-### 环境准备
+### 通用环境准备
 
-- 已完成 Infer Operator 的安装部署。安装步骤参见 [Infer Operator 安装指南](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/07_infer_operator.md)；弹性扩缩容策略配置可参考 [配置基于负载的弹性扩缩容](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/10_infer_operator_best_practice/05_configuring_elastic_scaling.md)。
-- 已准备 `infer_service_set` 模式的 PD 分离或 PD 混部部署配置，并具备调整实例所需的空闲 NPU 资源。已有服务启用扩缩容时，保持原命名空间、模型、挂载和端口配置。
+- Infer Operator后端已完成Infer Operator安装；安装步骤参见[Infer Operator安装指南](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/07_infer_operator.md)。RBG后端已按[RBG部署说明](../../../../../examples/deployer/lib/rbg/README.md)安装RBG CRD和控制器并满足相关限制。
+- 已准备`infer_service_set`或`rbg`模式的PD分离 / PD混部部署配置，并具备调整实例所需的空闲NPU资源。已有服务启用扩缩容时，保持原命名空间、模型、挂载和端口配置。
 - 已部署指标接入组件（二选一，均用于将 MindIE Motor 指标转换为 Kubernetes External Metrics）：[External Metrics Adaptor](https://gitcode.com/Ascend/mindcluster-deploy/tree/master/infer-operator-metrics-adaptor)（mindcluster-deploy 提供了可直接部署的示例），或 Prometheus + Prometheus Adapter。
 
-### 使用样例
+### 通用指标准备
 
 1. 配置 MindIE Motor 暴露 Metrics。
 
@@ -75,7 +86,7 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
 
 2. 部署指标接入（二选一）。
 
-   两条路径最终都向 HPA 提供 Kubernetes External Metrics API。部署完成后按[步骤 3](#step-2-3)核对指标可用，再配置[步骤 4](#step-3)的 `scalingPolicy`。
+   两条路径最终都向 HPA 提供 Kubernetes External Metrics API。部署完成后按[步骤 3](#step-2-3)核对指标可用，再按[Infer Operator 配置步骤 1](#step-3)设置 `scalingPolicy`。
 
    <a id="step-2-1"></a>
 
@@ -100,12 +111,12 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
       2. Prometheus Adapter 根据 `externalRules` 中的 `metricsQuery` 查询 Prometheus，并将结果注册到 `external.metrics.k8s.io`。
       3. HPA 通过 `type: External` 与 `external.metric.name` 消费该指标。
 
-      `metricsQuery` 是组合多个指标或做时间窗口聚合的配置位置；Motor deployer 只透传 HPA 的 `scalingPolicy`，不参与 PromQL 计算。Adapter 暴露的指标名须与[步骤 4](#step-3) `external.metric.name` 一致；若 HPA 配置了 `kubernetes_namespace` 或 `infer_huawei_com_inferservice_name` selector，Prometheus 时序及 Adapter 规则必须保留对应标签。
+      `metricsQuery` 是组合多个指标或做时间窗口聚合的配置位置；Motor deployer 只透传 HPA 的 `scalingPolicy`，不参与 PromQL 计算。Adapter 暴露的指标名须与[Infer Operator 配置步骤 1](#step-3)的 `external.metric.name` 一致；若 HPA 配置了 `kubernetes_namespace` 或 `infer_huawei_com_inferservice_name` selector，Prometheus 时序及 Adapter 规则必须保留对应标签。
 
 3. <a id="step-2-3"></a>使用以下方法验证指标是否可用。
 
    1. 用 HPA 实际要使用的指标名查询 External Metrics API。指标名如何选取见[应填哪个外部指标名](#应填哪个外部指标名)。
-   2. 将查询结果与 Coordinator `/metrics` 上的值核对；返回非空且数值合理后再进入[步骤 4](#step-3)。
+   2. 将查询结果与 Coordinator `/metrics` 上的值核对；返回非空且数值合理后再进入[Infer Operator 配置步骤 1](#step-3)。
    3. External Metrics Adaptor 路径：查询须带 `labelSelector`（InferService 名与角色标签），缺省 selector 时 Adaptor 无法判定 InferService：
 
       ```bash
@@ -118,7 +129,9 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
       kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/{namespace}/{metric-name}"
       ```
 
-4. <a id="step-3"></a>配置弹性扩缩容策略。
+### Infer Operator自动扩缩容
+
+1. <a id="step-3"></a>配置弹性扩缩容策略。
 
    以下示例基于 External Metrics Adaptor 路径：Prefill 按排队请求数扩缩容、Decode 按生成 token 速率扩缩容。
 
@@ -279,7 +292,7 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
             # ... 其余配置保持不变 ...
       ```
 
-5. 生成并应用扩缩容配置。
+2. 生成并应用扩缩容配置。
 
    <a id="step-4"></a>
 
@@ -298,7 +311,78 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
 
    上述第二条命令会变更集群资源。`--update_instance_num` 仅用于手动调整实例数，不重新读取模板，不能用它代替本次新增策略的生成步骤。启用 HPA 后由 HPA 管理角色副本数，避免另一自动化程序同时持续写入同一角色的 replicas。
 
-### 验证特性
+### RBG自动扩缩容
+
+RBG后端不使用InferServiceSet模板中的`scalingPolicy`。在`user_config.json`顶层配置`scaling_policy`，deployer会为启用的角色生成HPA，并将HPA目标设置为该角色的`RoleBasedGroupScalingAdapter`。
+
+PD分离示例：
+
+```json
+{
+  "motor_deploy_config": {
+    "deploy_mode": "rbg",
+    "job_id": "mindie-motor",
+    "p_instances_num": 1,
+    "d_instances_num": 1,
+    "rbg_config": {
+      "name": "vllm",
+      "logical_service_name": "vllm"
+    }
+  },
+  "scaling_policy": {
+    "prefill": {
+      "min_replicas": 1,
+      "max_replicas": 4,
+      "target": 0.8
+    },
+    "decode": {
+      "min_replicas": 1,
+      "max_replicas": 4,
+      "target": 0.8,
+      "behavior": {
+        "scaleDown": {
+          "stabilizationWindowSeconds": 300
+        }
+      }
+    }
+  }
+}
+```
+
+参数说明：
+
+| 参数 | 说明 |
+|------|------|
+| `min_replicas` / `max_replicas` | HPA副本下限和上限，须满足`min_replicas <= max_replicas`。 |
+| `metric` | 外部指标名。Prefill和Decode未配置时分别使用`motor_prefill_utilization`、`motor_decode_utilization`；union角色必须显式配置。 |
+| `target` | 目标阈值，默认使用`Value`类型。 |
+| `target_type` | 可选，支持`Value`或`AverageValue`。 |
+| `behavior` | 可选，原样写入HPA `spec.behavior`，用于配置稳定窗口和扩缩容策略。 |
+
+RBG也支持为`encode`角色配置`scaling_policy`，但须先在部署配置中启用Encode Role，并显式填写`metric`。HPA不能用于当前副本数为0的Role；应先将其手动扩容到至少1个副本。HPA的最小副本数必须至少为1。
+
+生成的HPA会自动携带`kubernetes_namespace`和`infer_huawei_com_inferservice_name`选择器。部署前先执行dry-run并检查输出：
+
+```bash
+cd examples/deployer
+python deploy.py --config_dir ../../model_configs/vllm --dry-run
+python deploy.py --config_dir ../../model_configs/vllm
+```
+
+RBG首次部署即使未配置`scaling_policy`，也会生成同名CoordinatedPolicy用于角色间协调，但不会生成HPA。更新已有服务时，省略`scaling_policy`表示保留兼容的现有策略；显式设置为空对象`"scaling_policy": {}`表示停用并删除Motor托管的角色HPA。配置自动策略后，不要再对同一角色执行`--update_instance_num`手动扩缩容。
+
+检查RBG扩缩容资源：
+
+```bash
+kubectl get rolebasedgroup,coordinatedpolicy,rolebasedgroupscalingadapter,hpa -n {namespace}
+kubectl describe hpa {rbg-name}-prefill-hpa -n {namespace}
+kubectl get rolebasedgroup {rbg-name} -n {namespace} -o jsonpath='{range .spec.roles[*]}{.name} replicas={.replicas}{"\n"}{end}'
+kubectl get roleinstance -n {namespace} -l rbg.workloads.x-k8s.io/group-name={rbg-name}
+```
+
+HPA的`REFERENCE`应指向`RoleBasedGroupScalingAdapter/{rbg-name}-{role}`。触发负载后，观察对应Role的`replicas`、RoleInstance和Pod数量是否在上下限内变化。
+
+### 验证Infer Operator自动扩缩容
 
 1. 查看 HPA 状态。
 
@@ -410,7 +494,7 @@ scalingPolicy:
 
 当前 Motor 还提供 `motor_prefill_utilization` 和 `motor_decode_utilization`，分别表示各角色的需求/供给比，计算式为 `demand_tps / (活跃实例数 × 单实例容量 capacity_tps)`，冒号原始名与无冒号别名同时输出。它们已按当前实例数归一化，HPA 应使用 `Value`，初始目标可设为 `0.8`。相关容量先验、标定状态与计算方式见 [监控接口](../../api/metrics_interfaces.md)。未标定时该利用率不会输出（容量为 0 或没有活跃实例时同样不输出），所以不要把“指标缺失”当作零负载；反过来，**指标非零也不代表当前有负载**：需求侧是 EMA，空闲时不会衰减到 0（实测空闲时该值可长期保持同一非零值），且标定早期容量估计偏小时利用率会虚高，可能在没有负载时也触发一次扩容、随后容量被抬高再按稳定窗口缩回。可先用 `motor:capacity_calibrated{role="prefill"}` 与 `motor:capacity_calibrated{role="decode"}` 确认对应角色是否已标定（1 为已标定）；该指标只在默认 `full` 视图输出，按角色请求的 `type=role` 视图里没有它，且按 role 标签成对出现，角色从未出现过时本身也缺失。
 
-除修改 YAML 模板外，也可在 `user_config.json` 顶层加入以下配置，由 deployer 生成策略；同一角色的该配置会覆盖模板中的 scalingPolicy，请选择一种方式维护：
+Infer Operator后端除修改YAML模板外，也可在`user_config.json`顶层加入以下配置，由deployer生成策略；同一角色的该配置会覆盖模板中的scalingPolicy，请选择一种方式维护。RBG后端仅使用该顶层配置，具体差异见[RBG自动扩缩容](#rbg自动扩缩容)。
 
 ```json
 {
@@ -433,16 +517,17 @@ scalingPolicy:
 
 **原因分析**
 
-1. 部署模式为 `multi_deployment` 或 `single_container`，不支持HPA。
-2. 仅修改本地模板，未执行[步骤 5](#step-4)生成与应用 YAML。
+1. 部署模式为`multi_deployment`或`single_container`，不支持HPA；或者RBG后端显式配置了空的`scaling_policy`。
+2. 仅修改本地模板，未执行[Infer Operator 配置步骤 2](#step-4)生成与应用 YAML。
 3. Infer Operator 版本过低或未正确创建 `scalingPolicy`。
 4. 直接 `kubectl patch` HPA 后被 Operator 回滚。
 
 **解决步骤**
 
-1. 确认服务运行于 `infer_service_set` 模式；不支持的模式改见[手动扩缩容](manual_scaling.md)。
-2. 执行[步骤 4](#step-4)生成并应用配置，检查 `output_yamls/infer_service.yaml` 中各角色是否包含 `scalingPolicy`。
-3. 检查 InferServiceSet 实际资源、Infer Operator 事件与日志。
+1. 确认服务运行于`infer_service_set`或`rbg`模式；不支持的模式改见[手动扩缩容](manual_scaling.md)。
+2. Infer Operator后端执行[配置步骤 2](#step-4)生成并应用配置，检查`output_yamls/infer_service.yaml`中各角色是否包含`scalingPolicy`。
+3. RBG后端检查顶层`scaling_policy`是否为空、对应Role的`replicas`是否大于0，并查看生成的HPA是否指向`RoleBasedGroupScalingAdapter`。
+4. 根据后端检查Infer Operator事件与日志，或RBG控制器、ScalingAdapter和CoordinatedPolicy事件。
 
 ### 应填哪个外部指标名
 

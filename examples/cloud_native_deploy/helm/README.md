@@ -47,31 +47,52 @@ chart). The controller defaults to `scheduler-plugins`; Motor's `rbg_config.sche
 is a separate setting. See the [RBG prerequisites](../../deployer/lib/rbg/README.md#前置条件).
 
 For the prerequisite installation commands and verification steps, see the
-[RBG prerequisite installation](../../deployer/lib/rbg/README.md#前置组件安装). In short:
+[RBG prerequisite installation](../../deployer/lib/rbg/README.md#前置组件安装). Run these commands from
+the Motor source root; use an unused absolute directory for `RBG_SOURCE_DIR`:
 
 ```bash
 # Volcano: install the MindCluster Volcano package and apply its YAML
 kubectl apply -f volcano-v{version}.yaml
 
 # RBG v0.8.0
-git clone https://github.com/sgl-project/rbg.git
-cd rbg && git checkout v0.8.0
-helm upgrade --install rbgs deploy/helm/rbgs \
+RBG_SOURCE_DIR=/tmp/rbg-v0.8.0
+git clone --branch v0.8.0 --single-branch https://github.com/sgl-project/rbg.git "$RBG_SOURCE_DIR"
+helm upgrade --install rbgs "$RBG_SOURCE_DIR/deploy/helm/rbgs" \
   --create-namespace --namespace rbgs-system \
   --set controller.features.gangScheduling.schedulerName=volcano --wait
 ```
 
-Keep one RBG per namespace. RAS (`ras_monitor`) currently rebuilds the whole instance on failure;
-deleting a single Pod only recreates that Pod, not the whole instance. See the
+Keep one RBG per namespace. Instance-linked rebuilds use the RBG `restartPolicy`. RAS (`ras_monitor`)
+still deletes and redeploys the whole service through the legacy `delete.sh`, without the data-PVC
+retention semantics of the RBG cleanup path, so it is not recommended for RBG recovery. Deleting a
+single Pod only recreates that Pod, not the whole instance. See the
 [ras_monitor guide](../../features/fault_tolerance/ras_monitor/readme.md).
 
 The RBG values sample uses A3 (`800I_A3`), one Pod per P/D instance, and 16 NPUs per Pod.
+This A3 sample is not the A5 DeepSeek-V4.1-Flash configuration. For A5, use
+`model_configs/vllm/models/deepseek_v4.1_flash/A5/`: `hardware_type: Ascend950`, P/D 1/1, one Pod
+per instance, 8 NPUs per Pod, P/D DP×TP×PP of 8×1×1, KV memcache inprocess, and P/D
+`HCCL_OP_EXPANSION_MODE=CCU_SCHED`. Do not only change `hardware_type` in the A3 sample.
 For A2/A5 or another model, use its matching configuration inside the `userConfig` JSON string
 and supply the corresponding `envConfig`; follow the
-[A2/A3/A5 field guide](../../deployer/lib/rbg/README.md#a2a3a5-配置调整).
+[A2/A3/A5 field guide](../../deployer/lib/rbg/README.md#a2a3a5-配置调整) and the
+[A5 parameter table](../../deployer/lib/rbg/README.md#a5-deepseek-v41-flash-部署参数).
 Check the [scheduling limits](../../deployer/lib/rbg/README.md#调度规格限制): `*-sp` supernode affinity
 is rejected, and default gang scheduling rejects different hardware policy combinations across active roles.
-That section also explains the RBG queue annotation mismatch affecting `scheduling_queue`.
+MindCluster supports A3/A5 supernode scheduling; these restrictions belong to the current Motor RBG
+adapter. A3 `sp-block` defines logical supernode blocks, while the default A5 `chip8-node8` selects a
+node-local interconnect policy. Matching P/D annotations do not prove that the hardware policy is
+active. A shared real supernode member selector can constrain placement, but does not complete the
+scheduling integration. Check the A2 multi-Pod gang count and A3 MultiConnector issues in the
+[hardware guide](../../deployer/lib/rbg/README.md#a2a3a5-配置调整) as well.
+`motor_deploy_config.scheduling_queue` is written to the RBG annotation
+`rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-queue`, which RBG v0.8.0 reads when gang
+scheduling is enabled. Verify the queue exists and `scheduler_name` is `volcano`; changing the
+RBG queue requires redeployment.
+RBG also rejects P2D and container snapshots. See the
+[complete rbg_config example](../../deployer/lib/rbg/README.md#完整-rbg_config-示例) for fields,
+defaults, and update restrictions, and the [acceptance checks](../../deployer/lib/rbg/README.md#部署后验收)
+for workload readiness and inference after resource submission.
 
 ## Scale and cleanup
 
@@ -136,10 +157,11 @@ omitted fields are unchanged. The Job validates with a server-side dry-run, appl
 guarded JSON Patch, and verifies the result. It does not redeploy engines or modify
 CoordinatedPolicy. The deployed mode is read from `motor-config`.
 
-The chart RBAC and `k8s/clusterrole.yaml` must be updated with the RBG implementation.
-Older versions contain no RBG or HPA rules; adding only RBG `list` is insufficient.
-Check all RBG, CoordinatedPolicy, Adapter, HPA, and runtime resource permissions against the
-[deployer RBAC list](../../deployer/lib/rbg/README.md#部署账号-rbac) before deploying or updating policies.
+Use chart RBAC or `k8s/clusterrole.yaml` from the same integrated RBG code version as the deployer
+image, and check the full [deployer RBAC list](../../deployer/lib/rbg/README.md#部署账号-rbac).
+Do not assume the selected branch already contains the RBG and HPA rules. Adding only RBG `list`
+is insufficient; check RBG, CoordinatedPolicy, Adapter, HPA, and runtime resource permissions
+before deploying or updating policies.
 
 The Job runs `examples/deployer/deploy.py --update_scaling_policy /policy/policy.json`
 from the deployer image. The ConfigMap carries only `policy.json`; later policy

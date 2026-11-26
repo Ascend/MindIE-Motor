@@ -47,8 +47,10 @@ make buildx-cloud-native-deployer TAG=latest
 
 可选配置项：
 
-- `motor_deploy_config.scheduling_queue`：InferServiceSet 模式下指定 Volcano 队列；RBG 存在注解键适配差异，
-  见 [调度规格限制](../deployer/lib/rbg/README.md#调度规格限制)。
+- `motor_deploy_config.scheduling_queue`：指定 Volcano 队列。Motor 将其写入 RBG 注解
+  `rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-queue`，与 RBG v0.8.0 读取的键一致，
+  启用组调度时作用于 RBG 组队列。使用前需确认队列存在且 `scheduler_name` 为 `volcano`；RBG 模式下
+  更改队列需要清理后重新部署。
 - `motor_deploy_config.coordinator_service_name`：覆盖默认的对外推理 Service 名称。
 - `motor_deploy_config.coordinator_infer_node_port`：覆盖对外推理 Service 的 NodePort。配置 `"-"` 时由 Kubernetes 自动分配，字段缺省时保留模板中的 `nodePort`，当前模板默认值为 `31015`。
 - `motor_deploy_config.encode_node_selector`、`motor_deploy_config.prefill_node_selector` 和 `motor_deploy_config.decode_node_selector`：分别控制 Encode / Prefill / Decode 的节点调度标签。
@@ -114,34 +116,49 @@ helm uninstall motor --namespace mindie
 完整前置条件见 [RBG 配置说明](../deployer/lib/rbg/README.md#前置条件)。
 
 Volcano 和 RBG v0.8.0 控制器的安装命令、版本要求和验证步骤见
-[RBG 前置组件安装](../deployer/lib/rbg/README.md#前置组件安装)。最小步骤如下：
+[RBG 前置组件安装](../deployer/lib/rbg/README.md#前置组件安装)。以下命令从 Motor 源码根目录执行，
+`RBG_SOURCE_DIR` 使用尚未存在的绝对目录，安装过程不切换当前目录：
 
 ```bash
 # Volcano：按 MindCluster Volcano 安装指导准备软件包和镜像，然后执行
 kubectl apply -f volcano-v{version}.yaml
 
 # RBG v0.8.0
-git clone https://github.com/sgl-project/rbg.git
-cd rbg && git checkout v0.8.0
-helm upgrade --install rbgs deploy/helm/rbgs \
+RBG_SOURCE_DIR=/tmp/rbg-v0.8.0
+git clone --branch v0.8.0 --single-branch https://github.com/sgl-project/rbg.git "$RBG_SOURCE_DIR"
+helm upgrade --install rbgs "$RBG_SOURCE_DIR/deploy/helm/rbgs" \
   --create-namespace --namespace rbgs-system \
   --set controller.features.gangScheduling.schedulerName=volcano --wait
 ```
 
 更完整的安装包准备、单机 `useClusterInfoManager=false` 配置和验证命令见上述链接。
 
-同一 namespace 只部署一套 RBG。RAS（`ras_monitor`）当前按整实例重建处理；`kubectl delete pod`
-只补建单个 Pod，不能替代整实例重建。详见 [ras_monitor 说明](../features/fault_tolerance/ras_monitor/readme.md)。
+同一 namespace 只部署一套 RBG。实例联动重建由 RBG 的 `restartPolicy` 实现；RAS（`ras_monitor`）
+仍通过旧 `delete.sh` 删除并重新部署整套服务，不具备 RBG 清理流程的数据 PVC 保留语义，
+不推荐作为 RBG 的实例恢复入口。`kubectl delete pod` 只补建单个 Pod，也不能替代整实例重建。
+详见 [ras_monitor 说明](../features/fault_tolerance/ras_monitor/readme.md)。
 
 复制 RBG values 后，仍需设置 deployer 镜像、`userConfig` 中的 Motor 运行镜像、模型路径、`job_id`、
 实例数、NPU 数量、硬件类型和节点标签，并按实际环境填写 `envConfig`。示例中的空运行镜像不能直接用于部署。
 
 RBG 示例使用 `hardware_type: "800I_A3"`，P/D 均为每实例单 Pod、每 Pod 16 NPU。
+该 A3 示例不是 A5 DeepSeek-V4.1-Flash 配置。使用 A5 时应采用
+`model_configs/vllm/models/deepseek_v4.1_flash/A5/`：`hardware_type: Ascend950`、P/D 1/1、
+每实例单 Pod、每 Pod 8 NPU、P/D 的 DP×TP×PP 为 8×1×1、KV memcache inprocess、P/D
+`HCCL_OP_EXPANSION_MODE=CCU_SCHED`，不能只把 A3 示例的 `hardware_type` 改成 A5。
 使用 A2/A5 或其他模型时，应将内嵌 JSON 换为对应模型、硬件的配置，再按
-[A2/A3/A5 配置调整](../deployer/lib/rbg/README.md#a2a3a5-配置调整)修改 RBG 字段。
+[A2/A3/A5 配置调整](../deployer/lib/rbg/README.md#a2a3a5-配置调整)与
+[A5 参数表](../deployer/lib/rbg/README.md#a5-deepseek-v41-flash-部署参数)修改 RBG 字段。
 Helm 修改 `userConfig` / `envConfig`；纯 kubectl 修改 `k8s/configmap-user-config-rbg.yaml` 中
 `data` 下的 `user_config.json` / `env.json`。当前适配器不支持 `*-sp` 超节点亲和，默认组调度也不支持
-活动角色使用不同的硬件调度策略组合，迁移前需检查 [调度规格限制](../deployer/lib/rbg/README.md#调度规格限制)。
+活动角色使用不同的硬件调度策略组合。MindCluster 支持 A3/A5 超节点调度，上述限制属于当前 Motor
+RBG 适配器。A3 的 `sp-block` 定义逻辑超节点块，A5 默认 `chip8-node8` 则是节点内互联策略；
+P/D 注解一致不能证明硬件调度已经生效。相同的真实超节点成员 selector 可以限制节点范围，
+但不能补齐调度接入。迁移前需检查 [调度规格限制](../deployer/lib/rbg/README.md#调度规格限制)，
+并核对 A2 多 Pod 实例的 Gang 计数和 A3 MultiConnector 配置问题。
+RBG 还不支持 P2D 和容器快照。[完整 rbg_config 示例](../deployer/lib/rbg/README.md#完整-rbg_config-示例)
+说明各字段、默认值和更新限制；资源提交后还需按 [部署后验收](../deployer/lib/rbg/README.md#部署后验收)
+确认工作负载就绪和实际推理成功。
 
 部署前须配置推理 TLS 与管理面 API Key，并保留部署和扩缩容 Job 的安全预检：
 
@@ -165,10 +182,10 @@ HPA 的启用、保留与关闭见 [RBG 扩缩容说明](../deployer/lib/rbg/REA
 因此清理时需使用 RBG values 文件（或保留 `deploy_mode: rbg` 的 values）。走纯 kubectl 路径时，需在
 `k8s/cleanup-job.yaml` 中设置 `MOTOR_DEPLOY_MODE: "rbg"`；同时在 ConfigMap 中配置
 相同的安全字段，生产环境的 `k8s/job.yaml` 与 `k8s/scale-job.yaml` 不携带 `--skip-check`。
-`k8s/clusterrole.yaml` 或 Helm RBAC 需随 RBG 实现同步更新，并按
-[部署账号 RBAC](../deployer/lib/rbg/README.md#部署账号-rbac)核对完整权限。
-旧版不含 RBG 和 HPA 规则，不能仅补 RBG `list`；部署及策略更新前需检查
-RBG、CoordinatedPolicy、Adapter、HPA 和运行时资源的全部所需权限。
+`k8s/clusterrole.yaml` 或 Helm RBAC 应与 deployer 镜像使用同一配套 RBG 实现版本，并按
+[部署账号 RBAC](../deployer/lib/rbg/README.md#部署账号-rbac)核对完整权限；不能假定所用分支已包含
+RBG 和 HPA 规则，也不能仅补 RBG `list`。部署及策略更新前需检查 RBG、CoordinatedPolicy、Adapter、
+HPA 和运行时资源的全部所需权限。
 
 RBG 的配置字段、前提条件与限制见 [Deployer 说明](../deployer/README.md) 的「RBG（RoleBasedGroup）模式」。
 

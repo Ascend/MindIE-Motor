@@ -48,8 +48,10 @@ Keep the pre-check enabled and remove any saved `--skip-check` from Helm values 
 
 Optional:
 
-- `motor_deploy_config.scheduling_queue` selects the Volcano queue in InferServiceSet mode;
-  RBG has an annotation mismatch described in the [scheduling limits](../deployer/lib/rbg/README.md#调度规格限制).
+- `motor_deploy_config.scheduling_queue` selects the Volcano queue. Motor writes it to the RBG
+  annotation `rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-queue`, which RBG v0.8.0 reads,
+  so it controls the RBG group queue when gang scheduling is enabled. Verify the queue exists and
+  `scheduler_name` is `volcano`. In RBG mode, changing the queue requires redeployment.
 - Set `motor_deploy_config.coordinator_service_name` to override the external inference Service name.
 - Set `motor_deploy_config.coordinator_infer_node_port` to override the inference Service NodePort. Use `"-"` for Kubernetes allocation; omitting it keeps the `nodePort` configured in the template, which currently defaults to `31015`.
 - Set `motor_deploy_config.encode_node_selector`, `motor_deploy_config.prefill_node_selector`, and `motor_deploy_config.decode_node_selector` to control Encode/Prefill/Decode node placement separately.
@@ -95,22 +97,25 @@ The controller defaults to `scheduler-plugins`; setting Motor's `rbg_config.sche
 not configure the controller. See the [RBG prerequisites](../deployer/lib/rbg/README.md#前置条件).
 
 For the prerequisite installation commands and verification steps, see the
-[RBG prerequisite installation](../deployer/lib/rbg/README.md#前置组件安装). In short:
+[RBG prerequisite installation](../deployer/lib/rbg/README.md#前置组件安装). Run these commands from
+the Motor source root; use an unused absolute directory for `RBG_SOURCE_DIR`:
 
 ```bash
 # Volcano: install the MindCluster Volcano package and apply its YAML
 kubectl apply -f volcano-v{version}.yaml
 
 # RBG v0.8.0
-git clone https://github.com/sgl-project/rbg.git
-cd rbg && git checkout v0.8.0
-helm upgrade --install rbgs deploy/helm/rbgs \
+RBG_SOURCE_DIR=/tmp/rbg-v0.8.0
+git clone --branch v0.8.0 --single-branch https://github.com/sgl-project/rbg.git "$RBG_SOURCE_DIR"
+helm upgrade --install rbgs "$RBG_SOURCE_DIR/deploy/helm/rbgs" \
   --create-namespace --namespace rbgs-system \
   --set controller.features.gangScheduling.schedulerName=volcano --wait
 ```
 
-Keep one RBG per namespace. RAS (`ras_monitor`) currently rebuilds the whole instance on failure;
-deleting a single Pod only recreates that Pod, not the whole instance. See the
+Keep one RBG per namespace. Instance-linked rebuilds use the RBG `restartPolicy`. RAS (`ras_monitor`)
+still deletes and redeploys the whole service through the legacy `delete.sh`, without the data-PVC
+retention semantics of the RBG cleanup path, so it is not recommended for RBG recovery. Deleting a
+single Pod only recreates that Pod, not the whole instance. See the
 [ras_monitor guide](../features/fault_tolerance/ras_monitor/readme.md).
 
 After copying the RBG values, set the deployer image, Motor runtime image in `userConfig`, model
@@ -118,12 +123,27 @@ paths, `job_id`, instance counts, NPU counts, hardware type, node selectors, and
 your environment. The sample's empty runtime image must be filled in before deployment.
 
 The RBG samples use `hardware_type: "800I_A3"`, one Pod per P/D instance, and 16 NPUs per Pod.
+This A3 sample is not the A5 DeepSeek-V4.1-Flash configuration. For A5, use
+`model_configs/vllm/models/deepseek_v4.1_flash/A5/`: `hardware_type: Ascend950`, P/D 1/1, one Pod
+per instance, 8 NPUs per Pod, P/D DP×TP×PP of 8×1×1, KV memcache inprocess, and P/D
+`HCCL_OP_EXPANSION_MODE=CCU_SCHED`. Do not only change `hardware_type` in the A3 sample.
 For A2/A5 or another model, replace the embedded JSON with the matching model/hardware configuration,
-then apply the [A2/A3/A5 field changes](../deployer/lib/rbg/README.md#a2a3a5-配置调整).
+then apply the [A2/A3/A5 field changes](../deployer/lib/rbg/README.md#a2a3a5-配置调整) and the
+[A5 parameter table](../deployer/lib/rbg/README.md#a5-deepseek-v41-flash-部署参数).
 Edit `userConfig` and `envConfig` for Helm; for plain kubectl, edit `data.user_config.json` and
 `data.env.json` in `k8s/configmap-user-config-rbg.yaml`. The adapter rejects `*-sp` supernode affinity,
-and default gang scheduling rejects different hardware policy combinations across active roles;
-see the [scheduling limits](../deployer/lib/rbg/README.md#调度规格限制) before reusing an InferServiceSet config.
+and default gang scheduling rejects different hardware policy combinations across active roles.
+MindCluster supports A3/A5 supernode scheduling; the restrictions above belong to the current Motor
+RBG adapter. A3 `sp-block` defines logical supernode blocks, while the default A5 `chip8-node8`
+selects a node-local interconnect policy. Matching P/D annotations do not prove that the hardware
+policy is active. A shared real supernode member selector can constrain placement, but does not
+complete the scheduling integration. Review the
+[scheduling limits](../deployer/lib/rbg/README.md#调度规格限制), including the A2 multi-Pod gang count
+and A3 MultiConnector configuration issues, before migration.
+RBG also rejects P2D and container snapshots. The
+[complete rbg_config example](../deployer/lib/rbg/README.md#完整-rbg_config-示例) explains fields,
+defaults, and update restrictions; the [acceptance checks](../deployer/lib/rbg/README.md#部署后验收)
+cover workload readiness and inference after resource submission.
 
 Configure inference TLS and a management API Key before deploying; keep the security pre-check enabled:
 
@@ -149,10 +169,11 @@ that keeps `deploy_mode: rbg`). For the plain kubectl path, set `MOTOR_DEPLOY_MO
 `k8s/cleanup-job.yaml` before applying it. Uninstall the Helm release after cleanup completes.
 Also configure the same security settings in the ConfigMap for the plain kubectl path, and leave
 `--skip-check` out of `k8s/job.yaml` and `k8s/scale-job.yaml` in production.
-Update `k8s/clusterrole.yaml` or the Helm RBAC with the RBG implementation and check the full
-[deployer permission list](../deployer/lib/rbg/README.md#部署账号-rbac). Older versions contain no
-RBG or HPA rules; adding only RBG `list` is insufficient. Check RBG, CoordinatedPolicy, Adapter,
-HPA, and runtime resource permissions before deploying or updating policies.
+Use `k8s/clusterrole.yaml` or Helm RBAC from the same integrated RBG code version as the deployer
+image, and check the full [deployer permission list](../deployer/lib/rbg/README.md#部署账号-rbac).
+Do not assume the selected branch already contains the RBG and HPA rules. Adding only RBG `list`
+is insufficient; check RBG, CoordinatedPolicy, Adapter, HPA, and runtime resource permissions before
+deploying or updating policies.
 
 See the RBG section in the [deployer README](../deployer/README.md) for configuration fields,
 prerequisites, and limitations.
