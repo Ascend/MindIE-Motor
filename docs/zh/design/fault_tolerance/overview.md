@@ -183,11 +183,11 @@ scale_p2d()：选择一个 P 实例，释放其占用的节点资源
 
 ## 引擎软件故障快恢
 
-三种快恢共用 `EngineFastRecoveryStrategy` 的调度暂停、活动 DP 实时校验、NodeManager 并发广播、同轮 request_id 和状态轮询。`recovery_planner` 按硬件证据选择具体策略，不通过最高故障码单值猜测原因。
+三种快恢共用 `EngineFastRecoveryStrategy` 的调度暂停、活动 DP 实时校验、NodeManager 并发广播、同轮 request_id 和状态轮询。`engine_recovery/planner.py` 按硬件证据选择具体策略，不通过最高故障码单值猜测原因。
 
-| 分支 | 进入条件（所有活动 DP 均 UNHEALTHY 后下发） | retry 参数 | 成功与失败 |
+| 分支 | 进入条件（所有活动 DP 均 UNHEALTHY 后下发） | 恢复参数 | 成功与失败 |
 |------|------|------|------|
-| HBM UCE | 软件 UNHEALTHY + 本实例设备的 `0x80E01801` | 单次 `abort=true`，不支持 resume | retry 后无论成功失败都等待所在节点全部设备 1801 清除；retry 成功且清码成功才结束；retry 失败但清码成功转 relaunch；清码超时/证据缺失转重配置 |
+| HBM UCE | 软件 UNHEALTHY + 本实例设备的 `0x80E01801` | 单次 `abort=true`，不支持 resume | 恢复后无论成功失败都等待所在节点全部设备 1801 清除；恢复成功且清码成功才结束；恢复失败但清码成功转 relaunch；清码超时/证据缺失转重配置 |
 | 灵衢 token 重推 | 软件 UNHEALTHY + `0x00F1FEF5` 或 `0x08520003` | 先不携带 abort，明确失败后 `abort=true` | 完全复用无故障码快恢流程；失败转 relaunch，不等待灵衢清码 |
 | 无故障码快恢 | 软件 UNHEALTHY，且未命中 HBM/灵衢专用码，也没有严重硬件阻断 | 第一轮不携带 abort；全 DP 明确失败后第二轮 `abort=true` | 全部 DP HEALTHY 即成功；再次失败、DEAD、失联、超时或部分下发失败转 relaunch；硬件证据失效则重配置 |
 
@@ -199,7 +199,7 @@ scale_p2d()：选择一个 P 实例，释放其占用的节点资源
 
 每轮引擎恢复使用 `recovery_round_timeout_sec=60` 秒；HBM 独立清码阶段使用 `hbm_uce_clearance_timeout_sec=60` 秒，成功或失败均进入该阶段。HBM 清码成功后的 relaunch 复用已有引擎重拉策略；关闭 `enable_engine_relaunch` 时转重配置。默认整体保护预算仍为 870 秒，按启用分支的最坏耗时计算：收集 + max(无故障码快恢两轮、HBM 一轮+清码、灵衢两轮) + max(组装、relaunch) + 30 秒余量。
 
-无故障码快恢和 token 重推共用两轮 retry 与 relaunch 回退，保留独立入口和开关。
+无故障码快恢和 token 重推共用最多两轮恢复与引擎重拉起回退，保留独立入口和开关。
 关闭 `enable_engine_relaunch` 则失败直接重配置。relaunch 失败、加载期间或稳定观察期内再次软件报错
 均转重配置，不重新进入快恢。全部引擎 NORMAL 后连续健康 `engine_relaunch_stability_sec`（默认 60 秒）
 才解除保护；探测失败会重新计时。

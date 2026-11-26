@@ -95,6 +95,7 @@ nav:
           - ScaleP2D 故障恢复: design/fault_tolerance/scale_p2d.md
           - FaultManager 设计: design/fault_tolerance/fault_manager.md
           - HBM UCE 原地快恢: design/fault_tolerance/hbm_uce_recover.md
+          - Token 重推快恢: design/fault_tolerance/token_reinference.md
           - 引擎快恢执行策略: design/fault_tolerance/fast_recovery_strategy.md
           - 主备倒换: design/fault_tolerance/standby.md
           - 精度检测: design/fault_tolerance/precision_detection.md

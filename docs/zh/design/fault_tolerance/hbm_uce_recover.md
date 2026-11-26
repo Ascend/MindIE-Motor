@@ -10,8 +10,8 @@ HBM UCE 快恢用于 HBM 多 bit 不可纠正错误（`0x80E01801`）场景：�
 
 | 模块 | 职责 |
 |------|------|
-| Motor / Controller | 识别 1801 与软件 UNHEALTHY，暂停调度、下发一轮 retry，确认引擎恢复与清码结果，失败时转引擎重拉起或实例重配置 |
-| Motor / NodeManager | 汇总各 DP 的引擎状态并上报，把 retry 命令广播给本地引擎，透传状态与错误 |
+| Motor / Controller | 识别 1801 与软件 UNHEALTHY，暂停调度、下发恢复命令，确认引擎恢复与清码结果，失败时转引擎重拉起或实例重配置 |
+| Motor / NodeManager | 汇总各 DP 的引擎状态并上报，向本地引擎广播恢复命令，透传状态与错误 |
 | 引擎 FT 框架 | 感知 Worker 异常、暂停调度、保存快照，组织 Worker 恢复和跨 DP 投票 |
 | Ascend Worker 恢复模块 | 停止设备、分类 UCE 地址、协商清理计划，恢复设备与通信，清零故障 KV block |
 | KV 管理与调度 | 维护 KV 地址归属、block 引用和前缀缓存，保证恢复后不复用脏数据 |
@@ -20,9 +20,19 @@ HBM UCE 快恢用于 HBM 多 bit 不可纠正错误（`0x80E01801`）场景：�
 
 ## 故障恢复流程
 
-<p align="center" markdown="1">
-  <img alt="快恢框架图" src="../../imgs/hbm_uce_recover_framework.png" width="70%" />
-</p>
+```mermaid
+flowchart LR
+    H[驱动与固件告警] --> D[DevicePlugin / ConfigMap]
+    D --> C[Controller / FaultManager]
+    C -->|恢复命令| N[NodeManager]
+    N -->|状态上报| C
+    N -->|恢复命令| E[EngineCore]
+    E -->|引擎状态| N
+    E -->|恢复协调与 KV 清理计划| W[Ascend Worker]
+    W -->|恢复结果| E
+    W --> R[底层设备与内存恢复]
+    E --> K[Scheduler / Connector 状态清理]
+```
 
 <p align="center"><b>图1 快恢框架图</b></p>
 
@@ -42,8 +52,8 @@ sequenceDiagram
     N->>C: ③ 软件故障上报
     H-->>C: ④ 硬件告警 1801（与软件故障联合触发）
     Note over C: 暂停新调度，保留在途连接，等待全部 DP UNHEALTHY
-    C->>N: ⑤ retry abort=true（同轮统一 request_id）
-    N->>E: ⑥ 透传 retry
+    C->>N: ⑤ 恢复命令 abort=true（同轮统一 request_id）
+    N->>E: ⑥ 透传恢复命令
     Note over E: 准备同轮恢复参数，重建 EngineCore DP Gloo 通信组
     E->>W: ⑦ 恢复命令，协调 KV 清理计划
     W->>W: ⑧ stop、UCE 分类及安全化、计划共识、设备与通信恢复、清零并同步
@@ -62,13 +72,13 @@ sequenceDiagram
 <p align="center"><b>图2 HBM UCE 快恢时序图</b></p>
 
 1. **感知故障**：Worker 捕获 HBM UCE 后上报 EngineCore，EngineCore 暂停调度并进入 UNHEALTHY，NodeManager 把各 DP 状态上报 Controller；驱动告警 1801 经 DevicePlugin 写入 ConfigMap。两条证据到齐后进入 HBM 分支。
-2. **下发 retry**：首个软件故障上报时立即暂停新调度、保留在途连接；全部活动 DP 均为 UNHEALTHY 后，Motor 向实例所有 NodeManager 下发一轮 `abort=true` 的 retry，本轮共用一个 `request_id`。
+2. **下发恢复命令**：首个软件故障上报时立即暂停新调度、保留在途连接；全部活动 DP 均为 UNHEALTHY 后，Motor 向实例所有 NodeManager 下发设置 `abort=true` 的恢复命令，本轮共用一个 `request_id`。
 3. **Worker 恢复**：Worker 停止设备执行，查询并分类 UCE 地址，确认故障范围都属于已登记的 KV 存储；各 DP 协商出一致的故障 block 清理计划后，恢复设备、通信组与软件状态，并按计划清零故障 block。
 4. **清理 KV 状态**：EngineCore 排空旧 batch 输出，补收晚到的 KV 传输结果，清理相关请求、引用与前缀缓存，保留健康缓存。
 5. **全 DP 投票**：全部参与 DP 投票通过后，EngineCore 发布 HEALTHY，经 NodeManager 返回 Controller；HEALTHY 若携带轮次标识，必须属于本轮。
-6. **判定结束**：retry 结束后单独等待实例所在节点全部设备的 1801 清除。引擎恢复且清码成功 → 结束；引擎失败但清码成功 → 引擎重拉起；清码超时或证据缺失 → 实例重配置。
+6. **判定结束**：恢复结束后单独等待实例所在节点全部设备的 1801 清除。引擎恢复且清码成功 → 结束；引擎失败但清码成功 → 引擎重拉起；清码超时或证据缺失 → 实例重配置。
 
-本轮覆盖实例的全部参与 DP，而不是最先报错的 Worker 或单张故障卡。HBM 只下发一轮 abort retry，失败不追加第二轮；1801 与其他可恢复故障码共存时优先 HBM（选择规则见策略文档）。
+本轮覆盖实例的全部参与 DP，而不是最先报错的 Worker 或单张故障卡。HBM 终止在途请求并执行单轮恢复，失败不追加第二轮；1801 与其他可恢复故障码共存时优先 HBM（选择规则见策略文档）。
 
 ## 引擎内部处理
 
@@ -104,7 +114,7 @@ KV cache 通过虚拟地址访问 HBM。UCE 发生后，引擎停止设备、查
 | 集群策略 | 恢复窗口内集群不会抢先驱逐业务 Pod | 先核对故障调度策略，不能靠隐藏故障码规避驱逐 |
 | 请求语义 | Motor 保留在途连接，是否终止或续推由引擎决定 | HBM 单轮 abort 会终止请求，不能承诺无损续推 |
 
-部署启用 FT 与快恢时，建议使用 `fault-scheduling: external-force-pod-failed` 协调集群与 Motor 的恢复顺序；测试中人为调整故障频次策略不属于生产能力前提。恢复期间 Motor 只暂停新调度，保留实例成员、工作量和 HTTP 流；是否续推由引擎的 `resume_requests_after_recovery` 配置决定，检测到 HBM 污染时仍会终止在途请求。
+部署启用 FT 与快恢时，建议使用 `fault-scheduling: external-force-pod-failed` 协调集群与 Motor 的恢复顺序；测试中人为调整故障频次策略不属于生产能力前提。恢复期间 Motor 只暂停新调度，保留实例成员、工作量和 HTTP 流；是否续推由引擎的 `request_failure_policy="recompute"` 配置决定，检测到 HBM 污染时仍会终止在途请求。
 
 ## 超时与恢复边界
 
@@ -114,12 +124,12 @@ KV cache 通过虚拟地址访问 HBM。UCE 发生后，引擎停止设备、查
 | `enable_hbm_uce_recovery` | `true` | HBM 分支开关 |
 | `hbm_uce_clearance_timeout_sec` | 60 秒 | 快恢结束后独立等待 1801 清除，引擎恢复失败也等待 |
 | `fault_collection_timeout_seconds` | 120 秒 | 软件故障收集窗口，状态到齐立即选择策略 |
-| `recovery_round_timeout_sec` | 每轮 60 秒 | 一轮 retry 后等待全部 DP HEALTHY，清码单独计时 |
+| `recovery_round_timeout_sec` | 每轮 60 秒 | 单轮等待全部 DP HEALTHY，清码单独计时 |
 | `recovery_poll_interval_sec` | 1 秒 | 状态轮询间隔 |
 
 FaultManager 从首个 UNHEALTHY 或 DEAD 上报开始统一计时，后续上报不重置窗口。全部活动 DP 为 UNHEALTHY 时选择快恢；存在 DEAD 且其余活动 DP 全部 UNHEALTHY 时选择 DP 缩容（需开启）；120 秒内收不齐则回退重配置。快恢下发前只做一次实时校验，不再额外等待。
 
-HBM 只有一轮 abort retry，最多等 60 秒；其后单独等清码，默认 60 秒。失败且清码成功才转引擎重拉起（需开启 `enable_engine_relaunch`），清码失败或重拉起失败则重配置。
+HBM 终止在途请求并执行单轮恢复，最多等 60 秒；其后单独等清码，默认 60 秒。失败且清码成功才转引擎重拉起（需开启 `enable_engine_relaunch`），清码失败或重拉起失败则重配置。
 
 Motor 按“收集窗口 + 启用分支最坏耗时 + max(实例组装、relaunch) + 30 秒余量”计算整体保护窗口，默认 870 秒。该窗口用于抑制恢复期间的健康探测自杀，不是单轮等待 HEALTHY 的超时，也不保证请求连接一定存活到窗口结束；部署时引擎的 `engine_recovery_timeout_sec` 会被提高到不低于该预算。
 
@@ -137,9 +147,9 @@ Motor 按“收集窗口 + 启用分支最坏耗时 + max(实例组装、relaunc
 
 ## 代码入口
 
-- `motor/controller/fault_tolerance/recovery_planner.py`：快恢策略选择。
-- `motor/controller/fault_tolerance/strategy/fast_recovery.py`：公共下发与状态轮询，以及 HBM / Token 重推 / 无故障码三种策略。
-- `motor/controller/fault_tolerance/serving_overlay.py`：暂停调度、保留在途连接。
+- `motor/controller/fault_tolerance/engine_recovery/planner.py`：快恢策略选择。
+- `motor/controller/fault_tolerance/strategy/engine_ft/fast_recovery.py`：公共下发与状态轮询，以及 HBM / Token 重推 / 无故障码三种策略。
+- `motor/controller/fault_tolerance/engine_recovery/serving.py`：暂停调度、保留在途连接。
 - `motor/node_manager/core/engine_ft_manager.py`：引擎 FT 状态上报与健康探测保护。
 - `motor/config/config_utils.py`：整体恢复保护预算。
 - vLLM `vllm/v1/fault_tolerance/engine_core_sentinel.py`：故障上报、恢复主流程、batch 排空与跨 DP 投票。
@@ -147,6 +157,7 @@ Motor 按“收集窗口 + 启用分支最坏耗时 + max(实例组装、relaunc
 
 ## 相关设计
 
+- [Token 重推快恢设计](token_reinference.md)
 - [引擎快恢执行策略](fast_recovery_strategy.md)
 - [可靠性能力概览](overview.md)
 - [FaultManager 设计](fault_manager.md)

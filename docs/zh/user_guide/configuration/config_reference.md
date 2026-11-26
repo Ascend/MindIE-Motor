@@ -963,6 +963,13 @@ Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两
 `fault_tolerance_config.enable_fault_tolerance` 只是 NodeManager 引擎状态轮询开关，检测到
 `engine_config.enable_fault_tolerance=true` 时会自动开启，无需用户重复配置。
 
+Token 重推使用 vLLM 原生请求恢复策略：在
+`motor_engine_prefill_config.engine_config.fault_tolerance_config` 或
+`motor_engine_decode_config.engine_config.fault_tolerance_config` 中设置
+`"request_failure_policy": "recompute"`，并在对应 `engine_config` 中开启
+`enable_fault_tolerance`。该参数不属于 Controller 的 `fault_tolerance_config`，也不属于
+NodeManager 的故障轮询配置。完整示例见[Token 重推快恢设计](../../design/fault_tolerance/token_reinference.md)。
+
 ```json
 "motor_engine_prefill_config": {
   "engine_type": "vllm",
