@@ -164,8 +164,8 @@
     <td>MiniMax-M3.1-Flash</td>
     <td align="center"><a href="../../../../model_configs/vllm/models/minimax_m3.1_flash/A2">A2</a></td>
     <td align="center"><a href="../../../../model_configs/vllm/models/minimax_m3.1_flash/A3">A3</a></td>
-    <td align="center">A5</td>
-    <td align="center">A2已完成，A3已完成</td>
+    <td align="center"><a href="../../../../model_configs/vllm/models/minimax_m3.1_flash/A5">A5</a></td>
+    <td align="center">A2已完成，A3已完成，A5已完成</td>
   </tr>
   <tr>
     <td>Qwen3.8-Flash-Next</td>
@@ -333,7 +333,7 @@ vim ./config/env.json
         <tr><td>DeepSeek-V3.1</td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v3.1/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v3.1/A3">A3</a></td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v3.1/A5">A5</a></td></tr>
         <tr><td>DeepSeek-V4-Pro</td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_pro/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_pro/A3">A3</a></td><td align="center"><a href="../../../../model_configs/vllm/models/deepseek_v4_pro/A5">A5</a></td></tr>
         <tr><td>GLM-5</td><td align="center"><a href="../../../../model_configs/vllm/models/glm_5/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/glm_5/A3">A3</a></td><td align="center"><a href="../../../../model_configs/vllm/models/glm_5/A5">A5</a></td></tr>
-        <tr><td>MiniMax-M3.1-Flash</td><td align="center"><a href="../../../../model_configs/vllm/models/minimax_m3.1_flash/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/minimax_m3.1_flash/A3">A3</a></td><td align="center">A5</td></tr>
+        <tr><td>MiniMax-M3.1-Flash</td><td align="center"><a href="../../../../model_configs/vllm/models/minimax_m3.1_flash/A2">A2</a></td><td align="center"><a href="../../../../model_configs/vllm/models/minimax_m3.1_flash/A3">A3</a></td><td align="center"><a href="../../../../model_configs/vllm/models/minimax_m3.1_flash/A5">A5</a></td></tr>
         <tr><td>Qwen3.8-Flash-Next</td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen3.8_flash_next/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen3.8_flash_next/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen3.8_flash_next/A5">A5</a></td></tr>
         <tr><td>Qwen3-235B</td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/master/model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td></tr>
       </table>
