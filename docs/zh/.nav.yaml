@@ -27,6 +27,7 @@ nav:
               - 服务部署: user_guide/deployment/slurm/service_deployment.md
           - Coordinator 独立部署: user_guide/deployment/standalone.md
           - 部署案例:
+              - ModelArts 2.0 PD 分离部署: user_guide/deployment/cases/ModelArts_2.0/modelarts2_pure_ranktable_pd_deployment.md
               - ModelArts 与元戎:
                   - 简介: user_guide/deployment/cases/ModelArts_yuanrong/README.md
                   - GLM5 8机大EP部署: user_guide/deployment/cases/ModelArts_yuanrong/ModelArts_GLM5_yuanrong_Motor_8Node_BigEP_Deployment_Guide.md
