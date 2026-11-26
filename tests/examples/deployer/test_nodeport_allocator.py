@@ -26,11 +26,19 @@ from lib.nodeport_allocator import (
     find_conflicts,
     rewrite_yaml_nodeports,
     resolve_and_rewrite_nodeports,
+    set_conflict_prompt_reader,
     write_nodeport_conflict_files,
 )
 from lib.generator import k8s_utils
 from lib.utils import is_observability_service_name
 import lib.constant as C
+
+
+@pytest.fixture(autouse=True)
+def _clear_conflict_prompt_reader():
+    """The TUI installs a global prompt reader — never leak it across tests."""
+    yield
+    set_conflict_prompt_reader(None)
 
 
 def _write_svc_yaml(path: Path, name: str, namespace: str, node_port: int, port: int = 1025) -> None:
@@ -537,3 +545,98 @@ def test_same_port_multiple_services_prompts_once(tmp_path: Path):
         remapping = resolve_and_rewrite_nodeports([str(yaml_a), str(yaml_b)], "ns2")
     assert remapping == {}
     assert prompt.call_count == 1
+
+
+def test_tui_reader_replaces_builtin_input(tmp_path: Path):
+    """The TUI reader must answer instead of input(), which hangs in raw mode."""
+    yaml_path = tmp_path / "svc.yaml"
+    _write_svc_yaml(yaml_path, "mindie-motor-coordinator-infer", "ns2", 31015, 1025)
+    cluster = {31015: ClusterNodePort(31015, "ns1", "other")}
+    prompts: list[str] = []
+
+    def _reader(prompt: str) -> str:
+        prompts.append(prompt)
+        return "y"
+
+    with (
+        patch("lib.nodeport_allocator.collect_cluster_nodeports", return_value=cluster),
+        patch("lib.nodeport_allocator.sys.stdin") as stdin,
+        patch("builtins.input", side_effect=AssertionError("input() must not run under the TUI")),
+    ):
+        # The reader implies an attached UI, so the non-TTY fallback must not fire.
+        stdin.isatty.return_value = False
+        set_conflict_prompt_reader(_reader)
+        remapping = resolve_and_rewrite_nodeports([str(yaml_path)], "ns2")
+
+    assert remapping[31015] == 31016
+    assert prompts == ["[NodePort] 31015 (Coordinator infer) -> y / <port> / N: "]
+    assert "nodePort: 31016" in yaml_path.read_text(encoding="utf-8")
+
+
+def test_tui_reader_cancel_keeps_conflicting_port(tmp_path: Path, monkeypatch):
+    """Esc / empty Enter from the TUI means N: keep the port and warn."""
+    yaml_path = tmp_path / "svc.yaml"
+    _write_svc_yaml(yaml_path, "mindie-motor-coordinator-infer", "ns2", 31015, 1025)
+    out_dir = tmp_path / "output_yamls"
+    out_dir.mkdir()
+    monkeypatch.setattr(C, "OUTPUT_ROOT_PATH", str(out_dir))
+    cluster = {31015: ClusterNodePort(31015, "ns1", "other")}
+
+    with (
+        patch("lib.nodeport_allocator.collect_cluster_nodeports", return_value=cluster),
+        patch("builtins.input", side_effect=AssertionError("input() must not run under the TUI")),
+    ):
+        set_conflict_prompt_reader(lambda _prompt: None)
+        remapping = resolve_and_rewrite_nodeports([str(yaml_path)], "ns2")
+
+    assert remapping == {}
+    assert "nodePort: 31015" in yaml_path.read_text(encoding="utf-8")
+    warn = (out_dir / C.NODEPORT_CONFLICT_COORDINATOR_FILE).read_text(encoding="utf-8")
+    assert "already allocated" in warn
+
+
+def test_tui_reader_exception_aborts_without_remap(tmp_path: Path):
+    """A reader that aborts (Ctrl-C) must propagate, not degrade into N."""
+
+    class _Aborted(Exception):
+        pass
+
+    yaml_path = tmp_path / "svc.yaml"
+    _write_svc_yaml(yaml_path, "mindie-motor-coordinator-infer", "ns2", 31015, 1025)
+    cluster = {31015: ClusterNodePort(31015, "ns1", "other")}
+
+    def _reader(_prompt: str) -> str:
+        raise _Aborted("deploy aborted by user")
+
+    with (
+        patch("lib.nodeport_allocator.collect_cluster_nodeports", return_value=cluster),
+        patch("builtins.input", side_effect=AssertionError("input() must not run under the TUI")),
+    ):
+        set_conflict_prompt_reader(_reader)
+        with pytest.raises(_Aborted):
+            resolve_and_rewrite_nodeports([str(yaml_path)], "ns2")
+
+    assert "nodePort: 31015" in yaml_path.read_text(encoding="utf-8")
+
+
+def test_tui_reader_reprompts_after_invalid_answer(tmp_path: Path):
+    """An unusable answer must re-prompt through the same reader."""
+    yaml_path = tmp_path / "svc.yaml"
+    _write_svc_yaml(yaml_path, "mindie-motor-coordinator-infer", "ns2", 31015, 1025)
+    cluster = {31015: ClusterNodePort(31015, "ns1", "other")}
+    answers = iter(["maybe", "31520"])
+    calls: list[str] = []
+
+    def _reader(prompt: str) -> str:
+        calls.append(prompt)
+        return next(answers)
+
+    with (
+        patch("lib.nodeport_allocator.collect_cluster_nodeports", return_value=cluster),
+        patch("builtins.input", side_effect=AssertionError("input() must not run under the TUI")),
+    ):
+        set_conflict_prompt_reader(_reader)
+        remapping = resolve_and_rewrite_nodeports([str(yaml_path)], "ns2")
+
+    assert remapping[31015] == 31520
+    assert len(calls) == 2

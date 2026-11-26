@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import yaml
@@ -39,6 +40,24 @@ _CONTAINER_PORT_COORD_METRICS = 1027
 
 _SHOWLOG_ROLE_COORDINATOR = "coordinator"
 _SHOWLOG_ROLE_CONTROLLER = "controller"
+
+# The interactive TUI keeps the terminal in raw mode, where builtin input() never
+# receives a line terminator (Enter arrives as CR, input() waits for LF) and keys
+# are not echoed. The TUI installs its own raw-mode line reader here while it runs
+# deploy, so conflict prompts stay usable inside the TUI.
+_conflict_prompt_reader: Callable[[str], str | None] | None = None
+
+
+def set_conflict_prompt_reader(reader: Callable[[str], str | None] | None) -> None:
+    """Install (or clear with ``None``) the reader used for conflict answers.
+
+    ``reader`` receives the prompt text and returns the raw answer, or ``None``
+    when the user cancels; cancelling keeps the conflicting port (same as ``N``).
+    Exceptions raised by the reader propagate, so a UI can abort the deploy the
+    same way Ctrl-C aborts the CLI (the TUI does this).
+    """
+    global _conflict_prompt_reader
+    _conflict_prompt_reader = reader
 
 
 @dataclass(frozen=True)
@@ -518,19 +537,25 @@ def _prompt_one_conflict(
     )
     logger.info("[NodePort] Suggested NodePort range: %d-%d", NODEPORT_MIN, NODEPORT_MAX)
 
-    if not sys.stdin.isatty():
+    reader = _conflict_prompt_reader
+    if reader is None and not sys.stdin.isatty():
         logger.error("[NodePort] stdin is not a TTY; treating as N for port %d.", item.port)
         _log_conflict_guidance(item, owner)
         return None
 
+    prompt = f"[NodePort] {item.port} ({item.purpose}) -> y / <port> / N: "
     while True:
         try:
-            answer = input(f"[NodePort] {item.port} ({item.purpose}) -> y / <port> / N: ").strip()
+            raw_answer = input(prompt) if reader is None else reader(prompt)
         except EOFError:
             logger.error("[NodePort] no interactive input; treating as N for port %d.", item.port)
             _log_conflict_guidance(item, owner)
             return None
 
+        if raw_answer is None:
+            _log_conflict_guidance(item, owner)
+            return None
+        answer = raw_answer.strip()
         lowered = answer.lower()
         if lowered in ("", "n", "no"):
             _log_conflict_guidance(item, owner)

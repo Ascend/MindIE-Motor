@@ -28,6 +28,10 @@ from .state import PodProgressState
 from .tui_utils import visible_length
 
 
+class DeployAborted(Exception):
+    """Deploy was aborted by the user (Ctrl-C) from an interactive TUI prompt."""
+
+
 class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outside-init
     """Mixin providing action methods for :class:`DeployInteractiveSession`.
 
@@ -415,8 +419,12 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
     # Text input (raw terminal mode)
     # ------------------------------------------------------------------
 
-    def _read_line(self, prompt: str, default: str = "") -> str | None:
+    def _read_line(self, prompt: str, default: str = "", *, ctrl_c_aborts: bool = False) -> str | None:
         """Read a line of text from the user.  Returns ``None`` on Escape.
+
+        ``ctrl_c_aborts=True`` turns Ctrl-C into :class:`DeployAborted` instead of
+        returning ``None``, so an inner prompt can abort the running operation the
+        way Ctrl-C aborts the CLI.
 
         Supports Tab path completion with bash-like behaviour:
         first Tab completes the common prefix; a second Tab (without
@@ -488,6 +496,8 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
             if code == 0x03:  # Ctrl-C
                 _clear_candidates()
                 ctx.write_at(input_row, 1, '\033[K')
+                if ctrl_c_aborts:
+                    raise DeployAborted('deploy aborted by user')
                 return None
             if code in (0x7F, 0x08):  # Backspace
                 if buffer:
@@ -632,8 +642,18 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
             # Deploy
             self._set_status(f"{C.Style.BOLD}⏳ Deploying...{C.Style.RESET}", duration=60)
             import deploy as deploy_mod
+            from lib import nodeport_allocator
 
-            deploy_mod.deploy_services(user_config, env_config_path, dry_run=False, auto_log_collect=False)
+            # NodePort conflict prompts must go through the TUI reader: builtin
+            # input() cannot receive Enter while the terminal is in raw mode.
+            nodeport_allocator.set_conflict_prompt_reader(self._prompt_nodeport_conflict)
+            try:
+                deploy_mod.deploy_services(user_config, env_config_path, dry_run=False, auto_log_collect=False)
+            finally:
+                nodeport_allocator.set_conflict_prompt_reader(None)
+        except DeployAborted:
+            self._set_status(f"{C.Style.YELLOW}Deploy aborted by user.{C.Style.RESET}", 3.0)
+            return
         except Exception as e:
             root.handlers[:] = old_handlers
             self._set_status(f"{C.Style.RED}✗ Deploy failed: {e}{C.Style.RESET}", 3.0)
@@ -674,6 +694,26 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
             f"{C.Style.GREEN}Deployment done — namespace {C.Style.BOLD}{self.namespace}{C.Style.RESET}",
             10.0,
         )
+
+    def _prompt_nodeport_conflict(self, prompt: str) -> str | None:
+        """Read a NodePort conflict answer through the TUI line editor.
+
+        ``deploy_services`` would ask with builtin ``input()``, which is unusable
+        while the TUI holds the terminal in raw mode: Enter arrives as CR (input()
+        waits for LF) and nothing is echoed. Reading through ``_read_line`` keeps
+        the prompt visible and responsive. ``None`` (Esc / empty Enter) keeps the
+        conflicting port, matching the empty answer in the CLI path; Ctrl-C raises
+        :class:`DeployAborted` so the deploy can be stopped like in the CLI.
+
+        Keys pressed while the deploy was running are dropped first: lingering
+        bytes would otherwise answer the prompt before the user sees it.
+        """
+        if self._ctx is None:
+            return None
+        self._ctx.flush_input()
+        answer = self._read_line(prompt, ctrl_c_aborts=True)
+        self._set_status(f"{C.Style.BOLD}⏳ Deploying...{C.Style.RESET}", duration=60)
+        return answer
 
     def _update_config(self) -> None:
         """Prompt for a config directory, then update ConfigMap."""

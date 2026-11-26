@@ -51,6 +51,7 @@
 
 | 日期 | 模块 | 案例 | 文件 | 关键词 |
 |------|------|------|------|--------|
+| 2026-11-25 | deployer | TUI 内部署触发 NodePort 冲突时按键无响应、界面卡死 | [tui-nodeport-prompt-raw-mode.md](deployer/tui-nodeport-prompt-raw-mode.md) | TUI, NodePort, input(), raw mode, setraw, 卡死 |
 | 2026-11-20 | controller | 重调度后 rank 正确但 master_dp_ip 指向 rank 1 | [dp-master-rank-order.md](controller/dp-master-rank-order.md) | DP master, master_dp_ip, node_rank, reschedule |
 | 2026-11-19 | controller | Pod 故障重建后 DP rank 从 0/1 漂移到 1/2 | [endpoint-rank-shift-after-pod-recreate.md](controller/endpoint-rank-shift-after-pod-recreate.md) | DP rank, endpoint id, register, pod recreate, rank slot |
 | 2026-11-19 | deployer | Docker 创建前预检误拒可自动创建的目录和兼容驱动路径 | [docker-host-bind-output-dirs.md](deployer/docker-host-bind-output-dirs.md) | Docker bind, hostPath, /driver, KV Store |
