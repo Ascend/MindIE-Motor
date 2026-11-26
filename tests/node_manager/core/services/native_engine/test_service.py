@@ -296,6 +296,19 @@ def test_pull_preserves_vllm_configuration_when_startup_acceleration_is_disabled
     inspect_graph_cache.assert_not_called()
 
 
+def test_kv_event_port_overrides_use_normalized_engine_config_key():
+    service = _native_engine_service(engine_type="vllm")
+    service.kv_events_port = 15557
+    service.kv_replay_port = 15565
+
+    assert service._kv_event_config_overrides() == {
+        "kv_events_config": {
+            "endpoint": "tcp://*:15557",
+            "replay_endpoint": "tcp://*:15565",
+        }
+    }
+
+
 def test_health_check_returns_dead_pids():
     service = _native_engine_service()
     service.supervisor.dead_pids.return_value = [(101, 0)]

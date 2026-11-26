@@ -148,7 +148,10 @@ class NativeEngineService:
             events["replay_endpoint"] = "tcp://*:%s" % self.kv_replay_port
         if not events:
             return {}
-        return {"kv-events-config": events}
+        # EngineConfig normalizes native option names from dashes to underscores.
+        # Use the normalized key so the endpoint override is merged into the
+        # user-provided config instead of producing a duplicate CLI argument.
+        return {"kv_events_config": events}
 
     def _pull(
         self,
