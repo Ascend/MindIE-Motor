@@ -189,7 +189,7 @@
       <td>支持</td>
       <td>—</td>
       <td>支持</td>
-      <td>—</td>
+      <td>支持</td>
     </tr>
     <tr>
       <td><a href="./fault_tolerance/instance_rescheduling.md">实例重调度</a></td>

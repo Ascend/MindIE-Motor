@@ -69,7 +69,7 @@ flowchart LR
 | --- | --- |
 | 硬件 | 无额外硬件限制，已验证适配以下产品：<ul><li>Atlas 800I A2 推理服务器</li><li>Atlas 800I A3 超节点服务器</li><li>Ascend 950PR&amp;DT 系列产品</li></ul> |
 | 部署场景 | 作用在 Coordinator 推理面；PD 分离、PD 混部、Coordinator 独立部署均可用。 |
-| 引擎 | 与推理引擎类型无关；本阶段 hint 只影响调度与亲和，不下发引擎、不改变引擎 KV 驱逐策略。 |
+| 引擎 | 本阶段 hint 只影响调度与亲和，不下发引擎、不改变引擎 KV 驱逐策略。 |
 | 特性互斥 | 无，可在既有基线上增量开启。 |
 | 软件依赖 | 无额外依赖。`MOTOR_SESSION_AFFINITY_SHARED=1` 依赖容器内 `/dev/shm` 可写。 |
 | 客户端依赖 | 需在 Agent 框架（harness）侧安装并启用对应 agent-hint 插件（DSH/LangChain/Hermes/Pi/Dify，见[对接 Agent 框架](#对接agent框架harness插件)）。 |
