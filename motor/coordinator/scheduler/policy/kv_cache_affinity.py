@@ -209,7 +209,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             # without the network cost.
             tenant = {conductor_instance_id(inst): {"DP": {}} for inst in instances}
         else:
-            rsp = ConductorApiClient.query_conductor(instances, encoded_ids)
+            rsp = ConductorApiClient.query_conductor(instances, encoded_ids, cache_identity=req_info.cache_identity)
             tenant = rsp.get(TENANT_ID, None)
             if tenant is None:
                 logger.warning(

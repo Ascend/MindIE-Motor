@@ -18,7 +18,7 @@ Replaces Mooncake conductor for MindIE Motor. Design priorities:
 ### References
 
 - KV Event wire format & multi-tier storage model: [Mooncake RFC #1527](https://github.com/kvcache-ai/Mooncake/issues/1527)
-- Radix tree design: [NVIDIA Dynamo kv-router](https://github.com/ai-dynamo/dynamo/tree/main/lib/kv-router)
+- Radix tree design: [NVIDIA Dynamo kv-indexer](https://github.com/ai-dynamo/dynamo/tree/main/lib/router/kv-indexer)
 
 ## Architecture
 
@@ -91,6 +91,9 @@ Crate root: `motor/kv_conductor/` (paths below are relative to it).
 | `src/events/tests.rs` | Unit tests for event parsing |
 | `src/protocols.rs` | HTTP types, WorkerKey, StorageMedium, KvCacheEventData, query/response types |
 | `src/hashing.rs` | `compute_block_hash_for_seq()` — XXH3 with rayon parallel |
+| `src/identity.rs` | CacheIdentity encoding, legacy/v1 configuration, lossless EngineBlockHash |
+| `src/events/identity_event.rs` | Strict v1 wire evidence (missing vs null, attention kind, text extra keys) |
+| `src/indexer/root_identity.rs` | Root hash binding, v1 query and existing tier lifecycle integration |
 | `src/error.rs` | KvConductorError (thiserror) |
 | `tests/integration_test.rs` | HTTP API integration tests over an axum test server |
 
@@ -107,7 +110,59 @@ Two distinct hash types serve different purposes:
 | `LocalBlockHash(u64)` | XXH3 of token bytes in a block | Content-addressed radix tree key | Primary — determines tree position |
 | `SequenceBlockHash(u64)` | Engine-provided rolling hash (includes parent context) | Reverse lookup by engine sequence hash | Secondary — stored in `Block.block_hash` for O(1) removal |
 
-`block_size` is passed by the caller per-query, not stored in the tree. Hashes computed at different `block_size` values coexist safely — they are distinct `u64` values. **The Coordinator must use the same `block_size` the engine uses for KV event publishing.**
+Both modes rely on deployment and callers using the engine's `block_size`; entries do not bind a global layout or reject registration/query size conflicts. Queries use the existing hash function's block-size behavior. Event parsing still checks each event's block size against that worker's registered value.
+
+### Root identity mode
+
+`--identity-mode legacy` remains the default. `--identity-mode v1` enables identity isolation
+without a group-number setting. A process uses one mode for its in-memory index lifetime.
+Both query DTOs accept `cache_identity` with version 1 and a Base/LoRA adapter.
+An omitted or null `cache_salt` selects the same unsalted identity. Successful v1 queries, including zero hits, return
+`X-KV-Identity-Protocol: 1`; legacy responses do not. Coordinator ignores unconfirmed scores.
+The legacy HTTP `/events` DTO lacks root evidence and is rejected in v1.
+
+For raw per-block token hashes `Ti`, only the prefix's first edge changes:
+`K0 = XXH3_64(domain || encode(adapter, salt) || u64_le(T0), seed=1337)`;
+`Ki = Ti` for every subsequent block. The domain is `kv-conductor/root-identity/v1\0`.
+Encoding uses Base/LoRA and null/salt byte tags and u32 little-endian UTF-8 lengths.
+`schema_version` is validated, not hashed. `/query_by_hash` receives raw token hashes
+and keeps its existing response multiplier of 1. The outer `(model, tenant)` entry,
+HBM tree traversal, and lower-tier continuation algorithms are shared across identities.
+
+v1 HBM events require explicit parent evidence, a supported attention kind (FullAttention,
+MlaAttention or SinkFullAttention), matching block size, and aligned complete token blocks.
+Identity isolation does not depend on `group_idx` or automatically select a group. Only explicit
+null parent is a root; continuations require an existing parent, with no generic HBM wait queue.
+Known ordinary-text LoRA/extra-key shapes establish root identity. Incomplete or non-text
+evidence cannot acquire token-only cache scores. Engine hashes retain complete binary values;
+internal sequence IDs compare complete values before reuse, with parent/local binding checks.
+Full identity is stored only for root-key collision checks, not on every suffix block.
+Value-only engine-ID parent/local bindings remain stable while existing lookup/edge/content
+records reference them (including their parent IDs); this prevents ID rebinding after partial
+deletion. These bindings retain no removed HBM lookup, node ownership, or cache availability.
+
+Ascend CPU offload events without root identity reuse an already confirmed engine-hash/content
+binding. They cannot create an identity from null fields. Existing offload/content/pending_pool
+matching ingests each engine offload event once, using the registered engine instance and DP
+as its source; confirmed Pool targets are returned by the matching operation.
+The matching state and TTLs carry the transformed root local hash; Pool Stored is still required for
+availability. Pool events use their existing formats; v1 must preserve complete hash equality
+with the engine and refuses unsupported or out-of-scope evidence. This does not add Mooncake
+object-key or sharding protocols.
+The missing-group Ascend CPU format is supported only for a verified single-attention-group
+layout. External engine hashes omit group IDs, so hash equality alone cannot prove which
+attention group a multi-group CPU event belongs to. Mixed-attention CPU adaptation is
+outside this mode's supported input contract. Across workers, the existing shared indexes
+also require consistent engine hashing (including the same explicit `PYTHONHASHSEED`);
+Motor inherits the process environment and does not set that value automatically.
+
+HBM Removed/Cleared still removes lookup/worker ownership and clears children as before.
+Lower tiers remove only the target worker's edges. A v1 Removed also revokes a previously
+confirmed edge when a later re-offload is pending. Existing retained content may resolve a
+later Disk confirmation, but retained metadata is never itself a cache hit.
+For one Removed/Cleared event, all target workers are updated under the identity write lock
+before identity bindings are pruned once. The next event observes the completed cleanup;
+pruning is not deferred across events to the periodic maintenance pass.
 
 ### WorkerKey
 
@@ -246,7 +301,7 @@ Optional fields may be omitted or null; unknown fields (including `extra_keys`) 
 `type` is required. `BlockRemoved` and `AllBlocksCleared` use the same map decoder.
 Legacy arrays use `rmpv::Value` + tag-based dispatch + type-pattern parsing.
 
-**Attention-group filtering:** A deny-list excludes SlidingWindow, SlidingWindowMla, Mamba,
+**Legacy attention-kind filtering:** A deny-list excludes SlidingWindow, SlidingWindowMla, Mamba,
 ChunkedLocalAttention, EncoderOnlyAttention and CrossAttention (case/underscore insensitive).
 FullAttention, MlaAttention, SinkFullAttention, absent and unknown kinds are retained.
 `BlockStored` with a nonzero event block size different from the registered size is dropped as
@@ -255,7 +310,7 @@ FullAttention, MlaAttention, SinkFullAttention, absent and unknown kinds are ret
 **`apply_vllm_event()` logic:**
 
 1. Parse the tagged map or legacy array into `VllmEvent` enum (`BlockStored` / `BlockRemoved` / `AllBlocksCleared`)
-2. Filter: skip non-main attention groups
+2. Filter: skip excluded attention kinds (v1 uses the strict supported-kind check described above)
 3. Determine `StorageMedium` from `medium` field (default `Npu`)
 4. **HBM (Npu) events:**
    - Compute `tokens_hash` from `token_ids` via `compute_block_hash_for_seq(block_size)`

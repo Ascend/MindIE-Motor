@@ -25,11 +25,13 @@ use serde::Deserialize;
 
 use crate::backend::MatchMode;
 use crate::error::KvConductorError;
+use crate::identity::EngineBlockHash;
 use crate::indexer::Indexer;
 use crate::protocols::*;
 
 use super::flex_hash::FlexHash;
 use super::helpers::{resolve_medium, resolve_workers};
+use super::identity_event::engine_hash;
 
 /// Minimum interval between repeated unresolved-target WARN lines for the
 /// same `(event_backend_id, subscriber_backend_id)` key.
@@ -120,6 +122,28 @@ pub(crate) struct MemcacheEventBatch {
 }
 
 /// Deserialized msgpack event from a pool backend ZMQ PUB frame.
+/// The first component retains legacy FlexHash semantics. v1 only consumes
+/// the complete second component, never a truncated binary projection.
+#[derive(Debug)]
+pub(crate) struct PoolHash(pub(crate) u64, pub(crate) Option<EngineBlockHash>);
+
+impl<'de> Deserialize<'de> for PoolHash {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = rmpv::Value::deserialize(deserializer)?;
+        let legacy: FlexHash =
+            rmpv::ext::from_value(value.clone()).map_err(serde::de::Error::custom)?;
+        Ok(Self(legacy.0, engine_hash(&value)))
+    }
+}
+
+#[cfg(test)]
+impl From<FlexHash> for PoolHash {
+    fn from(value: FlexHash) -> Self {
+        Self(value.0, Some(EngineBlockHash::U64(value.0)))
+    }
+}
+
+/// Deserialized msgpack event from a pool backend ZMQ PUB frame.
 #[derive(Debug, Deserialize)]
 pub(crate) struct PoolEvent {
     #[serde(default)]
@@ -143,9 +167,9 @@ pub(crate) struct PoolEvent {
     #[serde(default)]
     pub(crate) dp_rank: Option<u32>,
     #[serde(default)]
-    pub(crate) seq_hashes: Option<Vec<FlexHash>>,
+    pub(crate) seq_hashes: Option<Vec<PoolHash>>,
     #[serde(default)]
-    pub(crate) block_hashes: Option<Vec<FlexHash>>,
+    pub(crate) block_hashes: Option<Vec<PoolHash>>,
 }
 
 /// Apply a single pool backend event to the indexer.
@@ -212,6 +236,16 @@ pub(crate) fn apply_pool_event(
     let mn = pool_event.model_name.as_deref().unwrap_or(model_name);
     let tid = pool_event.tenant_id.as_deref().unwrap_or(tenant_id);
 
+    if indexer.identity_config().enabled()
+        && (mn != model_name
+            || tid != tenant_id
+            || target_media
+                .iter()
+                .any(|medium| !matches!(medium, StorageMedium::Cpu | StorageMedium::Disk)))
+    {
+        return Ok(());
+    }
+
     let entry = indexer.get_or_create(mn, tid);
 
     let mut target_workers =
@@ -228,6 +262,36 @@ pub(crate) fn apply_pool_event(
     // is a permanently zero CPU/Disk hit rate.
     if target_workers.is_empty() {
         warn_unresolved_pool_event(be_id, backend_id, event_type);
+        return Ok(());
+    }
+
+    if indexer.identity_config().enabled() {
+        if is_cleared {
+            entry.apply_identity_clear(&target_workers)?;
+            return Ok(());
+        }
+        let mut seen = rustc_hash::FxHashSet::default();
+        let mut hashes = Vec::new();
+        for hash in pool_event
+            .seq_hashes
+            .iter()
+            .chain(pool_event.block_hashes.iter())
+            .flatten()
+        {
+            let Some(hash) = &hash.1 else {
+                return Ok(());
+            };
+            if seen.insert(hash.clone()) {
+                hashes.push(hash.clone());
+            }
+        }
+        if is_stored {
+            for worker in &target_workers {
+                entry.apply_identity_pool_store(worker, &hashes)?;
+            }
+        } else if is_removed {
+            entry.apply_identity_remove(&target_workers, &hashes)?;
+        }
         return Ok(());
     }
 

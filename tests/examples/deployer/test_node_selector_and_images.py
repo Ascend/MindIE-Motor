@@ -139,7 +139,8 @@ def test_component_image_overrides_deploy_image(tmp_path):
     assert decode_data[C.SPEC][C.TEMPLATE][C.SPEC][C.CONTAINERS][0][C.IMAGE] == "mindie:decode"
 
 
-def test_infer_service_set_uses_chip_name_and_images(tmp_path):
+def test_infer_service_set_uses_chip_name_and_images(tmp_path, monkeypatch):
+    monkeypatch.setattr(k8s_utils, "g_kv_conductor_enabled", False)
     user_config = _pd_user_config(
         C.HARDWARE_TYPE_ASCEND950,
         extra_prefill={

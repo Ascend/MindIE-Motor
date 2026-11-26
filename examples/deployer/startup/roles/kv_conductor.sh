@@ -24,6 +24,16 @@ echo "Starting KV Conductor on ${KV_CONDUCTOR_HOST}:${KV_CONDUCTOR_PORT}"
 
 # kv-conductor is bundled inside the motor Python package.
 # RUST_LOG can be set via env to control tracing verbosity (default: info).
-exec python -m motor.kv_conductor \
-    --host "$KV_CONDUCTOR_HOST" \
+kv_conductor_args=(
+    --host "$KV_CONDUCTOR_HOST"
     --port "$KV_CONDUCTOR_PORT"
+)
+case "${KV_CONDUCTOR_IDENTITY_MODE:-legacy}" in
+    legacy) ;;
+    v1) kv_conductor_args+=(--identity-mode v1) ;;
+    *)
+        echo "KV_CONDUCTOR_IDENTITY_MODE must be 'legacy' or 'v1'" >&2
+        exit 2
+        ;;
+esac
+exec python -m motor.kv_conductor "${kv_conductor_args[@]}"

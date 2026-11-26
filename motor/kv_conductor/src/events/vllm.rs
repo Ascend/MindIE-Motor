@@ -37,6 +37,7 @@ use crate::protocols::*;
 
 use super::flex_hash::FlexHash;
 use super::helpers::{resolve_medium, resolve_workers};
+use super::identity_event::{IdentityRemovedEvent, IdentityStoredEvent, WireField};
 
 /// Minimum interval between repeated `block_size_mismatch` WARN lines for the
 /// same `(backend_id, event_block_size, registered_block_size)` key.
@@ -80,6 +81,8 @@ pub(crate) struct VllmEventMap {
     kv_cache_spec_kind: Option<String>,
     #[allow(dead_code)]
     kv_cache_spec_sliding_window: Option<u32>,
+    identity_stored: Option<IdentityStoredEvent>,
+    identity_removed: Option<IdentityRemovedEvent>,
 }
 
 impl VllmEventMap {
@@ -96,6 +99,8 @@ impl VllmEventMap {
             lora_name: None,
             kv_cache_spec_kind: None,
             kv_cache_spec_sliding_window: None,
+            identity_stored: None,
+            identity_removed: None,
         }
     }
 
@@ -117,6 +122,8 @@ impl VllmEventMap {
             lora_name: None,
             kv_cache_spec_kind: None,
             kv_cache_spec_sliding_window: None,
+            identity_stored: None,
+            identity_removed: None,
         }
     }
 }
@@ -281,6 +288,7 @@ fn parse_block_stored_values(
     event_type: String,
     values: &[rmpv::Value],
 ) -> Result<VllmEventMap, String> {
+    let identity_stored = IdentityStoredEvent::from_values(values);
     let values: Vec<&rmpv::Value> = values.iter().filter(|v| !v.is_nil()).collect();
     let len = values.len();
     let mut p: usize = 0;
@@ -395,6 +403,8 @@ fn parse_block_stored_values(
         lora_name,
         kv_cache_spec_kind,
         kv_cache_spec_sliding_window,
+        identity_stored,
+        identity_removed: None,
     })
 }
 
@@ -402,6 +412,7 @@ fn parse_block_removed_values(
     event_type: String,
     values: &[rmpv::Value],
 ) -> Result<VllmEventMap, String> {
+    let identity_removed = IdentityRemovedEvent::from_values(values);
     let values: Vec<&rmpv::Value> = values.iter().filter(|v| !v.is_nil()).collect();
     let len = values.len();
     let mut p: usize = 0;
@@ -432,12 +443,9 @@ fn parse_block_removed_values(
         None
     };
 
-    Ok(VllmEventMap::with_removed(
-        event_type,
-        block_hashes,
-        medium,
-        group_idx,
-    ))
+    let mut event = VllmEventMap::with_removed(event_type, block_hashes, medium, group_idx);
+    event.identity_removed = identity_removed;
+    Ok(event)
 }
 
 /// Build a [`VllmEventMap`] from a tagged-map event's ``(key, value)`` pairs.
@@ -481,6 +489,8 @@ fn parse_vllm_event_map(
                 lora_name: None,
                 kv_cache_spec_kind,
                 kv_cache_spec_sliding_window: None,
+                identity_stored: IdentityStoredEvent::from_fields(get),
+                identity_removed: None,
             })
         }
         "BlockRemoved" => {
@@ -488,12 +498,9 @@ fn parse_vllm_event_map(
             let medium = get("medium").and_then(|v| v.as_str().map(|s| s.to_string()));
             let group_idx = get("group_idx").and_then(u32_from_rmpv);
 
-            Ok(VllmEventMap::with_removed(
-                event_type,
-                block_hashes,
-                medium,
-                group_idx,
-            ))
+            let mut event = VllmEventMap::with_removed(event_type, block_hashes, medium, group_idx);
+            event.identity_removed = IdentityRemovedEvent::from_fields(get);
+            Ok(event)
         }
         "AllBlocksCleared" => Ok(VllmEventMap::empty(event_type)),
         _ => Ok(VllmEventMap::empty(event_type)),
@@ -555,12 +562,14 @@ pub(crate) enum VllmEvent {
         medium: Option<String>,
         #[allow(dead_code)]
         group_idx: Option<u32>,
+        identity: Option<Box<IdentityStoredEvent>>,
     },
     BlockRemoved {
         block_hashes: Vec<u64>,
         medium: Option<String>,
         #[allow(dead_code)]
         group_idx: Option<u32>,
+        identity: Option<IdentityRemovedEvent>,
     },
     AllBlocksCleared,
     /// Events we don't handle (e.g. from non-main-attention groups).
@@ -608,6 +617,7 @@ impl VllmEventMap {
                     block_size,
                     medium: self.medium.clone(),
                     group_idx: self.group_idx,
+                    identity: self.identity_stored.clone().map(Box::new),
                 }
             }
             "BlockRemoved" => {
@@ -620,6 +630,7 @@ impl VllmEventMap {
                     block_hashes,
                     medium: self.medium.clone(),
                     group_idx: self.group_idx,
+                    identity: self.identity_removed.clone(),
                 }
             }
             "AllBlocksCleared" => VllmEvent::AllBlocksCleared,
@@ -774,6 +785,20 @@ pub(crate) fn apply_vllm_event(
     hbm_ip_index: &Option<HbmIpIndex>,
     registered_block_size: u32,
 ) -> Result<(), KvConductorError> {
+    if indexer.identity_config().enabled() {
+        return apply_identity_event(
+            indexer,
+            event,
+            model_name,
+            tenant_id,
+            backend_id,
+            subscriber_dp_rank,
+            default_media,
+            match_mode,
+            hbm_ip_index,
+            registered_block_size,
+        );
+    }
     match event {
         VllmEvent::BlockStored {
             block_hashes,
@@ -782,6 +807,7 @@ pub(crate) fn apply_vllm_event(
             block_size,
             medium,
             group_idx: _,
+            identity: _,
         } => {
             // Hybrid KV groups publish their *native* block_size (DeepSeek-V4
             // MLA = 128), which can differ from the engine `--block-size` /
@@ -928,6 +954,7 @@ pub(crate) fn apply_vllm_event(
             block_hashes,
             medium,
             group_idx: _,
+            identity: _,
         } => {
             if block_hashes.is_empty() {
                 return Ok(());
@@ -969,6 +996,166 @@ pub(crate) fn apply_vllm_event(
             }
         }
         VllmEvent::Ignored => { /* skip */ }
+    }
+    Ok(())
+}
+
+/// Classify the actual target media, including a subscriber-provided default.
+fn identity_medium(
+    medium: Option<&str>,
+    default_media: &[StorageMedium],
+) -> Option<(Vec<StorageMedium>, bool)> {
+    let media = resolve_medium(medium, default_media);
+    let offload = match media.as_slice() {
+        [StorageMedium::Npu] => false,
+        media
+            if !media.is_empty()
+                && media
+                    .iter()
+                    .all(|medium| matches!(medium, StorageMedium::Cpu | StorageMedium::Disk)) =>
+        {
+            true
+        }
+        _ => return None,
+    };
+    Some((media, offload))
+}
+
+/// v1 requires complete wire evidence. A missing parent is never a new root,
+/// and CPU offload learns identity only from an already confirmed binding.
+#[allow(clippy::too_many_arguments)]
+fn apply_identity_event(
+    indexer: &Indexer,
+    event: &VllmEvent,
+    model_name: &str,
+    tenant_id: &str,
+    backend_id: &str,
+    subscriber_dp_rank: u32,
+    default_media: &[StorageMedium],
+    match_mode: MatchMode,
+    hbm_ip_index: &Option<HbmIpIndex>,
+    registered_block_size: u32,
+) -> Result<(), KvConductorError> {
+    match event {
+        VllmEvent::BlockStored {
+            identity: Some(stored),
+            ..
+        } => {
+            if stored.block_size == 0 || stored.block_size != registered_block_size {
+                warn_block_size_mismatch(
+                    backend_id,
+                    subscriber_dp_rank,
+                    stored.block_size,
+                    registered_block_size,
+                );
+                return Ok(());
+            }
+            let Some((target_media, offload)) =
+                identity_medium(stored.medium.as_deref(), default_media)
+            else {
+                return Ok(());
+            };
+            if !offload && !stored.main_attention() {
+                return Ok(());
+            }
+            let parent = match &stored.parent {
+                WireField::Missing => return Ok(()),
+                WireField::Null => None,
+                WireField::Value(parent) => Some(parent),
+            };
+            // Offload identity comes only from an already confirmed binding.
+            let text_identity = if offload {
+                None
+            } else {
+                stored.text_identity()
+            };
+            if !offload && text_identity.is_none() {
+                return Ok(());
+            }
+            let token_hashes: Vec<u64> =
+                compute_block_hash_for_seq(&stored.token_ids, stored.block_size)
+                    .iter()
+                    .map(|hash| hash.0)
+                    .collect();
+            if token_hashes.is_empty() || token_hashes.len() != stored.block_hashes.len() {
+                return Ok(());
+            }
+            let root_identity = if parent.is_none() {
+                text_identity.as_ref()
+            } else {
+                None
+            };
+            let entry = indexer.get_or_create(model_name, tenant_id);
+            if offload {
+                // The subscription identifies the source; pool confirmations
+                // inside apply_identity_store determine all storage targets.
+                let source = WorkerKey {
+                    instance_id: backend_id.to_string(),
+                    backend_id: backend_id.to_string(),
+                    dp_rank: subscriber_dp_rank,
+                    medium: StorageMedium::Npu,
+                };
+                entry.apply_identity_store(
+                    &source,
+                    &stored.block_hashes,
+                    parent,
+                    &token_hashes,
+                    root_identity,
+                    true,
+                )?;
+            } else {
+                let workers = resolve_workers(
+                    match_mode,
+                    hbm_ip_index,
+                    backend_id,
+                    subscriber_dp_rank,
+                    &target_media,
+                );
+                for worker in &workers {
+                    entry.apply_identity_store(
+                        worker,
+                        &stored.block_hashes,
+                        parent,
+                        &token_hashes,
+                        root_identity,
+                        false,
+                    )?;
+                }
+            }
+        }
+        VllmEvent::BlockRemoved {
+            identity: Some(removed),
+            ..
+        } => {
+            let Some((target_media, _)) = identity_medium(removed.medium.as_deref(), default_media)
+            else {
+                return Ok(());
+            };
+            if registered_block_size == 0 {
+                return Ok(());
+            }
+            let workers = resolve_workers(
+                match_mode,
+                hbm_ip_index,
+                backend_id,
+                subscriber_dp_rank,
+                &target_media,
+            );
+            let entry = indexer.get_or_create(model_name, tenant_id);
+            entry.apply_identity_remove(&workers, &removed.block_hashes)?;
+        }
+        VllmEvent::AllBlocksCleared => {
+            let workers = resolve_workers(
+                match_mode,
+                hbm_ip_index,
+                backend_id,
+                subscriber_dp_rank,
+                &resolve_medium(None, default_media),
+            );
+            let entry = indexer.get_or_create(model_name, tenant_id);
+            entry.apply_identity_clear(&workers)?;
+        }
+        _ => {}
     }
     Ok(())
 }

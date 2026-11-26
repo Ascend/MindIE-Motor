@@ -225,6 +225,8 @@ pub struct QueryRequest {
     pub token_ids: Vec<i64>,
     #[serde(default = "default_tenant")]
     pub tenant_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_identity: Option<crate::identity::CacheIdentity>,
 }
 
 /// POST /query_by_hash request body — query using pre-computed block hashes
@@ -238,6 +240,8 @@ pub struct QueryByHashRequest {
     pub block_hashes: Vec<u64>,
     #[serde(default = "default_tenant")]
     pub tenant_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_identity: Option<crate::identity::CacheIdentity>,
 }
 
 // ---------------------------------------------------------------------------
@@ -977,6 +981,7 @@ mod tests {
     #[test]
     fn test_query_request_msgpack_roundtrip() {
         let req = QueryRequest {
+            cache_identity: None,
             model: "llama-7b".into(),
             block_size: 128,
             token_ids: (0..100_000).map(|i| i % 32000).collect(),
@@ -993,6 +998,7 @@ mod tests {
     #[test]
     fn test_query_by_hash_request_msgpack_roundtrip() {
         let req = QueryByHashRequest {
+            cache_identity: None,
             model: "llama-7b".into(),
             block_size: 128,
             block_hashes: (0..10_000).map(|i| (i as u64) * 2654435761).collect(),

@@ -39,6 +39,7 @@
 
 pub(crate) mod flex_hash;
 mod helpers;
+mod identity_event;
 pub(crate) mod pool;
 pub(crate) mod vllm;
 

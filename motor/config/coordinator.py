@@ -41,6 +41,7 @@ from motor.config.config_utils import (
     resolve_config_json_path,
     resolve_engine_model_paths,
     resolve_render_enabled,
+    resolve_request_model_map,
     save_instance_config_to_json,
 )
 from motor.config.etcd import EtcdConfig
@@ -68,6 +69,17 @@ SLO_TPOT = "slo_tpot"
 logger = get_logger(__name__)
 
 MGMT_API_KEY_HEADER = "X-Motor-Management-Key"
+
+
+def merge_identity_config(coordinator: dict[str, Any], user_config: dict[str, Any]) -> None:
+    """Merge the identity mode and reject conflicting top-level/nested values."""
+    top_level = user_config.get("kv_conductor_config", {})
+    if not isinstance(top_level, dict) or "identity_mode" not in top_level:
+        return
+    nested = coordinator.setdefault("scheduler_config", {}).setdefault("kv_conductor_config", {})
+    if "identity_mode" in nested and nested["identity_mode"] != top_level["identity_mode"]:
+        raise ValueError("Conflicting kv_conductor_config.identity_mode values")
+    nested["identity_mode"] = top_level["identity_mode"]
 
 
 def _require_engine_config(engine_section: dict[str, Any], *, source: str) -> dict[str, Any]:
@@ -338,6 +350,9 @@ class KvConductorConfig:
     """
 
     # ── KV cache identity ─────────────────────────────────────────────
+    identity_mode: str = "legacy"
+    """``v1`` requires a resolved identity and server protocol confirmation for cache scores."""
+
     store_backend: str = ""
     """KV cache pooling backend: "Mooncake", "Memcache", "YuanRong"."""
 
@@ -1070,6 +1085,7 @@ class CoordinatorConfig:
     config_path: str | None = field(default=None, init=False)
     last_modified: float | None = field(default=None, init=False)
     engine_model_paths: list[str] = field(default_factory=list, init=False)
+    request_model_map: dict[str, dict[str, str]] = field(default_factory=dict, init=False)
     runtime_guard_enabled: bool = field(default=False, init=False)
     _errors: list[str] = field(default_factory=list, init=False)
     worker_index: int | None = field(default=None, repr=False)
@@ -1085,6 +1101,7 @@ class CoordinatorConfig:
         json_path, config_path = resolve_config_json_path(json_path)
 
         cfg = {}
+        raw = {}
         user_config_data = None
         try:
             if config_path and config_path.exists():
@@ -1110,10 +1127,12 @@ class CoordinatorConfig:
                         # Data obfuscation reads model-side parameters (image geometry) from the
                         # served weights directory when the user leaves them unconfigured.
                         cfg["engine_model_paths"] = resolve_engine_model_paths(raw)
-        except (json.JSONDecodeError, Exception) as e:
+        except Exception as e:
             log_json_config_load_error(json_path, e)
 
         try:
+            if isinstance(raw, dict):
+                merge_identity_config(cfg, raw)
             config = cls()
             if isinstance(user_config_data, dict):
                 config.runtime_guard_enabled = _decode_runtime_guard_enabled(user_config_data)
@@ -1247,6 +1266,8 @@ class CoordinatorConfig:
                 config.aigw_model = dict(cfg["aigw"])
 
             config.engine_model_paths = list(cfg.get("engine_model_paths", []))
+            if config.scheduler_config.kv_conductor_config.identity_mode == "v1":
+                config.request_model_map = resolve_request_model_map(raw)
 
             apply_config_path_metadata(config, config_path)
 
@@ -1555,6 +1576,9 @@ class CoordinatorConfig:
                 self._errors.append("aigw.p_max_seqlen or aigw.d_max_seqlen is required when context_budget_mode='on'")
 
         # Validate kv-conductor query wire encoding
+        conductor = self.scheduler_config.kv_conductor_config
+        if conductor.identity_mode not in ("legacy", "v1"):
+            self._errors.append("kv_conductor_config.identity_mode must be legacy or v1")
         valid_query_encodings = ["msgpack", "json"]
         query_encoding = self.scheduler_config.kv_conductor_config.query_encoding
         if query_encoding not in valid_query_encodings:
@@ -1736,6 +1760,7 @@ class CoordinatorConfig:
         config_dict.pop("last_modified", None)
         # Derived from the engine sections on load; never part of the public configuration surface
         config_dict.pop("engine_model_paths", None)
+        config_dict.pop("request_model_map", None)
         config_dict.pop("runtime_guard_enabled", None)
 
         # Convert enums to their string values for JSON serialization

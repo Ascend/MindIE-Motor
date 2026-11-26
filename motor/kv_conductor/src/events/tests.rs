@@ -583,6 +583,7 @@ fn test_apply_vllm_block_stored_computes_tokens_hash() {
         block_size,
         medium: Some("xpu".into()),
         group_idx: None,
+        identity: None,
     };
 
     let result = apply_vllm_event(
@@ -645,6 +646,7 @@ fn test_apply_vllm_drops_hybrid_group_block_size_mismatch() {
         block_size: event_block_size,
         medium: Some("GPU".into()),
         group_idx: Some(0),
+        identity: None,
     };
 
     let dropped = Indexer::new();
@@ -699,6 +701,263 @@ fn test_apply_vllm_drops_hybrid_group_block_size_mismatch() {
 // -----------------------------------------------------------------------
 
 #[test]
+fn v1_cpu_missing_identity_requires_confirmed_hbm_binding_and_pool_confirmation() {
+    let indexer = identity_indexer();
+    let mut offload = identity_root_event(None, None);
+    offload["medium"] = "cpu".into();
+    for field in ["extra_keys", "group_idx", "kv_cache_spec_kind"] {
+        offload.as_object_mut().unwrap().remove(field);
+    }
+    // The actual Ascend shape cannot create a Base/NoSalt root on its own.
+    let _ = apply_identity_wire(&indexer, &offload);
+    assert_eq!(
+        identity_coverage(
+            &indexer,
+            &identity_for(None, None),
+            &[1, 2],
+            StorageMedium::Cpu
+        ),
+        0
+    );
+    let root = identity_root_event(Some("adapter"), Some("salt"));
+    apply_identity_wire(&indexer, &root).unwrap();
+    apply_identity_wire(&indexer, &offload).unwrap();
+    let identity = identity_for(Some("adapter"), Some("salt"));
+    assert_eq!(
+        identity_coverage(&indexer, &identity, &[1, 2], StorageMedium::Cpu),
+        0
+    );
+    let pool: PoolEvent = serde_json::from_value(serde_json::json!({
+        "event_id": 1, "event_type": "stored", "seq_hashes": [100], "medium": "cpu"
+    }))
+    .unwrap();
+    apply_pool_event(
+        &indexer,
+        &pool,
+        "identity-model",
+        "default",
+        "engine",
+        0,
+        &[StorageMedium::Cpu],
+        MatchMode::None,
+        &None,
+    )
+    .unwrap();
+    apply_identity_wire(
+        &indexer,
+        &serde_json::json!({
+            "type": "BlockRemoved", "block_hashes": [100], "medium": "GPU", "group_idx": 3
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        identity_coverage(&indexer, &identity, &[1, 2], StorageMedium::Cpu),
+        1
+    );
+    assert_eq!(
+        identity_coverage(
+            &indexer,
+            &identity_for(None, None),
+            &[1, 2],
+            StorageMedium::Cpu
+        ),
+        0
+    );
+}
+
+#[test]
+fn v1_missing_medium_uses_subscriber_cpu_scope_without_creating_a_base_root() {
+    let indexer = identity_indexer();
+    let mut wire = identity_root_event(None, None);
+    wire.as_object_mut().unwrap().remove("medium");
+    let result = apply_vllm_event(
+        &indexer,
+        &identity_wire_event(&wire),
+        "identity-model",
+        "default",
+        "engine",
+        0,
+        &[StorageMedium::Cpu],
+        MatchMode::None,
+        &None,
+        2,
+    );
+    assert!(
+        result.is_err(),
+        "unbound CPU offload cannot establish root identity"
+    );
+    assert_eq!(
+        identity_coverage(
+            &indexer,
+            &identity_for(None, None),
+            &[1, 2],
+            StorageMedium::Cpu
+        ),
+        0
+    );
+}
+
+fn apply_identity_pool(
+    indexer: &crate::indexer::Indexer,
+    value: serde_json::Value,
+) -> Result<(), KvConductorError> {
+    let event: PoolEvent = serde_json::from_value(value).unwrap();
+    apply_pool_event(
+        indexer,
+        &event,
+        "identity-model",
+        "default",
+        "engine",
+        0,
+        &[StorageMedium::Cpu],
+        MatchMode::None,
+        &None,
+    )
+}
+
+fn identity_cpu_offload() -> serde_json::Value {
+    serde_json::json!({
+        "type": "BlockStored", "block_hashes": [100], "parent_block_hash": null,
+        "token_ids": [1, 2], "block_size": 2, "medium": "cpu", "lora_name": null
+    })
+}
+
+#[test]
+fn v1_pool_decode_preserves_binary_hashes_with_equal_low_bits() {
+    use crate::identity::EngineBlockHash;
+    use rmpv::Value;
+    let first = vec![1, 0, 0, 0, 0, 0, 0, 0, 42];
+    let second = vec![2, 0, 0, 0, 0, 0, 0, 0, 42];
+    let payload = Value::Map(vec![
+        ("event_type".into(), "stored".into()),
+        ("medium".into(), "cpu".into()),
+        (
+            "seq_hashes".into(),
+            Value::Array(vec![
+                Value::Binary(first.clone()),
+                Value::Binary(second.clone()),
+            ]),
+        ),
+    ]);
+    let mut bytes = Vec::new();
+    rmpv::encode::write_value(&mut bytes, &payload).unwrap();
+    let pool: PoolEvent = from_slice(&bytes).unwrap();
+    let hashes = pool.seq_hashes.unwrap();
+    assert_eq!((hashes[0].0, hashes[1].0), (42, 42));
+    assert_eq!(hashes[0].1, Some(EngineBlockHash::Bytes(first)));
+    assert_eq!(hashes[1].1, Some(EngineBlockHash::Bytes(second)));
+}
+
+#[test]
+fn v1_pool_enforces_registered_scope_and_retains_root_for_cpu_to_disk() {
+    let indexer = identity_indexer();
+    let identity = identity_for(Some("adapter"), Some("salt"));
+    apply_identity_wire(
+        &indexer,
+        &identity_root_event(Some("adapter"), Some("salt")),
+    )
+    .unwrap();
+    apply_identity_wire(&indexer, &identity_cpu_offload()).unwrap();
+    let pool_store =
+        serde_json::json!({"event_type": "stored", "seq_hashes": [100], "medium": "cpu"});
+    for (field, value) in [
+        ("model_name", "other-model"),
+        ("tenant_id", "other-tenant"),
+        ("medium", "npu"),
+    ] {
+        let mut event = pool_store.clone();
+        event[field] = value.into();
+        apply_identity_pool(&indexer, event).unwrap();
+    }
+    assert!(indexer.get("other-model", "default").is_none());
+    assert!(indexer.get("identity-model", "other-tenant").is_none());
+    assert_eq!(
+        identity_coverage(&indexer, &identity, &[1, 2], StorageMedium::Cpu),
+        0
+    );
+    apply_identity_pool(&indexer, pool_store).unwrap();
+    apply_identity_wire(
+        &indexer,
+        &serde_json::json!({
+            "type": "BlockRemoved", "block_hashes": [100], "medium": "GPU", "group_idx": 3
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        identity_coverage(&indexer, &identity, &[1, 2], StorageMedium::Cpu),
+        1
+    );
+    apply_identity_pool(
+        &indexer,
+        serde_json::json!({
+            "event_type": "removed", "seq_hashes": [100], "medium": "cpu"
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        identity_coverage(&indexer, &identity, &[1, 2], StorageMedium::Cpu),
+        0
+    );
+    apply_identity_pool(
+        &indexer,
+        serde_json::json!({
+            "event_type": "stored", "seq_hashes": [100], "medium": "disk"
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        identity_coverage(&indexer, &identity, &[1, 2], StorageMedium::Disk),
+        1
+    );
+    apply_identity_pool(
+        &indexer,
+        serde_json::json!({"event_type": "cleared", "medium": "disk"}),
+    )
+    .unwrap();
+    assert_eq!(
+        identity_coverage(&indexer, &identity, &[1, 2], StorageMedium::Disk),
+        0
+    );
+}
+
+#[test]
+fn v1_removed_pool_pending_is_not_restored_by_later_offload() {
+    let indexer = identity_indexer();
+    let identity = identity_for(None, Some("salt"));
+    apply_identity_wire(&indexer, &identity_root_event(None, Some("salt"))).unwrap();
+    apply_identity_pool(
+        &indexer,
+        serde_json::json!({
+            "event_type": "stored", "seq_hashes": [100], "medium": "cpu"
+        }),
+    )
+    .unwrap();
+    apply_identity_pool(
+        &indexer,
+        serde_json::json!({
+            "event_type": "removed", "seq_hashes": [100], "medium": "cpu"
+        }),
+    )
+    .unwrap();
+    apply_identity_wire(&indexer, &identity_cpu_offload()).unwrap();
+    assert_eq!(
+        identity_coverage(&indexer, &identity, &[1, 2], StorageMedium::Cpu),
+        0
+    );
+    apply_identity_pool(
+        &indexer,
+        serde_json::json!({
+            "event_type": "stored", "seq_hashes": [100], "medium": "cpu"
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        identity_coverage(&indexer, &identity, &[1, 2], StorageMedium::Cpu),
+        1
+    );
+}
+
+#[test]
 fn test_non_hbm_event_cached_not_in_tree() {
     use crate::indexer::Indexer;
 
@@ -714,6 +973,7 @@ fn test_non_hbm_event_cached_not_in_tree() {
         block_size,
         medium: Some("cpu".into()),
         group_idx: None,
+        identity: None,
     };
     apply_vllm_event(
         &indexer,
@@ -761,6 +1021,7 @@ fn test_pool_backend_store_matches_cached_block() {
         block_size,
         medium: Some("cpu".into()),
         group_idx: None,
+        identity: None,
     };
     apply_vllm_event(
         &indexer,
@@ -790,7 +1051,7 @@ fn test_pool_backend_store_matches_cached_block() {
         backend_id: Some("test-pool".into()),
         medium: Some("cpu".into()),
         dp_rank: Some(0),
-        seq_hashes: Some(vec![FlexHash(0xBEEF)]),
+        seq_hashes: Some(vec![super::pool::PoolHash::from(FlexHash(0xBEEF))]),
         block_hashes: None,
     };
     apply_pool_event(
@@ -841,7 +1102,7 @@ fn test_pool_backend_store_ignores_unknown_hash() {
         backend_id: Some("test-pool".into()),
         medium: Some("cpu".into()),
         dp_rank: Some(0),
-        seq_hashes: Some(vec![FlexHash(0xDEAD)]),
+        seq_hashes: Some(vec![super::pool::PoolHash::from(FlexHash(0xDEAD))]),
         block_hashes: None,
     };
     let result = apply_pool_event(
@@ -1057,6 +1318,7 @@ fn test_pool_backend_remove_evicts_cache() {
         block_size,
         medium: Some("cpu".into()),
         group_idx: None,
+        identity: None,
     };
     apply_vllm_event(
         &indexer,
@@ -1092,7 +1354,10 @@ fn test_pool_backend_remove_evicts_cache() {
         backend_id: Some("test-pool".into()),
         medium: Some("cpu".into()),
         dp_rank: Some(0),
-        seq_hashes: Some(vec![FlexHash(0xAAA), FlexHash(0xBBB)]),
+        seq_hashes: Some(vec![
+            super::pool::PoolHash::from(FlexHash(0xAAA)),
+            super::pool::PoolHash::from(FlexHash(0xBBB)),
+        ]),
         block_hashes: None,
     };
     apply_pool_event(
@@ -1119,7 +1384,7 @@ fn test_pool_backend_remove_evicts_cache() {
         backend_id: Some("test-pool".into()),
         medium: Some("cpu".into()),
         dp_rank: Some(0),
-        seq_hashes: Some(vec![FlexHash(0xAAA)]),
+        seq_hashes: Some(vec![super::pool::PoolHash::from(FlexHash(0xAAA))]),
         block_hashes: None,
     };
     apply_pool_event(
@@ -1191,7 +1456,7 @@ fn test_pool_arrives_before_offload() {
         backend_id: Some("test-pool".into()),
         medium: Some("cpu".into()),
         dp_rank: Some(0),
-        seq_hashes: Some(vec![FlexHash(0xBEEF)]),
+        seq_hashes: Some(vec![super::pool::PoolHash::from(FlexHash(0xBEEF))]),
         block_hashes: None,
     };
     apply_pool_event(
@@ -1230,6 +1495,7 @@ fn test_pool_arrives_before_offload() {
         block_size,
         medium: Some("cpu".into()),
         group_idx: None,
+        identity: None,
     };
     apply_vllm_event(
         &indexer,
@@ -1290,7 +1556,7 @@ fn test_pool_arrives_before_offload_multi_worker() {
             backend_id: Some("pool".into()),
             medium: Some("cpu".into()),
             dp_rank: Some(dp),
-            seq_hashes: Some(vec![FlexHash(0xCAFE)]),
+            seq_hashes: Some(vec![super::pool::PoolHash::from(FlexHash(0xCAFE))]),
             block_hashes: None,
         };
         apply_pool_event(
@@ -1322,6 +1588,7 @@ fn test_pool_arrives_before_offload_multi_worker() {
         block_size,
         medium: Some("cpu".into()),
         group_idx: None,
+        identity: None,
     };
     apply_vllm_event(
         &indexer,
@@ -1382,7 +1649,7 @@ fn test_pool_removal_cleans_pending() {
         backend_id: Some("pool".into()),
         medium: Some("cpu".into()),
         dp_rank: Some(0),
-        seq_hashes: Some(vec![FlexHash(0xD00D)]),
+        seq_hashes: Some(vec![super::pool::PoolHash::from(FlexHash(0xD00D))]),
         block_hashes: None,
     };
     apply_pool_event(
@@ -1415,7 +1682,7 @@ fn test_pool_removal_cleans_pending() {
         backend_id: Some("pool".into()),
         medium: Some("cpu".into()),
         dp_rank: Some(0),
-        seq_hashes: Some(vec![FlexHash(0xD00D)]),
+        seq_hashes: Some(vec![super::pool::PoolHash::from(FlexHash(0xD00D))]),
         block_hashes: None,
     };
     apply_pool_event(
@@ -1460,6 +1727,7 @@ fn test_offload_then_vllm_removal() {
         block_size,
         medium: Some("cpu".into()),
         group_idx: None,
+        identity: None,
     };
     apply_vllm_event(
         &indexer,
@@ -1486,6 +1754,7 @@ fn test_offload_then_vllm_removal() {
         block_hashes: vec![0xAAA],
         medium: Some("cpu".into()),
         group_idx: None,
+        identity: None,
     };
     apply_vllm_event(
         &indexer,
@@ -1530,6 +1799,7 @@ fn test_removal_after_both_matched() {
         block_size,
         medium: Some("cpu".into()),
         group_idx: None,
+        identity: None,
     };
     apply_vllm_event(
         &indexer,
@@ -1556,7 +1826,7 @@ fn test_removal_after_both_matched() {
         backend_id: Some("pool".into()),
         medium: Some("cpu".into()),
         dp_rank: Some(0),
-        seq_hashes: Some(vec![FlexHash(0xF00)]),
+        seq_hashes: Some(vec![super::pool::PoolHash::from(FlexHash(0xF00))]),
         block_hashes: None,
     };
     apply_pool_event(
@@ -1607,7 +1877,7 @@ fn test_removal_after_both_matched() {
         backend_id: Some("pool".into()),
         medium: Some("cpu".into()),
         dp_rank: Some(0),
-        seq_hashes: Some(vec![FlexHash(0xF00)]),
+        seq_hashes: Some(vec![super::pool::PoolHash::from(FlexHash(0xF00))]),
         block_hashes: None,
     };
     apply_pool_event(
@@ -1653,7 +1923,7 @@ fn test_vllm_removal_after_pool_queued() {
         backend_id: Some("pool".into()),
         medium: Some("cpu".into()),
         dp_rank: Some(0),
-        seq_hashes: Some(vec![FlexHash(0xB00)]),
+        seq_hashes: Some(vec![super::pool::PoolHash::from(FlexHash(0xB00))]),
         block_hashes: None,
     };
     apply_pool_event(
@@ -1680,6 +1950,7 @@ fn test_vllm_removal_after_pool_queued() {
         block_hashes: vec![0xB00],
         medium: Some("cpu".into()),
         group_idx: None,
+        identity: None,
     };
     apply_vllm_event(
         &indexer,
@@ -1723,7 +1994,7 @@ fn test_duplicate_pool_stored_idempotent() {
         backend_id: Some("pool".into()),
         medium: Some("cpu".into()),
         dp_rank: Some(0),
-        seq_hashes: Some(vec![FlexHash(0xCCC)]),
+        seq_hashes: Some(vec![super::pool::PoolHash::from(FlexHash(0xCCC))]),
         block_hashes: None,
     };
 
@@ -1781,7 +2052,9 @@ fn test_pending_worker_cleanup() {
             backend_id: Some("pool".into()),
             medium: Some("cpu".into()),
             dp_rank: Some(dp),
-            seq_hashes: Some(vec![FlexHash(0xE00 + dp as u64)]),
+            seq_hashes: Some(vec![super::pool::PoolHash::from(FlexHash(
+                0xE00 + dp as u64,
+            ))]),
             block_hashes: None,
         };
         apply_pool_event(
@@ -1834,7 +2107,7 @@ fn test_cleared_cleans_pending() {
         backend_id: Some("pool".into()),
         medium: Some("cpu".into()),
         dp_rank: Some(0),
-        seq_hashes: Some(vec![FlexHash(0xABC)]),
+        seq_hashes: Some(vec![super::pool::PoolHash::from(FlexHash(0xABC))]),
         block_hashes: None,
     };
     apply_pool_event(
@@ -1905,7 +2178,7 @@ fn test_sweep_stale_caches() {
         backend_id: Some("pool".into()),
         medium: Some("cpu".into()),
         dp_rank: Some(0),
-        seq_hashes: Some(vec![FlexHash(0xBAD)]),
+        seq_hashes: Some(vec![super::pool::PoolHash::from(FlexHash(0xBAD))]),
         block_hashes: None,
     };
     apply_pool_event(
@@ -1968,6 +2241,7 @@ fn test_vllm_parent_hash_root_level() {
             block_size,
             medium: Some("xpu".into()),
             group_idx: Some(0),
+            identity: None,
         },
         "m",
         "t",
@@ -2024,6 +2298,7 @@ fn test_vllm_parent_hash_cross_event_chain() {
             block_size,
             medium: Some("xpu".into()),
             group_idx: Some(0),
+            identity: None,
         },
         "m",
         "t",
@@ -2046,6 +2321,7 @@ fn test_vllm_parent_hash_cross_event_chain() {
             block_size,
             medium: Some("xpu".into()),
             group_idx: Some(0),
+            identity: None,
         },
         "m",
         "t",
@@ -2077,6 +2353,7 @@ fn test_vllm_parent_hash_cross_event_chain() {
             block_size,
             medium: Some("xpu".into()),
             group_idx: Some(0),
+            identity: None,
         },
         "m",
         "t",
@@ -2119,6 +2396,7 @@ fn test_vllm_map_batch_preserves_fields_and_lifecycle_events() {
             block_size,
             medium,
             group_idx,
+            ..
         } => {
             assert_eq!(block_hashes, &[100, 200]);
             assert_eq!(*parent_block_hash, Some(50));
@@ -2130,7 +2408,7 @@ fn test_vllm_map_batch_preserves_fields_and_lifecycle_events() {
         other => panic!("expected stored event, got {other:?}"),
     }
     assert!(
-        matches!(&events[1], VllmEvent::BlockRemoved { block_hashes, medium, group_idx }
+        matches!(&events[1], VllmEvent::BlockRemoved { block_hashes, medium, group_idx, .. }
         if block_hashes == &[100, 200] && medium.as_deref() == Some("cpu") && *group_idx == Some(3))
     );
     assert!(matches!(events[2], VllmEvent::AllBlocksCleared));
@@ -2173,5 +2451,436 @@ fn test_vllm_map_rejects_missing_tag_and_invalid_field_types() {
     ] {
         let packed = rmp_serde::to_vec(&event).unwrap();
         assert!(from_slice::<VllmEventMap>(&packed).is_err());
+    }
+}
+
+fn identity_wire_event(value: &serde_json::Value) -> VllmEvent {
+    let parsed: VllmEventMap = from_slice(&rmp_serde::to_vec(value).unwrap()).unwrap();
+    parsed.normalize()
+}
+
+fn identity_indexer() -> crate::indexer::Indexer {
+    crate::indexer::Indexer::with_identity_config(
+        crate::indexer::CacheMaintenanceConfig::default(),
+        crate::identity::IdentityConfig {
+            mode: crate::identity::IdentityMode::V1,
+        },
+    )
+}
+
+fn identity_root_event(name: Option<&str>, salt: Option<&str>) -> serde_json::Value {
+    let mut extra: Vec<&str> = name.into_iter().collect();
+    extra.extend(salt);
+    let extra = if extra.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!(extra)
+    };
+    serde_json::json!({
+        "type": "BlockStored", "block_hashes": [100], "parent_block_hash": null,
+        "token_ids": [1, 2], "block_size": 2, "medium": "GPU",
+        "lora_name": name, "extra_keys": [extra],
+        "kv_cache_spec_kind": "FullAttention"
+    })
+}
+
+fn apply_identity_wire(
+    indexer: &crate::indexer::Indexer,
+    value: &serde_json::Value,
+) -> Result<(), KvConductorError> {
+    apply_vllm_event(
+        indexer,
+        &identity_wire_event(value),
+        "identity-model",
+        "default",
+        "engine",
+        0,
+        &[StorageMedium::Npu],
+        MatchMode::None,
+        &None,
+        2,
+    )
+}
+
+fn identity_for(name: Option<&str>, salt: Option<&str>) -> crate::identity::CacheIdentity {
+    crate::identity::CacheIdentity {
+        schema_version: 1,
+        adapter: name.map_or(crate::identity::AdapterIdentity::Base, |name| {
+            crate::identity::AdapterIdentity::Lora { name: name.into() }
+        }),
+        cache_salt: salt.map(str::to_owned),
+    }
+}
+
+fn identity_coverage(
+    indexer: &crate::indexer::Indexer,
+    identity: &crate::identity::CacheIdentity,
+    tokens: &[i64],
+    medium: StorageMedium,
+) -> u32 {
+    let mut hashes = compute_block_hash_for_seq(tokens, 2);
+    hashes[0] = crate::hashing::compute_identity_root_hash(identity, hashes[0]);
+    indexer
+        .get_or_create("identity-model", "default")
+        .find_matches_by_hash(&hashes)
+        .blocks
+        .iter()
+        .filter(|(worker, _)| worker.medium == medium)
+        .map(|(_, count)| *count)
+        .max()
+        .unwrap_or(0)
+}
+
+#[test]
+fn v1_wire_preserves_null_missing_lora_and_each_extra_key() {
+    use super::identity_event::WireField;
+    let mut map = identity_root_event(Some("adapter"), Some("salt"));
+    map["block_hashes"] = serde_json::json!([100, 101]);
+    map["token_ids"] = serde_json::json!([1, 2, 3, 4]);
+    map["extra_keys"] = serde_json::json!([["adapter", "salt"], ["adapter"]]);
+    let array = serde_json::json!([
+        "BlockStored",
+        [100, 101],
+        null,
+        [1, 2, 3, 4],
+        2,
+        null,
+        "GPU",
+        "adapter",
+        [["adapter", "salt"], ["adapter"]],
+        3,
+        "FullAttention"
+    ]);
+    for value in [map.clone(), array] {
+        let VllmEvent::BlockStored {
+            identity: Some(stored),
+            ..
+        } = identity_wire_event(&value)
+        else {
+            panic!("missing strict wire evidence");
+        };
+        assert_eq!(stored.parent, WireField::Null);
+        assert_eq!(stored.lora_name, WireField::Value("adapter".into()));
+        assert_eq!(stored.extra_keys.as_ref().unwrap().len(), 2);
+        assert_eq!(
+            stored.text_identity(),
+            Some(identity_for(Some("adapter"), Some("salt")))
+        );
+    }
+    map.as_object_mut().unwrap().remove("parent_block_hash");
+    map.as_object_mut().unwrap().remove("lora_name");
+    let VllmEvent::BlockStored {
+        identity: Some(stored),
+        ..
+    } = identity_wire_event(&map)
+    else {
+        panic!("missing strict wire evidence");
+    };
+    assert_eq!(stored.parent, WireField::Missing);
+    assert_eq!(stored.lora_name, WireField::Missing);
+    assert!(stored.text_identity().is_none());
+}
+
+#[test]
+fn v1_wire_keeps_full_binary_engine_hashes_while_legacy_keeps_low_bits() {
+    use crate::identity::EngineBlockHash;
+    use rmpv::Value;
+    let first = Value::Binary(vec![1, 0, 0, 0, 0, 0, 0, 0, 42]);
+    let second = Value::Binary(vec![2, 0, 0, 0, 0, 0, 0, 0, 42]);
+    let stored = Value::Array(vec![
+        "BlockStored".into(),
+        Value::Array(vec![first.clone(), second.clone()]),
+        Value::Nil,
+        Value::Array(vec![1.into(), 2.into(), 3.into(), 4.into()]),
+        2.into(),
+        Value::Nil,
+        "GPU".into(),
+        Value::Nil,
+        Value::Array(vec![Value::Nil, Value::Nil]),
+        3.into(),
+        "FullAttention".into(),
+    ]);
+    let removed = Value::Array(vec![
+        "BlockRemoved".into(),
+        Value::Array(vec![second]),
+        "GPU".into(),
+        3.into(),
+    ]);
+    let batch = Value::Array(vec![
+        1.into(),
+        Value::Array(vec![stored, removed]),
+        0.into(),
+    ]);
+    let mut bytes = Vec::new();
+    rmpv::encode::write_value(&mut bytes, &batch).unwrap();
+    let (events, _) = parse_vllm_batch(&bytes).unwrap();
+    let VllmEvent::BlockStored {
+        block_hashes,
+        identity: Some(stored),
+        ..
+    } = &events[0]
+    else {
+        panic!("expected stored");
+    };
+    assert_eq!(block_hashes, &[42, 42]);
+    assert_ne!(stored.block_hashes[0], stored.block_hashes[1]);
+    assert_eq!(
+        stored.block_hashes[0],
+        EngineBlockHash::Bytes(vec![1, 0, 0, 0, 0, 0, 0, 0, 42])
+    );
+    let VllmEvent::BlockRemoved {
+        identity: Some(removed),
+        ..
+    } = &events[1]
+    else {
+        panic!("expected removed");
+    };
+    assert_eq!(removed.block_hashes, stored.block_hashes[1..]);
+    assert_eq!(
+        super::identity_event::engine_hash(&Value::Binary(vec![0, 42])),
+        Some(EngineBlockHash::U64(42))
+    );
+    assert_eq!(
+        super::identity_event::engine_hash(&Value::from("0x2a")),
+        Some(EngineBlockHash::U64(42))
+    );
+    let indexer = identity_indexer();
+    let identity = identity_for(None, None);
+    for (event, expected) in events.iter().zip([2, 1]) {
+        apply_vllm_event(
+            &indexer,
+            event,
+            "identity-model",
+            "default",
+            "engine",
+            0,
+            &[StorageMedium::Npu],
+            MatchMode::None,
+            &None,
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            identity_coverage(&indexer, &identity, &[1, 2, 3, 4], StorageMedium::Npu),
+            expected
+        );
+    }
+}
+
+#[test]
+fn v1_root_events_isolate_nine_adapter_and_salt_combinations() {
+    for name in [None, Some("adapter-a"), Some("adapter-b")] {
+        for salt in [None, Some("salt-a"), Some("salt-b")] {
+            let indexer = identity_indexer();
+            apply_identity_wire(&indexer, &identity_root_event(name, salt)).unwrap();
+            for query_name in [None, Some("adapter-a"), Some("adapter-b")] {
+                for query_salt in [None, Some("salt-a"), Some("salt-b")] {
+                    assert_eq!(
+                        identity_coverage(
+                            &indexer,
+                            &identity_for(query_name, query_salt),
+                            &[1, 2],
+                            StorageMedium::Npu
+                        ),
+                        u32::from(name == query_name && salt == query_salt),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn v1_continuation_uses_original_token_hash_and_requires_existing_parent() {
+    let indexer = identity_indexer();
+    let identity = identity_for(Some("adapter"), Some("salt"));
+    apply_identity_wire(
+        &indexer,
+        &identity_root_event(Some("adapter"), Some("salt")),
+    )
+    .unwrap();
+    let mut continuation = identity_root_event(Some("adapter"), None);
+    continuation["parent_block_hash"] = 100.into();
+    continuation["block_hashes"] = serde_json::json!([101]);
+    continuation["token_ids"] = serde_json::json!([3, 4]);
+    apply_identity_wire(&indexer, &continuation).unwrap();
+    assert_eq!(
+        identity_coverage(&indexer, &identity, &[1, 2, 3, 4], StorageMedium::Npu),
+        2
+    );
+    continuation["parent_block_hash"] = 999.into();
+    continuation["block_hashes"] = serde_json::json!([102]);
+    continuation["token_ids"] = serde_json::json!([5, 6]);
+    assert!(apply_identity_wire(&indexer, &continuation).is_err());
+    assert_eq!(
+        identity_coverage(&indexer, &identity, &[1, 2, 3, 4, 5, 6], StorageMedium::Npu),
+        2
+    );
+}
+
+#[test]
+fn v1_rejects_unknown_root_evidence_and_non_text_shapes() {
+    let root = identity_root_event(None, None);
+    let mut invalid = Vec::new();
+    for field in [
+        "parent_block_hash",
+        "lora_name",
+        "extra_keys",
+        "kv_cache_spec_kind",
+    ] {
+        let mut event = root.clone();
+        event.as_object_mut().unwrap().remove(field);
+        invalid.push(event);
+    }
+    for (field, value) in [
+        ("extra_keys", serde_json::json!(null)),
+        ("extra_keys", serde_json::json!([])),
+        ("extra_keys", serde_json::json!([[["image", 0]]])),
+        ("extra_keys", serde_json::json!([["salt", "unexpected"]])),
+        ("block_size", serde_json::json!(0)),
+        ("block_size", serde_json::json!(4)),
+        (
+            "kv_cache_spec_kind",
+            serde_json::json!("FutureAttentionType"),
+        ),
+        ("block_hashes", serde_json::json!([100, false])),
+        ("block_hashes", serde_json::json!([100, 101])),
+        ("token_ids", serde_json::json!([1, false, 2])),
+    ] {
+        let mut event = root.clone();
+        event[field] = value;
+        invalid.push(event);
+    }
+    for event in invalid {
+        let indexer = identity_indexer();
+        apply_identity_wire(&indexer, &event).unwrap();
+        assert_eq!(
+            identity_coverage(
+                &indexer,
+                &identity_for(None, None),
+                &[1, 2],
+                StorageMedium::Npu
+            ),
+            0,
+            "{event}"
+        );
+    }
+}
+
+#[test]
+fn v1_hbm_store_remove_and_clear_do_not_require_group_selection() {
+    let identity = identity_for(None, Some("salt"));
+    for group in [None, Some(0), Some(7)] {
+        let indexer = identity_indexer();
+        let mut stored = identity_root_event(None, Some("salt"));
+        let mut removed = serde_json::json!({
+            "type": "BlockRemoved", "block_hashes": [100], "medium": "GPU"
+        });
+        if let Some(group) = group {
+            stored["group_idx"] = group.into();
+            removed["group_idx"] = group.into();
+        }
+        apply_identity_wire(&indexer, &stored).unwrap();
+        assert_eq!(
+            identity_coverage(&indexer, &identity, &[1, 2], StorageMedium::Npu),
+            1
+        );
+        assert_eq!(
+            identity_coverage(
+                &indexer,
+                &identity_for(None, None),
+                &[1, 2],
+                StorageMedium::Npu
+            ),
+            0
+        );
+        apply_identity_wire(&indexer, &removed).unwrap();
+        assert_eq!(
+            identity_coverage(&indexer, &identity, &[1, 2], StorageMedium::Npu),
+            0
+        );
+        apply_identity_wire(&indexer, &stored).unwrap();
+        apply_identity_wire(&indexer, &serde_json::json!({"type": "AllBlocksCleared"})).unwrap();
+        assert_eq!(
+            identity_coverage(&indexer, &identity, &[1, 2], StorageMedium::Npu),
+            0
+        );
+    }
+}
+
+#[test]
+fn v1_offload_uses_subscriber_once_and_preserves_confirmed_pool_content() {
+    use crate::identity::EngineBlockHash;
+
+    for targets in [[("engine", 0), ("other", 1)], [("other", 1), ("engine", 0)]] {
+        let indexer = identity_indexer();
+        let identity = identity_for(Some("adapter"), Some("salt"));
+        let wrong_identity = identity_for(Some("adapter"), Some("other-salt"));
+        let mut event = identity_root_event(Some("adapter"), Some("salt"));
+        apply_identity_wire(&indexer, &event).unwrap();
+        let entry = indexer.get_or_create("identity-model", "default");
+        let hashes = [EngineBlockHash::U64(100)];
+        let workers: Vec<_> = targets
+            .iter()
+            .map(|&(instance_id, dp_rank)| WorkerKey {
+                instance_id: instance_id.into(),
+                backend_id: instance_id.into(),
+                dp_rank,
+                medium: StorageMedium::Cpu,
+            })
+            .collect();
+        for worker in &workers {
+            entry.apply_identity_pool_store(worker, &hashes).unwrap();
+        }
+        let ip_index = HbmIpIndex::default();
+        ip_index.write().insert(
+            "engine".into(),
+            targets.iter().map(|&(id, dp)| (id.into(), dp)).collect(),
+        );
+        event["medium"] = "cpu".into();
+        apply_vllm_event(
+            &indexer,
+            &identity_wire_event(&event),
+            "identity-model",
+            "default",
+            "engine",
+            0,
+            &[StorageMedium::Npu],
+            MatchMode::IpOnly,
+            &Some(ip_index),
+            2,
+        )
+        .unwrap();
+        {
+            let state = entry.offload_pool_state.read();
+            assert!(state.offload.is_empty());
+            assert!(state.pending_pool.is_empty());
+            assert_eq!(state.content.len(), 1);
+        }
+        let mut local = compute_block_hash_for_seq(&[1, 2], 2);
+        local[0] = crate::hashing::compute_identity_root_hash(&identity, local[0]);
+        let overlap = entry.find_matches_by_hash(&local);
+        for worker in &workers {
+            assert_eq!(overlap.blocks.get(worker), Some(&1));
+        }
+        assert_eq!(
+            identity_coverage(&indexer, &wrong_identity, &[1, 2], StorageMedium::Cpu),
+            0
+        );
+        // CPU removal must retain the confirmed mapping for a later Disk store.
+        entry.apply_identity_remove(&workers, &hashes).unwrap();
+        let disk = WorkerKey {
+            medium: StorageMedium::Disk,
+            ..workers[0].clone()
+        };
+        entry.apply_identity_pool_store(&disk, &hashes).unwrap();
+        assert_eq!(
+            identity_coverage(&indexer, &identity, &[1, 2], StorageMedium::Disk),
+            1
+        );
+        assert_eq!(
+            identity_coverage(&indexer, &wrong_identity, &[1, 2], StorageMedium::Disk),
+            0
+        );
     }
 }

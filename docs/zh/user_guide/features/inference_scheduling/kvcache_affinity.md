@@ -114,6 +114,38 @@ KV Cache 亲和性调度结合缓存前缀命中和当前负载，为请求选�
 
     以下以本文的 **K8s Deployer + vLLM** 部署为例，配置合并到已有 `user_config.json`。`scheduler_config` 位于 `motor_coordinator_config` 下，`kv_conductor_config` 写在顶层。
 
+    使用 LoRA 或 `cache_salt` 身份隔离时，在同一个顶层对象中加入以下字段：
+
+    ```json
+    {
+      "kv_conductor_config": {
+        "http_server_port": 13333,
+        "identity_mode": "v1"
+      }
+    }
+    ```
+
+    `identity_mode` 可选 `legacy` 或 `v1`，未填写时保持 `legacy`。身份隔离不依赖 group 编号，
+    不需要配置主组，也不自动选组。Coordinator 与 Conductor 应使用同一份配置；切换模式后重新启动
+    Conductor，以重建内存索引。`v1` 查询只有收到 `X-KV-Identity-Protocol: 1` 才采纳缓存结果。
+
+    本版本支持已核对的普通文本事件；HBM 仍校验受支持的注意力类型
+    （FullAttention、MlaAttention、SinkFullAttention）、身份信息与对应 worker 注册一致的事件 block_size。
+    注册和查询的 block_size 一致性由既有部署与调用方保证，身份模式不建立全局布局绑定。
+    CPU offload 不携带 group 时，仅适用于已确认的单注意力组模型。
+    多组/混合注意力的这类 CPU 事件、缺少完整 tokens 或完整 engine hash 的格式不在支持范围。
+    多实例继续沿用现有索引对一致 engine hash 的要求：所有引擎使用相同哈希算法，并在启动环境中
+    显式设置相同的 `PYTHONHASHSEED`（例如 `0`）；Motor 继承环境，但不会自动设置此值。
+    LoRA 名称必须与实际加载名称一致，同名适配器须对应相同权重；更新权重时使用新名称。
+
+    K8s 的独立 Deployment、InferServiceSet、RoleBasedGroup（RBG）及 Slurm 部署会将身份模式传入
+    `KV_CONDUCTOR_IDENTITY_MODE`。启动脚本仅在启用 `v1` 时追加 `--identity-mode v1`；
+    默认或显式配置 `legacy` 时沿用原启动参数。直接启动 `v1` 时使用：
+
+    ```bash
+    python -m motor.kv_conductor --identity-mode v1
+    ```
+
     **表 1** 必须配置或核对的参数
 
     | 参数 | 说明 |

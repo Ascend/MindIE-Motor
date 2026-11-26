@@ -991,6 +991,7 @@ async fn test_query_msgpack_endpoint() {
     register_and_seed(&client, &base_url).await;
 
     let req = kv_conductor::QueryRequest {
+        cache_identity: None,
         model: "msgpack-model".into(),
         block_size: 4,
         token_ids: (1..=8).collect(),
@@ -1052,6 +1053,7 @@ async fn test_query_by_hash_msgpack_endpoint() {
     register_and_seed(&client, &base_url).await;
 
     let req = kv_conductor::QueryByHashRequest {
+        cache_identity: None,
         model: "msgpack-model".into(),
         block_size: 4,
         block_hashes: vec![
@@ -1092,6 +1094,7 @@ async fn test_query_msgpack_error_paths() {
 
     // 404: unregistered model, error must come back as msgpack.
     let req = kv_conductor::QueryRequest {
+        cache_identity: None,
         model: "no-such-model".into(),
         block_size: 4,
         token_ids: vec![1, 2, 3, 4],

@@ -28,6 +28,7 @@ from lib.generator.kv_cache_store import (
     resolve_external_master,
     split_plain_master_address,
 )
+from lib.generator.kv_conductor import gen_kv_conductor_identity_env, normalize_kv_conductor_config
 from lib.generator.storage import build_storage_pvc_docs
 from lib.prepare_utils import configmap_assets
 from lib.rbg.config import (
@@ -114,9 +115,10 @@ def render_configmap(
     env.setdefault("motor_engine_union_env", dict(env.get(C.MOTOR_ENGINE_PREFILL_ENV, {})))
     conductor_port = config.get(C.KV_CONDUCTOR_CONFIG, {}).get(C.KV_CONDUCTOR_PORT, 0)
     if conductor_port:
-        env.setdefault("motor_kv_conductor_env", {})[C.ENV_KV_CONDUCTOR_PORT] = integer(
-            conductor_port, "kv_conductor port", 1
-        )
+        conductor = normalize_kv_conductor_config(config)
+        conductor_env = env.setdefault("motor_kv_conductor_env", {})
+        conductor_env[C.ENV_KV_CONDUCTOR_PORT] = integer(conductor_port, "kv_conductor port", 1)
+        conductor_env.update({item[C.NAME]: item[C.VALUE] for item in gen_kv_conductor_identity_env(conductor)})
     data = {name: path.read_text(encoding="utf-8") for path, name in configmap_assets(C.RBG_DEPLOYER_ROOT)}
     for filename, functions in C.RBG_FUNCTIONS.items():
         for section, function in functions:

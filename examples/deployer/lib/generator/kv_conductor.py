@@ -22,13 +22,25 @@ from lib.generator import k8s_utils
 
 def normalize_kv_conductor_config(user_config):
     kv_config = user_config.get(C.KV_CONDUCTOR_CONFIG)
-    if not isinstance(kv_config, dict):
-        raise ValueError(f"Missing or invalid '{C.KV_CONDUCTOR_CONFIG}' in user config")
+    _validate_kv_conductor_config(kv_config)
     return kv_config
 
 
+def _validate_kv_conductor_config(kv_config):
+    if not isinstance(kv_config, dict):
+        raise ValueError(f"Missing or invalid '{C.KV_CONDUCTOR_CONFIG}' in user config")
+    identity_mode = kv_config.get("identity_mode", "legacy")
+    if identity_mode not in ("legacy", "v1"):
+        raise ValueError("kv_conductor_config.identity_mode must be 'legacy' or 'v1'")
+
+
+def gen_kv_conductor_identity_env(kv_conductor_config):
+    return [{C.NAME: "KV_CONDUCTOR_IDENTITY_MODE", C.VALUE: kv_conductor_config.get("identity_mode", "legacy")}]
+
+
 def generate_yaml_kv_conductor(input_yaml, output_file, user_config, kv_conductor_config):
-    logger.info(f"Generating YAML from {input_yaml} to {output_file}")
+    logger.info("Generating YAML from %s to %s", input_yaml, output_file)
+    _validate_kv_conductor_config(kv_conductor_config)
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     data = load_yaml(input_yaml, False)
 
@@ -71,6 +83,7 @@ def generate_yaml_kv_conductor(input_yaml, output_file, user_config, kv_conducto
     # the kv-conductor endpoint for /register and /query calls.
     kv_conductor_service_name = kv_conductor_config.get("conductor_service", "kv-conductor")
     kv_conductor_env = [{C.NAME: C.ENV_KV_CONDUCTOR_SERVICE, C.VALUE: kv_conductor_service_name}]
+    kv_conductor_env.extend(gen_kv_conductor_identity_env(kv_conductor_config))
     container[C.ENV].extend(kv_conductor_env)
     kv_store_env = [{C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_store_service}]
     container[C.ENV].extend(kv_store_env)

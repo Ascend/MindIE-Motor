@@ -11,17 +11,30 @@
 import subprocess
 import sys
 
+import pytest
 
-def test_models_and_domain_public_api_import_in_fresh_interpreter():
+
+@pytest.mark.parametrize(
+    "first_import",
+    [
+        "motor.coordinator.models.request",
+        "motor.config.coordinator",
+        "motor.coordinator.api_client.conductor_api_client",
+    ],
+)
+def test_models_and_domain_public_api_import_in_fresh_interpreter(first_import):
     """Models may load first without domain package exports causing a circular import."""
     code = """
 from motor.coordinator.models.request import RequestInfo
+from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import InstanceReadiness, RequestManager, calculate_demand_workload
 
 assert RequestInfo.__name__ == "RequestInfo"
+assert CoordinatorConfig.__name__ == "CoordinatorConfig"
 assert InstanceReadiness.__name__ == "InstanceReadiness"
 assert RequestManager.__name__ == "RequestManager"
 assert calculate_demand_workload.__name__ == "calculate_demand_workload"
 """
 
+    code = f"import importlib\nimportlib.import_module({first_import!r})\n" + code
     subprocess.run([sys.executable, "-c", code], check=True)

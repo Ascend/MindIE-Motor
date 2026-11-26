@@ -87,7 +87,11 @@ def test_token_only_retry_replays_tokens_reduces_budget_and_obfuscates_engine_in
         TokenizedRequest(
             prompt_token_ids=[10, 20],
             tokenizer_source=TokenizerSource.RENDER,
-            metadata={"sampling_params": {"max_tokens": 8, "temperature": 0.5}},
+            metadata={
+                "model": "sql@v1",
+                "cache_salt": "session",
+                "sampling_params": {"max_tokens": 8, "temperature": 0.5},
+            },
         )
     ]
     req_info.effective_entry_api.return_value = "v1/completions"
@@ -106,6 +110,8 @@ def test_token_only_retry_replays_tokens_reduces_budget_and_obfuscates_engine_in
     assert replay.prompt_token_ids == [10, 20, 30, 31]
     assert replay.engine_prompt_token_ids == expected_engine_ids
     assert replay.metadata["sampling_params"] == {"max_tokens": 6, "temperature": 0.5}
+    assert replay.metadata["model"] == "sql@v1"
+    assert replay.metadata["cache_salt"] == "session"
     assert req_info.tokenized_requests[0].metadata["sampling_params"]["max_tokens"] == 8
     if obfuscate:
         req_info._token_obfuscation_service.obfuscate.assert_called_once_with([10, 20, 30, 31])

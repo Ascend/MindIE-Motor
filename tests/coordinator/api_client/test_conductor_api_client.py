@@ -22,6 +22,7 @@ from motor.coordinator.api_client.conductor_api_client import (
     ConductorApiClient,
     conductor_instance_id,
 )
+from motor.coordinator.models.cache_identity import CacheIdentity
 
 # ------------------------------------------------------------------
 # Helpers
@@ -653,6 +654,7 @@ def _mock_successful_query(
     *,
     encoding="msgpack",
     response_content_type=None,
+    identity_protocol=None,
 ):
     """Mock a successful /query round trip.
 
@@ -667,9 +669,9 @@ def _mock_successful_query(
         response_content_type = MSGPACK_CONTENT_TYPE if encoding == "msgpack" else "application/json"
 
     fake_resp = Mock()
-    fake_resp.headers.get.side_effect = lambda key, default=None: (
-        response_content_type if key.lower() == "content-type" else default
-    )
+    fake_resp.headers = {"Content-Type": response_content_type}
+    if identity_protocol is not None:
+        fake_resp.headers["X-KV-Identity-Protocol"] = identity_protocol
     fake_resp.content = (
         msgspec.msgpack.encode(response) if response_content_type.startswith(MSGPACK_CONTENT_TYPE) else b""
     )
@@ -739,6 +741,41 @@ def test_query_json_encoding_config(mock_http):
     assert json_data["token_ids"] == [1, 2, 3]
 
 
+@pytest.mark.parametrize("encoding", ["json", "msgpack"])
+@pytest.mark.parametrize("protocol", [None, "2", "1"])
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_identity_query_requires_confirmation_and_keeps_shared_wire_fields(mock_http, encoding, protocol):
+    identity = CacheIdentity(schema_version=1, adapter={"kind": "lora", "name": "sql"}, cache_salt="session")
+    expected = {TENANT_ID: {"vllm-prefill-1": {"longest_matched": 128, "DP": {"0": 1}}}}
+    _mock_successful_query(mock_http, expected, encoding=encoding, identity_protocol=protocol)
+    with _setup_reg_config("Mooncake", query_encoding=encoding, identity_mode="v1"):
+        result = ConductorApiClient.query_conductor([_make_mock_instance(1)], [1, 2], identity)
+    assert result == (expected if protocol == "1" else {})
+    assert ConductorApiClient._query_failures == 0
+    client = mock_http.return_value.__enter__.return_value
+    payload = (
+        msgspec.msgpack.decode(client.post_bytes.call_args.args[1])
+        if encoding == "msgpack"
+        else client.do_post.call_args.kwargs["data"]
+    )
+    assert payload == {
+        "model": "test-model",
+        "block_size": 128,
+        "token_ids": [1, 2],
+        "cache_identity": identity.model_dump(),
+    }
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_identity_query_skips_unknown_identity_and_accepts_confirmed_zero_hits(mock_http):
+    _mock_successful_query(mock_http, {TENANT_ID: {}}, identity_protocol="1")
+    identity = CacheIdentity(schema_version=1, adapter={"kind": "base"}, cache_salt=None)
+    with _setup_reg_config("Mooncake", identity_mode="v1"):
+        assert ConductorApiClient.query_conductor([_make_mock_instance(1)], [1, 2]) == {}
+        mock_http.assert_not_called()
+        assert ConductorApiClient.query_conductor([_make_mock_instance(1)], [1, 2], identity) == {TENANT_ID: {}}
+
+
 @patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
 def test_query_legacy_json_response_fallback(mock_http):
     """A msgpack request answered by a legacy JSON-only conductor still
@@ -778,6 +815,7 @@ def _setup_reg_config(
     disk_endpoint="",
     replay_endpoint="",
     query_encoding="msgpack",
+    identity_mode="legacy",
 ):
     """Patch ConductorApiClient's config for registration testing."""
     from motor.config.coordinator import KvConductorConfig, SchedulerConfig
@@ -791,9 +829,12 @@ def _setup_reg_config(
         disk_endpoint=disk_endpoint,
         replay_endpoint=replay_endpoint,
         query_encoding=query_encoding,
+        identity_mode=identity_mode,
     )
     sched = SchedulerConfig(kv_conductor_config=reg)
     ConductorApiClient._pool_registered = False
+    ConductorApiClient._query_failures = 0
+    ConductorApiClient._query_cool_until = 0
     ConductorApiClient._yuanrong_nodes_registered = set()
     ConductorApiClient._yuanrong_node_refs = {}
     return patch.object(

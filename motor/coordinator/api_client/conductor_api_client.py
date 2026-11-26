@@ -20,6 +20,7 @@ from motor.common.http.http_client import SafeHTTPSClient
 from motor.common.utils.env import Env
 from motor.common.utils.net import format_address, format_host
 from motor.config.coordinator import CoordinatorConfig
+from motor.coordinator.models.cache_identity import CacheIdentity
 
 
 TENANT_ID = "default"
@@ -33,6 +34,7 @@ _STORE_BACKEND_NAMES = ("Mooncake", "Memcache", "YuanRong")
 
 # Content-Type for MessagePack query bodies / responses.
 MSGPACK_CONTENT_TYPE = "application/msgpack"
+IDENTITY_PROTOCOL_HEADER = "X-KV-Identity-Protocol"
 
 
 def encode_query_msgpack(query_data: dict[str, Any]) -> bytes:
@@ -665,7 +667,9 @@ class ConductorApiClient:
         return response.json()
 
     @classmethod
-    def query_conductor(cls, instances: list[Instance], encoded_ids: list[int]) -> dict[str, Any]:
+    def query_conductor(
+        cls, instances: list[Instance], encoded_ids: list[int], cache_identity: CacheIdentity | None = None
+    ) -> dict[str, Any]:
         """Query KV conductor for prefix cache matched blocks.
 
         Wire encoding is selected by ``kv_conductor_config.query_encoding``
@@ -692,11 +696,15 @@ class ConductorApiClient:
             )
 
         reg = cls._kv_reg()
+        if reg.identity_mode == "v1" and cache_identity is None:
+            return {}
         query_data: dict = {
             "model": instances[0].model_name,
             "block_size": reg.block_size,
             "token_ids": encoded_ids,
         }
+        if reg.identity_mode == "v1":
+            query_data["cache_identity"] = cache_identity.model_dump()
         if TENANT_ID != "default":
             query_data["tenant_id"] = TENANT_ID
 
@@ -719,6 +727,8 @@ class ConductorApiClient:
                     response = client.post_bytes("/query", body, content_type=content_type)
                 else:
                     response = client.do_post("/query", data=query_data)
+                if reg.identity_mode == "v1" and response.headers.get(IDENTITY_PROTOCOL_HEADER) != "1":
+                    return {}
                 parsed = cls._decode_query_response(response, encoding)
                 # INFO: full match result (per-instance longest_matched / per-DP
                 # matched blocks) is key observability data for KV-affinity tuning.

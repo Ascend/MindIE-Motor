@@ -24,6 +24,9 @@ import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
+
+from motor.config.coordinator import CoordinatorConfig
 
 # Keep the same package initialization order as existing router tests.
 from motor.coordinator.domain import InstanceReadiness  # noqa: F401
@@ -121,6 +124,39 @@ async def test_create_request_info_logs_request_arrive(caplog):
     assert len(records) == 1
     assert "req_id=req-arrive-1" in records[0]
     assert f"{arrive_ts:.6f}" in records[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model,kind", [("base", "base"), ("sql", "lora"), ("unknown", None)])
+@pytest.mark.parametrize("salt", [None, "session"])
+async def test_ingress_resolves_identity_without_rewriting_engine_fields(model, kind, salt):
+    config = CoordinatorConfig()
+    config.scheduler_config.kv_conductor_config.identity_mode = "v1"
+    config.request_model_map = {"base": {"kind": "base"}, "sql": {"kind": "lora", "name": "sql"}}
+    payload = {"model": model, "cache_salt": salt, "prompt": "hello"}
+    manager = AsyncMock()
+    manager.generate_request_id.return_value = "identity-request"
+    header = _b64_hint({"session": {"session_id": "identity-session"}})
+    raw = _IngressRequest(b"{}", payload, headers={"x-agent-hint": header})
+    result = await __create_request_info(raw, manager, config=config)
+    assert result.req_data == payload
+    assert result.req_data["agent_hint"]["session_id"] == "identity-session"
+    if kind is None:
+        assert result.cache_identity is None
+    else:
+        assert result.cache_identity.adapter.kind == kind
+        assert result.cache_identity.cache_salt == salt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fields", [{"cache_salt": ""}, {"cache_salt": 1}, {"model": []}, {"model": ""}])
+async def test_ingress_rejects_invalid_identity_fields(fields):
+    config = CoordinatorConfig()
+    config.scheduler_config.kv_conductor_config.identity_mode = "v1"
+    payload = {"model": "base", "prompt": "hello", **fields}
+    with pytest.raises(HTTPException) as error:
+        await __create_request_info(_IngressRequest(b"{}", payload), AsyncMock(), config=config)
+    assert error.value.status_code == 400
 
 
 def _b64_hint(payload: dict) -> str:

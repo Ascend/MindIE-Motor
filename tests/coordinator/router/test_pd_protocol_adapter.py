@@ -64,7 +64,8 @@ def test_adapter_registry_is_static():
 def test_vllm_prefill_request_matches_native_handoff_contract_without_mutation():
     adapter = VllmProtocolAdapter()
     request = {
-        "model": "glm",
+        "model": "sql@v1",
+        "cache_salt": "session",
         "messages": [{"role": "user", "content": "hello"}],
         "stream": True,
         "stream_options": {"include_usage": True},
@@ -81,6 +82,8 @@ def test_vllm_prefill_request_matches_native_handoff_contract_without_mutation()
     assert request == original
     assert engine_request.api == "/v1/chat/completions"
     assert engine_request.body["request_id"] == "engine-1"
+    assert engine_request.body["model"] == "sql@v1"
+    assert engine_request.body["cache_salt"] == "session"
     assert "rid" not in engine_request.body
     assert engine_request.body["stream"] is False
     assert engine_request.body["max_tokens"] == 1
@@ -226,6 +229,7 @@ DECODE_KV = {"do_remote_prefill": True, "remote_host": "10.0.0.1"}
 )
 def test_vllm_tokenized_builders_preserve_metadata_and_shape(builder, expected_kv, expected_max_tokens):
     metadata = _token_metadata()
+    metadata.update(model="sql@v1", cache_salt="session")
     original = deepcopy(metadata)
     request = builder(VllmProtocolAdapter(), [10, 20], metadata, _context())
 
@@ -237,6 +241,8 @@ def test_vllm_tokenized_builders_preserve_metadata_and_shape(builder, expected_k
     assert request.body["sampling_params"]["max_tokens"] == expected_max_tokens
     assert request.body["sampling_params"]["extra_args"]["render_flag"] == "keep"
     assert request.body["features"] == metadata["features"]
+    assert request.body["model"] == "sql@v1"
+    assert request.body["cache_salt"] == "session"
     if expected_max_tokens == 1:
         assert request.body["sampling_params"]["min_tokens"] == 1
     if expected_kv is None:
@@ -312,6 +318,8 @@ def test_vllm_prefill_response_rejects_invalid_handoff(response, message):
 def test_vllm_decode_restores_original_generation_budget_and_copies_ticket():
     adapter = VllmProtocolAdapter()
     request = {
+        "model": "sql@v1",
+        "cache_salt": "session",
         "stream": True,
         "max_tokens": 128,
         "max_completion_tokens": 96,
@@ -331,6 +339,8 @@ def test_vllm_decode_restores_original_generation_budget_and_copies_ticket():
     assert engine_request.body["stream"] is True
     assert engine_request.body["max_tokens"] == 128
     assert engine_request.body["max_completion_tokens"] == 96
+    assert engine_request.body["model"] == "sql@v1"
+    assert engine_request.body["cache_salt"] == "session"
     assert engine_request.body["kv_transfer_params"] == ticket
     engine_request.body["kv_transfer_params"]["private"]["blocks"].append(8)
     assert ticket["private"]["blocks"] == [7]

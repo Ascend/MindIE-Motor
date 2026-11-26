@@ -27,6 +27,7 @@
 
 use xxhash_rust::xxh3;
 
+use crate::identity::CacheIdentity;
 use crate::protocols::LocalBlockHash;
 
 /// Seed for XXH3 hashing (same value as NVIDIA Dynamo kv-router for wire
@@ -37,6 +38,17 @@ pub const XXH3_SEED: u64 = 1337;
 #[inline]
 pub fn compute_block_hash(data: &[u8]) -> LocalBlockHash {
     LocalBlockHash(xxh3::xxh3_64_with_seed(data, XXH3_SEED))
+}
+
+/// Mix a validated identity into the complete prefix's first local hash.
+pub fn compute_identity_root_hash(
+    identity: &CacheIdentity,
+    token_hash: LocalBlockHash,
+) -> LocalBlockHash {
+    let mut bytes = b"kv-conductor/root-identity/v1\0".to_vec();
+    identity.encode_into(&mut bytes);
+    bytes.extend_from_slice(&token_hash.0.to_le_bytes());
+    compute_block_hash(&bytes)
 }
 
 /// Minimum number of blocks to trigger parallel hash computation via rayon.
@@ -135,6 +147,80 @@ fn hash_u32_chunk(chunk: &[u32]) -> LocalBlockHash {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::AdapterIdentity;
+
+    #[test]
+    fn identity_root_matches_independent_libxxhash_vectors() {
+        // Generated with libxxhash's C XXH3_64bits_withSeed, including UTF-8 lengths.
+        for (name, salt, token, expected) in [
+            (None, None, 0, 0x471a_c7ae_f774_1ee1),
+            (
+                Some("sql-helper@v1"),
+                Some("session-123"),
+                123,
+                0xb04e_4212_a4d6_9c5d,
+            ),
+            (
+                Some("适配器"),
+                Some("盐"),
+                0xfedc_ba98_7654_3210,
+                0xb59f_8b85_3765_2d62,
+            ),
+        ] {
+            let identity = CacheIdentity {
+                schema_version: 1,
+                adapter: name.map_or(AdapterIdentity::Base, |name| AdapterIdentity::Lora {
+                    name: name.into(),
+                }),
+                cache_salt: salt.map(str::to_owned),
+            };
+            assert_eq!(
+                compute_identity_root_hash(&identity, LocalBlockHash(token)),
+                LocalBlockHash(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn identity_root_encoding_separates_adapter_salt_and_token_hash() {
+        let raw = compute_block_hash_for_seq(&[1, 2, 3, 4], 4)[0];
+        let mut roots = std::collections::HashSet::new();
+        for adapter in [
+            AdapterIdentity::Base,
+            AdapterIdentity::Lora { name: "a".into() },
+            AdapterIdentity::Lora { name: "A".into() },
+        ] {
+            for salt in [None, Some("a"), Some("A")] {
+                let identity = CacheIdentity {
+                    schema_version: 1,
+                    adapter: adapter.clone(),
+                    cache_salt: salt.map(str::to_owned),
+                };
+                let root = compute_identity_root_hash(&identity, raw);
+                assert_ne!(root, raw);
+                assert_eq!(root, compute_identity_root_hash(&identity, raw));
+                assert_ne!(
+                    root,
+                    compute_identity_root_hash(&identity, LocalBlockHash(raw.0 + 1))
+                );
+                assert!(roots.insert(root));
+            }
+        }
+        let a = CacheIdentity {
+            schema_version: 1,
+            adapter: AdapterIdentity::Lora { name: "a".into() },
+            cache_salt: Some("bc".into()),
+        };
+        let b = CacheIdentity {
+            schema_version: 1,
+            adapter: AdapterIdentity::Lora { name: "ab".into() },
+            cache_salt: Some("c".into()),
+        };
+        assert_ne!(
+            compute_identity_root_hash(&a, raw),
+            compute_identity_root_hash(&b, raw)
+        );
+    }
 
     #[test]
     fn test_compute_block_hash_empty() {

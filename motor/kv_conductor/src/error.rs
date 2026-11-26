@@ -11,6 +11,9 @@
 /// Errors returned by the KV conductor service.
 #[derive(Debug, thiserror::Error)]
 pub enum KvConductorError {
+    #[error("invalid cache identity: {0}")]
+    InvalidIdentity(String),
+
     #[error("instance {instance_id} not found")]
     InstanceNotFound { instance_id: String },
 

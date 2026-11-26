@@ -19,7 +19,7 @@ from typing import Any
 
 from motor.common.logger import get_logger, reconfigure_logging
 from motor.common.utils.env import Env
-from motor.config.resolver import ConfigResolver
+from motor.config.resolver import ConfigResolver, normalize_keys
 from motor.config.standby import LOCK_SLASH
 
 logger = get_logger(__name__)
@@ -240,6 +240,58 @@ def resolve_engine_model_paths(user_config_data: dict[str, Any]) -> list[str]:
     return paths
 
 
+def _lora_name(module: str | dict[str, Any], field: str) -> str:
+    if isinstance(module, str) and module.lstrip().startswith("{"):
+        try:
+            module = json.loads(module)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{field} contains invalid JSON: {exc}") from exc
+
+    if isinstance(module, dict):
+        name, path = module.get("name"), module.get("path")
+    elif isinstance(module, str) and module.count("=") == 1 and "," not in module:
+        name, path = module.split("=")
+    else:
+        raise ValueError(f"{field} must be name=path or a JSON object with name and path")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"{field} must declare a nonempty name")
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError(f"{field} must declare a nonempty path")
+    return name
+
+
+def resolve_request_model_map(user_config_data: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Map configured vLLM model aliases to Base or their actual loaded LoRA name."""
+    result: dict[str, dict[str, str]] = {}
+    for role in ("prefill", "decode", "union"):
+        section_name = f"motor_engine_{role}_config"
+        section = user_config_data.get(section_name)
+        if not isinstance(section, dict) or section.get("engine_type", "vllm").lower() != "vllm":
+            continue
+        engine = normalize_keys(section.get("engine_config", {}))
+        names = ConfigResolver(section).get_model_name()
+        if isinstance(names, str):
+            names = [names] if names else []
+        if not isinstance(names, list) or any(not isinstance(name, str) or not name for name in names):
+            raise ValueError("served_model_name must be a string or a list of nonempty strings")
+        mapping = {name: {"kind": "base"} for name in names}
+        if engine.get("enable_lora"):
+            modules = engine.get("lora_modules", [])
+            field = f"{section_name}.engine_config.lora_modules"
+            if not isinstance(modules, list):
+                raise ValueError(f"{field} must be a list")
+            for index, module in enumerate(modules):
+                name = _lora_name(module, f"{field}[{index}]")
+                if name in mapping:
+                    raise ValueError(f"LoRA name {name!r} conflicts with a served base model")
+                mapping[name] = {"kind": "lora", "name": name}
+        for name, adapter in mapping.items():
+            if name in result and result[name] != adapter:
+                raise ValueError(f"Request model {name!r} has conflicting cache identities across engines")
+            result[name] = adapter
+    return result
+
+
 def _resolve_re_register_interval_sec(user_config_data: dict[str, Any]) -> int:
     motor_coordinator_config = user_config_data.get(ConfigKey.MOTOR_COORDINATOR.value)
     if not isinstance(motor_coordinator_config, dict):
@@ -402,7 +454,8 @@ def _redirect_prefill_kv_event_config(updated_config: dict[str, Any], user_confi
         top_level = user_config_data.get(KV_CONDUCTOR_CONFIG)
         if isinstance(top_level, dict):
             for key, value in top_level.items():
-                if value not in (None, "") and not reg.get(key):
+                # Coordinator validates identity_mode conflicts before merging that field.
+                if key != "identity_mode" and value not in (None, "") and not reg.get(key):
                     reg[key] = value
 
         # ── Backward compat: migrate old prefill_kv_event_config ──────

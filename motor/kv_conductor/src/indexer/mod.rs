@@ -40,9 +40,12 @@ use serde::Serialize;
 use crate::concurrent_tree::{ConcurrentRadixTree, PrefixMatch, WorkerLookup};
 use crate::error::KvConductorError;
 use crate::hashing::compute_block_hash_for_seq;
+use crate::identity::{CacheIdentity, IdentityConfig};
 use crate::lower_tier::{ContiguousHit, LowerTierContinuation, LowerTierIndexer};
 use crate::metrics::QueryObservation;
 use crate::protocols::*;
+
+mod root_identity;
 
 /// TTL for stale pending pool entries (60 seconds).
 const PENDING_TTL: std::time::Duration = std::time::Duration::from_secs(60);
@@ -108,7 +111,7 @@ impl TierBreakpoint {
 // ---------------------------------------------------------------------------
 
 /// Hash content shared by the timed offload and retained-content caches.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BlockContent {
     pub(crate) tokens_hash: u64,
     pub(crate) parent_hash: Option<u64>,
@@ -222,6 +225,7 @@ pub struct IndexerEntry {
     pub(crate) offload_pool_state: Arc<RwLock<OffloadPoolState>>,
 
     maintenance: CacheMaintenanceConfig,
+    identity_state: RwLock<root_identity::RootIdentityState>,
 }
 
 impl Default for IndexerEntry {
@@ -243,6 +247,7 @@ impl IndexerEntry {
             disk_tiers: Arc::new(LowerTierIndexer::new()),
             offload_pool_state: Arc::new(RwLock::new(OffloadPoolState::default())),
             maintenance,
+            identity_state: RwLock::new(root_identity::RootIdentityState::default()),
         }
     }
 
@@ -767,12 +772,14 @@ impl IndexerEntry {
 
     /// Run one complete maintenance pass for this model/tenant index.
     pub fn maintenance(&self) -> usize {
+        let mut identity_state = self.identity_state.write();
         let mut pruned = self.sweep_stale_caches(
             self.maintenance.pending_ttl,
             self.maintenance.content_ttl,
             self.maintenance.offload_ttl,
         );
         pruned += self.hbm_tree.sweep_stale_nodes();
+        self.prune_identity_state(&mut identity_state);
         pruned
     }
 
@@ -850,6 +857,7 @@ impl IndexerEntry {
     /// Remove all cache entries for a given instance and DP rank across
     /// **all** storage media.
     pub fn remove_worker_all_media(&self, instance_id: &str, dp_rank: u32) {
+        let mut identity_state = self.identity_state.write();
         // HBM tree
         {
             let mut lookups = self.lookups.write();
@@ -887,6 +895,7 @@ impl IndexerEntry {
                 !entries.is_empty()
             });
         }
+        self.prune_identity_state(&mut identity_state);
     }
 
     /// Get the total number of cached blocks across all workers and media.
@@ -940,6 +949,7 @@ impl IndexerEntry {
 pub struct Indexer {
     entries: DashMap<IndexerKey, Arc<IndexerEntry>>,
     maintenance: CacheMaintenanceConfig,
+    identity_config: IdentityConfig,
 }
 
 impl Indexer {
@@ -949,10 +959,22 @@ impl Indexer {
     }
 
     pub fn with_config(maintenance: CacheMaintenanceConfig) -> Self {
+        Self::with_identity_config(maintenance, IdentityConfig::default())
+    }
+
+    pub fn with_identity_config(
+        maintenance: CacheMaintenanceConfig,
+        identity_config: IdentityConfig,
+    ) -> Self {
         Self {
             entries: DashMap::new(),
             maintenance,
+            identity_config,
         }
+    }
+
+    pub fn identity_config(&self) -> IdentityConfig {
+        self.identity_config
     }
 
     /// Get or create an indexer entry for the given model and tenant.
@@ -1038,6 +1060,14 @@ impl Indexer {
         token_ids: &[i64],
         block_size: u32,
     ) -> (Result<QueryResponse, KvConductorError>, QueryObservation) {
+        if self.identity_config.enabled() {
+            return (
+                Err(KvConductorError::InvalidIdentity(
+                    "use an identity-bearing query in v1 mode".into(),
+                )),
+                QueryObservation::default(),
+            );
+        }
         let t0 = std::time::Instant::now();
 
         let t_hash = std::time::Instant::now();
@@ -1072,55 +1102,23 @@ impl Indexer {
             );
         };
 
-        let t_match = std::time::Instant::now();
-        let (overlap, medium_ends) = entry.find_matches_with_coverage(&block_hashes);
-        let match_elapsed = t_match.elapsed();
-        obs.match_secs = match_elapsed.as_secs_f64();
-
-        tracing::debug!(
-            num_tokens = token_ids.len(),
+        let resp = self.match_and_build_profiled(
+            &entry,
+            &block_hashes,
+            model_name,
+            tenant_id,
             block_size,
-            num_hashes = block_hashes.len(),
-            hash_us,
-            matched_workers = overlap.blocks.len(),
-            "hash_computed"
+            &mut obs,
         );
-        let t_tree = t0.elapsed();
-
-        let t_build = std::time::Instant::now();
-        let resp = self.build_response(&overlap, &medium_ends, model_name, tenant_id, block_size);
-        obs.build_secs = t_build.elapsed().as_secs_f64();
-        let total = t0.elapsed();
-
-        // Longest per-medium coverage across workers, in blocks.
-        let npu_blocks = medium_ends.values().map(|m| m.npu).max().unwrap_or(0);
-        let cpu_blocks = medium_ends.values().map(|m| m.cpu).max().unwrap_or(0);
-        let disk_blocks = medium_ends.values().map(|m| m.disk).max().unwrap_or(0);
-        let any_blocks = medium_ends
-            .values()
-            .map(|m| m.npu.max(m.cpu).max(m.disk))
-            .max()
-            .unwrap_or(0);
-        let bs = u64::from(block_size);
-        let q_tokens = token_ids.len() as u64;
-        obs.best_hbm_blocks = u64::from(npu_blocks);
-        obs.best_cpu_blocks = u64::from(cpu_blocks);
-        obs.best_disk_blocks = u64::from(disk_blocks);
-        obs.best_any_blocks = u64::from(any_blocks);
-        obs.best_hbm_tokens = obs.best_hbm_blocks.saturating_mul(bs).min(q_tokens);
-        obs.best_cpu_tokens = obs.best_cpu_blocks.saturating_mul(bs).min(q_tokens);
-        obs.best_disk_tokens = obs.best_disk_blocks.saturating_mul(bs).min(q_tokens);
-        obs.best_any_tokens = obs.best_any_blocks.saturating_mul(bs).min(q_tokens);
-
         tracing::debug!(
             num_tokens = token_ids.len(),
             block_size,
             hash_us,
-            match_us = t_tree.as_micros(),
-            total_us = total.as_micros(),
-            npu_blocks,
-            cpu_blocks,
-            disk_blocks,
+            match_us = (obs.match_secs * 1e6) as u64,
+            total_us = t0.elapsed().as_micros(),
+            npu_blocks = obs.best_hbm_blocks,
+            cpu_blocks = obs.best_cpu_blocks,
+            disk_blocks = obs.best_disk_blocks,
             "query profile"
         );
         (resp, obs)
@@ -1144,6 +1142,14 @@ impl Indexer {
         tenant_id: &str,
         block_hashes: &[LocalBlockHash],
     ) -> (Result<QueryResponse, KvConductorError>, QueryObservation) {
+        if self.identity_config.enabled() {
+            return (
+                Err(KvConductorError::InvalidIdentity(
+                    "use an identity-bearing query in v1 mode".into(),
+                )),
+                QueryObservation::default(),
+            );
+        }
         let mut obs = QueryObservation {
             query_tokens: block_hashes.len() as u64,
             ..Default::default()
@@ -1159,35 +1165,56 @@ impl Indexer {
             );
         };
 
+        let resp =
+            self.match_and_build_profiled(&entry, block_hashes, model_name, tenant_id, 1, &mut obs);
+        (resp, obs)
+    }
+
+    fn match_and_build_profiled(
+        &self,
+        entry: &IndexerEntry,
+        hashes: &[LocalBlockHash],
+        model: &str,
+        tenant: &str,
+        block_size: u32,
+        obs: &mut QueryObservation,
+    ) -> Result<QueryResponse, KvConductorError> {
         let t_match = std::time::Instant::now();
-        let (overlap, medium_ends) = entry.find_matches_with_coverage(block_hashes);
+        let (overlap, ends) = entry.find_matches_with_coverage(hashes);
         obs.match_secs = t_match.elapsed().as_secs_f64();
+        tracing::debug!(
+            num_tokens = obs.query_tokens,
+            block_size,
+            num_hashes = hashes.len(),
+            hash_us = (obs.hash_secs * 1e6) as u64,
+            matched_workers = overlap.blocks.len(),
+            "hash_computed"
+        );
 
         let t_build = std::time::Instant::now();
-        // Default to 1 token per hash (no scaling) since we don't know the
-        // original block_size from the hash alone.
-        let resp = self.build_response(&overlap, &medium_ends, model_name, tenant_id, 1);
+        let resp = self.build_response(&overlap, &ends, model, tenant, block_size);
         obs.build_secs = t_build.elapsed().as_secs_f64();
 
-        let npu_blocks = medium_ends.values().map(|m| m.npu).max().unwrap_or(0);
-        let cpu_blocks = medium_ends.values().map(|m| m.cpu).max().unwrap_or(0);
-        let disk_blocks = medium_ends.values().map(|m| m.disk).max().unwrap_or(0);
-        let any_blocks = medium_ends
-            .values()
-            .map(|m| m.npu.max(m.cpu).max(m.disk))
-            .max()
-            .unwrap_or(0);
-        let q_len = block_hashes.len() as u64;
-        obs.best_hbm_blocks = u64::from(npu_blocks);
-        obs.best_cpu_blocks = u64::from(cpu_blocks);
-        obs.best_disk_blocks = u64::from(disk_blocks);
-        obs.best_any_blocks = u64::from(any_blocks);
-        obs.best_hbm_tokens = obs.best_hbm_blocks.min(q_len);
-        obs.best_cpu_tokens = obs.best_cpu_blocks.min(q_len);
-        obs.best_disk_tokens = obs.best_disk_blocks.min(q_len);
-        obs.best_any_tokens = obs.best_any_blocks.min(q_len);
-
-        (resp, obs)
+        // Longest per-medium coverage across workers, capped at the query length.
+        for end in ends.values() {
+            obs.best_hbm_blocks = obs.best_hbm_blocks.max(u64::from(end.npu));
+            obs.best_cpu_blocks = obs.best_cpu_blocks.max(u64::from(end.cpu));
+            obs.best_disk_blocks = obs.best_disk_blocks.max(u64::from(end.disk));
+        }
+        obs.best_any_blocks = obs
+            .best_hbm_blocks
+            .max(obs.best_cpu_blocks)
+            .max(obs.best_disk_blocks);
+        let covered_tokens = |blocks: u64| {
+            blocks
+                .saturating_mul(u64::from(block_size))
+                .min(obs.query_tokens)
+        };
+        obs.best_hbm_tokens = covered_tokens(obs.best_hbm_blocks);
+        obs.best_cpu_tokens = covered_tokens(obs.best_cpu_blocks);
+        obs.best_disk_tokens = covered_tokens(obs.best_disk_blocks);
+        obs.best_any_tokens = covered_tokens(obs.best_any_blocks);
+        resp
     }
 
     /// Snapshot indexer-wide block, cache, and active-worker counts for Prometheus gauges.

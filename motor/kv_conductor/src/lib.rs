@@ -20,6 +20,7 @@ pub mod concurrent_tree;
 pub mod error;
 pub mod events;
 pub mod hashing;
+pub mod identity;
 pub mod indexer;
 pub mod lower_tier;
 pub mod metrics;

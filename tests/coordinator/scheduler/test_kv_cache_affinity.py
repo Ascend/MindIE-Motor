@@ -31,6 +31,7 @@ from motor.coordinator.scheduler.policy.kv_cache_affinity import (
     TokenizerManager,
 )
 from motor.coordinator.models.request import RequestInfo
+from motor.coordinator.models.cache_identity import CacheIdentity
 from motor.coordinator.api_client.conductor_api_client import TENANT_ID
 from motor.coordinator.scheduler.policy.utils import (
     preprocess_input,
@@ -58,6 +59,26 @@ def _make_endpoint(ep_id: int, active_tokens: float = 0.0) -> Endpoint:
         business_port="8000",
         workload=Workload(active_tokens=active_tokens),
     )
+
+
+@patch("motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor")
+@patch.object(KvCacheAffinityPolicy, "_conductor_block_size", return_value=4)
+def test_affinity_sends_resolved_identity_and_still_skips_short_prompts(_block_size, query):
+    request = RequestInfo(
+        req_id="identity",
+        req_data={"model": "sql", "cache_salt": "session"},
+        req_len=1,
+        api="v1/completions",  # gitleaks:allow - public API route
+        token_ids=[1, 2, 3, 4],
+        cache_identity=CacheIdentity(schema_version=1, adapter={"kind": "lora", "name": "sql"}, cache_salt="session"),
+    )
+    query.return_value = {}
+    assert KvCacheAffinityPolicy.select_endpoint_candidates_from_list([], request) is None
+    query.assert_called_once_with([], [1, 2, 3, 4], cache_identity=request.cache_identity)
+    query.reset_mock()
+    request.token_ids = [1, 2]
+    KvCacheAffinityPolicy.select_endpoint_candidates_from_list([], request)
+    query.assert_not_called()
 
 
 class TestKvCacheAffinityPolicy(unittest.TestCase):

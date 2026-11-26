@@ -61,7 +61,7 @@ from lib.generator.kv_cache_store import (
 )
 from lib.generator.storage import apply_storage_volumes, apply_dshm_size
 from lib.container_ipc import apply_k8s_host_ipc
-from lib.generator.kv_conductor import normalize_kv_conductor_config
+from lib.generator.kv_conductor import gen_kv_conductor_identity_env, normalize_kv_conductor_config
 from lib.generator.render import configure_render_sidecar
 from lib.container_snapshot import configure_container_snapshot
 
@@ -411,7 +411,8 @@ def _configure_kv_conductor_role(infer_doc, user_config):
     container = containers[0]
     set_container_env(
         container,
-        [{C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_store_service}],
+        [{C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_store_service}]
+        + gen_kv_conductor_identity_env(kv_conductor_config),
     )
     k8s_utils.apply_additional_labels_annotations(role, kv_conductor_config)
 

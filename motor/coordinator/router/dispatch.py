@@ -34,6 +34,7 @@ from motor.config.coordinator import CoordinatorConfig
 from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import PDRole
 from motor.coordinator.models.constants import OpenAIField
+from motor.coordinator.models.cache_identity import resolve_request_cache_identity
 from motor.coordinator.models.request import RequestInfo, ReqState
 from motor.coordinator.render.api_spec import get_render_api_spec
 from motor.coordinator.render.image_obfuscation_service import ImageObfuscationError
@@ -646,6 +647,14 @@ async def __create_request_info(
     header_hint = apply_agent_hint_header(request_json, dict(raw_request.headers))
     apply_session_control_autofill(request_json)
     req_data = request_json.copy()
+    cache_identity = None
+    if config is not None and config.scheduler_config.kv_conductor_config.identity_mode == "v1":
+        try:
+            cache_identity = resolve_request_cache_identity(req_data, config.request_model_map)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid cache identity fields"
+            ) from exc
     # The engine view gets a private agent_hint dict: the spec cache_control is
     # translated for the engine here, while request_json stays header-only for
     # parse_agent_hint (body fields still win).
@@ -668,6 +677,7 @@ async def __create_request_info(
     req_info = RequestInfo(
         req_id=req_id,
         req_data=req_data,
+        cache_identity=cache_identity,
         api=api,
         req_len=req_len,
         entry_api=api,

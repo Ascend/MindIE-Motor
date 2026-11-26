@@ -20,6 +20,7 @@ use parking_lot::RwLock as ParkingRwLock;
 
 use crate::backend::{MatchMode, StoreBackend};
 use crate::error::KvConductorError;
+use crate::identity::IdentityConfig;
 use crate::indexer::{CacheMaintenanceConfig, Indexer, IndexerKey};
 use crate::metrics::{
     ConductorGaugeSnapshot, ConductorMetrics, MetricEventSource, MetricEventStatus, QueryEndpoint,
@@ -205,13 +206,21 @@ impl WorkerRegistry {
     }
 
     pub fn with_cache_config(config: CacheMaintenanceConfig) -> Self {
+        Self::with_identity_config(config, IdentityConfig::default())
+    }
+
+    pub fn with_identity_config(config: CacheMaintenanceConfig, identity: IdentityConfig) -> Self {
         Self {
             instances: tokio::sync::RwLock::new(HashMap::new()),
-            indexer: Arc::new(Indexer::with_config(config)),
+            indexer: Arc::new(Indexer::with_identity_config(config, identity)),
             zmq_subscribers: tokio::sync::RwLock::new(HashMap::new()),
             hbm_ip_index: Arc::new(ParkingRwLock::new(HashMap::new())),
             metrics: Arc::new(ConductorMetrics::new()),
         }
+    }
+
+    pub fn identity_config(&self) -> IdentityConfig {
+        self.indexer.identity_config()
     }
 
     /// Register a worker endpoint.
@@ -513,9 +522,13 @@ impl WorkerRegistry {
 
     /// Query KV cache overlap for a token sequence.
     pub async fn query(&self, req: &QueryRequest) -> Result<QueryResponse, KvConductorError> {
-        let (result, obs) =
-            self.indexer
-                .query_profiled(&req.model, &req.tenant_id, &req.token_ids, req.block_size);
+        let (result, obs) = self.indexer.query_with_identity_profiled(
+            &req.model,
+            &req.tenant_id,
+            &req.token_ids,
+            req.block_size,
+            req.cache_identity.as_ref(),
+        );
         if result.is_ok() {
             self.metrics
                 .record_query_observation(QueryEndpoint::Query, &obs);
@@ -535,10 +548,13 @@ impl WorkerRegistry {
             .map(|&h| LocalBlockHash(h))
             .collect();
         let hash_secs = t_hash.elapsed().as_secs_f64();
-        let (result, mut obs) =
-            self.indexer
-                .query_by_hash_profiled(&req.model, &req.tenant_id, &hashes);
-        obs.hash_secs = hash_secs;
+        let (result, mut obs) = self.indexer.query_by_hash_with_identity_profiled(
+            &req.model,
+            &req.tenant_id,
+            &hashes,
+            req.cache_identity.as_ref(),
+        );
+        obs.hash_secs += hash_secs;
         if result.is_ok() {
             self.metrics
                 .record_query_observation(QueryEndpoint::QueryByHash, &obs);
@@ -559,6 +575,11 @@ impl WorkerRegistry {
         model_name: Option<&str>,
         tenant_id: Option<&str>,
     ) -> Result<usize, KvConductorError> {
+        if self.identity_config().enabled() {
+            return Err(KvConductorError::InvalidIdentity(
+                "HTTP /events does not carry the identity evidence required by v1".into(),
+            ));
+        }
         // Resolve model_name / tenant_id:
         //   explicit args > registered values > defaults
         let (model_name, tenant_id) = {
@@ -891,6 +912,7 @@ mod tests {
         let registry = WorkerRegistry::new();
         let req = QueryRequest {
             model: "missing-model".into(),
+            cache_identity: None,
             block_size: 4,
             token_ids: vec![1, 2, 3, 4],
             tenant_id: "tenant".into(),

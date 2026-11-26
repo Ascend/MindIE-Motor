@@ -50,7 +50,7 @@ from lib.generator.engine import (
 )
 from lib.generator.kv_cache_store import generate_yaml_kv_store, normalize_kv_cache_store_config
 from lib.generator.storage import generate_yaml_storage_pvc, get_storage_entries
-from lib.generator.kv_conductor import generate_yaml_kv_conductor, normalize_kv_conductor_config
+from lib.generator.kv_conductor import generate_yaml_kv_conductor
 from lib.generator.single_container import generate_yaml_single_container
 from lib.generator.infer_service import (
     generate_yaml_infer_service_set,
@@ -263,9 +263,11 @@ def deploy_services_multi_yaml(paths, user_config, dry_run=False, log_root=None)
             paths["kv_store_input_yaml"], paths["kv_store_output_yaml"], user_config, kv_store_config
         )
     if k8s_utils.g_kv_conductor_enabled:
-        kv_conductor_config = normalize_kv_conductor_config(user_config)
         generate_yaml_kv_conductor(
-            paths["kv_conductor_input_yaml"], paths["kv_conductor_output_yaml"], user_config, kv_conductor_config
+            paths["kv_conductor_input_yaml"],
+            paths["kv_conductor_output_yaml"],
+            user_config,
+            user_config.get(C.KV_CONDUCTOR_CONFIG),
         )
     if k8s_utils.g_mf_store_enabled:
         generate_yaml_mf_store(paths["mf_store_input_yaml"], paths["mf_store_output_yaml"], user_config)

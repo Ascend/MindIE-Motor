@@ -67,6 +67,8 @@ def anyio_backend():
     ],
 )
 async def test_render_maps_openai_path_and_normalizes_response(api, expected_path, request_data):
+    request_data = {**request_data, "model": "sql@v1", "cache_salt": "session"}
+
     async def handler(request):
         assert request.url.path == expected_path
         assert json.loads(request.content) == request_data
@@ -74,6 +76,8 @@ async def test_render_maps_openai_path_and_normalizes_response(api, expected_pat
             200,
             json={
                 "token_ids": [10, 20],
+                "model": request_data["model"],
+                "cache_salt": request_data["cache_salt"],
                 "sampling_params": {"max_tokens": 10},
                 "multi_modal_data": {"image": "serialized"},
             },
@@ -87,6 +91,8 @@ async def test_render_maps_openai_path_and_normalizes_response(api, expected_pat
         TokenizerSource.RENDER,
     )
     assert result[0].metadata == {
+        "model": "sql@v1",
+        "cache_salt": "session",
         "sampling_params": {"max_tokens": 10},
         "multi_modal_data": {"image": "serialized"},
     }

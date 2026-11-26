@@ -247,6 +247,21 @@ decoded by Content-Type (msgpack via `msgspec`, otherwise JSON — legacy
 JSON responses can still be decoded). Request encoding does not automatically downgrade:
 set `query_encoding: "json"` explicitly for JSON-only conductor binaries.
 
+**Conductor cache identity** (`motor/coordinator/models/cache_identity.py`, `motor/config/coordinator.py`, `motor/config/config_utils.py`):
+`identity_mode` defaults to `legacy`; `v1` enables identity isolation without a group-number setting.
+Top-level and nested Conductor identity modes must agree. In v1, config loading derives
+`CoordinatorConfig.request_model_map` from vLLM P/D/Union `served_model_name` aliases (falling back
+to `model`) and enabled `lora_modules`; this internal map is not a second user-maintained mapping.
+The config helper intentionally does not import Coordinator models to avoid package import cycles.
+Ingress saves a validated `RequestInfo.cache_identity` (schema_version 1, Base/LoRA adapter, nullable
+nonempty UTF-8 cache_salt). Unknown/missing model names remain unresolved and do not get Base scores.
+Original inference model/salt stay in the request for native P/D, Render, token-only and retries.
+The affinity client sends `cache_identity` in either JSON or MessagePack only in v1 and accepts
+scores only when the response carries `X-KV-Identity-Protocol: 1`, including zero-hit responses.
+Missing or invalid confirmation returns an empty result for scheduling fallback and leaves the query failure
+count unchanged. Sub-block prompts still skip Conductor. Legacy requests retain their previous wire fields
+and response handling.
+
 **Factory registration** (`factory.py`): `SchedulingPolicyFactory` maps policy name → class. New policies register here.
 
 The policy is selected per role by `SchedulerConfig.type_for_role()`: `prefill_scheduler_type` serves Prefill, Encode and Union; `decode_scheduler_type` serves Decode. Both default to `LOAD_BALANCE`; Decode supports load balance / round robin / dynamic bucket, while KV affinity applies only to P/U. Deprecated `scheduler_type` migrates only to role fields that are not explicitly configured. When a role uses `kv_cache_affinity`, a sub-mode is chosen by `kv_affinity.mode`:

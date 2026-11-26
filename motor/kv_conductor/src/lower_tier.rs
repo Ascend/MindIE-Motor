@@ -331,6 +331,19 @@ impl LowerTierIndexer {
             .any(|m| m.contains_key(&seq))
     }
 
+    /// Engine IDs still referenced by live lower-tier edges.
+    pub(crate) fn referenced_hashes(&self) -> Vec<u64> {
+        self.worker_blocks
+            .read()
+            .values()
+            .flat_map(|blocks| {
+                blocks.iter().flat_map(|(id, edge)| {
+                    std::iter::once(id.0).chain(edge.parent_hash.map(|parent| parent.0))
+                })
+            })
+            .collect()
+    }
+
     /// Number of blocks tracked for ``worker``.
     pub fn worker_block_count(&self, worker: &WorkerKey) -> usize {
         self.worker_blocks

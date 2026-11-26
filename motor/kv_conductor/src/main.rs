@@ -21,6 +21,7 @@ use clap::Parser;
 use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::EnvFilter;
 
+use kv_conductor::identity::{IdentityConfig, IdentityMode};
 use kv_conductor::indexer::CacheMaintenanceConfig;
 use kv_conductor::registry::WorkerRegistry;
 use kv_conductor::server::{create_router, AppState};
@@ -37,6 +38,10 @@ struct Cli {
     /// Port to listen on
     #[arg(long, short, default_value = "13333")]
     port: u16,
+
+    /// Cache identity protocol; legacy retains token-only root hashes.
+    #[arg(long, value_enum, default_value = "legacy")]
+    identity_mode: IdentityMode,
 
     /// Maintenance sweep interval in seconds.
     #[arg(long, default_value = "30")]
@@ -70,15 +75,21 @@ async fn main() {
         .init();
 
     let cli = Cli::parse();
+    let identity_config = IdentityConfig {
+        mode: cli.identity_mode,
+    };
 
     let host: IpAddr = cli.host.parse().expect("invalid host address");
     let addr = SocketAddr::new(host, cli.port);
 
-    let registry = Arc::new(WorkerRegistry::with_cache_config(CacheMaintenanceConfig {
-        pending_ttl: std::time::Duration::from_secs(cli.pending_ttl_secs),
-        content_ttl: std::time::Duration::from_secs(cli.content_ttl_secs),
-        offload_ttl: std::time::Duration::from_secs(cli.offload_ttl_secs),
-    }));
+    let registry = Arc::new(WorkerRegistry::with_identity_config(
+        CacheMaintenanceConfig {
+            pending_ttl: std::time::Duration::from_secs(cli.pending_ttl_secs),
+            content_ttl: std::time::Duration::from_secs(cli.content_ttl_secs),
+            offload_ttl: std::time::Duration::from_secs(cli.offload_ttl_secs),
+        },
+        identity_config,
+    ));
     let maintenance_registry = Arc::downgrade(&registry);
     let maintenance_interval = std::time::Duration::from_secs(cli.maintenance_interval_secs.max(1));
     tokio::spawn(async move {
@@ -137,4 +148,18 @@ async fn shutdown_signal() {
     ctrl_c.await;
 
     tracing::info!("received shutdown signal, draining connections...");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_cli_defaults_to_legacy_and_accepts_v1_without_group() {
+        let legacy = Cli::try_parse_from(["kv-conductor"]).unwrap();
+        assert_eq!(legacy.identity_mode, IdentityMode::Legacy);
+        let v1 = Cli::try_parse_from(["kv-conductor", "--identity-mode", "v1"]).unwrap();
+        assert_eq!(v1.identity_mode, IdentityMode::V1);
+        assert!(Cli::try_parse_from(["kv-conductor", "--identity-mode", "v2"]).is_err());
+    }
 }

@@ -97,7 +97,8 @@ def test_runtime_identity_matches_startup_environment(config, facts):
             render.generate_rbg_resources(config, {"motor_engine_decode_env": {key: "wrong"}}, facts=facts)
 
 
-def test_custom_conductor_port_reaches_service_and_startup(config, facts):
+@pytest.mark.parametrize("identity_config", [{}, {"identity_mode": "legacy"}, {"identity_mode": "v1"}])
+def test_conductor_service_and_startup_use_configured_port_and_identity(config, facts, identity_config):
     import json
 
     config[C.KV_CACHE_STORE_CONFIG] = {
@@ -105,7 +106,7 @@ def test_custom_conductor_port_reaches_service_and_startup(config, facts):
         "eviction_high_watermark_ratio": 0.9,
         "eviction_ratio": 0.1,
     }
-    config[C.KV_CONDUCTOR_CONFIG] = {C.KV_CONDUCTOR_PORT: 14444}
+    config[C.KV_CONDUCTOR_CONFIG] = {C.KV_CONDUCTOR_PORT: 14444, **identity_config}
     bundle = render.generate_rbg_resources(config, {}, facts=facts)
     role = next(r for r in bundle["rbg"]["spec"]["roles"] if r["name"] == C.ROLE_KV_CONDUCTOR)
     env = {e["name"]: e.get("value") for e in pod_template(role)["spec"]["containers"][0]["env"]}
@@ -113,7 +114,23 @@ def test_custom_conductor_port_reaches_service_and_startup(config, facts):
     cm = next(obj for obj in bundle["prerequisites"] if obj["kind"] == "ConfigMap")
     assert service["spec"]["ports"][0]["targetPort"] == int(env["KV_CONDUCTOR_PORT"]) == 14444
     assert "export KV_CONDUCTOR_PORT=14444" in cm["data"]["kv_conductor.sh"]
-    assert json.loads(cm["data"]["env.json"])["motor_kv_conductor_env"]["KV_CONDUCTOR_PORT"] == 14444
+    expected_mode = identity_config.get("identity_mode", "legacy")
+    assert f"export KV_CONDUCTOR_IDENTITY_MODE={expected_mode}" in cm["data"]["kv_conductor.sh"]
+    conductor_env = json.loads(cm["data"]["env.json"])["motor_kv_conductor_env"]
+    assert conductor_env["KV_CONDUCTOR_PORT"] == 14444
+    assert conductor_env["KV_CONDUCTOR_IDENTITY_MODE"] == expected_mode
+
+
+def test_conductor_startup_rejects_invalid_or_overridden_identity_mode(config):
+    config[C.KV_CONDUCTOR_CONFIG] = {C.KV_CONDUCTOR_PORT: 14444, "identity_mode": "invalid"}
+    context = render.deployment_settings(config)
+    with pytest.raises(ValueError, match="identity_mode must be"):
+        render.render_configmap(context, config, {}, "service-id")
+
+    config[C.KV_CONDUCTOR_CONFIG]["identity_mode"] = "v1"
+    env = {"motor_kv_conductor_env": {"KV_CONDUCTOR_IDENTITY_MODE": "legacy"}}
+    with pytest.raises(ValueError, match="overrides managed fields.*KV_CONDUCTOR_IDENTITY_MODE"):
+        render.render_configmap(context, config, env, "service-id")
 
 
 @pytest.mark.parametrize("value,expected", [(True, "1"), (False, "0"), ("True", "1"), ("FALSE", "0")])

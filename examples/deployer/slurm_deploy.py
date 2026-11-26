@@ -38,7 +38,7 @@ from lib.log_mount import common_log_root
 from lib.generator import k8s_utils
 from lib.generator.engine import validate_instance_nums
 from lib.generator.kv_cache_store import normalize_kv_cache_store_config
-from lib.generator.kv_conductor import normalize_kv_conductor_config
+from lib.generator.kv_conductor import gen_kv_conductor_identity_env, normalize_kv_conductor_config
 from lib.utils import read_json
 
 
@@ -387,6 +387,7 @@ def _management_nodes(args: argparse.Namespace) -> dict[str, str]:
 def _export_runtime_env(user_config: dict, kv_store: dict, args: argparse.Namespace, deployment_id: str) -> dict:
     """Set the environment variables used by Slurm jobs and containers."""
     deploy = user_config[C.MOTOR_DEPLOY_CONFIG]
+    kv_conductor_config = user_config.get(C.KV_CONDUCTOR_CONFIG) or {}
     kv_service_enabled = k8s_utils.g_kv_store_enabled or k8s_utils.g_kv_conductor_enabled
     hardware_type = _as_str(deploy.get(C.HARDWARE_TYPE))
     kv_backend = _as_str(kv_store.get(C.KV_STORE_BACKEND), C.DEFAULT_KV_STORE_BACKEND)
@@ -420,7 +421,8 @@ def _export_runtime_env(user_config: dict, kv_store: dict, args: argparse.Namesp
         ),
         "MMC_METRICS_PORT": metrics_port,
         "MMC_LOCAL_SERVICE_MODE": _as_str(kv_store.get(C.MMC_LOCAL_SERVICE_CONFIG_KEY)),
-        "KV_CONDUCTOR_PORT": _as_str(user_config.get(C.KV_CONDUCTOR_CONFIG, {}).get(C.KV_CONDUCTOR_PORT, 0)),
+        "KV_CONDUCTOR_PORT": _as_str(kv_conductor_config.get(C.KV_CONDUCTOR_PORT, 0)),
+        "KV_CONDUCTOR_IDENTITY_MODE": "",
         "ASCEND_MF_STORE_PORT": args.ascend_mf_store_port,
         "ASCEND_MF_STORE_URL": "",
         "ASCEND_MF_TRANSFER_PROTOCOL": "device_rdma" if hardware_type in C.HARDWARE_TYPE_A2 else "sdma",
@@ -429,6 +431,8 @@ def _export_runtime_env(user_config: dict, kv_store: dict, args: argparse.Namesp
         "SLURM_DISTRIBUTION_PATH": args.distribution_path,
         "SLURM_LOG_PATH": args.log_path,
     }
+    if k8s_utils.g_kv_conductor_enabled:
+        values.update({item[C.NAME]: item[C.VALUE] for item in gen_kv_conductor_identity_env(kv_conductor_config)})
     if k8s_utils.g_mf_store_enabled:
         values["ASCEND_MF_STORE_URL"] = (
             f"tcp://{_format_host_for_url(args.mf_store_service)}:{args.ascend_mf_store_port}"

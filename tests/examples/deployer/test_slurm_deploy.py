@@ -162,6 +162,8 @@ def test_slurm_job_broadcasts_configmap_to_configurable_node_local_workspace():
     assert "ENABLE_IPC_HOST" not in job_script
     assert '--env "COMPUTE_UNIT_LOG_SUBPATH=${SLURMD_NODENAME:-$(hostname)}/$INSTANCE_NAME"' in job_script
     assert '--env "ENGINE_TYPE=$ENGINE_TYPE"' in job_script
+    assert '--env "KV_CONDUCTOR_IDENTITY_MODE=$KV_CONDUCTOR_IDENTITY_MODE"' in job_script
+    assert "KV_CONDUCTOR_IDENTITY_MAIN_GROUP" not in job_script
     assert "apptainer exec \\\n  --cleanenv \\" in job_script
 
 
@@ -186,13 +188,16 @@ def test_runtime_env_clears_disabled_optional_service_addresses(monkeypatch):
 
     assert runtime_env["KVS_MASTER_SERVICE"] == ""
     assert runtime_env["KV_CONDUCTOR_SERVICE"] == ""
+    assert runtime_env["KV_CONDUCTOR_IDENTITY_MODE"] == ""
+    assert "KV_CONDUCTOR_IDENTITY_MAIN_GROUP" not in runtime_env
     assert "MF_STORE_SERVICE" not in runtime_env
     assert runtime_env["ASCEND_MF_STORE_URL"] == ""
 
 
-def test_runtime_env_preserves_enabled_optional_service_addresses(monkeypatch):
+@pytest.mark.parametrize("identity_config", [{}, {"identity_mode": "v1"}])
+def test_runtime_env_preserves_enabled_optional_service_addresses(monkeypatch, identity_config):
     user_config = _user_config()
-    user_config["kv_conductor_config"] = {"http_server_port": 14444}
+    user_config["kv_conductor_config"] = {"http_server_port": 14444, **identity_config}
     args = argparse.Namespace(
         coordinator_service="10.0.0.1",
         controller_service="10.0.0.2",
@@ -211,6 +216,8 @@ def test_runtime_env_preserves_enabled_optional_service_addresses(monkeypatch):
 
     assert runtime_env["KVS_MASTER_SERVICE"] == "10.0.0.3"
     assert runtime_env["KV_CONDUCTOR_SERVICE"] == "10.0.0.4"
+    assert runtime_env["KV_CONDUCTOR_IDENTITY_MODE"] == identity_config.get("identity_mode", "legacy")
+    assert "KV_CONDUCTOR_IDENTITY_MAIN_GROUP" not in runtime_env
     assert "MF_STORE_SERVICE" not in runtime_env
     assert runtime_env["ASCEND_MF_STORE_URL"] == "tcp://10.0.0.5:50089"
 
@@ -418,6 +425,22 @@ def test_start_without_k8s_deploy_mode_prepares_once_and_submits_roles(tmp_path,
     assert state["engine_jobs"]["decode"] == {"0": "104"}
 
 
+def test_start_rejects_invalid_identity_mode_before_rebuilding_job_script(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    user_config = _user_config()
+    user_config["kv_conductor_config"] = {"http_server_port": 14444, "identity_mode": "v2"}
+    (tmp_path / "user_config.json").write_text(json.dumps(user_config), encoding="utf-8")
+    (tmp_path / "env.json").write_text("{}", encoding="utf-8")
+    job_script = slurm_deploy.JOB_SCRIPT
+    job_script.parent.mkdir()
+    job_script.write_text("previous job", encoding="utf-8")
+    args = argparse.Namespace(config_dir=str(tmp_path), user_config_path=None, env_config_path=None)
+
+    with pytest.raises(ValueError, match="identity_mode must be"):
+        slurm_deploy.start(args)
+    assert job_script.read_text(encoding="utf-8") == "previous job"
+
+
 def test_start_submits_basic_memcache_pool_and_kv_conductor(tmp_path, monkeypatch):
     source = tmp_path / "conf"
     source.mkdir()
@@ -429,7 +452,7 @@ def test_start_submits_basic_memcache_pool_and_kv_conductor(tmp_path, monkeypatc
         "metrics_port": 50090,
         "local_service_mode": "inprocess",
     }
-    user_config["kv_conductor_config"] = {"http_server_port": 14444}
+    user_config["kv_conductor_config"] = {"http_server_port": 14444, "identity_mode": "v1"}
     (source / "user_config.json").write_text(json.dumps(user_config), encoding="utf-8")
     (source / "env.json").write_text(json.dumps({"motor_common_env": {}}), encoding="utf-8")
     submitted = []
@@ -471,6 +494,7 @@ def test_start_submits_basic_memcache_pool_and_kv_conductor(tmp_path, monkeypatc
     assert os.environ["KV_STORE_BACKEND"] == "memcache"
     assert os.environ["KV_CONDUCTOR_ENABLED"] == "1"
     assert os.environ["KV_CONDUCTOR_PORT"] == "14444"
+    assert os.environ["KV_CONDUCTOR_IDENTITY_MODE"] == "v1"
     assert [label for label, _args in submitted] == [
         "coordinator",
         "controller",
@@ -588,7 +612,7 @@ def test_update_instance_num_rejects_other_config_changes(tmp_path, monkeypatch)
 def test_kv_conductor_does_not_allocate_a_kv_store_node_by_itself(monkeypatch):
     user_config = _user_config()
     user_config["kv_conductor_config"] = {"http_server_port": 14444}
-    slurm_deploy._init_deploy_flags(user_config)
+    assert slurm_deploy._init_deploy_flags(user_config) == {}
     resolved_labels = []
     monkeypatch.setattr(
         slurm_deploy,
