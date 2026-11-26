@@ -414,3 +414,146 @@ def test_kill_workers_sigkills_workers_not_launcher(mock_popen):
     ]
     kill_group.assert_not_called()
     assert supervisor.pid_list() == [100]
+
+
+@patch("motor.node_manager.core.services.native_engine.supervisor.SafeHTTPSClient")
+@patch("motor.node_manager.core.services.native_engine.supervisor.subprocess.Popen")
+def test_native_probe_flaps_ready_unhealthy_ready_within_startup_window(mock_popen, mock_client):
+    process = MagicMock(pid=12345)
+    process.poll.return_value = None
+    mock_popen.return_value = process
+    client = mock_client.return_value.__enter__.return_value
+    ok_response = client.do_get.return_value
+    ok_response.status_code = HTTPStatus.OK
+    client.do_get.side_effect = [ok_response, RuntimeError("connection refused"), ok_response]
+    supervisor = ProcessSupervisor()
+    supervisor.start(3, _command(), _probe(startup_timeout=600))
+
+    with patch("motor.node_manager.core.services.native_engine.supervisor.time.monotonic", return_value=100):
+        supervisor._processes[3].started_at = 0
+        assert supervisor.state(3, "10.0.0.1", 8000) == RuntimeState.READY
+        # The runtime is READY now, so a probe failure must commit UNHEALTHY even though
+        # elapsed (100s) is still below startup_timeout (600s).
+        assert supervisor.state(3, "10.0.0.1", 8000) == RuntimeState.UNHEALTHY
+        assert supervisor.state(3, "10.0.0.1", 8000) == RuntimeState.READY
+
+
+@patch("motor.node_manager.core.services.native_engine.supervisor.SafeHTTPSClient")
+@patch("motor.node_manager.core.services.native_engine.supervisor.subprocess.Popen")
+def test_snapshot_health_no_content_is_treated_as_probe_failure(mock_popen, mock_client):
+    process = MagicMock(pid=12345)
+    process.poll.return_value = None
+    mock_popen.return_value = process
+    response = mock_client.return_value.__enter__.return_value.do_get.return_value
+    response.status_code = HTTPStatus.NO_CONTENT
+    supervisor = ProcessSupervisor()
+    probe = ProbeSpec(path="/snapshot/health", timeout_seconds=5, startup_timeout_seconds=10)
+    supervisor.start(3, _command(), probe)
+
+    with patch("motor.node_manager.core.services.native_engine.supervisor.time.monotonic", return_value=11):
+        supervisor._processes[3].started_at = 0
+        state = supervisor.state(3, "10.0.0.1", 8000)
+
+    assert state == RuntimeState.UNHEALTHY
+
+
+@patch("motor.node_manager.core.services.native_engine.supervisor.subprocess.Popen")
+def test_rebind_endpoint_ids_pairs_sorted_ids_and_preserves_processes(mock_popen):
+    processes = []
+    for pid in range(100, 104):
+        process = MagicMock(pid=pid)
+        process.poll.return_value = None
+        processes.append(process)
+    mock_popen.side_effect = processes
+    supervisor = ProcessSupervisor()
+    # Unordered start order (dict insertion order 3,1,0,2) and an unordered
+    # new id list lock in the sorted-pairing behavior: dropping either
+    # sorted() call breaks the mapping assertions below.
+    start_order = [3, 1, 0, 2]
+    for endpoint_id in start_order:
+        supervisor.start(endpoint_id, _command(), _probe())
+    supervisor._processes[0].state = RuntimeState.READY
+    supervisor._processes[0].ready_at = 10.0
+    supervisor._processes[1].state = RuntimeState.STOPPING
+    supervisor._processes[1].started_at = 3.0
+    supervisor._processes[3].state = RuntimeState.STOPPED
+    supervisor._processes[3].started_at = 4.0
+
+    with patch("motor.node_manager.core.services.native_engine.supervisor.time.monotonic", return_value=555.0):
+        mapping = supervisor.rebind_endpoint_ids([5, 2, 4, 3])
+
+    assert mapping == {0: 2, 1: 3, 2: 4, 3: 5}
+    assert set(supervisor._processes) == {2, 3, 4, 5}
+    assert sorted(supervisor.pid_list()) == [100, 101, 102, 103]
+    # sorted(old)=[0,1,2,3] pairs position-wise with sorted(new)=[2,3,4,5]:
+    # old id was started as start_order[processes.index(process)].
+    for old_id, new_id in ((0, 2), (1, 3), (2, 4), (3, 5)):
+        runtime = supervisor._processes[new_id]
+        assert runtime.process is processes[start_order.index(old_id)]
+        assert runtime.endpoint_id == new_id
+    # The formerly READY endpoint restarts its lifecycle under the new id.
+    rebound = supervisor._processes[2]
+    assert rebound.state == RuntimeState.STARTING
+    assert rebound.ready_at is None
+    assert rebound.started_at == 555.0
+    # Stopping/stopped runtimes keep their state and timestamps untouched.
+    stopping = supervisor._processes[3]
+    assert stopping.state == RuntimeState.STOPPING
+    assert stopping.started_at == 3.0
+    stopped = supervisor._processes[5]
+    assert stopped.state == RuntimeState.STOPPED
+    assert stopped.started_at == 4.0
+
+
+@patch("motor.node_manager.core.services.native_engine.supervisor.subprocess.Popen")
+def test_rebind_endpoint_ids_identity_mapping_keeps_runtime_states(mock_popen):
+    first = MagicMock(pid=100)
+    second = MagicMock(pid=101)
+    first.poll.return_value = None
+    second.poll.return_value = None
+    mock_popen.side_effect = [first, second]
+    supervisor = ProcessSupervisor()
+    supervisor.start(0, _command(), _probe())
+    supervisor.start(1, _command(), _probe())
+    supervisor._processes[0].state = RuntimeState.READY
+    supervisor._processes[0].ready_at = 10.0
+    supervisor._processes[0].started_at = 7.0
+    supervisor._processes[1].state = RuntimeState.READY
+    supervisor._processes[1].ready_at = 20.0
+    supervisor._processes[1].started_at = 9.0
+
+    assert supervisor.rebind_endpoint_ids([1, 0]) == {0: 0, 1: 1}
+
+    for endpoint_id, ready_at, started_at in ((0, 10.0, 7.0), (1, 20.0, 9.0)):
+        runtime = supervisor._processes[endpoint_id]
+        assert runtime.state == RuntimeState.READY
+        assert runtime.ready_at == ready_at
+        assert runtime.started_at == started_at
+    assert set(supervisor._processes) == {0, 1}
+    assert supervisor.pid_list() == [100, 101]
+
+
+@patch("motor.node_manager.core.services.native_engine.supervisor.subprocess.Popen")
+def test_rebind_endpoint_ids_count_mismatch_keeps_original_mapping(mock_popen):
+    first = MagicMock(pid=100)
+    second = MagicMock(pid=101)
+    first.poll.return_value = None
+    second.poll.return_value = None
+    mock_popen.side_effect = [first, second]
+    supervisor = ProcessSupervisor()
+    supervisor.start(0, _command(), _probe())
+    supervisor.start(1, _command(), _probe())
+
+    with pytest.raises(RuntimeError, match="Cannot rebind engine endpoints"):
+        supervisor.rebind_endpoint_ids([2])
+
+    assert set(supervisor._processes) == {0, 1}
+    assert supervisor.pid_list() == [100, 101]
+    assert supervisor._processes[0].state == RuntimeState.STARTING
+    assert supervisor._processes[1].state == RuntimeState.STARTING
+
+
+def test_rebind_endpoint_ids_without_local_runtimes_returns_empty():
+    supervisor = ProcessSupervisor()
+
+    assert supervisor.rebind_endpoint_ids([4, 5]) == {}

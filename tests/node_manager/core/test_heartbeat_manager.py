@@ -870,3 +870,103 @@ class TestHeartBeatManager:
         assert heart_beat_manager.is_within_grace_period() is True
         heart_beat_manager._is_within_grace_period = False
         assert heart_beat_manager.is_within_grace_period() is False
+
+    @pytest.mark.parametrize("probe_scenario", ["unhealthy", "stopped", "probe_exception"])
+    @patch("motor.node_manager.core.heartbeat_manager.is_restored_from_host_side_snapshot", return_value=False)
+    @patch('motor.node_manager.core.daemon.Daemon')
+    def test_runtime_failure_maps_to_abnormal_then_recovers_to_normal(
+        self, mock_daemon, _mock_restored, heart_beat_manager, probe_scenario
+    ):
+        """runtime failures (UNHEALTHY/STOPPED/probe exception) map to ABNORMAL and recover to NORMAL"""
+        from motor.node_manager.core.services.native_engine.models import RuntimeState
+
+        endpoint = Endpoint(id=1, ip="192.168.1.1", business_port="8080", status=EndpointStatus.INITIAL)
+        with heart_beat_manager._endpoint_lock:
+            heart_beat_manager._endpoints = [endpoint]
+
+        if probe_scenario == "probe_exception":
+            mock_daemon.return_value.get_engine_runtime_state.side_effect = RuntimeError("probe boom")
+        elif probe_scenario == "stopped":
+            mock_daemon.return_value.get_engine_runtime_state.return_value = RuntimeState.STOPPED
+        else:
+            mock_daemon.return_value.get_engine_runtime_state.return_value = RuntimeState.UNHEALTHY
+
+        heart_beat_manager._refresh_native_engine_status()
+
+        assert heart_beat_manager._endpoints[0].status == EndpointStatus.ABNORMAL
+
+        # Engine recovers: the next probe reports READY, the endpoint returns
+        # to NORMAL and the global grace period ends (READY has been proved).
+        mock_daemon.return_value.get_engine_runtime_state.side_effect = None
+        mock_daemon.return_value.get_engine_runtime_state.return_value = RuntimeState.READY
+
+        heart_beat_manager._refresh_native_engine_status()
+
+        assert heart_beat_manager._endpoints[0].status == EndpointStatus.NORMAL
+        assert heart_beat_manager.is_within_grace_period() is False
+
+    @pytest.mark.parametrize("runtime_state", ["ready", "unhealthy"], ids=["engine-ready", "engine-unhealthy"])
+    @patch("motor.node_manager.core.heartbeat_manager.is_restored_from_host_side_snapshot", return_value=False)
+    @patch('motor.node_manager.core.daemon.Daemon')
+    def test_paused_endpoint_stays_paused_after_refresh(
+        self, mock_daemon, _mock_restored, heart_beat_manager, runtime_state
+    ):
+        """PAUSED (PreStop) endpoints keep their status regardless of the engine-reported runtime state"""
+        from motor.node_manager.core.services.native_engine.models import RuntimeState
+
+        mock_daemon.return_value.get_engine_runtime_state.return_value = RuntimeState(runtime_state)
+        endpoint = Endpoint(id=1, ip="192.168.1.1", business_port="8080", status=EndpointStatus.PAUSED)
+        with heart_beat_manager._endpoint_lock:
+            heart_beat_manager._endpoints = [endpoint]
+
+        heart_beat_manager._refresh_native_engine_status()
+
+        assert heart_beat_manager._endpoints[0].status == EndpointStatus.PAUSED
+        # No endpoint ended up NORMAL, so the grace period is left untouched.
+        assert heart_beat_manager.is_within_grace_period() is True
+
+    @patch("motor.node_manager.core.heartbeat_manager.is_restored_from_host_side_snapshot")
+    @patch('motor.node_manager.core.daemon.Daemon')
+    def test_refresh_discards_probe_result_when_restored_mid_probe(
+        self, mock_daemon, mock_restored, heart_beat_manager
+    ):
+        """a restore finished mid-probe discards the stale probe result and keeps the original status"""
+        from motor.node_manager.core.services.native_engine.models import RuntimeState
+
+        restore_calls = {"count": 0}
+
+        def restored_side_effect():
+            restore_calls["count"] += 1
+            # 1st call: the pre-probe check (restore not finished yet, so the
+            # probe really runs); 2nd call: the post-probe check (restore
+            # finished while the probe was in flight).
+            return restore_calls["count"] > 1
+
+        mock_restored.side_effect = restored_side_effect
+        mock_daemon.return_value.get_engine_runtime_state.return_value = RuntimeState.UNHEALTHY
+        heart_beat_manager._config.api_config.pod_ip = "127.0.0.1"
+
+        endpoint = Endpoint(id=1, ip="192.168.1.1", business_port="8080", status=EndpointStatus.NORMAL)
+        with heart_beat_manager._endpoint_lock:
+            heart_beat_manager._endpoints = [endpoint]
+
+        heart_beat_manager._refresh_native_engine_status()
+
+        assert mock_daemon.return_value.get_engine_runtime_state.call_count == 1
+        assert mock_restored.call_count == 2
+        assert heart_beat_manager._endpoints[0].status == EndpointStatus.NORMAL
+        # The preserved stale NORMAL status still satisfies the any-NORMAL
+        # write-back in _refresh_native_engine_status, so the grace period
+        # ends even though the UNHEALTHY probe result itself was discarded.
+        assert heart_beat_manager.is_within_grace_period() is False
+
+    @patch('motor.node_manager.core.daemon.Daemon')
+    def test_refresh_native_engine_status_without_endpoints_is_noop(self, mock_daemon, heart_beat_manager):
+        """an empty endpoint snapshot returns before any daemon lookup happens"""
+        with heart_beat_manager._endpoint_lock:
+            heart_beat_manager._endpoints = []
+
+        heart_beat_manager._refresh_native_engine_status()
+
+        mock_daemon.assert_not_called()
+        assert heart_beat_manager._endpoints == []
