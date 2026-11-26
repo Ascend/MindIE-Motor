@@ -194,6 +194,8 @@ Decode 使用与 Prefill 匹配的 Mooncake Connector，不配置 UCM。以下�
 python3 deploy.py --config_dir ../../model_configs/vllm/ucm_pd
 ```
 
+若命令提示安全预检未通过，请参见[部署前安全预检](../../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
 使用 `user_config.json` 中的 `job_id` 作为命名空间，一条命令删除部署：
 
 ```bash

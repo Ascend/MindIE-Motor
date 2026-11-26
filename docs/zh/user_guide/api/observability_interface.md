@@ -814,7 +814,7 @@ Reporter 进程还读取下列环境变量（可写入 `env.json` 的 `motor_con
 | CCAE_REPORTER_LOG_LEVEL | Reporter 自身日志级别。可选 `DEBUG` / `INFO` / `WARN` / `ERROR` / `CRITICAL` / `NULL`（关闭文件日志）。未设置或为空时为 `INFO`。非法非空值会输出 warning 并回退到 `INFO`。`WARNING` 视为 `WARN`。 |
 | MOTOR_LOG_PATH | Reporter 自身日志目录与采集根目录。未设置时默认 `/root/ascend/log`。标准部署脚本会从 `MOTOR_LOG_ROOT_PATH` 推导并注入该变量。 |
 
-修改配置后，可在 `examples/deployer` 目录更新配置：
+修改配置后，可在 `examples/deployer` 目录按以下任一种方式更新配置。两种方式均会执行[部署前安全预检](../deployment/k8s/README.md#deployment-security-precheck)。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
 
 ```bash
 cd examples/deployer

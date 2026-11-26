@@ -221,6 +221,8 @@ MindIE Motor部署EPD分离只需修改user_config.json配置文件后，通过d
    python deploy.py --user_config_path ../../model_configs/vllm/user_config.json --env_config_path ../../model_configs/vllm/env.json
    ```
 
+   若命令提示安全预检未通过，请参见[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
    执行后看到如下内容，说明执行成功：
 
    ```output

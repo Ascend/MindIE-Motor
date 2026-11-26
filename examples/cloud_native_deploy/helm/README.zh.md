@@ -6,7 +6,7 @@ Chart 只管理以下资源：
 
 - 包含 `user_config.json` 和 `env.json` 的 ConfigMap。
 - deployer 使用的 ServiceAccount、ClusterRole 和 ClusterRoleBinding。
-- 执行 `deploy.py` 的 deploy / scale / cleanup Job。
+- 调用 `deploy.py` 的部署和扩缩容 Job，以及调用 `cleanup.sh` 的清理 Job。
 
 Controller、Coordinator、Engine、KV Pool 和 KV Conductor 等运行时资源仍由 deployer Job 动态生成。
 
@@ -32,10 +32,6 @@ Controller、Coordinator、Engine、KV Pool 和 KV Conductor 等运行时资源�
    - `userConfig` JSON 字符串中的 `motor_deploy_config.image_name`：运行 Controller、Coordinator 和 Engine 的 Motor 镜像。
    - `job_id`、模型路径、实例数、NPU 数量和硬件类型。
    - 按需修改 `userConfig` JSON 字符串中的 `coordinator_infer_node_port` 和各组件 `*_node_selector`。
-
-   生产部署与扩缩容前，还须在 `userConfig` 中配置推理 TLS 和管理面 API Key，具体字段见
-   [安全预检说明](../../deployer/README.md#安全预检)。保留安全预检，移除 values / Job 中已保存的
-   `--skip-check`；该参数仅限隔离的本地或测试环境验证，生产环境不得使用。
 
 3. RBG（RoleBasedGroup）形态改用 `helm/values-rbg.yaml`。它只覆盖 `operation` 与 `userConfig`，
    镜像、`envConfig`、Job 等仍取 `values.yaml` 中的默认值；`userConfig` 与默认值的差异仅为
@@ -99,10 +95,19 @@ Controller、Coordinator、Engine、KV Pool 和 KV Conductor 等运行时资源�
    [完整 rbg_config 示例](../../deployer/lib/rbg/README.md#完整-rbg_config-示例)，资源提交后还需按
    [部署后验收](../../deployer/lib/rbg/README.md#部署后验收)确认工作负载就绪和实际推理成功。
 
-   部署前须在 `userConfig` 中配置推理 TLS 与管理面 API Key，并保留安全预检，
-   具体字段见 [安全预检说明](../../deployer/README.md#安全预检)。
-   `--skip-check` 仅限隔离的本地或测试环境验证，生产环境不得使用；其余操作与 `values.yaml` 相同，下文命令中的
-   `--values /tmp/motor-values.yaml` 换成 `/tmp/motor-rbg-values.yaml` 即可。
+   其余操作与 `values.yaml` 相同，下文命令中的 `--values /tmp/motor-values.yaml` 换成
+   `/tmp/motor-rbg-values.yaml` 即可。
+
+<a id="deployment-security-precheck"></a>
+
+## 部署前安全预检
+
+部署和手动扩缩容 Job 都会检查 `userConfig` 是否启用了推理 TLS 和管理 API Key 认证，以及是否指定了密钥文件路径。生产环境请参照[K8s 部署前安全预检](../../../docs/zh/user_guide/deployment/k8s/README.md#deployment-security-precheck)完成配置，并移除 values 或 Job 参数中已保存的 `--skip-check`。
+
+仅在隔离测试环境需要沿用现有配置时，可将 `--skip-check` 追加到部署的 `jobs.deploy.args` 或扩缩容的 `jobs.scale.args` 列表。这两个列表默认均为空，只接受字符串数组。对应列表为空时，可按以下方式在 Helm 命令中传参。
+
+- 部署时追加 `--set 'jobs.deploy.args[0]=--skip-check'`。
+- 扩缩容时追加 `--set 'jobs.scale.args[0]=--skip-check'`。
 
 ## 部署
 
@@ -297,8 +302,3 @@ Job 不设固定活跃期限，通过 Helm 的 `--timeout` 为 Pod 调度、镜�
 在 RBG 路径表示指定 HPA 已写入并核对，实际扩缩容由 HPA 与 RBG 控制器异步执行。
 正常 `operation=deploy` Job 完成只表示资源已提交，不代表工作负载就绪或业务推理验证完成。
 本操作不修改原始部署模板，重新部署仍以部署配置为准；恢复策略需显式再次更新，不依赖 Helm rollback。
-
-部署与手动扩缩容的额外 deploy.py 参数分别通过 `jobs.deploy.args`、`jobs.scale.args` 传入。
-不传额外参数时保留安全预检；生产须完成推理 TLS 与管理面 API Key 配置，并移除已保存在 values 或 Job 中的
-`--skip-check`。该参数仅限隔离的本地或测试环境验证，生产环境不得使用。
-这两个参数默认均为空数组，只接受字符串数组；字符串、对象或含非字符串元素的数组会在 Helm 校验阶段报错。

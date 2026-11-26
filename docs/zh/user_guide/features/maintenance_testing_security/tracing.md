@@ -199,6 +199,8 @@ MindIE Motor开启Tracing能力需修改env.json配置文件和user_config.json�
    python deploy.py --user_config_path ../../model_configs/vllm/user_config.json --env_config_path ../../model_configs/vllm/env.json
    ```
 
+   若命令提示安全预检未通过，请参见[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
    Coordinator 日志应包含以下片段（endpoint 随配置变化；以下为格式示例）：
 
    ```text

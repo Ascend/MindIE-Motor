@@ -60,6 +60,8 @@
     python3 deploy.py --config_dir <第二套配置目录>
     ```
 
+    启动第二套服务时也会执行[部署前安全预检](README.md#deployment-security-precheck)。请在第二套配置中启用推理 TLS 和管理 API Key 认证。仅在隔离测试环境需要沿用现有配置时，可在启动命令末尾追加 `--skip-check`。
+
 4. 确认两套都在，且名字不重叠。
 
     ```bash
@@ -67,7 +69,9 @@
     kubectl get pods -n mindie-motor -l motor.mindie.io/service=service2
     ```
 
-5. 向第二套自己的推理 NodePort 发请求。`<node_ip>` 是集群节点 IP，端口使用第二套的 `coordinator_infer_node_port`。
+5. 向第二套自己的推理 NodePort 发请求。端口使用第二套的 `coordinator_infer_node_port`。
+
+    启用推理 TLS 时，请按[HTTPS 验证方式](README.md#verify-inference-tls)使用第二套服务证书覆盖的域名或 IP 及对应的 CA。以下 HTTP 示例适用于推理 TLS 关闭的隔离测试环境，其中 `<node_ip>` 是集群节点 IP。
 
     ```bash
     curl -X POST http://<node_ip>:31025/v1/chat/completions \

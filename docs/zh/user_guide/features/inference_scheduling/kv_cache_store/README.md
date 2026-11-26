@@ -255,6 +255,8 @@ P/D传输Connector选型如下表所示：
     python deploy.py --user_config_path ../../model_configs/vllm/user_config.json --env_config_path ../../model_configs/vllm/env.json
     ```
 
+    若命令提示安全预检未通过，请参见[部署前安全预检](../../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
     **部署完成后**
 
     - 集群中会创建/更新 ConfigMap `motor-config`（内容来自当前输入的 `user_config.json`），作为后续扩缩容与刷新的基线。
@@ -290,6 +292,8 @@ P/D传输Connector选型如下表所示：
     # 方式二：单独指定配置文件
     python deploy.py --user_config_path ../../model_configs/vllm/user_config.json --env_config_path ../../model_configs/vllm/env.json
     ```
+
+    若命令提示安全预检未通过，请参见[部署前安全预检](../../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
 
     **部署完成后**
 
@@ -408,6 +412,8 @@ P/D传输Connector选型如下表所示：
 
   如不符合，修改 `user_config.json` 后重新执行 `python deploy.py --config_dir ../../model_configs/vllm` 部署。
 
+  重新部署时如遇到预检提示，请参考[部署前安全预检](../../../deployment/k8s/README.md#deployment-security-precheck)。
+
 ### D 实例拉取 KV Cache 超时
 
 **问题描述**
@@ -449,6 +455,8 @@ MemCache MetaService 启动失败。
 **解决步骤**
 
 确保两处 `backend` 值相同；修改后重新执行 `python deploy.py --config_dir ../../model_configs/vllm` 部署。
+
+重新部署时如遇到预检提示，请参考[部署前安全预检](../../../deployment/k8s/README.md#deployment-security-precheck)。
 
 ### 为什么 UCM 样例中仍然有 backend: "mooncake"
 

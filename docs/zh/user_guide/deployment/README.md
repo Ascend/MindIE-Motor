@@ -212,6 +212,8 @@ vim ./config/env.json
     python3 deploy.py --config_dir ../config/
     ```
 
+    若启动时遇到安全预检提示，请参考[部署前安全预检](k8s/README.md#deployment-security-precheck)，了解如何完成安全配置，或在隔离测试环境中使用 `--skip-check`。
+
 2. 使用以下命令查看服务状态。
 
     ```bash
@@ -242,6 +244,8 @@ vim ./config/env.json
     ```
 
 4. 使用以下命令验证服务。
+
+    启用推理 TLS 时，请按[HTTPS 验证方式](k8s/README.md#verify-inference-tls)使用 HTTPS 地址和 `curl --cacert`。以下 HTTP 示例适用于推理 TLS 关闭的隔离测试环境。
 
     ```bash
     # 替换占位符：<master_node_ip>为master节点IP，<served_model_name>为user_config.json中served_model_name字段值
@@ -534,6 +538,8 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
     python3 deploy.py --config_dir ../../model_configs/sglang/models/deepseek_v4_flash_0731/A3
     ```
 
+    若启动时遇到安全预检提示，请参考[部署前安全预检](k8s/README.md#deployment-security-precheck)，了解如何完成安全配置，或在隔离测试环境中使用 `--skip-check`。
+
 3. 查看状态
 
     ```bash
@@ -560,6 +566,8 @@ python3 /home/examples/deployer/docker_deploy.py --config_dir /home/examples/con
     ```
 
 5. 验证服务
+
+    启用推理 TLS 时，请按[HTTPS 验证方式](k8s/README.md#verify-inference-tls)使用 HTTPS 地址和 `curl --cacert`。以下 HTTP 示例适用于推理 TLS 关闭的隔离测试环境。
 
     ```bash
     # <node_ip>：暴露 Coordinator Infer NodePort 的节点 IP

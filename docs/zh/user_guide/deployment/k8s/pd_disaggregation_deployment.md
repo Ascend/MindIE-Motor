@@ -155,6 +155,12 @@ RBG方式不支持ScaleP2D和容器快照。启用Gang Scheduling时所有启用
     python3 deploy.py --config_dir ../config/
     ```
 
+    启动和 `--dry-run` 都会执行安全预检，包括 RBG 部署方式。如果遇到预检提示，请参考[部署前安全预检](README.md#deployment-security-precheck)配置推理 TLS 和管理 API Key 认证。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
+    ```bash
+    python3 deploy.py --config_dir ../config/ --skip-check
+    ```
+
 2. 使用以下命令查看服务状态。
 
    ```bash
@@ -207,6 +213,8 @@ RBG方式不支持ScaleP2D和容器快照。启用Gang Scheduling时所有启用
    使用已有 `plog-path` hostPath 日志卷的标准模板部署时，计算 Pod 内各组件写入的日志文件、诊断文件和缓存默认位于其所在宿主机的 `<宿主机日志根>/<模型名>/<service_id>/<Pod名>/<容器名>/`。宿主机日志根默认与 `env.json` 中的 `motor_common_env.MOTOR_LOG_ROOT_PATH` 相同，未配置时为 `/root/ascend/log`；`multi_deployment` 可通过 `logging_config.host_log_dir` 指定宿主机日志根。`service_id` 在环境生成阶段按 `<job_id>_<北京时间YYYYMMDDhhmmss>` 生成。挂载适用范围、组件子目录及控制面目录见[日志与诊断文件目录](../../maintenance/log_directory.md)。
 
 4. 使用以下命令验证服务。
+
+   启用推理 TLS 时，请按[HTTPS 验证方式](README.md#verify-inference-tls)使用 HTTPS 地址和 `curl --cacert`。以下 HTTP 示例适用于推理 TLS 关闭的隔离测试环境。
 
    ```bash
    # 替换占位符：<master_node_ip>为master节点IP，<served_model_name>为user_config.json中served_model_name字段值

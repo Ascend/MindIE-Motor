@@ -64,6 +64,8 @@ cp -n .env.example .env   # launch.sh 在无 .env 时也会自动从 .env.exampl
 
 #### 1.4.1 Tracing 接入（让 Tempo 链路看板有数据）
 
+重新部署前请参见[部署前安全预检](../../../../docs/zh/user_guide/deployment/k8s/README.md#deployment-security-precheck)。若在隔离测试环境需要沿用现有配置，可在 `deploy.py` 命令末尾追加 `--skip-check`。
+
 需修改 deploy 使用的 `env.json` 与 `user_config.json`（`<obs-host>` 为观测栈所在主机 IP），随后用 `deploy.py` 重新部署生效：
 
 - `env.json`：在 `motor_coordinator_env` / `motor_engine_prefill_env` / `motor_engine_decode_env` 下新增：

@@ -112,6 +112,8 @@ flowchart TD
 
 ### 应用场景
 
+执行下表的 `deploy.py` 验证命令时，请同时传入 `--config_dir` 指定配置目录，并参照[部署前安全预检](../user_guide/deployment/k8s/README.md#deployment-security-precheck)准备安全配置。
+
 | 场景 | 步骤 | 预期 |
 |------|------|------|
 | 首次部署（infer_service_set） | `motor_deploy_config` 中不配置或配置 `"deploy_mode": "infer_service_set"`，执行 `python3 deploy.py` | 成功；生成 `output/deployment/infer_service.yaml`；RBAC 与 InferServiceSet 被 apply；ConfigMap motor-config 存在；CRD controller 拉起 controller/coordinator/prefill/decode pod；服务能正常推理 |

@@ -86,3 +86,5 @@ MindIE Motor修改user_config.json配置文件后，通过deploy.py脚本即可�
     # 方式二：单独指定配置文件
     python deploy.py --user_config_path ../../model_configs/vllm/single_container/user_config.json --env_config_path ../../model_configs/vllm/single_container/env.json
     ```
+
+    若命令提示安全预检未通过，请参见[部署前安全预检](../../../docs/zh/user_guide/deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。

@@ -424,7 +424,7 @@ cd examples/deployer
 python deploy.py --config_dir ../../model_configs/vllm
 ```
 
-ETCD TLS仅控制连接ETCD的认证，不替代部署工具要求的推理TLS、管理接口鉴权等配置。
+ETCD TLS 用于保护 Motor 与 ETCD 之间的通信。请按[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)配置推理 TLS 和管理 API Key 认证。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
 
 查看Motor所在命名空间（与`motor_deploy_config.job_id`一致）的Pod：
 

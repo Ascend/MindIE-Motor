@@ -296,6 +296,8 @@ HPA（Horizontal Pod Autoscaler）通过External Metrics Adaptor或Prometheus + 
 
    <a id="step-4"></a>
 
+   下方的 YAML 预览和部署命令均会执行[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
    修改本地模板不会更新已部署资源。使用与原部署一致的配置先生成 YAML，并检查输出中的 namespace、角色、副本上下限、指标名和 selector：
 
    ```bash
@@ -361,7 +363,7 @@ PD分离示例：
 
 RBG也支持为`encode`角色配置`scaling_policy`，但须先在部署配置中启用Encode Role，并显式填写`metric`。HPA不能用于当前副本数为0的Role；应先将其手动扩容到至少1个副本。HPA的最小副本数必须至少为1。
 
-生成的HPA会自动携带`kubernetes_namespace`和`infer_huawei_com_inferservice_name`选择器。部署前先执行dry-run并检查输出：
+生成的HPA会自动携带`kubernetes_namespace`和`infer_huawei_com_inferservice_name`选择器。下方的 YAML 预览和部署命令均会执行[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)。部署前先执行 `--dry-run` 并检查输出：
 
 ```bash
 cd examples/deployer

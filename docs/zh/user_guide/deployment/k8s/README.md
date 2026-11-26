@@ -47,3 +47,34 @@ Prefill与Decode由同一类实例（union）承载，适用于快速验证与�
 | single_container | 单容器方式。将P/D合并到单个容器中运行，适用于小规模或测试场景。 |
 
 如需了解user_config.json文件的其余配置字段，请参考[user_config.json配置文件全量参数说明](../../configuration/config_reference.md)。
+
+<a id="deployment-security-precheck"></a>
+
+## 部署前安全预检
+
+Kubernetes 命令行部署时，`deploy.py` 会在启动服务、`--dry-run`、`--update_config` 和 `--update_instance_num` 前检查 `user_config.json`。如果看到 `Deployment pre-check requires attention.`，请检查以下配置。
+
+- 将 `motor_deploy_config.tls_config.infer_tls_config.enable_tls` 设为 `true`，并按[配置参数说明](../../configuration/config_reference.md)配置推理 TLS 证书。
+- 将 `motor_coordinator_config.mgmt_api_key_config.enable_api_key` 设为 `true`，并在 `api_key_file` 中指定符合[管理接口认证要求](../../api/management_interfaces.md)的密钥文件路径。
+
+生产环境请完成安全配置后重新执行原命令。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。例如，在 `examples/deployer` 目录启动服务时可执行以下命令，将 `/path/to/config` 替换为实际配置目录。
+
+```bash
+python3 deploy.py --config_dir /path/to/config --skip-check
+```
+
+`--skip-check` 仅跳过部署前的安全配置检查。运行时沿用 `user_config.json` 中的安全配置。推理 TLS 关闭时，推理入口使用明文 HTTP。管理 API Key 认证关闭时，管理接口跳过该 Key 的校验。
+
+<a id="verify-inference-tls"></a>
+
+## 通过 HTTPS 验证推理服务
+
+推理 TLS 启用并成功加载证书后，推理入口使用 HTTPS。请用服务证书覆盖的域名或 IP 访问 Coordinator 推理端口，并在客户端准备签发该服务证书的 CA 证书（PEM 格式）。以下示例使用默认 NodePort `31015`，请按实际地址和端口修改 `INFER_URL`，并将 `INFER_CA` 改为客户端可读取的 CA 证书路径。
+
+```bash
+INFER_URL="https://infer.example.com:31015"
+INFER_CA="/path/to/infer-ca.pem"
+curl --cacert "$INFER_CA" "$INFER_URL/v1/models"
+```
+
+验证 `/v1/chat/completions` 等推理请求时，同样使用 HTTPS 地址并添加 `--cacert "$INFER_CA"`，请求体沿用相应接口示例。启用了推理 API Key 认证时，请按[接口鉴权说明](../../api/README.md)携带请求头。

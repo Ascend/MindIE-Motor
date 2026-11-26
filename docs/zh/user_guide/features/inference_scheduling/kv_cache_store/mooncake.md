@@ -127,6 +127,8 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
     python deploy.py --config_dir <配置目录>
     ```
 
+    若命令提示安全预检未通过，请参见[部署前安全预检](../../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
     >[!NOTE] 说明
     >`<配置目录>` 为已按上文完成 Mooncake 配置的 `user_config.json`、`env.json` 所在目录，请替换为实际路径。
 
@@ -255,6 +257,8 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
     python deploy.py --config_dir <配置目录>
     ```
 
+    若命令提示安全预检未通过，请参见[部署前安全预检](../../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
     >[!NOTE] 说明
     >`<配置目录>` 为已按上文完成 Mooncake 配置的 `user_config.json`、`env.json` 所在目录，请替换为实际路径。
 
@@ -335,6 +339,8 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
     cd examples/deployer
     python deploy.py --config_dir <配置目录>
     ```
+
+    若命令提示安全预检未通过，请参见[部署前安全预检](../../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
 
     >[!NOTE] 说明
     >`<配置目录>` 为已按上文完成 Mooncake 配置的 `user_config.json`、`env.json` 所在目录，请替换为实际路径。

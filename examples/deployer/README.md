@@ -40,6 +40,8 @@ cd examples/deployer
    并配置 `motor_coordinator_config.mgmt_api_key_config` 的 `enable_api_key` 和 `api_key_file`。
    字段见 [配置参数说明](../../docs/zh/user_guide/configuration/config_reference.md)，
    管理鉴权行为见 [管理接口](../../docs/zh/user_guide/api/management_interfaces.md)。
+   `--dry-run`、`--update_config` 和 `--update_instance_num` 也会执行这项检查。
+   隔离测试环境中需要沿用现有配置时，可按[部署前安全预检](../../docs/zh/user_guide/deployment/k8s/README.md#deployment-security-precheck)在原命令末尾追加 `--skip-check`。
 3. 非 `--dry-run` 部署时，`lib/utils.py` 的 `set_env_to_shell()` 读取 `env.json`，将公共环境段
    `motor_common_env` 与各组件环境段合并（同名变量以组件值为准），写入
    `startup/common.sh` 和 `startup/roles/*.sh` 中的 `set_*_env` 函数。
@@ -308,7 +310,7 @@ Pod 的 `terminationGracePeriodSeconds` 限制，不保证所有在途请求都�
 
 ### 生成预览、实际部署与检查
 
-完成前置配置后，可先预览 YAML，再执行实际部署：
+完成前置配置后，可先预览 YAML，再执行实际部署。两条命令均会执行[部署前安全预检](../../docs/zh/user_guide/deployment/k8s/README.md#deployment-security-precheck)。
 
 ```bash
 python3 deploy.py --config_dir ../../model_configs/vllm --dry-run
@@ -316,7 +318,7 @@ python3 deploy.py --config_dir ../../model_configs/vllm
 ```
 
 `--dry-run` 仅对正常部署生效：它会生成或覆盖本地 YAML，但跳过启动脚本改写、
-ConfigMap 更新和工作负载 apply，也不显示启动进度。它仍会执行安全预检，生成 YAML 时还可能查询
+ConfigMap 更新和工作负载 apply，也不显示启动进度。生成 YAML 时还可能查询
 集群节点标签、可复用的 KV Store 和 NodePort 占用情况，因此并非完全离线的检查。
 **不要将它与 `--update_config` 或 `--update_instance_num` 组合使用来预演更新**：
 这两个操作会先于正常部署执行，即使加上 `--dry-run` 也可能修改集群。
@@ -357,7 +359,7 @@ MindIE Motor服务部署参数说明如下所示：
 | `--dry-run` | - | 仅生成 YAML，不执行 `kubectl apply`；不应与 `--update_config`、`--update_instance_num` 组合使用，否则更新操作仍会执行。 |
 | `--auto_log_collect` | - | 部署完成后自动启动日志采集。 |
 | `--nostep` | - | 部署完成后不显示服务启动进度条。 |
-| `--skip-check` | - | 仅限隔离的本地或测试环境跳过安全预检；不会开启 TLS 或管理 API Key 认证，生产环境不得使用。 |
+| `--skip-check` | - | 仅在隔离测试环境跳过[部署前安全预检](../../docs/zh/user_guide/deployment/k8s/README.md#deployment-security-precheck)，并沿用现有配置。 |
 
 Motor 配置文件自动生成参数：
 
@@ -396,6 +398,8 @@ python3 deploy.py
 
 > 已部署状态下，进度监控（`P`）会自动发现 Running 的 vLLM Pod，通过尾随 `kubectl logs` 解析启动日志，在菜单下方绘制每个 Pod 的实时进度条，并展示 Pod 就绪状态（`kubectl get pods`）。
 
+方式一至方式三均会执行[部署前安全预检](../../docs/zh/user_guide/deployment/k8s/README.md#deployment-security-precheck)。仅在隔离测试环境需要沿用现有配置时，可在相应命令末尾追加 `--skip-check`。
+
 #### 方式一：指定配置目录（推荐）
 
 ```bash
@@ -431,6 +435,8 @@ python3 deploy.py --mode general_config --deploy-scenario separate --hardware-ty
 `motor_deploy_config.deploy_mode` 决定，与 `--mode` 无关。
 
 ### 其他操作
+
+下面的配置更新和实例扩缩容命令均会执行[部署前安全预检](../../docs/zh/user_guide/deployment/k8s/README.md#deployment-security-precheck)。
 
 #### 更新配置
 

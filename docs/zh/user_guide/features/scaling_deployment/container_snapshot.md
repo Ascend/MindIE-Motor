@@ -114,7 +114,7 @@
 | mnt_mount_path | string | 是 | 无 | `mnt` 卷的宿主机路径及容器挂载路径，必须为绝对路径，并且不能与 `host_snapshot_image_path` 有交集。 |
 | device_snapshot_weight_path | string | 是 | 无 | Device 运行时模型权重的宿主机保存目录，必须为绝对路径。快照权重在该目录下以模型权重名称、DP 数和 TP 数组合命名；容器内固定挂载到 `/snapshot/weight`。 |
 
-通过 `deploy.py` 启动服务时，Motor 会完成以下配置：
+启动服务前，请参见[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)。通过 `deploy.py` 启动服务时，Motor 会完成以下配置：
 
 - 基于通用部署模板渲染容器快照所需配置，并生成最终的 `infer_service.yaml`。
 - 配置快照标签、Readiness Probe、所需的挂载项。
@@ -327,7 +327,7 @@ kubectl logs -n <namespace> <coordinator-pod> | grep "Added instance ID"
 
 1. 检查 `host_snapshot_image_path` 和 `mnt_mount_path` 的配置。
 2. 将 `host_snapshot_image_path` 修改为不会挂载到容器内的独立宿主机目录，确保两个路径不相同且不互为父子目录。
-3. 重新执行 `deploy.py` 启动服务。
+3. 重新执行 `deploy.py` 启动服务。若遇到预检提示，请参见[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)。
 
 ### 更换模型或并行配置后仍加载旧快照
 

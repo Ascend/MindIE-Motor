@@ -112,6 +112,8 @@ RBG方式不支持ScaleP2D和容器快照。启用Gang Scheduling时所有启用
    python3 deploy.py --config_dir ../../model_configs/sglang/models/deepseek_v4_flash_0731/A3
    ```
 
+   所有部署后端（含 RBG）在启动和 `--dry-run` 预览前均会执行[部署前安全预检](README.md#deployment-security-precheck)。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
 3. 查看状态
 
    ```bash
@@ -161,6 +163,8 @@ RBG方式不支持ScaleP2D和容器快照。启用Gang Scheduling时所有启用
 
 5. 验证服务。
 
+   启用推理 TLS 时，请按[HTTPS 验证方式](README.md#verify-inference-tls)使用 HTTPS 地址和 `curl --cacert`。以下 HTTP 示例适用于推理 TLS 关闭的隔离测试环境。
+
    - node_ip：暴露Coordinator Infer NodePort的节点IP地址。
    - infer_port：user_config.json中的coordinator_infer_node_port。
    - model：engine_config中的served-model-name。
@@ -201,6 +205,8 @@ python3 deploy.py \
   --config_dir ../../model_configs/sglang/models/deepseek_v4_flash_0731/A3 \
   --update_instance_num
 ```
+
+若命令提示安全预检未通过，请参见[部署前安全预检](README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
 
 RBG方式会更新在线RoleBasedGroup中对应Role的`replicas`。若目标Role已存在deployer管理的HPA或RoleBasedGroupScalingAdapter，脚本会拒绝手动扩缩容。完整操作参见[手动扩缩容](../../features/scaling_deployment/manual_scaling.md)。
 

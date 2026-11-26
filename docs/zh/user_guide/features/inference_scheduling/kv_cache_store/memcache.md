@@ -175,7 +175,7 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
 
         `common.sh` 会把两份文件同步到 ConfigMap。引擎启动后，worker 读 `/usr/local/Ascend/Motor/conf/mmc-local-inprocess.conf`。standalone 子进程再改读同目录的 `mmc-local-standalone.conf`。模板和字段注释在 `examples/deployer/startup/roles/kv_store_backends/memcache/`。
     5. `user_config.json` 中 `kv_cache_store_config.backend` 设为 `memcache`。A3 的 `local_service_mode` 设为 `standalone`，`local_config_path` 仍指向 `mmc-local-inprocess.conf`。P/D connector 与 [P/D传输Connector选型](README.md#table_Connector) 保持一致。
-    6. 执行 `examples/deployer/deploy.py` 做全量部署。修改模式、`local_config_path` 或上述两份 conf 后，不要只执行 `--update_config`。prompt 不少于 128 token 才会按 chunk 入池。部署前确认推理 NodePort 不与集群里已有服务冲突。
+    6. 执行 `examples/deployer/deploy.py` 做全量部署。部署前请参见[部署前安全预检](../../../deployment/k8s/README.md#deployment-security-precheck)并确认推理 NodePort 不与集群里已有服务冲突。修改模式、`local_config_path` 或上述两份 conf 后，不要只执行 `--update_config`。prompt 不少于 128 token 才会按 chunk 入池。
 
 ### 验证特性
 

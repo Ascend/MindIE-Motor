@@ -708,7 +708,7 @@ python3 deploy.py --update_scaling_policy policy.json
 MOTOR_DEPLOY_MODE=rbg bash ../cloud_native_deploy/cleanup.sh "$NAMESPACE"
 ```
 
-部署、预览、改配置与扩缩容默认保留安全预检。生产环境须配置推理 TLS 与管理面 API Key，
+部署、预览、更新运行配置和手动扩缩容默认执行安全预检。生产环境须配置推理 TLS 与管理面 API Key，
 具体字段见 [Deployer 安全预检](../../README.md#安全预检)，并移除 Helm values / Job 参数中的
 `--skip-check`。该参数仅限隔离的本地或测试环境验证，生产环境不得使用。
 

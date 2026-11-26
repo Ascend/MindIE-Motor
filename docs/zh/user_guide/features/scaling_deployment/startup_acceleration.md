@@ -106,6 +106,8 @@ D2D权重加载特性通过user_config.json配置文件中的`engine_config`字�
    python3 deploy.py --config_dir .../../model_configs/vllm/models/...
    ```
 
+   若命令提示安全预检未通过，请参见[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
    >[!NOTE] 说明
    >
    >`--config_dir`为`user_config.json`与`env.json`所在目录。上述`.../../model_configs/vllm/models/...`为路径样例，需替换为实际使用的引擎与模型对应的配置目录（可参考本文档“已测试模型”表中的配置目录）。
@@ -119,6 +121,8 @@ D2D权重加载特性通过user_config.json配置文件中的`engine_config`字�
    ```bash
    python3 deploy.py --config_dir .../../model_configs/vllm/models/... --update_instance_num
    ```
+
+   若命令提示安全预检未通过，请参见[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
 
 4. <a id="step004"></a>确认部署结果。
 

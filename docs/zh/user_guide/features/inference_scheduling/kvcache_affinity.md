@@ -220,6 +220,8 @@ KV Cache 亲和性调度结合缓存前缀命中和当前负载，为请求选�
     python deploy.py --config_dir ../../model_configs/vllm/pd_hybrid
     ```
 
+    若命令提示安全预检未通过，请参见[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
     部署后按[验证特性](#验证特性)检查注册、缓存命中和实际选点。
 
 ### 验证特性

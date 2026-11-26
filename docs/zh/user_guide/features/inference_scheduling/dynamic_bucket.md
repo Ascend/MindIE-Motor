@@ -200,6 +200,8 @@ length_factor + load_factor <= 1 → 保持初选桶
    python deploy.py --config_dir ../../infer_engines/vllm
    ```
 
+   若命令提示安全预检未通过，请参见[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
 ### 验证特性
 
 可通过Coordinator输出的动态分桶选择日志核对请求长度、目标桶、所选endpoint和候选负载；请求无法获得有效token数时会回退到负载均衡。

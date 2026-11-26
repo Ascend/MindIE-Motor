@@ -240,6 +240,8 @@ Yuanrong 提供了异构数据对象抽象，支持 key/value 读写，并构建
    python deploy.py --user_config_path ../infer_engines/vllm/user_config.json --env_config_path ../infer_engines/vllm/env.json
    ```
 
+   若命令提示安全预检未通过，请参见[部署前安全预检](../../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
    >[!NOTE] 说明
    >上述命令以 `../infer_engines/vllm` 为配置目录示例。请先按上文修改该目录中的 `user_config.json`，并准备 `env.json`；使用其他目录时，将两条命令中的 `../infer_engines/vllm` 统一替换为实际配置目录。
 

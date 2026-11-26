@@ -81,8 +81,8 @@ python examples/deployer/deploy.py \
 继续下一步核对节点和引擎状态。
 
 **失败处理**：若出现 `Deployment pre-check requires attention.`，按
-[配置参数说明](../../../docs/zh/user_guide/configuration/config_reference.md)补齐推理 TLS
-和管理面 API Key 配置，再重新执行。
+[部署前安全预检](../../../docs/zh/user_guide/deployment/k8s/README.md#deployment-security-precheck)补齐推理 TLS
+和管理 API Key 配置后重新执行。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
 其他报错按首处错误检查依赖、集群资源、镜像和模型挂载。
 
 ### 3. 核对节点与 PCP 状态

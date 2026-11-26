@@ -149,6 +149,8 @@ L3及以下不触发ScaleP2D：L3需人工介入，L2走Token重推等其他策�
    python3 deploy.py --config_dir ../../model_configs/vllm --nostep
    ```
 
+   若命令提示安全预检未通过，请参见[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
    部署成功时日志出现`all deploy end.`和`Deploy complete.`。
 
 ### 验证特性

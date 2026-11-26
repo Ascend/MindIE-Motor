@@ -132,6 +132,8 @@ python deploy.py --config_dir <配置目录>
 kubectl get pod -n <命名空间> -o wide
 ```
 
+若命令提示安全预检未通过，请参见[部署前安全预检](../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
 >[!NOTE] 说明
 >
 > - 自定义 selector 会与 deployer 根据 `hardware_type` 生成的硬件标签（如 `accelerator`、`accelerator-type`）合并，同名 key 以 `user_config.json` 为准。

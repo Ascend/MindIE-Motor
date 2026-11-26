@@ -62,9 +62,13 @@ RBG 整组重新部署应先通过 TUI 删除，或执行
 由于故障发生一段时间后，ras_monitor 执行服务重拉时将调用 deploy.py，上述2.2中 ras_monitor 的输入参数建议与服务拉起时执行 deploy.py 脚本的输入参数保持一致，否则可能导致重拉失败。
 具体 deploy.py 的参数介绍见[链接](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/README.md) 。
 
+自动重拉时，ras_monitor 会检查 `deploy.py` 是否支持 `--skip-check`，并在支持时自动追加该参数。首次手动启动仍应按[部署前安全预检](../../../../docs/zh/user_guide/deployment/k8s/README.md#deployment-security-precheck)准备配置。
+
 ### 其他
 
 1、由于 ras_monitor 的定位为大 EP 的健康伴侣，与大 EP 的启动执行脚本 deploy.py 解耦。若 ras_monitor 先启动，用户需在 `examples/deployer` 目录下手动执行 `python3 deploy.py --config_dir ../../model_configs/vllm`（或使用 `--user_config_path` 与 `--env_config_path` 指定配置文件）拉起服务后，ras_monitor 才进入监控流程，否则将一直等待服务拉起并 ready。
+
+首次启动时若遇到安全预检提示，请参考[部署前安全预检](../../../../docs/zh/user_guide/deployment/k8s/README.md#deployment-security-precheck)。仅在隔离测试环境需要沿用现有配置时，可在手动执行的 `deploy.py` 命令末尾追加 `--skip-check`。
 
 2、若在 ras_monitor 监控过程中客户有修改配置的诉求，若在执行 `bash delete` 删除服务后，客户未终止ras_monitor 进程，ras_monitor 作为自动化脚本可能会误判认为服务异常，执行重拉。因此，建议在 `bash delete` 执行后，手动停止ras_monitor 进程以防止误重启。
 

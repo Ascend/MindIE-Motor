@@ -61,6 +61,8 @@ make buildx-cloud-native-deployer TAG=latest
 
 社区版本提供 `helm/` Chart，用于直接创建 ConfigMap、ServiceAccount、RBAC 和 deploy / scale / cleanup Job。运行时服务资源仍由 Job 中的 `examples/deployer/deploy.py` 生成。
 
+部署和手动扩缩容 Job 都会执行安全预检。安全配置要求及隔离测试环境的传参方式见 [Helm 部署前安全预检](helm/README.zh.md#deployment-security-precheck)。
+
 先复制并修改默认配置，至少设置 deployer 镜像、Motor 运行镜像、模型路径和实际集群参数：
 
 ```bash
@@ -191,6 +193,11 @@ RBG 的配置字段、前提条件与限制见 [Deployer 说明](../deployer/REA
 
 ## 部署前准备与执行
 
+部署 Job 会检查 `user_config.json` 是否启用了推理 TLS 和管理 API Key 认证，并填写了 API Key 文件路径。
+生产环境请参照 [K8s 部署前安全预检](../../docs/zh/user_guide/deployment/k8s/README.md#deployment-security-precheck)完成配置。
+仅在隔离测试环境需要沿用现有配置时，可在创建 Job 前为 `k8s/job.yaml` 中的 `deployer` 容器添加
+`args: ["--skip-check"]`。
+
 以下命令使用默认配置；RBG 模式将其中的 ConfigMap 文件改为 `configmap-user-config-rbg.yaml`，
 并完成上文的镜像、配置和 Job 参数设置。
 
@@ -209,6 +216,9 @@ kubectl logs job/mindie-motor-deploy -n mindie
 ```
 
 ## 扩缩容
+
+扩缩容 Job 也会执行安全预检。仅在隔离测试环境需要沿用现有配置时，可在创建 Job 前为
+`k8s/scale-job.yaml` 中的 `scaler` 容器添加 `args: ["--skip-check"]`。
 
 修改所用 ConfigMap（RBG 为 `k8s/configmap-user-config-rbg.yaml`）中的 `p_instances_num` 和/或
 `d_instances_num`，重新 apply ConfigMap 后执行；RBG 目标角色须已解除 HPA/ScalingAdapter 管理：

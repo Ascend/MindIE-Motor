@@ -39,6 +39,8 @@ python3 deploy.py --config_dir ../../model_configs/vllm --update_config
 python3 deploy.py --config_dir ../../model_configs/vllm --update_instance_num
 ```
 
+若命令提示安全预检未通过，请参见[部署前安全预检](../../../docs/zh/user_guide/deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
 Docker / Slurm 环境分别使用 `docker_deploy.py` / `slurm_deploy.py`。参数说明见
 [`examples/deployer/README.md`](../../deployer/README.md)。
 
@@ -122,6 +124,8 @@ python3 deploy.py --config_dir ../../model_configs/vllm --update_config
 # 方式二：单独指定配置文件
 python3 deploy.py --user_config_path ../../model_configs/vllm/user_config.json --env_config_path ../../model_configs/vllm/env.json --update_config
 ```
+
+若命令提示安全预检未通过，请参见[部署前安全预检](../../../docs/zh/user_guide/deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
 
 CCAE Reporter 独立打包：在本目录执行 `bash build.sh` 生成 wheel（入口命令 `ccae_reporter`）。
 

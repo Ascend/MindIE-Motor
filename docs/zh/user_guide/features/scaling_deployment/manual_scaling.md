@@ -58,6 +58,8 @@
    python3 deploy.py --user_config_path ../../model_configs/vllm/user_config.json --env_config_path ../../model_configs/vllm/env.json --nostep
    ```
 
+   若命令提示安全预检未通过，请参见[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
    参数说明：
    - `--config_dir`：指定配置目录路径。
    - `--user_config_path`：单独指定user_config.json路径。
@@ -93,6 +95,8 @@
    python3 deploy.py --config_dir ../../model_configs/vllm --update_instance_num --nostep
    ```
 
+   若命令提示安全预检未通过，请参见[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
    >[!NOTE] 说明
    >若使用单独指定配置文件方式部署，扩缩容时需同样指定`--user_config_path`和`--env_config_path`。
 
@@ -125,6 +129,8 @@
    python3 deploy.py --user_config_path ../../model_configs/vllm/pd_hybrid/user_config.json --env_config_path ../../model_configs/vllm/pd_hybrid/env.json --nostep
    ```
 
+   若命令提示安全预检未通过，请参见[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
+
    参数说明：
    - `--config_dir`：指定配置目录路径。
    - `--user_config_path`：单独指定user_config.json路径。
@@ -156,6 +162,8 @@
    cd examples/deployer
    python3 deploy.py --config_dir ../../model_configs/vllm/pd_hybrid --update_instance_num --nostep
    ```
+
+   若命令提示安全预检未通过，请参见[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
 
    >[!NOTE] 说明
    >若使用单独指定配置文件方式部署，扩缩容时需同样指定`--user_config_path`和`--env_config_path`。
@@ -295,6 +303,8 @@
    cd examples/deployer
    python3 deploy.py --config_dir ../../model_configs/vllm --nostep
    ```
+
+   若命令提示安全预检未通过，请参见[部署前安全预检](../../deployment/k8s/README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
 
 ### user_config changes detected beyond instance numbers
 

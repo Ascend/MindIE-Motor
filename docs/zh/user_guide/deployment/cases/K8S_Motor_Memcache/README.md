@@ -460,6 +460,8 @@ kubectl create ns mindie-motor
 python3 deploy.py --config_dir <user_config.json和env.json的文件放置目录>
 ```
 
+若启动时遇到安全预检提示，请参考[部署前安全预检](../../k8s/README.md#deployment-security-precheck)，了解如何完成安全配置，或在隔离测试环境中使用 `--skip-check`。
+
 **5）验证服务**
 
 查看服务状态：
@@ -468,7 +470,7 @@ python3 deploy.py --config_dir <user_config.json和env.json的文件放置目录
 kubectl get pods -n mindie-motor -o wide
 ```
 
-各 Pod 均为 Running（或 Completed）状态后，可通过以下命令验证推理服务：
+各 Pod 均为 Running（或 Completed）状态后，可验证推理服务。启用推理 TLS 时，请按[HTTPS 验证方式](../../k8s/README.md#verify-inference-tls)使用 HTTPS 地址和 `curl --cacert`。以下 HTTP 示例适用于推理 TLS 关闭的隔离测试环境。
 
 ```bash
 curl -X POST http://<master_node_ip>:31015/v1/chat/completions \

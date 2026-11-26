@@ -353,7 +353,7 @@ PD混部可直接参考代码仓model_configs/vllm/pd_hybrid/env.json文件进�
 
 ### 部署命令
 
-在/examples/deployer目录下执行以下命令，支持两种指定配置的方式。
+在 `examples/deployer` 目录下可按以下任一种方式启动服务。所有部署后端（含 RBG）在启动和 `--dry-run` 预览前均会执行[部署前安全预检](README.md#deployment-security-precheck)。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
 
 - 方式一：指定配置目录（推荐）
 
@@ -369,7 +369,7 @@ PD混部可直接参考代码仓model_configs/vllm/pd_hybrid/env.json文件进�
   > python3 deploy.py --config_dir ../../model_configs/vllm/pd_hybrid --dry-run
   >```
   >
-  >`deploy.py`部署脚本会依次执行以下步骤：
+  >正常部署时，`deploy.py` 会依次执行以下步骤：
   >
   >1. 读取user_config.json和env.json配置文件。
   >2. 根据motor_deploy_config生成Controller、Coordinator和union实例的K8s资源；`deploy_mode=rbg`时生成RoleBasedGroup、业务Service、CoordinatedPolicy及配套资源。
@@ -456,6 +456,8 @@ PD混部可直接参考代码仓model_configs/vllm/pd_hybrid/env.json文件进�
 
 服务就绪后，可通过/v1/chat/completions接口测试服务是否拉起正常。推理入口为Coordinator对外暴露的端口（默认为31015）。请将`<IP>`替换为实际访问地址，将`model`替换为user_config.json配置文件中motor_engine_union_config字段下`served_model_name`参数配置的模型名称。
 
+启用推理 TLS 时，请按[HTTPS 验证方式](README.md#verify-inference-tls)使用 HTTPS 地址和 `curl --cacert`。以下 HTTP 示例适用于推理 TLS 关闭的隔离测试环境。
+
 ```bash
 curl -X POST http://<IP>:31015/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -485,6 +487,8 @@ PD混部扩缩容时仅修改user_config.json配置文件中motor_deploy_config�
 ```bash
 python3 deploy.py --config_dir ../../model_configs/vllm/pd_hybrid --update_instance_num
 ```
+
+若命令提示安全预检未通过，请参见[部署前安全预检](README.md#deployment-security-precheck)完成安全配置。仅在隔离测试环境需要沿用现有配置时，可在原命令末尾追加 `--skip-check`。
 
 >[!NOTE] 说明
 >
