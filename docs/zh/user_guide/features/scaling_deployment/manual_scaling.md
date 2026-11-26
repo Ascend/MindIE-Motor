@@ -66,7 +66,7 @@
    - `--env_config_path`：单独指定env.json路径。
 
    执行完成后：
-   - 集群中会创建/更新ConfigMap `motor-config`（内容来自当前输入的user_config.json），作为后续扩缩容与刷新的基线；
+   - 集群中会创建/更新ConfigMap `motor-config`（内容来自当前输入的user_config.json），作为后续扩缩容与刷新的基线。
    - 部署成功时日志出现`all deploy end.`和`Deploy complete.`。
 
 2. 根据实际情况修改`user_config.json`中的实例数，需要修改的参数为`p_instances_num`和`d_instances_num`。更多参数解释请参见[user_config.json配置文件全量参数说明](../../configuration/config_reference.md#motor_deploy_config)。
@@ -190,7 +190,7 @@
 
    成功时deploy日志出现：
 
-   ```text
+   ```output
    instance num update end.
    ```
 
@@ -202,13 +202,13 @@
 
    扩容到2个P实例后回显示例如下：
 
-   ```text
+   ```output
    p_instances_num= 2 d_instances_num= 1
    ```
 
    缩容回1个P实例后回显示例如下：
 
-   ```text
+   ```output
    p_instances_num= 1 d_instances_num= 1
    ```
 
@@ -220,7 +220,7 @@
 
    扩容后新增高index的engine实例处于Running状态，回显示例如下：
 
-   ```text
+   ```output
    NAME                         READY   STATUS    RESTARTS   AGE
    vllm-0-controller-0-xxx      1/1     Running   0          1m
    vllm-0-coordinator-0-xxx     1/1     Running   0          1m
@@ -231,7 +231,7 @@
 
    缩容后高index的实例进入Terminating并被删除，回显示例如下：
 
-   ```text
+   ```output
    NAME                         READY   STATUS        RESTARTS   AGE
    vllm-0-controller-0-xxx      1/1     Running       0          2m
    vllm-0-coordinator-0-xxx     1/1     Running       0          2m
@@ -250,14 +250,14 @@
 
    扩容后回显示例如下：
 
-   ```text
+   ```output
    prefill replicas=2
    decode replicas=1
    ```
 
    缩容后回显示例如下：
 
-   ```text
+   ```output
    prefill replicas=1
    decode replicas=1
    ```
@@ -292,7 +292,7 @@
 
 **原因分析**
 
-尚未进行过全量部署，或对应namespace下没有motor-config。
+尚未进行过全量部署，或对应命名空间下没有motor-config。
 
 **解决步骤**
 

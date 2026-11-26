@@ -2,7 +2,7 @@
 
 本文档通过**简单快速**的部署案例，以Atlas 800I A2推理服务器（8卡）、Qwen3-8B模型、P/D实例各1个的场景为例，指导开发者体验基于MindIE Motor的PD分离服务部署流程。
 
-如需详细的PD分离部署指导，请参考[PD 分离部署指导](./deployment/README.md#k8s-pd-disaggregation)。
+如需详细的PD分离部署指导，请参考[PD分离部署指导](./deployment/README.md#k8s-pd-disaggregation)。
 
 ## 什么是PD分离？
 
@@ -40,7 +40,7 @@ chmod -R 755 /mnt/weight
    docker rm "$cid"
    ```
 
-   请将上述脚本（examples目录）上传至k8s集群的管理节点（master节点），后续部署操作均在管理节点执行。
+   请将上述脚本（examples目录）上传至K8s集群的管理节点（master节点），后续部署操作均在管理节点执行。
 
 2. 配置服务化参数。
 
@@ -54,7 +54,7 @@ chmod -R 755 /mnt/weight
      model_configs/vllm/models/<模型名>/<硬件型号>/
      ```
 
-     例如：DeepSeek-V4-Flash模型在Atlas 800I A2推理服务器上的典配目录为： model_configs/vllm/models/deepseek_v4_flash/A2/。
+     例如：DeepSeek-V4-Flash模型在Atlas 800I A2推理服务器上的典配目录为：`model_configs/vllm/models/deepseek_v4_flash/A2/`。
 
      其中包含user_config.json与env.json配置文件。选用典配后，按实际场景修改镜像名（image_name）、权重路径（weight_mount_path/model）等少量字段即可部署。
 
@@ -100,9 +100,9 @@ chmod -R 755 /mnt/weight
            "single_d_instance_pod_num": 1,
            "p_pod_npu_num": 4,
            "d_pod_npu_num": 4,
-           "image_name": "xxxxxx镜像名称。例如：mindie-motor-vllm:dev-26.1.0.B050-800I-A2-py311-Ubuntu24.04-lts-aarch64",
+           "image_name": "镜像名称。例如：mindie-motor-vllm:dev-26.1.0.B050-800I-A2-py311-Ubuntu24.04-lts-aarch64",
            "job_id": "mindie-motor",
-           "hardware_type": "xxxxxx硬件类型。Atlas 800I A2推理服务器：800I_A2； Atlas 800I A3超节点服务器：800I_A3；Ascend 950PR系列产品：Ascend950",
+           "hardware_type": "硬件类型。Atlas 800I A2推理服务器：800I_A2； Atlas 800I A3超节点服务器：800I_A3；Ascend 950PR系列产品：Ascend950",
            "weight_mount_path": "xxxxxx权重文件路径。例如：/mnt/weight/qwen3_8B"
          },
          "motor_controller_config": {},
@@ -112,7 +112,7 @@ chmod -R 755 /mnt/weight
            "motor_nodemanger_config": {},
            "engine_config": {
              "served_model_name": "qwen3-8B",
-             "model": "xxxxxx。权重文件路径。例如：/mnt/weight/qwen3_8B",
+             "model": "权重文件路径。例如：/mnt/weight/qwen3_8B",
              "gpu_memory_utilization": 0.9,
              "data_parallel_size": 1,
              "tensor_parallel_size": 2,
@@ -136,7 +136,7 @@ chmod -R 755 /mnt/weight
            "motor_nodemanger_config": {},
            "engine_config": {
              "served_model_name": "qwen3-8B",
-             "model": "xxxxxx。权重文件路径。例如：/mnt/weight/qwen3_8B",
+             "model": "权重文件路径。例如：/mnt/weight/qwen3_8B",
              "gpu_memory_utilization": 0.9,
              "data_parallel_size": 1,
              "tensor_parallel_size": 2,

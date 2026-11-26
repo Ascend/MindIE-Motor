@@ -127,7 +127,7 @@ class FaultInfo(BaseModel):
 
 #### PreSeparateNPU 动态等级调整
 
-`PreSeparateNPU` 在 mind-cluster 中表示 NPU 进入预警状态（节点状态 `PreSeparate`，不同于 `UnHealthy`）：不给该 NPU 调度新任务，但现有任务可继续运行。因此 MindIE Motor 采用**运行时动态判定**而非静态映射：
+`PreSeparateNPU` 在 MindCluster 中表示 NPU 进入预警状态（节点状态 `PreSeparate`，不同于 `UnHealthy`）：不给该 NPU 调度新任务，但现有任务可继续运行。因此 MindIE Motor 采用**运行时动态判定**而非静态映射：
 
 ```text
 PreSeparateNPU 故障感知
@@ -145,7 +145,7 @@ PreSeparateNPU 故障感知
 - **ConfigMap 更新时** (`_handle_fault_info_update`)：首次接收故障即判定
 - **故障等级刷新时** (`_refresh_instance_fault_level`)：重新评估，覆盖"实例离开节点后无 ConfigMap 变更"的场景
 
-软件故障等级映射: `DEAD(1) → L2 (ENGINE_DEAD)`, `UNHEALTHY(2) → L2 (ENGINE_UNHEALTHY)`。软件故障更新实例 fault_level，并由统一 planner 根据 DP 状态和功能开关选择快恢、缩容、relaunch 或重配置。
+软件故障等级映射: `DEAD(1) → L2 (ENGINE_DEAD)`, `UNHEALTHY(2) → L2 (ENGINE_UNHEALTHY)`。软件故障更新实例 fault_level，并由统一H恢复规划器根据 DP 状态和功能开关选择快恢、缩容、relaunch 或重配置。
 
 ### NodeMetadata
 
@@ -207,16 +207,14 @@ P2: job_name="prefill-2"    D2: job_name="decode-2"
 
 ### 交换流程
 
-在 `_add_new_instance_with_nodes` 中完成分类后，调用 `_swap_node_ownership`:
+在 `_add_new_instance_with_nodes` 中完成分类后，调用 `_swap_node_ownership`：
 
-```text
-1. [调用方] 遍历 self.nodes，将外来源节点和孤儿节点分别收集
-2. [调用方] foreign_nodes: node.job_name != new_job_name（被换入的节点）
-3. [调用方] orphaned_nodes: node.job_name == new_job_name 且不在新实例中（被换出的节点）
-4. [_swap_node_ownership] 等量配对: foreign.instance_id/job_name ↔ orphaned.instance_id/job_name
-5. [_swap_node_ownership] 剩余外来源: 单边接管（扩容场景）
-6. [_swap_node_ownership] 剩余孤儿: 保留原值，等对方实例认领
-```
+1. [调用方] 遍历 self.nodes，将外来源节点和孤儿节点分别收集。
+2. [调用方] foreign_nodes: node.job_name != new_job_name（被换入的节点）。
+3. [调用方] orphaned_nodes: node.job_name == new_job_name 且不在新实例中（被换出的节点）。
+4. [_swap_node_ownership] 等量配对: foreign.instance_id/job_name ↔ orphaned.instance_id/job_name。
+5. [_swap_node_ownership] 剩余外来源: 单边接管（扩容场景）。
+6. [_swap_node_ownership] 剩余孤儿: 保留原值，等对方实例认领。
 
 ### 场景示例
 
@@ -254,7 +252,7 @@ P5'(id=14, job="prefill-5"): p_5                       (未参与交换)
 
 **Step 3 — D1'(id=8, job="decode-1") 的 INITIAL 处理**:
 
-遍历节点 `{d1_1, d1_2, p_1, p_2}`:
+遍历节点 `{d1_1, d1_2, p_1, p_2}`：
 
 ```text
 d1_1: node.job_name = "decode-1" → 同 job ✓
@@ -290,7 +288,7 @@ p_5:  job_name = "prefill-5" → 跳过
 
 **Step 4 — D2'(id=9, job="decode-2") 的 INITIAL 处理**:
 
-遍历 `{d2_1, d2_2, d2_4, p_3}`:
+遍历 `{d2_1, d2_2, d2_4, p_3}`：
 
 ```text
 d2_1, d2_2, d2_4: node.job_name = "decode-2" → 同 job ✓
@@ -313,9 +311,9 @@ p_4, p_5: prefill → 跳过
 
 交换: `d2_3(inst=7) ↔ p_3(inst=3)`
 
-**Step 5 — P1'(id=10, job="prefill-1") 的 INITIAL 处理**:
+**Step 5 — P1'(id=10, job="prefill-1") 的 INITIAL 处理**：
 
-遍历 `{d1_3}`:
+遍历 `{d1_3}`：
 
 ```text
 d1_3: 当前 job_name = "prefill-1" (已被 D1' 的 swap 更新) → 同 job ✓
@@ -340,7 +338,7 @@ self.nodes:
 - D2 的 L6 故障跟随 `d2_3` → P3'，不再触发 D2 的策略
 - 整个过程**与 INSTANCE_INITIAL 到达顺序无关**：唯一 `job_name` 天然保证每个实例的孤儿搜索只命中自己的节点
 
-### 边界情况: 一方延迟超过 20 分钟
+### 边界情况：一方延迟超过 20 分钟
 
 如果 `d1_3` 的硬件故障需要超过 20 分钟才能恢复，旧 P1(id=1) 从 InstanceManager 中删除。届时 P1' 创建时：
 
@@ -423,16 +421,16 @@ L6 → A2 隔离码集合的 Prefill / Decode / 多 Pod union → NmSuicideStrat
 
 | 参数 | 类型 | 说明 |
 |---|---|---|
-| `enable_fault_tolerance` | bool | 是否启用故障容错。默认: `true` |
-| `strategy_center_check_interval` | int | 策略中心检查间隔(秒)。默认: `1` |
-| `enable_scale_p2d` | bool | 是否启用 Scale P2D 策略。默认: `true` |
-| `enable_fast_recovery` | bool | 快恢总开关，开启后由分支开关决定策略。默认: `false` |
+| enable_fault_tolerance | bool | 是否启用故障容错。默认: `true` |
+| strategy_center_check_interval | int | 策略中心检查间隔(秒)。默认: `1` |
+| enable_scale_p2d | bool | 是否启用 ScaleP2D 策略。默认: `true` |
+| enable_fast_recovery | bool | 快恢总开关，开启后由分支开关决定策略。默认: `false` |
 
 ### NodeManager 侧 (FaultToleranceConfig)
 
 | 参数 | 类型 | 说明 |
 |---|---|---|
-| `enable_fault_tolerance` | bool | 显式启用故障上报线程；引擎 user config 检测到 FT 时自动启用。默认: `false` |
-| `poll_interval_sec` | float | 轮询引擎 FT 状态接口的间隔 (秒)。默认: `1.0` |
-| `poll_timeout_sec` | float | 单次轮询的 HTTP 超时 (秒)。默认: `5.0` |
-| `max_poll_failures` | int | 连续轮询失败阈值，达到后按 `dead` 上报。默认: `3` |
+| enable_fault_tolerance | bool | 显式启用故障上报线程；引擎 user config 检测到 FT 时自动启用。默认: false |
+| poll_interval_sec | float | 轮询引擎 FT 状态接口的间隔 (秒)。默认: 1.0 |
+| poll_timeout_sec | float | 单次轮询的 HTTP 超时 (秒)。默认: 5.0 |
+| max_poll_failures | int | 连续轮询失败阈值，达到后按 `dead` 上报。默认: 3 |

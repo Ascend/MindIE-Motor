@@ -32,7 +32,7 @@ IP与端口请参见[业务接口的IP/端口与配置](./README.md#业务接口
 
 其余OpenAI兼容字段（如`max_tokens`、`temperature`等）将透传给后端推理引擎。常用参数说明如下：
 
-| 参数 | 类型 | 说明 |
+| 参数名 | 类型 | 说明 |
 |---|---|---|
 | max_tokens | integer | 最大生成Token数上限。 |
 | temperature | number | 采样温度，温度越大输出结果越随机（常用 0~1），温度过大可能导致输出不稳定。 |
@@ -106,7 +106,7 @@ IP与端口请参见[业务接口的IP/端口与配置](./README.md#业务接口
     "choices": [
       {
         "index": 0,
-        "message": { "role": "assistant", "content": "Hey there! Great to see you—how can I help today?" },
+        "message": { "role": "assistant", "content": "Hey there! Great to see you-how can I help today?" },
         "finish_reason": "stop"
       }
     ]
@@ -306,7 +306,7 @@ IP与端口请参见[业务接口的IP/端口与配置](./README.md#业务接口
   ```output
   data: {"id":"cmpl-xxx-0","object":"text_completion","created":1765856304,"model":"qwen3","choices":[{"index":0,"text":"Hey there! ","finish_reason":null}]}
 
-  data: {"id":"cmpl-xxx-0","object":"text_completion","created":1765856304,"model":"qwen3","choices":[{"index":0,"text":"Lovely to hear from you—","finish_reason":null}]}
+  data: {"id":"cmpl-xxx-0","object":"text_completion","created":1765856304,"model":"qwen3","choices":[{"index":0,"text":"Lovely to hear from you-","finish_reason":null}]}
 
   data: {"id":"cmpl-xxx-0","object":"text_completion","created":1765856304,"model":"qwen3","choices":[{"index":0,"text":"what would you like to do today?","finish_reason":null}]}
 
@@ -324,7 +324,7 @@ IP与端口请参见[业务接口的IP/端口与配置](./README.md#业务接口
     "created": 1765856304,
     "model": "qwen3",
     "choices": [
-      { "index": 0, "text": "Hey there! Lovely to hear from you—what would you like to do today?", "finish_reason": "stop" }
+      { "index": 0, "text": "Hey there! Lovely to hear from you-what would you like to do today?", "finish_reason": "stop" }
     ]
   }
   ```

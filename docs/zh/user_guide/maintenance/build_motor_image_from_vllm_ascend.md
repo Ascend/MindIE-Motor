@@ -6,7 +6,7 @@
 
     [使用 MindIE Motor 官方完整镜像](#使用mindie-motor官方完整镜像)
 
-2. 自行制作镜像 —— 需要基于 vllm-ascend / sglang 基础镜像自行制作。
+2. 自行制作镜像 —— 需要基于 vllm-ascend / SGLang 基础镜像自行制作。
 
     [自行制作 MindIE Motor 镜像](#自行制作mindie-motor镜像)
 
@@ -38,7 +38,7 @@
 
 ## 自行制作MindIE Motor镜像
 
-基于 vllm-ascend 或 sglang 基础镜像制作 MindIE Motor 镜像，提供两种制作方式：
+基于 vllm-ascend 或 SGLang 基础镜像制作 MindIE Motor 镜像，提供两种制作方式：
 
 - 方式一：使用项目提供的 **Dockerfile 构建**，适合联网环境下的日常开发和测试。
 
@@ -175,7 +175,7 @@
 
         pip install -r requirements.txt
 
-        # 有 libzmq 时 bash build.sh 会打 kv-conductor；缺 zmq 自动跳过。显式跳过：
+        # 有 libzmq 时 bash build.sh 会打包 kv-conductor；缺 zmq 自动跳过。显式跳过：
         SKIP_KV_CONDUCTOR_BUILD=1 bash build.sh
         pip install --force-reinstall ./dist/motor-*.whl
 
@@ -226,7 +226,7 @@
 
     - 下载 pciutils。
 
-        ```sh
+        ```bash
         mkdir -p /mnt/pciutils-offline
         cd /mnt/pciutils-offline
 
@@ -322,7 +322,7 @@
 
     - 安装 pciutils
 
-        ```sh
+        ```bash
         cd /mnt/
         tar -xzvf pciutils-offline.tar.gz
         cd pciutils-offline

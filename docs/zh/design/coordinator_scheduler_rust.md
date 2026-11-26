@@ -2,7 +2,7 @@
 
 > 状态：本分支已实现 R1–R4 代码路径（schema 4；无独立 Scheduler 进程；热路径 CAS）。§13.2 性能验收需 NPU 集群对照，不在单机交付范围。
 > 基线代码：`b94fc20b`（2026-08-15，`master`）
-> 相关文档：[熔断设计](circuit_breaker_design.md)、[精度检测](fault_tolerance/precision_detection.md)、[KV Conductor](kv_conductor.md)、[Coordinator 开发者指南](../developer_guide/components/coordinator.md)
+> 相关文档：[熔断设计](circuit_breaker_design.md)、[精度检测](fault_tolerance/precision_detection.md)、[KV Conductor](kv_conductor.md)、[Coordinator开发者指南](../developer_guide/components/coordinator.md)
 
 本文描述将 Coordinator **调度热路径**从「Scheduler 进程单点账本 + 每请求 ZMQ」重构为「Rust 共享内存多进程原子记账 + Mgmt 控制面」的完整设计。负载均衡 / KV 亲和 / 轮询的**打分公式不变**；变的是账本介质、提交原语和进程边界。
 
@@ -209,7 +209,7 @@ else:
 
 熔断（`CircuitBreakerManager`）：实例粒度；连续 3 次 failure → OPEN；`timeout = min(30 * 2^(trip_count-1), 300)` 秒；success 可提前关闭；到期对全部 endpoint `GET /health`；SET 清全部，DEL 清该实例。Worker 只有 PUB 镜像 `_cb_blocked_instances`；**最终闸门在 ALLOCATE**。
 
-精度告警的活动状态、清除计数和 MOI 在 Scheduler 上，按 Decode 实例保存。计数来自 Runtime Guard，由可观测进程透传上报告警。详见 [精度检测设计](fault_tolerance/precision_detection.md)。
+精度告警的活动状态、清除计数和 MOI 在 Scheduler 上，按 Decode 实例保存。计数来自 Runtime Guard，由可观测进程透传上报告警。详见 [精度检测](fault_tolerance/precision_detection.md)。
 
 ## 3. 目标架构（To-Be）
 
@@ -552,13 +552,13 @@ IPC 地址第一期仍用 `scheduler_frontend` / `scheduler_instance_pub`，避�
 | Python 调用 | HTTP | ctypes / 稳定 C ABI |
 | 为何不做成进程 | — | 多一跳就抵消 SHM 的意义 |
 | 打包 | copy bin → package_data | **同一套**：copy `.so` → package_data |
-| wheel tag | 已是 none-any 里塞本机 ELF | 沿用，不为此平台化 |
+| wheel tag | 已是在 none-any 里塞本机 ELF | 沿用，不为此平台化 |
 
 ### 8.2 为什么不用 pyo3
 
 - 仓内零先例，根目录没有 `pyproject.toml`（打包是 `setup.py` + `pip wheel --no-deps`）
 - wheel 会变成 `cp311-manylinux_*` / `macosx_*`，与 kv-conductor 的 none-any 模型冲突
-- 每个 CPython 小版本、每种 arch 一条构建矩阵；Docker/CI 要绑 Python headers
+- 每个 CPython 小版本、每种 arch 一套构建矩阵；Docker/CI 要绑 Python headers
 
 只有在「整个 motor wheel 平台化」时才值得上 pyo3。为 SHM 单独开口，和现有打包会打架。
 
@@ -646,13 +646,13 @@ Docker：`docker/mindie-motor-vllm/master/Dockerfile` 安装 gcc/curl/libzmq（c
 
 - `ctypes.CDLL` 加载包内 `.so`（wheel）或 `target/release/`（源码开发）
 - 封装为 `WorkloadShm` 类：`create` / `attach` / `load_role` / `cas_add` / …
-- `writer.py` / `reader.py` 变为对 `WorkloadShm` 的薄封装，保持现有测试能按行为迁
+- `writer.py` / `reader.py` 变为对 `WorkloadShm` 的薄封装，保持现有测试能按行为迁移
 
 源码开发：改 `.rs` 后需重新 `cargo build`（不像纯 Python 改完即生效）。`AGENTS.md` 写明。
 
 ## 9. Python 侧改动要点
 
-### 9.1 `select_and_allocate`
+### 9.1 select_and_allocate
 
 `AsyncSchedulerClient.select_and_allocate` 删除 ZMQ `ALLOCATE_ONLY` 段，改为 §3.3 循环。返回值仍是 `tuple[Instance, Endpoint, Workload] | None`，Router **不改签名**。
 
@@ -770,7 +770,7 @@ TDD 在本方案中的定义（硬性）：
 | L2 账本介质 | seqlock、CAS-expected、floor0、BLOCKED、generation、多进程守恒 | **今天几乎没有，P0/P1 必须先写** |
 | L3 控制面 | CB 三次 trip、精度门闩、PUB delta 订阅 | 状态机可迁；发布端绑了 Scheduler，要改挂 |
 
-### 11.2 现有用例分类（基线 `b94fc20b`）
+### 11.2 现有用例分类（基线 b94fc20b）
 
 #### 冻结金标：全程不许红（L1 / 部分 L3）
 
@@ -861,7 +861,7 @@ P1 起对这些用例的策略是：**改写成公共 API / 字节契约，或�
 | `test_scheduler_connection_manager.py` | 对端 Mgmt，连接语义不变 |
 | `conftest.py` | 增加可切换 Python / `.so` 的真实 shm 夹具（现仅有 policy Mock） |
 
-### 11.5 Rust `cargo test`
+### 11.5 Rust cargo test
 
 crate 内至少覆盖：seqlock 奇数重试、多线程 CAS 守恒、CAS-expected 互斥、floor0、BLOCKED、generation、schema mismatch。`tests/run_tests.sh` 增加 `--rust`（默认在有 cargo 时跑本 crate；与 kv-conductor 现状对齐，也可先放 pre-commit clippy）。clippy `-D warnings` 扩到新 crate。
 

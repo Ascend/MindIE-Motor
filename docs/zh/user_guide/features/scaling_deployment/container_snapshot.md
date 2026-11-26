@@ -81,7 +81,7 @@
 
 ### 使用场景
 
-**场景一：默认 K8s + MindCluster 部署模式**
+**场景一：默认 K8s 和 MindCluster 部署模式**
 
 - 适用场景：使用 containerd 和 MindCluster CRD 的标准 K8s 部署，需要缩短实例创建或重调度耗时。
 - 特点：通过 `deploy.py` 启用容器快照后，部署环境自动完成快照配置、基准快照制作、缓存检测和快照恢复。
@@ -89,12 +89,12 @@
 
 **场景二：其他部署模式**
 
-- 适用场景：未使用默认 K8s + MindCluster 部署流程，但部署平台具备 Host 和 Device 侧快照能力，例如通过 ModelArts 平台部署 Motor。
+- 适用场景：未使用默认 K8s 和 MindCluster 部署流程，但部署平台具备 Host 和 Device 侧快照能力，例如通过 ModelArts 平台部署 Motor。
 - 特点：Motor 不提供非默认部署模式的容器快照自动管理能力，部署平台需自行集成快照元数据管理、容器挂载、快照文件维护以及 checkpoint 和 restore 流程。
 
 ### 使用样例
 
-#### 场景一：默认 K8s + MindCluster 部署模式
+#### 场景一：默认 K8s 和 MindCluster 部署模式
 
 用户需在 `user_config.json` 中配置：
 
@@ -281,7 +281,7 @@
 
 2. 检查实例日志中以下内容的数量：
 
-   ```text
+   ```output
    It took <time> seconds to resume.
    ```
 
@@ -299,7 +299,7 @@
 
 查看 Coordinator 日志，检查是否包含当前实例加入可用实例池的日志：
 
-```text
+```output
 Added instance ID <instance-id> (role: <role>, job_name: <job-name>) with <endpoint-num> endpoints to available pool successfully
 ```
 

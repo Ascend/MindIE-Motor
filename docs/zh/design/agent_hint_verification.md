@@ -20,22 +20,22 @@
 
 | 测试文件 | 覆盖 |
 | --- | --- |
-| `tests/coordinator/domain/test_agent_hint.py` | spec schema、cache_control（ephemeral/ttl_s/range unit 收敛，pin 已删除）、ttl_explicit、畸形输入 |
-| `tests/coordinator/domain/test_agent_hint_wire.py` | header 解码、spec→legacy 映射、body wins、golden vector |
-| `tests/coordinator/domain/test_agent_session_status.py` | 状态机迁移契约、TTL、LRU |
-| `tests/coordinator/domain/test_block_offset_translator.py` | 块坐标换算与 None 守卫 |
-| `tests/coordinator/domain/test_cache_declaration.py` | 声明表语义：入账/钳制/惰性过期入队/sweep/renew/finalize/容量驱逐/env 构建 |
-| `tests/coordinator/middleware/test_rate_limiter.py` | 预留额度、strict 旁路、热更新 |
-| `tests/coordinator/scheduler/runtime/__init__.py` + `test_session_affinity.py` | 角色/epoch/parent/LRU/env |
-| `tests/coordinator/scheduler/runtime/test_session_affinity_shared.py` | 共享表语义、drop_all_roles、count_pins_by_instance |
-| `tests/coordinator/scheduler/runtime/test_agent_status_channel.py` | notify/PUB 分支、finalize drop 联动 |
-| `tests/coordinator/scheduler/runtime/test_cache_lifecycle.py` | keeper 集成：门控、never-raise、sweep→drop、touch、任务启停 |
-| `tests/coordinator/scheduler/test_scheduler_client.py` | pin 解析集成、门槛过滤、balanced 放置 |
-| `tests/coordinator/scheduler/test_cache_lifecycle_e2e.py` | 声明→保活→到期释放→finalize 全链路 |
-| `tests/coordinator/api_server/test_agent_status_endpoint.py` | 端点协议：400/200+applied=false、GET、skip_paths |
-| `tests/coordinator/core/test_config.py` | 新增配置段校验与默认值 |
-| `tests/coordinator/core/test_config.py`（既有） | Ascend 侧 decode_first_token_timeout 等既有用例保持 |
-| `tests/e2e/test_standalone_coordinator_smoke.py` | standalone coordinator 冒烟 |
+| tests/coordinator/domain/test_agent_hint.py | spec schema、cache_control（ephemeral/ttl_s/range unit 收敛，pin 已删除）、ttl_explicit、畸形输入 |
+| tests/coordinator/domain/test_agent_hint_wire.py | header 解码、spec→legacy 映射、body wins、golden vector |
+| tests/coordinator/domain/test_agent_session_status.py | 状态机迁移契约、TTL、LRU |
+| tests/coordinator/domain/test_block_offset_translator.py | 块坐标换算与 None 守卫 |
+| tests/coordinator/domain/test_cache_declaration.py | 声明表语义：入账/钳制/惰性过期入队/sweep/renew/finalize/容量驱逐/env 构建 |
+| tests/coordinator/middleware/test_rate_limiter.py | 预留额度、strict 旁路、热更新 |
+| tests/coordinator/scheduler/runtime/__init__.py + test_session_affinity.py | 角色/epoch/parent/LRU/env |
+| tests/coordinator/scheduler/runtime/test_session_affinity_shared.py | 共享表语义、drop_all_roles、count_pins_by_instance |
+| tests/coordinator/scheduler/runtime/test_agent_status_channel.py | notify/PUB 分支、finalize drop 联动 |
+| tests/coordinator/scheduler/runtime/test_cache_lifecycle.py | keeper 集成：门控、never-raise、sweep→drop、touch、任务启停 |
+| tests/coordinator/scheduler/test_scheduler_client.py | pin 解析集成、门槛过滤、balanced 放置 |
+| tests/coordinator/scheduler/test_cache_lifecycle_e2e.py | 声明→保活→到期释放→finalize 全链路 |
+| tests/coordinator/api_server/test_agent_status_endpoint.py | 端点协议：400/200+applied=false、GET、skip_paths |
+| tests/coordinator/core/test_config.py | 新增配置段校验与默认值 |
+| tests/coordinator/core/test_config.py（既有） | Ascend 侧 decode_first_token_timeout 等既有用例保持 |
+| tests/e2e/test_standalone_coordinator_smoke.py | standalone coordinator 冒烟 |
 
 ## 3. 执行环境
 
@@ -47,9 +47,9 @@
 
 | 范围 | 命令 | 结果 |
 | --- | --- | --- |
-| Coordinator 模块 | `bash tests/run_tests.sh tests/coordinator/` | **2233 passed / 0 failed** / 37 skipped |
-| 全仓回归（合入前基线） | `bash tests/run_tests.sh` | 4316 passed / 0 failed / 42 skipped |
-| 全仓回归（并入上游 `49e0595f` 后终版） | `bash tests/run_tests.sh` | **4387 passed / 0 failed** / 46 skipped |
+| Coordinator 模块 | bash tests/run_tests.sh tests/coordinator/ | **2233 passed / 0 failed** / 37 skipped |
+| 全仓回归（合入前基线） | bash tests/run_tests.sh | 4316 passed / 0 failed / 42 skipped |
+| 全仓回归（并入上游 `49e0595f` 后终版） | bash tests/run_tests.sh | **4387 passed / 0 failed** / 46 skipped |
 
 （执行时间 2026-10-19；warnings 为存量告警，与本次改动无关。终版分支已并入合入窗口期上游新增的 `49e0595f`（flash engine KV offload 事件 + DP 统计修复），冲突解决：`scheduler_client.py` scheduled 日志行采用上游新标签 + 本侧 `prio/aff/reason/sp` 字段并集；`scheduler_connection_manager.py` 采用上游 `log_dp_stats` 新语义 + 本侧优先级门槛参数。）
 
@@ -130,11 +130,11 @@ device 1）** 发起真实推理流量，agent-hint 全链路 **23/23 检查通�
 
 ### 4.6 合入前修复的质量问题（同轮静态门禁）
 
-- `tests/coordinator/scheduler/test_cache_lifecycle_e2e.py`：F811（参数遮蔽导入的fixture）改为 `@pytest.mark.usefixtures("native_lib")`；D209 文档字符串收尾；
-- `tests/coordinator/domain/test_agent_hint_wire.py`：W0404（函数内重复 import base64）；
-- `tests/coordinator/scheduler/runtime/test_session_affinity_shared.py`：W0404（子进程目标函数内重复 import，模块级导入已覆盖 fork/spawn 两种启动方式）；
-- `session_affinity.py` ↔ `session_affinity_shared.py` 模块级循环引用（R0401）：`SessionPin` 与 `_DEFAULT_MAX_ENTRIES` 下移至 `session_affinity_shared.py`（共享表与进程内表共用同一类型，且该模块仅依赖 stdlib），`session_affinity.py`单向引用并 re-export，依赖方向唯一化；行为与对外 API 路径不变；
-- `fastapi_middleware.py`：R1714 合并等值比较为 `in`；
+- `tests/coordinator/scheduler/test_cache_lifecycle_e2e.py`：F811（参数遮蔽导入的fixture）改为 `@pytest.mark.usefixtures("native_lib")`；D209 文档字符串收尾。
+- `tests/coordinator/domain/test_agent_hint_wire.py`：W0404（函数内重复 import base64）。
+- `tests/coordinator/scheduler/runtime/test_session_affinity_shared.py`：W0404（子进程目标函数内重复 import，模块级导入已覆盖 fork/spawn 两种启动方式）。
+- `session_affinity.py` ↔ `session_affinity_shared.py` 模块级循环引用（R0401）：`SessionPin` 与 `_DEFAULT_MAX_ENTRIES` 下移至 `session_affinity_shared.py`（共享表与进程内表共用同一类型，且该模块仅依赖 stdlib），`session_affinity.py`单向引用并 re-export，依赖方向唯一化；行为与对外 API 路径不变。
+- `fastapi_middleware.py`：R1714 合并等值比较为 `in`。
 - `scheduler_client.py`：W0706 删除冗余 `except asyncio.CancelledError: raise`（3.8+ CancelledError 为 BaseException，`except Exception` 不会捕获）。
 
 ### 4.7 评审修复（PR #1196 检视意见补充）
@@ -155,14 +155,14 @@ device 1）** 发起真实推理流量，agent-hint 全链路 **23/23 检查通�
 
 ## 5. 兼容性检查
 
-- 默认配置（不设置任何新开关/env）下，基线调度行为不变：全部新逻辑由`MOTOR_SESSION_AFFINITY*` / `MOTOR_CACHE_CONTROL_*` / `agent_status_config.enabled`/ `priority_reserve_ratio` / `priority_load_threshold` / `strict_priority_config.enabled`门控，缺省关闭；
-- 既有客户端（不发送 `X-Agent-Hint`）零感知：body legacy 接口冻结，spec 字段不进入 body；
-- `user_config.json` 增量兼容：新增字段均有默认值，既有配置文件无需修改——已用 `examples/deployer/config_tool/output_config/user_config.json` 实际加载并`validate_config()` 通过（全部新开关读出为默认关闭值）；
+- 默认配置（不设置任何新开关/env）下，基线调度行为不变：全部新逻辑由`MOTOR_SESSION_AFFINITY*` / `MOTOR_CACHE_CONTROL_*` / `agent_status_config.enabled`/ `priority_reserve_ratio` / `priority_load_threshold` / `strict_priority_config.enabled`门控，缺省关闭。
+- 既有客户端（不发送 `X-Agent-Hint`）零感知：body legacy 接口冻结，spec 字段不进入 body。
+- `user_config.json` 增量兼容：新增字段均有默认值，既有配置文件无需修改——已用 `examples/deployer/config_tool/output_config/user_config.json` 实际加载并`validate_config()` 通过（全部新开关读出为默认关闭值）。
 - 调度日志 `aff=` outcome 口径不变，新增字段仅追加。
 
 ## 6. 遗留项与边界
 
-- 引擎侧 KV 动作（offload/prefetch，pause/suspend 钩子）与请求级 priority 引擎透传：依赖引擎消费能力，当前降级为状态跟踪（见设计 §4.6）；
-- strict_priority 信任门为 bootstrap（静态 token），产品决策后平移至密钥表/mTLS，消费点无需改动；
-- Prometheus 指标（hits/misses/stale/声明数）为后续横切项；
+- 引擎侧 KV 动作（offload/prefetch，pause/suspend 钩子）与请求级 priority 引擎透传：依赖引擎消费能力，当前降级为状态跟踪（见设计 §4.6）。
+- strict_priority 信任门为 bootstrap（静态 token），产品决策后平移至密钥表/mTLS，消费点无需改动。
+- Prometheus 指标（hits/misses/stale/声明数）为后续横切项。
 - 端到端实机联调（DSH/Pi/Hermes 三 harness 互操作）在开发仓完成过验证，本次合入以单元/集成测试与默认关闭的兼容性为验收基线。

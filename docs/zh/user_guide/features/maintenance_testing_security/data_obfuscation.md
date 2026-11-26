@@ -2,15 +2,15 @@
 
 ## 特性介绍
 
-PMCC 数据混淆推理特性让 MindIE Motor 能够直接承载**数据混淆权重**，Coordinator 在请求侧把 prompt token ID 与多模态（图像）张量映射到混淆权重所在的「受保护词表 / 受保护视觉空间」，在响应侧把引擎输出的受保护 token ID 还原为原始词表，使明文 token 与明文图像张量不进入引擎。
+PMCC数据混淆推理特性让MindIE Motor能够直接承载**数据混淆权重**，Coordinator在请求侧把prompt token ID与多模态（图像）张量映射到混淆权重所在的“受保护词表/受保护视觉空间”，在响应侧把引擎输出的受保护token ID还原为原始词表ID，使明文token与明文图像张量不进入引擎。
 
-该特性通过「离线权重混淆 + 线上同 seed 双向置换」机制，在**不修改推理引擎代码**的前提下让混淆权重可用：
-实测 Qwen3-VL-30B-A3B 混淆权重（58 GiB）在 4 卡（P 2 + D 2，TP=2）PD 分离部署下，纯文本与图像请求经 Render → 混淆 → 引擎 → 反混淆全链路返回正确结果（红图 → `"red"`，`2+2` → `"4"`）。
+该特性通过“离线权重混淆 + 线上同 seed 双向置换”机制，在**不修改推理引擎代码**的前提下让混淆权重可用。
+
+实测Qwen3-VL-30B-A3B混淆权重（58 GB）在4卡（P2 + D2，TP=2）PD分离部署下，纯文本与图像请求经Render → 混淆 → 引擎 → 反混淆全链路返回正确结果（红图 → `"red"`，`2+2` → `"4"`）。
 
 ### 工作原理
 
-离线与线上使用**同一个数据混淆因子（seed）**：离线用 `ai-asset-obfuscate` 生成混淆权重，线上 Coordinator 用
-同一个 seed 把请求数据映射到混淆权重所在的物理空间，并在响应侧反变换。
+离线与线上使用**同一个数据混淆因子（seed）**：离线用`ai-asset-obfuscate`生成混淆权重，线上Coordinator用同一个seed把请求数据映射到混淆权重所在的物理空间，并在响应侧反变换。
 
 ```mermaid
 flowchart LR
@@ -30,7 +30,7 @@ flowchart LR
 3. **Token 混淆（请求侧）**：`TokenObfuscationService.data_1d_obf` 把语义 token ID 映射为受保护词表 ID，写入 `engine_prompt_token_ids`；`token_white_list` 中的 token 不参与置换。送入引擎的是受保护 ID。
 4. **视觉张量混淆（请求侧，可选）**：`ImageObfuscationService` 对 `features.kwargs_data` 下每个模态的张量载荷调用 SDK 的 `image_render_obf` 做 patch 置换，并回写同一字段。图像插入位置由 Render 返回的占位信息承载，与 token ID 置换互不影响。
 5. **引擎推理**：引擎在受保护空间完成 prefill / decode。KV Conductor 的前缀索引使用同一批物理 token ID（`engine_token_ids`），因此缓存命中与引擎实际计算的内容一致。
-6. **输出反混淆**：引擎输出的受保护 token ID 经 `data_1d_deobf` 还原为原词表 ID，再交给 Render sidecar 的derender 接口用原始 tokenizer 转成客户端可见文本（OpenAI 响应形态）。
+6. **输出反混淆**：引擎输出的受保护 token ID 经 `data_1d_deobf` 还原为原词表 ID，再交给 Render sidecar 的 derender 接口用原始 tokenizer 转成客户端可见文本（OpenAI 响应形态）。
 
 ### 核心功能
 
@@ -58,12 +58,11 @@ flowchart LR
 
 ### 环境准备
 
-1. 已使用 MindIE Motor 完成基础推理服务部署（PD 分离），服务运行正常。参考 [PD 分离部署](../inference_scheduling/pd_disaggregation.md)。
-2. 镜像/环境内的 vLLM 提供 Render token-only 接口（Coordinator 通过 `render_config.endpoint` 访问），
-   且 `render_config.enable=true`。
+1. 已使用 MindIE Motor 完成基础推理服务部署（PD分离），服务运行正常。参考 [PD分离部署](../inference_scheduling/pd_disaggregation.md)。
+2. 镜像/环境内的 vLLM 提供 Render token-only 接口（Coordinator 通过 `render_config.endpoint` 访问），且 `render_config.enable=true`。
 3. 使用 MindIE Motor 官方镜像部署时，运行环境已内置 `ai-asset-obfuscate`（版本与仓库 `requirements.txt` 一致），须与离线生成混淆权重的 SDK **版本一致**。
 
-4. 已准备与待部署权重**同 seed** 的混淆权重目录。离线生成示例（在 CPU 环境即可执行）：
+4. 已准备与待部署权重**同 seed** 的混淆权重目录，离线生成示例如下所示（在 CPU 环境即可执行）。
 
    ```python
    # 离线生成数据混淆权重：输入模型路径、token 白名单与 seed_content，输出混淆权重目录，供线上 Coordinator 加载
@@ -85,8 +84,7 @@ flowchart LR
        == ErrorCode.SUCCESS.value
    ```
 
-   生成结果目录中会额外生成一个 `obf_config.json`，**其内容仅为混淆标记**（如 `{"flag": "OBF_DATA"}`），
-   不包含 seed、白名单与视觉几何，因此上述参数不能从该文件读取（取值来源见[参数来源](#参数来源)）。
+   生成结果目录中会额外生成一个 `obf_config.json`，**其内容仅为混淆标记**（如 `{"flag": "OBF_DATA"}`），不包含 seed、白名单与视觉几何，因此上述参数不能从该文件读取（取值来源见[参数来源](#参数来源)）。
 
    >[!NOTE] 说明
    >`ModelType`、`seed_type` / `obf_type` 的取值随模型和 SDK 版本而异，上例为 Qwen3-VL 验证通过的取值。其他模型请按 SDK 文档选择对应枚举；关键是**权重生成与线上 Coordinator 必须使用同一 `seed_content` 与白名单**。
@@ -95,8 +93,7 @@ flowchart LR
 
 ### 参数来源
 
-数据混淆相关参数均为模型相关参数，代码不提供内置默认值。**图像几何可不配置**，未配置时 Coordinator 自动从
-被服务权重目录读取，显式配置的值始终优先；其余参数按下表来源配置：
+数据混淆相关参数均为模型相关参数，代码不提供内置默认值。**图像几何可不配置**，未配置时 Coordinator 自动从被服务权重目录读取，显式配置的值始终优先；其余参数按下表来源配置：
 
 （以 `/data/weights/<模型目录>` 为被服务的权重目录，原始权重与混淆权重中的相关文件内容一致）
 
@@ -122,16 +119,17 @@ print("vocab_size:", cfg.get("text_config", {}).get("vocab_size") or cfg.get("vo
 EOF
 ```
 
-> [!NOTE] 说明
+>[!NOTE] 说明
 >
-> - `patch_size` 与 `temporal_patch_size` 共同决定 `pixel_values` 的展平维度
-> - `D = 3 × patch_size² × temporal_patch_size`（Qwen3-VL 为 1536），与权重不一致时，SDK 只打 warning 并把载荷**原样返回**（请求静默未混淆），参见[问题七](#faq-geometry-mismatch)。
+>- `patch_size` 与 `temporal_patch_size` 共同决定 `pixel_values` 的展平维度。
+>- `D = 3 × patch_size² × temporal_patch_size`（Qwen3-VL 为 1536），与权重不一致时，SDK 只打 warning 并把载荷**原样返回**（请求静默未混淆），请参见[日志出现 pixel_values D=... != expected ...，但请求成功](#faq-geometry-mismatch)。
 
 ### 使用场景
 
-- **场景一：纯文本数据混淆**。仅开启 `token_obfuscation_config.enable`，适用于对话/补全等纯文本请求。
-- **场景二：多模态（图像）数据混淆**。在场景一基础上开启 `token_obfuscation_config.image_config.enable`，
-  适用于带图请求（Qwen3-VL 等视觉语言模型）。文本 token 混淆照旧全量生效，图像张量混淆为**追加**的一层。
+- **场景一：纯文本数据混淆**
+  仅开启 `token_obfuscation_config.enable`，适用于对话/补全等纯文本请求。
+- **场景二：多模态（图像）数据混淆**
+  在场景一基础上开启 `token_obfuscation_config.image_config.enable`，适用于带图请求（Qwen3-VL 等视觉语言模型）。文本 token 混淆照旧全量生效，图像张量混淆为**追加**的一层。
 
 ### 使用样例
 
@@ -256,10 +254,10 @@ EOF
        }'
    ```
 
-   返回 HTTP 200，`choices[0].message.content` 为 `"red"`（蓝色图片应为 `"blue"`）。
-   若返回乱码或颜色错误，说明 seed / 白名单 / 视觉几何与权重不一致，或命中了引擎侧陈旧 mm 缓存（见常见问题）。
+   - 返回 HTTP 200，`choices[0].message.content` 为 `"red"`（蓝色图片应为 `"blue"`）。
+   - 若返回乱码或颜色错误，说明 seed / 白名单 / 视觉几何与权重不一致，或命中了引擎侧陈旧 mm 缓存（见常见问题）。
 
-2. 检查 Coordinator 日志中每个请求的混淆计数。
+2. 检查Coordinator日志中每个请求的混淆计数。
 
    ```bash
    kubectl logs -n <namespace> <coordinator-pod> -c mindie-motor-coordinator | grep "render tokenize success"
@@ -272,8 +270,7 @@ EOF
    render tokenize success request_id=... prompt_length=20 latency_ms=3.77 tokenizer_source=render obfuscated_images=0
    ```
 
-   `obfuscated_images` 只统计图像张量置换的模态数；token 置换在 `_obfuscate` 中静默完成，没有单独计数
-   （即 `obfuscated_images=1` 不代表只有图像被混淆）。
+   `obfuscated_images` 只统计图像张量置换的模态数；token 置换在 `_obfuscate` 中静默完成，没有单独计数（即 `obfuscated_images=1` 不代表只有图像被混淆）。
 
 3. 发送纯文本请求，确认文本链路同样生效（混淆权重下若 token 未置换，输出必然错乱）。
 
@@ -300,11 +297,10 @@ EOF
 
 **解决步骤**
 
-1. 确认 Coordinator 容器内版本：`python -c "import ai_asset_obfuscate, importlib.metadata as m; print(m.version('ai-asset-obfuscate'))"`，
-   须与离线生成混淆权重的 SDK 版本一致（与当前 MindIE Motor 镜像/`requirements.txt` 中 `ai-asset-obfuscate==26.0.22` 对齐）。
+1. 确认 Coordinator 容器内版本：`python -c "import ai_asset_obfuscate, importlib.metadata as m; print(m.version('ai-asset-obfuscate'))"`，须与离线生成混淆权重的 SDK 版本一致（与当前 MindIE Motor 镜像/`requirements.txt` 中 `ai-asset-obfuscate==26.0.22` 对齐）。
 2. 使用包含该版本 SDK 的 MindIE Motor 官方镜像重新部署或重启 Coordinator 容器。
 
-### 日志显示混淆已开启，但同一张图的答案一直不变（例如始终返回 "gray"）
+### 日志显示混淆已开启，但同一张图的答案一直不变（例如始终返回"gray"）
 
 **问题描述**
 
@@ -312,14 +308,12 @@ EOF
 
 **原因分析**
 
-引擎按 `mm_hash` 缓存多模态张量。图片 hash 由 Render 对原图计算，混淆后的张量载荷变化但不改变 hash，
-因此同 hash 图片会命中此前写入的旧缓存。
+引擎按 `mm_hash` 缓存多模态张量。图片 hash 由 Render 对原图计算，混淆后的张量载荷变化但不改变 hash，因此同 hash 图片会命中此前写入的旧缓存。
 
 **解决步骤**
 
-1. 重启 Prefill / Decode 实例（`kubectl delete pod <prefill/decode-pod> -n <namespace>`），或
-2. 换一张内容不同（hash 不同）的图片验证；
-3. 验证新链路时优先整体重建命名空间，确保引擎全新加载。
+1. 重启 Prefill / Decode 实例（`kubectl delete pod <prefill/decode-pod> -n <namespace>`），或换一张内容不同（hash 不同）的图片验证。
+2. 验证新链路时优先整体重建命名空间，确保引擎全新加载。
 
 ### 请求返回 503 ai-asset-obfuscate is unavailable 或 ai-asset-obfuscate vision API is unavailable: ObfException: Failed To Load Library
 
@@ -333,9 +327,9 @@ Coordinator 启动成功或请求时才报 SDK 不可用/原生库加载失败�
 
 **解决步骤**
 
-1. 确认使用 MindIE Motor 官方镜像，且在容器内可导入：`python -c "import ai_asset_obfuscate"`；
+1. 确认使用 MindIE Motor 官方镜像，且在容器内可导入：`python -c "import ai_asset_obfuscate"`。
 2. 确认 `token_obfuscation_config.image_config.enable=true` 时 `render_config.enable=true`，否则配置校验会直接失败：
-   `token_obfuscation_config.image_config requires render_config.enable=true`。
+`token_obfuscation_config.image_config requires render_config.enable=true`。
 
 ### 模型输出乱码或答非所问
 
@@ -345,17 +339,15 @@ Coordinator 启动成功或请求时才报 SDK 不可用/原生库加载失败�
 
 **原因分析**
 
-线上 `seed_content`、`token_white_list`、`vocab_size` 或 `image_config` 视觉几何与离线混淆权重不一致；
-或权重本身不是用同一 SDK 版本生成。其中：
+线上 `seed_content`、`token_white_list`、`vocab_size` 或 `image_config` 视觉几何与离线混淆权重不一致，或权重本身不是用同一 SDK 版本生成，其中：
 
-- **几何不一致** 是**静默失效**：SDK 只打 warning 并把载荷原样返回，即请求实际未做混淆（见[日志出现 pixel_values D=... != expected ...，但请求成功](#faq-geometry-mismatch)）；
+- **几何不一致** 是**静默失效**：SDK 只打 warning 并把载荷原样返回，即请求实际未做混淆（见[日志出现 pixel_values D=... != expected ...，但请求成功](#faq-geometry-mismatch)）。
 - **白名单不一致**（漏配/多配）同样不报错：白名单内的 token 是置换固定点，漏掉一个就会把它错误地置换掉，造成 token 错位。
 
 **解决步骤**
 
-1. 比对参数与权重混淆时使用的清单：白名单由混淆方提供；视觉几何与 `vocab_size` 参见
-   [参数来源](#参数来源)；
-2. 如需自查白名单是否生效，可验证固定点语义（正确时结果应与输入相同）：
+1. 比对参数与权重混淆时使用的清单：白名单由混淆方提供；视觉几何与 `vocab_size` 参见[参数来源](#参数来源)。
+2. 如需自查白名单是否生效，可验证固定点语义（正确时结果应与输入相同）。
 
    ```bash
    python3 - <<'EOF'
@@ -368,7 +360,7 @@ Coordinator 启动成功或请求时才报 SDK 不可用/原生库加载失败�
    EOF
    ```
 
-3. 确认未对混淆权重再次做常规量化/转换（会破坏置换后的张量布局）；
+3. 确认未对混淆权重再次做常规量化/转换（会破坏置换后的张量布局）。
 4. 修正配置后重新部署，并重启引擎避免命中旧缓存。
 
 ### 开启混淆后请求时延升高
@@ -379,12 +371,12 @@ Coordinator 启动成功或请求时才报 SDK 不可用/原生库加载失败�
 
 **原因分析**
 
-Render 首次加载图像处理器（冷启动，实测约 22 s）与每请求的张量载荷置换（实测单请求毫秒级）。
+Render首次加载图像处理器（冷启动，实测约22秒）与每请求的张量载荷置换（实测单请求毫秒级）。
 
 **解决步骤**
 
-1. 调大 `render_config.timeout_ms`（避免冷启动超时）；
-2. 预热一次带图请求（或引入固定的预热流程）后再接入压测；
+1. 调大 `render_config.timeout_ms`（避免冷启动超时）。
+2. 预热一次带图请求（或引入固定的预热流程）后再接入压测。
 3. 纯文本场景关闭 `image_config.enable`。
 
 <a id="faq-geometry-mismatch"></a>
@@ -393,19 +385,15 @@ Render 首次加载图像处理器（冷启动，实测约 22 s）与每请求�
 
 **问题描述**
 
-带图请求正常返回 HTTP 200，但答案明显不对；Coordinator/引擎日志中出现
-`pixel_values D=1536 != expected 768. Returning as-is.` 之类的告警。
+带图请求正常返回 HTTP 200，但答案明显不对；Coordinator/引擎日志中出现`pixel_values D=1536 != expected 768. Returning as-is.`之类的告警。
 
 **原因分析**
 
-`patch_size` / `temporal_patch_size` 与权重混淆时使用的不一致，导致
-`D != 3 × patch_size² × temporal_patch_size`。此时 SDK **不会报错**，只是把载荷原样返回，
-即图像张量未做混淆就发给了引擎（混淆权重要求的是混淆后的张量），因此输出异常。
+`patch_size` / `temporal_patch_size` 与权重混淆时使用的不一致，导致`D != 3 × patch_size² × temporal_patch_size`。此时 SDK **不会报错**，只是把载荷原样返回，即图像张量未做混淆就发给了引擎（混淆权重要求的是混淆后的张量），因此输出异常。
 
 **解决步骤**
 
-1. 按 [参数来源](#参数来源) 从被服务权重目录的 `preprocessor_config.json` 重新获取
-   `patch_size` 与 `temporal_patch_size`（注意不同模型取值不同）；
-2. 确认这两个值与离线权重混淆时使用的一致（同一模型、同一份权重）；
-3. 修正后重启 Coordinator；
+1. 按 [参数来源](#参数来源) 从被服务权重目录的 `preprocessor_config.json` 重新获取`patch_size`与`temporal_patch_size`（注意不同模型取值不同）。
+2. 确认这两个值与离线权重混淆时使用的一致（同一模型、同一份权重）。
+3. 修正后重启 Coordinator。
 4. 注意：该告警意味着本次请求未经混淆，属于安全影响而不只是结果问题，建议在验收中加入日志检查项。

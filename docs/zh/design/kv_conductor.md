@@ -1,4 +1,4 @@
-# KV Conductor 设计文档
+# KV Conductor设计文档
 
 ## 架构总览
 
@@ -97,7 +97,7 @@ HBM 使用前缀链 Radix Tree，每个节点以 `LocalBlockHash`（XXH3 token-c
 
 - `LocalBlockHash` 是独立 XXH3 内容哈希，不包含前缀信息
 - 仅靠哈希值无法判断 "block 3 是否紧接 block 2"
-- RadixTree 以 `parent → child` 的树结构显式编码前缀链
+- Radix Tree 以 `parent → child` 的树结构显式编码前缀链
 - 查询时从 root 逐层遍历，第一个缺失即停，天然保证最长连续前缀
 
 **并发模型**：
@@ -120,7 +120,7 @@ HBM 使用前缀链 Radix Tree，每个节点以 `LocalBlockHash`（XXH3 token-c
 
 ### CPU/Disk 索引：LowerTierIndexer
 
-CPU/DISK 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**：
+CPU/Disk 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**：
 
 ```text
   TransitionKey: (parent_seq_hash, local_hash) -> child_seq_hash
@@ -376,7 +376,7 @@ Coordinator 的 `re_register_interval_sec` 默认 0，周期对账关闭。开�
   └──────────────────────────────────────────────────────────┘
 ```
 
-### 为什么用 "断点续查" 而不是每层独立从 root 走？
+### 为什么用 “断点续查” 而不是每层独立从 root 走？
 
 | | HBM RadixTree | CPU/Disk Continuation |
 |---|---|---|
@@ -461,7 +461,7 @@ pub struct OffloadPoolState {
 - content **跨 tier 移除存活**（不随 CPU 驱逐清除）：即便 CPU 先驱逐、Disk store
   事件后到，仍可在 `content` 保留窗口（`CONTENT_TTL`，300s）内解析入 Disk。
 - `content` 按 `CONTENT_TTL`（300s）TTL 清扫：迁移窗口关闭后自动清除，内存有界；
-  条目是 tier 数据的拷贝加短暂迁移残留，无 Disk 部署额外开销可忽略。
+  条目是 tier 数据的拷贝加短暂迁移残留，无 Disk 部署的额外开销可忽略。
 
 **为什么 offload 缓存要携带 parent_hash？**
 
@@ -494,10 +494,10 @@ maintenance 周期。`offload` 没有容量上限，但不会永久驻留，同�
 
 | CLI 参数 | 默认值 | 说明 |
 |----------|--------|------|
-| `--maintenance-interval-secs` | `30` | 后台维护周期；实现至少按 1 秒执行 |
-| `--pending-ttl-secs` | `60` | Pool-first 等待项 TTL |
-| `--content-ttl-secs` | `300` | CPU→Disk promotion 映射保留 TTL |
-| `--offload-ttl-secs` | `600` | 未确认 engine offload TTL；无容量上限 |
+| --maintenance-interval-secs | 30 | 后台维护周期；实现至少按 1 秒执行 |
+| --pending-ttl-secs | 60 | Pool-first 等待项 TTL |
+| --content-ttl-secs | 300 | CPU→Disk promotion 映射保留 TTL |
+| --offload-ttl-secs | 600 | 未确认 engine offload TTL；无容量上限 |
 
 ### vLLM 事件过滤
 
@@ -528,7 +528,7 @@ ZMQ 路径（`zmq_subscriber::process_payload`）根据注册来源 `EventSource
 实时引擎事件以注册的 DP 为路由上下文；model/tenant 等上下文由注册提供，事件携带的
 block size 会与注册粒度核对。Pool 回放复用上述分流；Engine 回放仍保留 vLLM 解析后尝试 legacy pool batch 的兼容分支。
 
-### HTTP `/events` Wire Format
+### HTTP /events Wire Format
 
 Coordinator / 引擎也可经 `POST /events` 推送 JSON（`KvEventBatch` / `KvEventWirePayload`）：
 支持引擎 map 形态、RFC #1527 pool 形态，以及 `type` / `event_type` / legacy `BlockStored`

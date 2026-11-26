@@ -2,9 +2,9 @@
 
 ## 特性介绍
 
-MindIE Motor Tracing能力基于第三方组件opentelemetry，opentelemetry文档资料可参考[文档|OpenTelemetry](https://opentelemetry.io/zh/docs/)。
+MindIE Motor Tracing能力基于第三方组件OpenTelemetry，OpenTelemetry文档资料可参考[文档|OpenTelemetry](https://opentelemetry.io/zh/docs/)。
 
-MindIE Motor 在 Coordinator 中记录请求处理与路由 Span，并通过 W3C `traceparent` / `tracestate` 传播请求上下文。若引擎支持上下文传播与 OTLP Span 导出，可在同一 Trace 中关联 Coordinator、Prefill 和 Decode 的处理过程，用于定位请求耗时与跨组件调用。下文以 vLLM 配置项与 Jaeger 接收端为例演示；引擎 Span 的数量和属性取决于引擎实现与配置。
+MindIE Motor在Coordinator中记录请求处理与路由 Span，并通过 W3C `traceparent` / `tracestate` 传播请求上下文。若引擎支持上下文传播与 OTLP Span 导出，可在同一 Trace 中关联 Coordinator、Prefill 和 Decode 的处理过程，用于定位请求耗时与跨组件调用。下文以 vLLM 配置项与 Jaeger 接收端为例演示；引擎 Span 的数量和属性取决于引擎实现与配置。
 
 ### 约束与限制
 
@@ -22,7 +22,7 @@ MindIE Motor 在 Coordinator 中记录请求处理与路由 Span，并通过 W3C
 ### 环境准备
 
 - 以[MindIE Motor快速开始](../../quick_start.md)中的env.json与user_config.json示例为配置基线。
-- 准备 Jaeger 可执行文件，或采用 Docker 容器部署（参考 [Jaeger 官网](https://www.jaegertracing.io/download/)及所用版本的文档）。也可使用其他兼容 OTLP 的 Trace 后端。按下文的接收端启动方法先启动接收端，再部署推理服务。
+- 准备Jaeger可执行文件，或采用Docker容器部署（参考 [Jaeger 官网](https://www.jaegertracing.io/download/)及所用版本的文档）。也可使用其他兼容OTLP的Trace后端。按下文的接收端启动方法先启动接收端，再部署推理服务。
 - 确保部署环境可访问Jaeger的OTLP接收端口（4318/4317）及Jaeger页面端口（16686）。
 
 ### 使用样例
@@ -159,7 +159,7 @@ MindIE Motor开启Tracing能力需修改env.json配置文件和user_config.json�
 
    | 配置项 | 类型 | 取值范围 | 必填/选填 | 默认值 | 说明 |
    |--------|------|----------|-----------|--------|------|
-   | motor_coordinator_config.tracer_config.endpoint | string | 与协议匹配的可达 URL | 开启 Coordinator Tracing 时必填 | 空字符串 | <ul><li>HTTP 示例： `http://<接收端>:4318/v1/traces`；</li><li>gRPC 示例： `http://<接收端>:4317`；</li></ul>TLS 使用 HTTPS |
+   | motor_coordinator_config.tracer_config.endpoint | string | 与协议匹配的可达 URL | 开启 Coordinator Tracing 时必填 | 空字符串 | <ul><li>HTTP 示例：`http://<接收端>:4318/v1/traces`；</li><li>gRPC 示例：`http://<接收端>:4317`；</li></ul>TLS 使用 HTTPS |
    | motor_coordinator_config.tracer_config.root_sampling_rate | number | (0, 1] | 选填 | 1.0 | 没有父 Span 时的采样比例 |
    | motor_coordinator_config.tracer_config.remote_parent_sampled | number | (0, 1] | 选填 | 1.0 | 远端父 Span 已采样时的采样比例 |
    | motor_coordinator_config.tracer_config.remote_parent_not_sampled | number | [0, 1] | 选填 | 1.0 | 远端父 Span 未采样时的采样比例 |
@@ -168,13 +168,13 @@ MindIE Motor开启Tracing能力需修改env.json配置文件和user_config.json�
    | motor_engine_prefill_config.engine_config.otlp-traces-endpoint | string | 与协议匹配的可达 URL | 开启该引擎 Tracing 时必填 | 未配置 | prefill 引擎上报地址，按 HTTP/gRPC 协议分别填写 |
    | motor_engine_decode_config.engine_config.otlp-traces-endpoint | string | 与协议匹配的可达 URL | 开启该引擎 Tracing 时必填 | 未配置 | decode 引擎上报地址，按 HTTP/gRPC 协议分别填写 |
 
-   OTel 采样器要求五个采样率均不超过 1。`remote_parent_not_sampled` 和 `local_parent_not_sampled` 可以配置为 0，表示父 Span 未采样时当前 Span 也不记录，可用范围是 `[0, 1]`；其余三个采样率 Motor 配置校验要求大于 0，可用范围是 `(0, 1]`。关闭 Coordinator Tracing 时将 `endpoint` 置为空字符串，不要用采样率关闭。默认值 1.0 用于全量采样，包括父 Span 未采样的情况；生产环境应评估导出和存储开销后调整采样率，并配合 TLS endpoint 使用（见上表及 env.json 说明）。Motor Tracing 无额外独立调优参数，主要配置项即表 2 所列 endpoint 与五个采样率。
+   OTel 采样器要求五个采样率均不超过 1。`remote_parent_not_sampled` 和 `local_parent_not_sampled` 可以配置为 0，表示父 Span 未采样时当前 Span 也不记录，可用范围是 `[0, 1]`；其余三个采样率 Motor 配置校验要求大于 0，可用范围是 `(0, 1]`。关闭 Coordinator Tracing 时将 `endpoint` 置为空字符串，不要用采样率关闭。默认值 1.0 用于全量采样，包括父 Span 未采样的情况；生产环境应评估导出和存储开销后调整采样率，并配合 TLS endpoint 使用（见上表及env.json说明）。Motor Tracing 无额外独立调优参数，主要配置项即表 2 所列 endpoint 与五个采样率。
 
-3. 启动 Jaeger 接收端。
+3. 启动Jaeger接收端。
 
    从 [Jaeger 官网](https://www.jaegertracing.io/download/) 获取与部署环境匹配的可执行文件或镜像，按所用版本的文档启用 OTLP 接收。以下以 all-in-one 可执行文件为例（HTTP 4318、gRPC 4317、UI 16686）；不同版本的启动参数可能不同，以官方文档为准。
 
-   也可采用 Docker 容器方式部署：
+   也可采用Docker容器方式部署：
 
    ```bash
    ./jaeger --set receivers.otlp.protocols.http.endpoint=0.0.0.0:4318 --set receivers.otlp.protocols.grpc.endpoint=0.0.0.0:4317 &
@@ -203,11 +203,11 @@ MindIE Motor开启Tracing能力需修改env.json配置文件和user_config.json�
 
    Coordinator 日志应包含以下片段（endpoint 随配置变化；以下为格式示例）：
 
-   ```text
+   ```output
    TracerManager init.(enable:True,endpoint:http://<接收端>:4318/v1/traces,protocol:http/protobuf)
    ```
 
-   该日志仅表示 Coordinator 已启用 exporter，不证明接收端已收到数据。服务就绪和端到端 Trace 仍需按照[验证特性](#验证特性)进行检查。
+   该日志仅表示Coordinator已启用exporter，不证明接收端已收到数据。服务就绪和端到端Trace仍需按照[验证特性](#验证特性)进行检查。
 
 ### 验证特性
 
@@ -221,9 +221,9 @@ MindIE Motor开启Tracing能力需修改env.json配置文件和user_config.json�
         -d '{"model":"qwen3-8B","messages":[{"role":"user","content":"hello"}]}'
    ```
 
-2. 等待批量导出后，打开 Jaeger 所在主机的页面 `http://<Jaeger-IP>:16686`，按服务名和请求发生的时间范围查询。Jaeger 主机不一定与推理服务主机相同。
+2. 等待批量导出后，打开Jaeger 在主机的页面`http://<Jaeger-IP>:16686`，按服务名和请求发生的时间范围查询。Jaeger主机不一定与推理服务主机相同。
 
-3. 在同一个 Trace ID 下确认 Coordinator 及该请求实际经过的 P/D 引擎 Span。仅看到三个服务名不表示链路已经串联。先以示例的全量采样配置验收；出现数据缺失时，检查各进程的 endpoint、协议、上下文传播和 exporter 错误日志。
+3. 在同一个Trace ID下确认Coordinator及该请求实际经过的P/D引擎Span。仅看到三个服务名不表示链路已经串联。先以示例的全量采样配置验收；出现数据缺失时，检查各进程的endpoint、协议、上下文传播和exporter错误日志。
 
 ## 常见问题
 
@@ -253,10 +253,10 @@ MindIE Motor开启Tracing能力需修改env.json配置文件和user_config.json�
 
 **解决步骤**
 
-在运行 Jaeger 的 Linux 主机上定位监听进程：
+在运行Jaeger的Linux主机上定位监听进程：
 
 ```bash
 ss -ltnp | grep -E ':(4317|4318|16686)[[:space:]]'
 ```
 
-先确认进程归属。若已有可用 Jaeger，复用其端点；若属于其他服务，可为 Jaeger 选择未占用端口，并同步修改 Coordinator 和引擎的 endpoint。确需停止已有服务时，使用其原有服务管理方式，不直接强制结束不明进程。
+先确认进程归属。若已有可用Jaeger，复用其端点；若属于其他服务，可为Jaeger选择未占用端口，并同步修改Coordinator和引擎的endpoint。确需停止已有服务时，使用其原有服务管理方式，不直接强制结束不明进程。

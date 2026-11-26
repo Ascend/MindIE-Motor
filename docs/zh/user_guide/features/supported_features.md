@@ -1,14 +1,14 @@
 # 特性支持
 
-本页汇总 MindIE Motor 当前版本的特性支持情况。你可以按功能类别查询特性的可用状态，以及支持的推理引擎和部署方式。点击特性名称可查看使用详细的特性使用说明。
+本页汇总MindIE Motor当前版本的特性支持情况。你可以按功能类别查询特性的可用状态，以及支持的推理引擎和部署方式。点击特性名称可查看详细的特性使用说明。
 
-说明：POC 表示当前版本可试用，尚未正式商发。支持列中的「—」表示尚不支持。
+说明：POC表示当前版本可试用，尚未正式商发。支持列中的「—」表示尚不支持。
 
 <div id="feature-support" markdown="1">
 
 ## 推理与调度
 
-本类特性主要包括PD分离和请求调度两大类，通过将Prefill实例和Decode实例分开部署，有助于提升计算资源利用效率；通过KV cache池化和亲和性调度，能够最大化复用KV cache，减少计算量。
+本类特性主要包括PD分离和请求调度两大类，通过将Prefill实例和Decode实例分开部署，有助于提升计算资源利用效率；通过KV Cache池化和亲和性调度，能够最大化复用KV Cache，减少计算量。
 
 <div class="feature-support-table">
 <table>
@@ -82,7 +82,7 @@
       <td>支持</td>
     </tr>
     <tr>
-      <td><a href="./inference_scheduling/max_tokens_adaptation.md"><code>max_tokens</code> 自适应</a></td>
+      <td><a href="./inference_scheduling/max_tokens_adaptation.md">max_tokens自适应</a></td>
       <td>可用</td>
       <td>支持</td>
       <td>—</td>
@@ -95,7 +95,7 @@
 
 ## 扩缩容与部署
 
-本类特性可根据业务负载情况，自动开启阔缩容调整实例数量，也可以手动调整实例数，并通过容器快照或 D2D 权重加载缩短启动时间。
+本类特性可根据业务负载情况，自动开启扩缩容调整实例数量，也可以手动调整实例数，并通过容器快照或D2D权重加载缩短启动时间。
 
 <div class="feature-support-table">
 <table>

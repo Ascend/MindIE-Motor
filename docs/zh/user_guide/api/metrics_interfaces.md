@@ -8,8 +8,8 @@ MindIE Motor的监控指标由Coordinator统一汇聚、聚合并提供，**唯�
 
 指标采集链路如下：
 
-1. Coordinator的`MetricsCollector`后台线程按周期（`prometheus_metrics_config.reuse_time`，默认为3秒）从每个Engine 的`/metrics`接口拉取原始指标；
-2. 解析Prometheus文本，按指标语义（sum / max / mean / 直方图合并 / 直通）跨实例、跨端点聚合，并计算Motor自定义指标；
+1. Coordinator的`MetricsCollector`后台线程按周期（`prometheus_metrics_config.reuse_time`，默认为3秒）从每个Engine的`/metrics`接口拉取原始指标。
+2. 解析Prometheus文本，按指标语义（sum / max / mean / 直方图合并 / 直通）跨实例、跨端点聚合，并计算Motor自定义指标。
 3. 聚合结果按采集版本缓存，通过本接口对外提供。
 
 >[!NOTE] 说明
@@ -27,8 +27,8 @@ MindIE Motor的监控指标由Coordinator统一汇聚、聚合并提供，**唯�
 
 - 使用Kubernetes部署时，IP使用主机IP或域名。
 - 在Kubernetes集群内，IP使用`Coordinator`服务的IP：
-  - 取值来自[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)配置文件的`coordinator_api_host`配置项；
-  - 未配置时使用环境变量`POD_IP`；
+  - 取值来自[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)配置文件的`coordinator_api_host`配置项。
+  - 未配置时使用环境变量`POD_IP`。
   - 环境变量不存在或为空时，使用默认值`127.0.0.1`。
 
 **端口**
@@ -254,8 +254,8 @@ vllm:num_requests_running{pod_ip="192.168.1.10",role="prefill",model_name="Qwen2
 | motor:decode_utilization | Decode 需求/供给利用率（>1 表示供给不足），详情请参见[容量规划指标](#容量规划指标) |
 | motor:prefill_replicas_required | 容量规划推导的所需 Prefill 实例数，详情请参见[容量规划指标](#容量规划指标) |
 | motor:decode_replicas_required | 容量规划推导的所需 Decode 实例数（吞吐与 KV 双约束），详情请参见[容量规划指标](#容量规划指标) |
-| motor:pd_ratio_current` | 当前 PD 配比：active Prefill 实例数 / max(active Decode 实例数, 1) |
-| motor:pd_ratio_suggested` | 建议 PD 配比（仅为建议信号，Motor 不执行任何调整），详情请参见[容量规划指标](#容量规划指标) |
+| motor:pd_ratio_current | 当前 PD 配比：active Prefill 实例数 / max(active Decode 实例数, 1) |
+| motor:pd_ratio_suggested | 建议 PD 配比（仅为建议信号，Motor 不执行任何调整），详情请参见[容量规划指标](#容量规划指标) |
 
 ### 容量规划指标
 
@@ -326,7 +326,7 @@ vllm:num_requests_running{pod_ip="192.168.1.10",role="prefill",model_name="Qwen2
 - **PD 混合部署不输出**：容量规划指标仅按 prefill / decode 角色实例计算，PD 混合
   （hybrid / union）部署不输出上述 P/D 侧容量规划指标。
 - **建议信号不执行**：Motor 只输出 `motor:pd_ratio_suggested` 信号，不会依据它修改
-  任何实例数量或 K8s 资源，执行由外部控制器完成。
+  任何实例数量或Kubernetes资源，执行由外部控制器完成。
 
 相关配置项（均位于 `prometheus_metrics_config.capacity_planning` 子配置段，均可选）：
 

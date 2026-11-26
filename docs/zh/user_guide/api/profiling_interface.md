@@ -32,7 +32,7 @@ Client
 
 ## 采集前置配置
 
-### 1. 开启 Coordinator Profiling 接口
+### 开启 Coordinator Profiling 接口
 
 在 `user_config.json` 的 `motor_coordinator_config` 中增加：
 
@@ -50,7 +50,7 @@ Client
 
 参数说明参见 [profiling_config 字段](../configuration/config_reference.md#motor_coordinator_config)。
 
-### 2. 引擎开启 Profiler
+### 引擎开启 Profiler
 
 在引擎配置（`motor_engine_prefill_config` / `motor_engine_decode_config` / `motor_engine_union_config` 的 `engine_config`）中增加 `profiler-config`：
 
@@ -72,8 +72,8 @@ Client
 
 | 接口 | 方法 | 用途 |
 |------|------|------|
-| `/profiling/start` | POST | 对选中的目标启动 Profiling，返回逐目标结果 |
-| `/profiling/stop` | POST | 停止匹配目标上当前的采集，返回逐目标结果 |
+| /profiling/start | POST | 对选中的目标启动 Profiling，返回逐目标结果 |
+| /profiling/stop | POST | 停止匹配目标上当前的采集，返回逐目标结果 |
 
 **IP/端口**：与 `GET /metrics` 相同，使用 Coordinator Observability 端口：
 
@@ -87,11 +87,11 @@ Client
 
 | 参数名 | 类型 | 必选 | 说明 |
 |--------|------|------|------|
-| `service` | string | 否 | 模型服务名，对应实例 `model_name`。不传时匹配所有服务。 |
-| `roles` | array[string] | 否 | P/D 角色筛选：`prefill` / `decode` / `union` / `encode`。筛选时 `both`、`hybrid` 与 `union` 等价，响应保留实例的原始角色标签。不传时匹配所有角色。 |
-| `instances` | array[int] | 否 | 实例 ID 列表，即 metrics 中的 `instance_id`。不传时匹配服务/角色筛选后的全部实例。 |
-| `dps` | array[int] \| object | 否 | DP rank 筛选，即 metrics 中的 `dp_rank`（`Endpoint.id`）。<br>数组形式：对每个选中实例应用同一组 DP rank；<br>对象形式：`{"实例ID": [DP rank, ...]}`，仅采集对象中列出的实例/DP 组合。 |
-| `profiler_options` | object | 否 | 仅 `POST /profiling/start` 支持。透传给引擎 `/start_profile` 的 JSON 参数，例如 `profile_prefix`。Coordinator 会为该前缀补充目标维度后缀。 |
+| service | string | 否 | 模型服务名，对应实例 `model_name`。不传时匹配所有服务。 |
+| roles | array[string] | 否 | P/D 角色筛选：`prefill` / `decode` / `union` / `encode`。筛选时 `both`、`hybrid` 与 `union` 等价，响应保留实例的原始角色标签。不传时匹配所有角色。 |
+| instances | array[int] | 否 | 实例 ID 列表，即 metrics 中的 `instance_id`。不传时匹配服务/角色筛选后的全部实例。 |
+| dps | array[int] \| object | 否 | DP rank 筛选，即 metrics 中的 `dp_rank`（`Endpoint.id`）。<br>数组形式：对每个选中实例应用同一组 DP rank；<br>对象形式：`{"实例ID": [DP rank, ...]}`，仅采集对象中列出的实例/DP 组合。 |
+| profiler_options | object | 否 | 仅 `POST /profiling/start` 支持。透传给引擎 `/start_profile` 的 JSON 参数，例如 `profile_prefix`。Coordinator 会为该前缀补充目标维度后缀。 |
 
 目标解析规则：
 
@@ -214,13 +214,13 @@ motor_profile_svc-<service>_ins-<instance_id>_role-<role>_dp-<dp_rank>
 
 | 场景 | HTTP 状态码 |
 |------|-------------|
-| Profiling 接口未开启（`profiling_config.enable=false`） | `404` |
+| Profiling 接口未开启（`profiling_config.enable=false`） | 404 |
 | 请求体为空、JSON 非法、参数校验失败、目标无法解析 | `400` |
-| 请求包含未知字段（如把 `roles` 拼成 `role`、`dps` 拼成 `dp`） | `400` |
-| 请求体超过 1 MiB | `413`，读取过程中超限即拒绝 |
-| 管理面 API Key 缺失/错误（开启鉴权时） | `401` / `403` |
-| 备 Coordinator 收到请求 | `503` |
-| 调度侧实例视图不可用或无可用实例 | `503` |
+| 请求包含未知字段（如把 `roles` 拼成 `role`、`dps` 拼成 `dp`） | 400 |
+| 请求体超过 1 MiB | 413，读取过程中超限即拒绝 |
+| 管理面 API Key 缺失/错误（开启鉴权时） | 401/403 |
+| 备 Coordinator 收到请求 | 503 |
+| 调度侧实例视图不可用或无可用实例 | 503 |
 | 引擎返回错误或调用超时 | 响应中该目标为 `failed`，原因见 `detail`。整批请求仍返回 HTTP `200`。 |
 
 ## 监控与后续操作

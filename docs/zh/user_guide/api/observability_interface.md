@@ -474,7 +474,7 @@ Controller 检测到实例 Endpoint 心跳超时或 Endpoint 状态异常时，�
 | 定位信息、MOI、附加信息 | service name | 组件名称 `Controller`。 |
 | 定位信息、MOI、附加信息 | endpoint ip | 异常 Endpoint 的 IP 地址。 |
 | 定位信息、MOI、附加信息 | endpoint ids | 同一 IP 下检测到异常的 Endpoint ID 列表。 |
-| 附加信息 | `pod id | 环境变量 `SERVICE_ID`。 |
+| 附加信息 | pod id | 环境变量 `SERVICE_ID`。 |
 | 原因 | reasonId=1 | Endpoint 心跳超时。 |
 | 原因 | reasonId=2 | Endpoint 状态异常。 |
 
@@ -561,8 +561,8 @@ Prefill 和 Decode 两类角色均重新具备可用实例时自动生成 `categ
 
 | 类别 | 参数名称 | 参数含义 |
 | --- | --- | --- |
-| 定位信息、MOI | service name` | 组件名称 `Coordinator`。 |
-| 定位信息、MOI | service ip` | Coordinator 所在 Pod 的 `POD_IP`。 |
+| 定位信息、MOI | service name | 组件名称 `Coordinator`。 |
+| 定位信息、MOI | service ip | Coordinator 所在 Pod 的 `POD_IP`。 |
 | 附加信息 | 当前请求数、`max_requests` 和阈值 | 标识本次记录为达到 85% 的拥塞状态或低于 75% 的恢复状态。 |
 | 附加信息 | pod id | 环境变量 `SERVICE_ID`。 |
 | 原因 | reasonId=1 | Coordinator 正在处理的请求发生拥塞。 |
@@ -639,7 +639,7 @@ ScaleP2D 故障恢复策略成功恢复 Decode 实例后，Controller 上报此�
 
 | 事件 ID | 事件级别 | 事件类型 |
 | --- | --- | --- |
-|`0xFC001007 | 警告 | 状态改变 |
+|0xFC001007 | 警告 | 状态改变 |
 
 **事件参数**
 
@@ -693,7 +693,7 @@ Coordinator主备模式发生主备切换，备Coordinator获取主角色并启�
 
 **对系统的影响**
 
-该记录的 `serviceAffectedType=0`。新主 Coordinator 启动 Inference 进程，用于通知发生了主备切换。
+该记录的 `serviceAffectedType=0`。新主 Coordinator 启动推理进程，用于通知发生了主备切换。
 
 **可能原因**
 
@@ -726,18 +726,18 @@ Coordinator主备模式发生主备切换，备Coordinator获取主角色并启�
 
 | 类别 | 参数名称 | 参数含义 |
 | --- | --- | --- |
-| 定位信息 | `service name` | 组件名称 `Coordinator`。 |
-| 定位信息 | `service ip` | Coordinator 所在 Pod 的 `POD_IP`。 |
-| MOI | `instanceId` | Decode 实例 ID。告警与清除记录必须使用完全相同的 MOI。本告警不带 Prefill。 |
-| 附加信息 | `precision_issue_count` | 本轮 Runtime Guard 计数增量。 |
-| 附加信息 | `probe_failure_count` | 本轮拨测失败次数。 |
-| 附加信息 | `abnormal_ports` | 本轮出现新增的 Decode endpoint 业务端口。 |
-| 附加信息 | `p_instance_id` | 空。 |
-| 附加信息 | `d_instance_id` | Decode 实例 ID。 |
-| 附加信息 | `pod id` | 依次取非空的 `SERVICE_ID`、`sys_id` 或模型 ID。 |
-| 响应字段 | `instanceId` | Decode 实例 ID。 |
-| 响应字段 | `pInstanceId` | Prefill 实例 ID；无 Prefill 实例时为空字符串。 |
-| 原因 | `reasonId=0` | 当前实现保留 `Record` 的默认值。 |
+| 定位信息 | service name | 组件名称 `Coordinator`。 |
+| 定位信息 | service ip | Coordinator 所在 Pod 的 `POD_IP`。 |
+| MOI | instanceId | Decode 实例 ID。告警与清除记录必须使用完全相同的 MOI。本告警不带 Prefill。 |
+| 附加信息 | precision_issue_count | 本轮 Runtime Guard 计数增量。 |
+| 附加信息 | probe_failure_count | 本轮拨测失败次数。 |
+| 附加信息 | abnormal_ports | 本轮出现新增的 Decode endpoint 业务端口。 |
+| 附加信息 | p_instance_id | 空。 |
+| 附加信息 | d_instance_id | Decode 实例 ID。 |
+| 附加信息 | pod id | 依次取非空的 `SERVICE_ID`、`sys_id` 或模型 ID。 |
+| 响应字段 | instanceId | Decode 实例 ID。 |
+| 响应字段 | pInstanceId | Prefill 实例 ID；无 Prefill 实例时为空字符串。 |
+| 原因 | reasonId=0 | 当前实现保留 `Record` 的默认值。 |
 
 **对系统的影响**
 
@@ -756,13 +756,13 @@ Decode endpoint 上的 Runtime Guard 计数相对上次已确认值增加。
 
 **告警清除**
 
-清除记录必须复用原告警的 MOI。自动恢复、CCAE 精度控制以及连续正常检测三种清除路径详见[精度检测故障恢复特性](../../design/fault_tolerance/precision_detection.md#告警清除)。
+清除记录必须复用原告警的 MOI。自动恢复、CCAE 精度控制以及连续正常检测三种清除路径详见[精度检测故障恢复特性](../../design/fault_tolerance/precision_detection.md#告警与清除)。
 
 如需将上述记录上报到 CCAE，可部署 CCAE Reporter。Reporter 的配置、启动方式和北向接口关系请参见下文“对接 CCAE 前端平台”。
 
 ## 对接 CCAE 前端平台
 
-CCAE（Cluster Computing Autonomous Engine）是集群自智引擎系统。Motor 可通过 `examples/features/observability/ccae_reporter` 中的 CCAE Reporter 对接 CCAE，由 Reporter 采集 Motor 的告警、日志、实例清单和 metrics 信息并上报到 CCAE。
+CCAE（Cluster Computing Autonomous Engine）是集群自智引擎系统。Motor 可通过 `examples/features/observability/ccae_reporter` 中的 CCAE Reporter 对接 CCAE，由 Reporter 采集 Motor 的告警、日志、实例清单和指标信息并上报到 CCAE。
 
 ### 配置 CCAE 信息
 

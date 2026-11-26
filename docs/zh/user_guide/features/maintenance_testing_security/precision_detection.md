@@ -25,7 +25,7 @@ Prefill 可以带同一份检测器配置。本特性只消费 Decode 的计数�
 | 部署场景 | 经过 Coordinator 管理的 Decode 实例。直连引擎不经过本特性。 |
 | 引擎 | vLLM，且已安装带 Runtime Guard 的 vLLM-Ascend。检测器配置写在 `motor_engine_decode_config.engine_config.additional_config`，修改后重启 Decode 和 Coordinator 生效。 |
 | 告警粒度 | Decode 实例。端口只写在附加信息里，用于定位 endpoint。 |
-| 恢复 | 自动恢复只终止告警中的 Decode 实例，不终止 Prefill，不缩单个 DP，也不走软件故障入口。 |
+| 恢复 | 自动恢复只终止告警中的 Decode 实例，不终止 Prefill，不缩容单个 DP，也不走软件故障入口。 |
 | 其他限制 | <ul><li>抓取失败、文本无法解析、计数非法时，该次不计入 10 次窗口，已有基线保留。</li><li>整页没有 Runtime Guard 计数时，不能当作正常，基线会被清掉。</li><li>以前见过、本轮消失的 endpoint 会挡住清除。</li><li>修改检测器配置后需要重启对应 Decode 和 Coordinator。修改 `precision_clear_threshold` 或 `probe_timeout_seconds` 后需要重启 Coordinator。</li></ul> |
 
 ## 特性使用
@@ -99,13 +99,13 @@ Prefill 可以带同一份检测器配置。本特性只消费 Decode 的计数�
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | enabled | bool | false | 是否打开该检测器。 |
-| window | int | 10 | 滚动窗口长度，最小 1。 |
+| window | int | 10 | 滑动窗口长度，最小 1。 |
 | low_threshold | float | 0.3 | 接受率下限，取值 0 到 1。 |
 | len_low_threshold | float | 1.4 | 接受率处于低位时使用的长度比，最小 0。 |
 | high_threshold | float | 0.96 | 接受率上限，取值 0 到 1。 |
 | len_high_threshold | float | 2.8 | 接受率处于高位时使用的长度比，最小 0。 |
 
-三种检测器同时打开、并改掉默认阈值时，可以写成：
+三种检测器同时打开并改掉默认阈值时，可以写成：
 
 ```json
 {
@@ -142,7 +142,7 @@ Prefill 可以带同一份检测器配置。本特性只消费 Decode 的计数�
 }
 ```
 
-Coordinator 侧只保留清除和拨测超时。省略时分别使用 10 和 600 秒。`precision_check_enabled` 不控制本特性。
+Coordinator侧只保留清除和拨测超时。省略时分别使用10次和600秒。`precision_check_enabled`不控制本特性。
 
 ```json
 {
@@ -185,7 +185,7 @@ Coordinator 侧只保留清除和拨测超时。省略时分别使用 10 和 600
 
 ### 验证特性
 
-不需要查看 Decode 启动参数，也不需要直接访问 Decode 的 `/metrics`。确认配置已写入 `user_config.json` 并完成对应重启后，看 Coordinator 可观测进程的 INFO 日志和精度告警即可。
+不需要查看 Decode 启动参数，也不需要直接访问 Decode 的 `/metrics`。确认配置已写入 `user_config.json` 并完成对应重启后，看 Coordinator 可观测进程的 INFO 日志和精度异常告警即可。
 
 日志前缀是 `[PrecisionDetection]`。只看到 `schedule` 或 `ingest`，只说明 Coordinator 已在消费该 Decode 的抓取结果，不能说明检测器已打开。
 

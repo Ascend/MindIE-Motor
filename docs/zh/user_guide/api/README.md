@@ -26,7 +26,7 @@ MindIE Motor提供下列推理业务接口：
 **推理业务接口端口**
 
 - 使用Kubernetes部署时，推理业务接口端口使用`yaml`文件中`mindie-motor-coordinator-infer`元数据定义的`nodePort`，默认值为`31015`。
-  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)；
+  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)。
   - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/coordinator_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/coordinator_template.yaml)。
 - 在Kubernetes集群内，推理业务接口端口使用[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)配置文件中`coordinator_api_infer_port`定义的端口。
   - 当配置文件中无此配置项时，使用默认端口`1025`。
@@ -48,7 +48,7 @@ MindIE Motor提供下列管理接口：
 >[!NOTE] 说明
 >
 > - 除实例查询外，管理接口仅限Kubernetes集群内使用，不提供给集群外使用。
-> - `/instances` 同时保留在内部管理端口 `1026`，并通过 Coordinator Observability 端口 `1027`（K8s nodePort `31017`）对外提供只读查询。
+> - `/instances` 同时保留在内部管理端口 `1026`，并通过 Coordinator Observability 端口 `1027`（Kubernetes nodePort `31017`）对外提供只读查询。
 > - `/health` 与 `/metrics` 同挂 Coordinator Observability 端口（`coordinator_obs_port`，默认 `1027`），**不在**管理接口端口（`coordinator_api_mgmt_port`，默认 `1026`）上，详见[健康状态查询接口](./management_interfaces.md#健康状态查询接口)。
 > - `POST /controller/fault_tolerance/recover` 挂在 Controller API 端口（`controller_api_port`，默认 `1026`）。扩容开关 `enable_dp_scale_up` 必须与缩容开关 `enable_dp_scale_down` 同时开启，该接口才可用。
 
@@ -58,7 +58,7 @@ MindIE Motor提供下列管理接口：
 
 - 在Kubernetes集群内，管理接口IP使用Coordinator服务的IP。
   - 取值来自于[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)配置文件中的`coordinator_api_host`配置项。
-  - 当配置文件中无此配置项时，则使用`Coordinator`服务部署的环境变量`POD_IP`。
+  - 当配置文件中无此配置项时，则使用Coordinator服务部署的环境变量`POD_IP`。
   - 当环境变量`POD_IP`也不存在或为空时，使用默认值`127.0.0.1`。
 
 **管理接口端口**
@@ -91,14 +91,14 @@ MindIE Motor 的监控指标由 Coordinator 统一汇聚、聚合，通过 Coord
 **指标接口端口**
 
 - 使用Kubernetes部署时，指标接口端口使用`yaml`文件中`mindie-motor-coordinator-obs`元数据定义的`nodePort`，默认值为`31017`。
-  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)；
+  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)。
   - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/coordinator_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/coordinator_template.yaml)。
 - 在Kubernetes集群内，指标接口端口使用[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_coordinator_config)配置文件中`coordinator_obs_port`定义的端口。
   - 当配置文件中无此配置项时，使用默认端口`1027`。
 - 指标接口的TLS由`mgmt_tls_config.enable_tls`控制。
 
 >[!NOTE] 说明
->指标接口端口（`coordinator_obs_port`，默认`1027`）与Controller观测接口端口（`observability_api_port`，默认`1027`）默认值相同，但属于不同组件、不同服务：指标接口位于`Coordinator`（nodePort `31017`），观测接口位于`Controller`（nodePort `31027`），使用时注意区分。
+>指标接口端口（`coordinator_obs_port`，默认`1027`）与Controller观测接口端口（`observability_api_port`，默认`1027`）默认值相同，但属于不同组件、不同服务：指标接口位于Coordinator（nodePort `31017`），观测接口位于`Controller`（nodePort `31027`），使用时注意区分。
 
 ## 性能采集接口
 
@@ -147,7 +147,7 @@ Controller 观测接口提供模型服务清单与告警等运维观测数据（
 **观测接口端口**
 
 - 使用Kubernetes部署时，观测接口端口使用`yaml`文件中`mindie-motor-observability`元数据定义的`nodePort`，默认值为`31027`。
-  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)；
+  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)。
   - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/controller_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/controller_template.yaml)。
 - 在Kubernetes集群内，观测接口端口使用[user_config.json配置文件全量参数说明](../configuration/config_reference.md#motor_controller_config)配置文件中`observability_api_port`定义的端口。
   - 当配置文件中无此配置项时，使用默认端口`1027`。
@@ -155,11 +155,11 @@ Controller 观测接口提供模型服务清单与告警等运维观测数据（
 ## 安全、认证与限流
 
 - 安全协议：`infer_tls_config.enable_tls` / `mgmt_tls_config.enable_tls` 为 `true` 时，推理/管理接口端口使用 `https`。
-- 管理面认证：`mgmt_api_key_config.enable_api_key=true` 时，实例查询、实例刷新、精度告警状态清理和性能采集接口必须携带 `X-Motor-Management-Key`；探针接口免鉴权。密钥由 `api_key_file` 指定的文件提供。
+- 管理面认证：`mgmt_api_key_config.enable_api_key=true` 时，实例查询、实例刷新、精度告警状态清理和性能采集接口必须携带 `X-Motor-Management-Key`；探针接口免认证。密钥由 `api_key_file` 指定的文件提供。
 - 请求头：
   - 必选：`Content-Type: application/json`
   - 可选：API Key
     - 对 `/v1/completions`、`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/messages/count_tokens` 生效
-    - Header 名称：`api_key_config.header_name`（默认 `Authorization`）
+    - 请求头名称：`api_key_config.header_name`（默认 `Authorization`）
     - 前缀：`api_key_config.key_prefix`（默认 `Bearer`）
-- 限流（可选）：`rate_limit_config.enable_rate_limit=true` 时启用，超限返回 `429`。机制与配置见 [服务限流](../features/fault_tolerance/rate_limiting.md)
+- 限流（可选）：`rate_limit_config.enable_rate_limit=true` 时启用，超限返回 `429`。机制与配置见 [服务限流](../features/fault_tolerance/rate_limiting.md)。

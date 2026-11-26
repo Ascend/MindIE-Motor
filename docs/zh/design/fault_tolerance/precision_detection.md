@@ -30,13 +30,15 @@ Decode 引擎 Runtime Guard
 
 ## 告警与清除
 
+**告警**
+
 告警归属 Decode 实例。`p_instance_id` 为空。附加信息在原有计数字段后包含 `abnormal_ports`。
 
 活动告警不重复抬起。当前各 endpoint 连续无新增达到 `precision_clear_threshold`（默认 10）后，用原 MOI 上报清除。已知 endpoint 从抓取名单消失时，不把该实例记为正常。
 
 `precision_auto_recovery_enabled` 默认关闭。打开后，Controller 终止告警中的 Decode 实例；终止成功则清除告警，并通知 Coordinator 删除活动状态。
 
-## 告警清除
+**清除**
 
 清除记录与抬起使用同一 MOI：`service name=Coordinator, service ip=<POD_IP>, instanceId=<Decode实例ID>`。
 

@@ -1,7 +1,7 @@
 # user_config.json配置文件全量参数说明
 
-本文档详细说明user_config.json配置文件中Controller、Coordinator等组件的全量可配置项，其结构与"examples/features/config_sample.json"结构一一对应。
-部署时，系统会将"user_config.json"中对应模块合并至组件运行时配置，遵循“代码默认值优先，用户配置覆盖”原则。此外，支持通过修改组件所监控的配置文件实现动态生效。配置文件位于“model_configs/”目录下（如“model_configs/vllm/user_config.json”），请根据实际使用的引擎类型和模型选择对应配置。
+本文档详细说明user_config.json配置文件中Controller、Coordinator等组件的全量可配置项，其结构与`examples/features/config_sample.json`结构一一对应。
+部署时，系统会将user_config.json中对应模块合并至组件运行时配置，遵循“代码默认值优先，用户配置覆盖”原则。此外，支持通过修改组件所监控的配置文件实现动态生效。配置文件位于`model_configs/`目录下（如：`model_configs/vllm/user_config.json`），请根据实际使用的引擎类型和模型选择对应配置。
 
 ## motor_deploy_config
 
@@ -253,11 +253,11 @@ motor_controller_config字段配置样例如下所示：
   },
   "fault_tolerance_config": {
     "enable_fault_tolerance": true,
-    "strategy_center_check_interval": 1,
+    "strategy_center_check_interval": 10,
     "configmap_namespace": "kube-system",
     "configmap_prefix": "mindx-dl-deviceinfo-",
     "k8s_cert_path": "",
-    "enable_scale_p2d": false,
+    "enable_scale_p2d": true,
     "enable_fast_recovery": false,
     "enable_hbm_uce_recovery": true,
     "enable_token_reinference": true,
@@ -820,7 +820,7 @@ motor_coordinator_config字段配置样例如下所示：
 
 ## motor_engine_union_config
 
-motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 原生引擎实例。其结构与motor_engine_prefill_config/motor_engine_decode_config类似，但不区分P/D两套引擎配置，也无需配置 kv_transfer_config的producer/consumer角色。其配置样例如下所示。
+motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 原生引擎实例。其结构与motor_engine_prefill_config/motor_engine_decode_config类似，但不区分P/D两套引擎配置，也无需配置 kv_transfer_config的producer/consumer角色，其配置样例如下所示。
 
 ```json
 "motor_engine_union_config": {
@@ -955,7 +955,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 
 ## motor_engine_prefill_config/motor_engine_decode_config
 
-motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离部署场景**，这两个字段分别配置Prefill与Decode引擎。两者结构相同，均需指定engine_type与engine_config；`health_check_config` 用于配置原生 `/health` 超时与模型加载启动窗口。配置示例如下所示。
+motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离部署场景**，这两个字段分别配置Prefill与Decode引擎。两者结构相同，均需指定engine_type与engine_config；`health_check_config` 用于配置原生 `/health` 超时与模型加载启动窗口，配置示例如下所示。
 
 DP 域缩容不在 P/D 配置中增加 Motor 特性开关。若希望某一侧实例具备缩容能力，只需在该侧
 `engine_config` 中开启 vLLM 原生 FT，并配置 external-lb、MC2 Mask、EP/EPLB 等实际所需能力；
@@ -1198,11 +1198,9 @@ PD模式下P与D**各自独立配置**"health_check_config"，未配置时使用
 - `enable_startup_plan=true`：启用 vLLM StartPlan。Profile 命中并通过安全检查后跳过 memory profiling。
 - `enable_startup_plan=false`：不生成或加载 StartPlan。
 - `enable_startup_plan=true` 需要配套的 vLLM/vLLM-Ascend 版本已经接入 StartPlan；Motor 不修改运行时源码。
-- `enable_graph_reuse=true`：启用 vLLM-Ascend 后端完整图复用，并以该配置为准设置。
-  `enable_npugraph_ex=true`、`enforce_eager=false` 和角色对应的 `cudagraph_mode`。
+- `enable_graph_reuse=true`：启用 vLLM-Ascend 后端完整图复用，并以该配置为准设置。`enable_npugraph_ex=true`、`enforce_eager=false` 和角色对应的 `cudagraph_mode`。
 - `enable_graph_reuse=false`：关闭 vLLM-Ascend 后端完整图复用，不强制关闭普通图捕获或 AOT 缓存。
-- `cache_root`：vLLM 缓存根目录，用于保存 StartPlan、AOT 和后端编译图缓存。PD 分离场景建议为 Prefill、
-  Decode 配置各自可持久化且对 vLLM 进程可读写的目录。
+- `cache_root`：vLLM 缓存根目录，用于保存 StartPlan、AOT 和后端编译图缓存。PD 分离场景建议为 Prefill、Decode 配置各自可持久化且对 vLLM 进程可读写的目录。
 
 ### dispatch_profile
 
@@ -1274,7 +1272,7 @@ Deployer 只读取顶层配置决定 conductor 服务是否启用及服务端口
 不包含 `query_encoding` 及介质端口等新增字段。
 Coordinator 会根据实例角色自动识别 P/D 分离或 union 混部拓扑，并根据 `engine_type` 选择 vLLM handoff 或 SGLang bootstrap Adapter。vLLM Connector 白名单、`MultiConnector` 取 `connectors[0]` 的规则，以及未知 Connector 在启动期 fail-closed 的处理，详情请参见[PD 分离特性说明](../../design/pd_disaggregation.md#vllm-connector-识别白名单)与[PD 分离服务部署](../deployment/README.md#k8s-pd-disaggregation)。
 
-**表9** kv_conductor_config 自动推导来源
+**表8** kv_conductor_config 自动推导来源
 
 | 来源 | 说明 |
 |------|------|

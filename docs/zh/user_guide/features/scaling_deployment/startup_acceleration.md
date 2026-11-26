@@ -25,6 +25,10 @@ D2D权重加载特性的工作原理大致分为以下三步：
 
 以下模型已在MindIE Motor示例配置中验证D2D启动加速：
 
+<a id="table000"></a>
+
+**表 1** 已适配模型
+
 | 模型 | 配置目录(参考) |
 |------|----------|
 | Qwen3-30B | model_configs/vllm/models/qwen_235b/ |
@@ -54,8 +58,8 @@ D2D权重加载特性的工作原理大致分为以下三步：
 
 D2D权重加载特性通过user_config.json配置文件中的`engine_config`字段进行配置。Controller判定D2D权重加载特性开启需同时满足以下条件：
 
-- model_loader_extra_config 存在且为合法 JSON 对象；
-- source参数配置为"auto"；
+- model_loader_extra_config 存在且为合法 JSON 对象。
+- source参数配置为"auto"。
 - 配置listen_port参数。
 
 满足后，Engine启动时会自动设置`load_format = "netloader"`。
@@ -81,14 +85,14 @@ D2D权重加载特性通过user_config.json配置文件中的`engine_config`字�
    }
    ```
 
-   **表 1** 配置参数说明
+   **表 2** 配置参数说明
 
    | 配置项 | 类型 | 取值范围 | 必填 | 默认值 | 说明 |
    |--------|------|----------|------|--------|------|
    | source | string | auto | 是 | "auto" | 固定为"auto"，表示peer地址由Controller自动填充。 |
-   | listen_port | int | 端口号 | 是 | 无 | 本实例对外提供权重服务的起始端口；各device实际端口为`listen_port+device_rank`（含dp偏移）。 |
+   | listen_port | int | [1,65535] | 是 | 无 | 本实例对外提供权重服务的起始端口；各device实际端口为`listen_port+device_rank`（含dp偏移）。 |
    | int8_cache | string | ["hbm", "dram", "no"] | 选填 | "no" | 是否启用INT8缓存，未启用时全量参数直传。 |
-   | int8_cache_name | list | INT8缓存名称 | 选填 | None | vLLM Ascend内部int8参数名称，若配置，d2d将只传输对应int8参数。默认不过滤，全量参数传输。|
+   | int8_cache_name | list | INT8缓存名称 | 选填 | None | vLLM Ascend内部INT8参数名称，若配置，D2D将只传输对应INT8参数。默认不过滤，全量参数传输。|
    | output_prefix | string | 文件名前缀 | 选填 | None | 若设置，每个rank将产出{OUTPUT_PREFIX}{RANK}.txt，内容为每个rank的IP:Port配对信息。|
 
    >[!NOTE] 说明
@@ -98,7 +102,7 @@ D2D权重加载特性通过user_config.json配置文件中的`engine_config`字�
 
 2. 部署首个实例。
 
-   按照 [PD 分离服务部署](../../deployment/README.md#k8s-pd-disaggregation) 相关文档获取 P/D 分离推理服务部署配置，在对应的user_config.json中按步骤1添加`model_loader_extra_config`（Prefill / Decode / Union按实际角色分别配置）。
+   按照[PD分离服务部署](../../deployment/README.md#k8s-pd-disaggregation) 相关文档获取PD分离推理服务部署配置，在对应的user_config.json中按步骤1添加`model_loader_extra_config`（Prefill / Decode / Union按实际角色分别配置）。
 
    执行以下命令部署首个实例，等待实例进入ACTIVE状态：
 
@@ -110,7 +114,7 @@ D2D权重加载特性通过user_config.json配置文件中的`engine_config`字�
 
    >[!NOTE] 说明
    >
-   >`--config_dir`为`user_config.json`与`env.json`所在目录。上述`.../../model_configs/vllm/models/...`为路径样例，需替换为实际使用的引擎与模型对应的配置目录（可参考本文档“已测试模型”表中的配置目录）。
+   >`--config_dir`为`user_config.json`与`env.json`所在目录。上述`.../../model_configs/vllm/models/...`为路径样例，需替换为实际使用的引擎与模型对应的配置目录（请参考[已适配模型](#table000)）。
 
 3. 扩容或部署同角色新实例。
 
@@ -126,9 +130,9 @@ D2D权重加载特性通过user_config.json配置文件中的`engine_config`字�
 
 4. <a id="step004"></a>确认部署结果。
 
-   日志中有如下打印，则已启动对外服务，后续新实例可从本实例拉取权重。
+   日志中有如下打印，则说明已启动对外服务，后续新实例可从本实例拉取权重。
 
-   ```text
+   ```output
    [netloader.py:664] Start elastic Netloader server, rank: 3, listen port: 10.244.66.130:12348, group: netloader
    [netloader.py:708] Elastic server started, rank: 3, group: netloader
    ```
@@ -137,7 +141,7 @@ D2D权重加载特性通过user_config.json配置文件中的`engine_config`字�
 
 新实例启动时将自动从seed实例拉取权重。
 
-```text
+```output
 [netloader.py:514] Netloader manifest build time: 0.8685483103618026, rank: 6, manifest=2682
 [elastic.py:136] Start connection to server: 10.244.66.130:12351
 [elastic.py:138] Finish connection to server: 10.244.66.130:12351
@@ -169,7 +173,7 @@ Elastic server启动失败，该实例后续无法作为seed实例供其他实�
 
 **问题描述**
 
-测试新模型时出现HCCL传输长时间卡住，或特性执行失败fallback到从磁盘加载权重。
+测试新模型时出现HCCL传输长时间卡住，或特性执行失败回退到从磁盘加载权重。
 
 **原因分析**
 
@@ -177,4 +181,4 @@ Elastic server启动失败，该实例后续无法作为seed实例供其他实�
 
 **解决步骤**
 
-携带模型名称与实例日志，至官方社区提[ISSUE](https://gitcode.com/Ascend/MindIE-Motor/issues)。
+携带模型名称与实例日志，至官方社区提交[ISSUE](https://gitcode.com/Ascend/MindIE-Motor/issues)。

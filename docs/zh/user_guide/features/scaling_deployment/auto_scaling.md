@@ -212,7 +212,7 @@ HPA（Horizontal Pod Autoscaler）通过External Metrics Adaptor或Prometheus + 
    >      value: "0.8"
    >```
 
-   scalingPolicy 参数说明：
+   scalingPolicy参数说明：
 
    | 参数 | 说明 | 取值 |
    |------|------|------|
@@ -465,7 +465,7 @@ MindIE Motor /metrics 端点提供了丰富的引擎级指标，下表列出推�
 
 ### 多指标组合策略
 
-可在 HPA 中配置多个指标。HPA 分别计算各指标的期望副本数并取最大值：例如分别建议 2 和 6 个副本时，采用 6，再受上下限等约束。若某个指标获取失败，其他指标仅建议缩容，HPA 会跳过缩容；有效指标建议扩容时仍可扩容。参见 [Kubernetes HPA 算法说明](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/)。
+可在 HPA 中配置多个指标。HPA 分别计算各指标的期望副本数并取最大值：例如分别建议 2 和 6 个副本时，采用 6，再受上下限等约束。若某个指标获取失败，其他指标仅建议缩容，HPA 会跳过缩容；有效指标建议扩容时仍可扩容。参见 [Kubernetes HPA算法说明](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/)。
 
 下例的 KV 使用率由 Coordinator 聚合为均值，要求指标接入组件保持该语义，因此使用 `Value`：
 

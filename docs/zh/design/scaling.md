@@ -80,9 +80,9 @@ Prefill 为计算密集型、Decode 为访存密集型，建议分别配置不�
 | `motor:prompt_tokens_per_second` | Gauge | Prompt token 处理速率（Motor 计算） | 按 SLA 目标设定 |
 | `vllm:time_to_first_token_seconds` | Histogram | 首 token 延迟（TTFT） | 按 SLA 目标（如 p95 < 500ms） |
 
-**Decode 扩缩容推荐指标：**
+**Decode扩缩容推荐指标：**
 
-| 指标名 | 类型 | 说明 | 推荐阈值建议 |
+| 指标名 | 类型 | 说明 | 推荐阈值 |
 |--------|------|------|-------------|
 | `vllm:num_requests_waiting` | Gauge | 等待调度的请求数 | > 5 触发扩容 |
 | `vllm:num_requests_running` | Gauge | 当前运行中的请求数 | 视 NPU 规格和模型而定 |
@@ -207,20 +207,20 @@ metrics:
 
 模板中的 `kubernetes_namespace` 与 `infer_huawei_com_inferservice_name` 只是占位值：deployer 生成 `infer_service.yaml` 时，会把 `kubernetes_namespace` 更新为 `user_config.json` 中的 `motor_deploy_config.job_id`，把 `infer_huawei_com_inferservice_name` 更新为 `<InferServiceSet 名>-0`；仅更新实例数的手动扩缩容路径也会按当前 `job_id` 回填这两个标签。未配置这两个标签时不会自动注入。
 
-**scalingPolicy 参数说明：**
+**scalingPolicy参数说明：**
 
 | 参数 | 说明 | 取值 |
 |------|------|------|
-| `scalingPolicy.type` | 弹性扩缩容策略类型 | 当前仅支持 `HPA` |
-| `scalingPolicy.spec.minReplicas` | 缩容下限，实例数不会低于此值 | 正整数 |
-| `scalingPolicy.spec.maxReplicas` | 扩容上限，实例数不会超过此值 | 正整数，且 ≥ minReplicas |
-| `scalingPolicy.spec.metrics[].type` | 指标类型 | `External`（由 External Metrics Adaptor 或 Prometheus Adapter 提供） |
-| `scalingPolicy.spec.metrics[].external.metric.name` | 外部指标名称 | 需与所选指标接入组件暴露的指标名一致 |
-| `scalingPolicy.spec.metrics[].external.metric.selector` | 指标选择器 | 仅 Prometheus Adapter 场景需要配置；External Metrics Adaptor 场景无需新增 |
-| `scalingPolicy.spec.metrics[].external.metric.selector.matchLabels.kubernetes_namespace` | 指标所属命名空间 | 仅 Prometheus Adapter 场景配置。模板包含此标签时，deployer 生成 YAML 会将其更新为 `motor_deploy_config.job_id` |
-| `scalingPolicy.spec.metrics[].external.metric.selector.matchLabels.infer_huawei_com_inferservice_name` | 指标所属 InferService | 仅 Prometheus Adapter 场景配置。模板包含此标签时，deployer 按 `<InferServiceSet 名>-0` 自动更新；缺失时不注入 |
-| `scalingPolicy.spec.metrics[].external.target.type` | 目标值类型 | `AverageValue`（Pod 平均值） |
-| `scalingPolicy.spec.metrics[].external.target.averageValue` | 目标平均值阈值 | 按指标量纲设定 |
+| scalingPolicy.type | 弹性扩缩容策略类型 | 当前仅支持 `HPA` |
+| scalingPolicy.spec.minReplicas | 缩容下限，实例数不会低于此值 | 正整数 |
+| scalingPolicy.spec.maxReplicas | 扩容上限，实例数不会超过此值 | 正整数，且 ≥ minReplicas |
+| scalingPolicy.spec.metrics[].type | 指标类型 | `External`（由 External Metrics Adaptor 或 Prometheus Adapter 提供） |
+| scalingPolicy.spec.metrics[].external.metric.name | 外部指标名称 | 需与所选指标接入组件暴露的指标名一致 |
+| scalingPolicy.spec.metrics[].external.metric.selector | 指标选择器 | 仅 Prometheus Adapter 场景需要配置；External Metrics Adaptor 场景无需新增 |
+| scalingPolicy.spec.metrics[].external.metric.selector.matchLabels.kubernetes_namespace | 指标所属命名空间 | 仅 Prometheus Adapter 场景配置。模板包含此标签时，deployer 生成 YAML 会将其更新为 `motor_deploy_config.job_id` |
+| scalingPolicy.spec.metrics[].external.metric.selector.matchLabels.infer_huawei_com_inferservice_name | 指标所属 InferService | 仅 Prometheus Adapter 场景配置。模板包含此标签时，deployer 按 `<InferServiceSet 名>-0` 自动更新；缺失时不注入 |
+| scalingPolicy.spec.metrics[].external.target.type | 目标值类型 | `AverageValue`（Pod 平均值） |
+| scalingPolicy.spec.metrics[].external.target.averageValue | 目标平均值阈值 | 按指标量纲设定 |
 
 > [!NOTE] 说明
 > `scalingPolicy.spec.metrics[].external.metric.name` 需填写所选指标接入组件暴露的指标名。External Metrics Adaptor 或 Prometheus Adapter 都可能对 MindIE Motor 原始 Prometheus 指标名（如 `vllm:num_requests_waiting`）做映射或重命名。部署后，可通过以下命令查看实际暴露的指标列表：
@@ -250,8 +250,8 @@ metrics:
 
 适用场景：
 
-- 集群未部署 HPA / External Metrics Adaptor，不具备自动扩缩容条件；
-- 需要精确预期变更行为（如按计划扩容、临时缩容、演练）；
+- 集群未部署 HPA / External Metrics Adaptor，不具备自动扩缩容条件。
+- 需要精确预期变更行为（如按计划扩容、临时缩容、演练）。
 - 作为自动扩缩容不可用时的兜底手段。
 
 与自动扩缩容的边界：手动扩缩容只调整 **Prefill / Decode 实例数**，Controller、Coordinator 等控制面组件不在扩缩容路径中。
@@ -270,7 +270,7 @@ metrics:
 
 **3. 增量式调整，不动存量实例**
 
-- **扩容**：仅对新增的实例（更高 index）执行创建，已运行实例不重拉、不滚动重启，存量流量不受影响；
+- **扩容**：仅对新增的实例（更高 index）执行创建，已运行实例不重拉、不滚动重启，存量流量不受影响。
 - **缩容**：从最大 index 开始逆序删除，并同步清理对应部署产物。实例对等（无状态），逆序删除不会产生 index 空洞。
 
 增量语义保证操作耗时与变更量成正比，大规模集群下避免全量重建。
@@ -279,7 +279,7 @@ metrics:
 
 扩缩容路径的部署模式取自集群基线（而非本地输入），保证与集群实际拓扑一致：
 
-- **InferServiceSet 模式**：直接更新角色 replicas，与自动扩缩容共享同一份 YAML 形态；
+- **InferServiceSet 模式**：直接更新角色 replicas，与自动扩缩容共享同一份 YAML 形态。
 - **multi_deployment 模式**：按引擎类型逐个增量 apply / delete 对应实例的 YAML。
 
 **5. 成功即刷新基线**
