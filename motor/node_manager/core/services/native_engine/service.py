@@ -18,7 +18,7 @@ from motor.common.resources.instance import PDRole
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
 from motor.common.utils.snapshot_utils import MOTOR_SNAPSHOT_METADATA_PATH
-from motor.config.node_manager import VLLMStartupAccelerationConfig
+from motor.config.node_manager import KVCacheStoreConfig, VLLMStartupAccelerationConfig
 from motor.node_manager.core.services.native_engine.ascend_device_ids import (
     calc_endpoint_visible_device_ids,
     list_pod_physical_device_ids,
@@ -73,6 +73,9 @@ def _create_native_engine(hardware_type: str, config):
         ),
         startup_acceleration_config=config.vllm_startup_acceleration_config,
         enable_dp_scale_up=config.fault_tolerance_config.enable_dp_scale_up,
+        kv_cache_store_config=config.kv_cache_store_config
+        if config.fault_tolerance_config.enable_kv_migration
+        else None,
     )
 
 
@@ -97,6 +100,7 @@ class NativeEngineService:
         snapshot_metadata: str | None = None,
         startup_acceleration_config: VLLMStartupAccelerationConfig | None = None,
         enable_dp_scale_up: bool = False,
+        kv_cache_store_config: KVCacheStoreConfig | None = None,
     ):
         self.engine_type = str(engine_type).strip().lower()
         self.config_path = config_path
@@ -113,6 +117,7 @@ class NativeEngineService:
         self.snapshot_metadata = snapshot_metadata
         self.startup_acceleration_config = startup_acceleration_config or VLLMStartupAccelerationConfig()
         self.enable_dp_scale_up = enable_dp_scale_up
+        self.kv_cache_store_config = kv_cache_store_config
         self.backend = get_backend(self.engine_type)
         self.supervisor = ProcessSupervisor()
         # Serializes pull/stop so a completed stop() cannot be followed by a late monitor install.
@@ -201,6 +206,10 @@ class NativeEngineService:
             if extra_env:
                 base_env.update({str(k): str(v) for k, v in extra_env.items()})
                 logger.info("Applying StartCmdMsg.extra_env keys=%s", sorted(extra_env))
+            kv = self.kv_cache_store_config
+            if kv and kv.enable and kv.backend == "memcache" and kv.local_service_mode == "standalone":
+                # Memcache falls back to this variable when the engine client's config has no label.
+                base_env.pop("MMC_LOCAL_SERVICE_NODE_LABEL", None)
             if self.engine_type == "vllm" and self.enable_dp_scale_up:
                 previous = base_env.get(VLLM_ASCEND_MOE_DISTRIBUTE_V3_ENV)
                 if previous not in (None, "1"):

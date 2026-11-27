@@ -125,6 +125,11 @@ class ControllerApiClient:
         logger.info("Register success!")
         return True
 
+    @classmethod
+    def plan_provider_exit(cls, payload: dict, *, timeout: float = 10) -> dict:
+        with SafeHTTPSClient(timeout=timeout, **cls._generate_client_args()) as client:
+            return client.post("/controller/migration/exit-targets", payload)
+
     @staticmethod
     def re_register(re_register_msg: ReregisterMsg):
         client_args = {}

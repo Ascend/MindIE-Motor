@@ -184,6 +184,15 @@ class FaultToleranceConfig:
     engine_relaunch_dispatch_retries: int = 3
     #: Consecutive poll failures before a NodeManager counts as unreachable.
     engine_relaunch_nm_unreachable_threshold: int = 3
+    # ------------------------------------------------------------------
+    # Standalone Memcache KV migration
+    # ------------------------------------------------------------------
+    # Controller, NodeManager and preStop require explicit opt-in at startup.
+    enable_kv_migration: bool = False
+    #: Migrate to other active instances before whole-instance fault reconfiguration.
+    enable_kv_migration_on_reconfiguration: bool = False
+    #: Migration budget per reconfiguring instance or per exiting Pod after preStop request draining.
+    kv_migration_timeout_sec: float = 30.0
 
 
 @dataclass
@@ -221,7 +230,7 @@ class ControllerConfig:
         init_motor_config(self, "controller")
 
     @classmethod
-    def from_json(cls, json_path: str | None = None) -> "ControllerConfig":
+    def from_json(cls, json_path: str | None = None, *, startup_kv_migration: bool | None = None) -> "ControllerConfig":
         """Load configuration from JSON file"""
         json_path, config_path = resolve_config_json_path(json_path)
 
@@ -292,6 +301,9 @@ class ControllerConfig:
 
             if "fault_tolerance_config" in cfg:
                 fault_tolerance_config = dict(cfg["fault_tolerance_config"])
+                if "enable_hw_evacuate_migration" in fault_tolerance_config:
+                    legacy_migration = fault_tolerance_config.pop("enable_hw_evacuate_migration")
+                    fault_tolerance_config.setdefault("enable_kv_migration_on_reconfiguration", legacy_migration)
                 dp_scale_down_config = fault_tolerance_config.pop("dp_scale_down_config", None)
                 update_config_from_dict(config.fault_tolerance_config, fault_tolerance_config)
                 if dp_scale_down_config is not None:
@@ -330,6 +342,8 @@ class ControllerConfig:
                 config.last_modified = None
 
             apply_standby_persistence_rule(config)
+            if startup_kv_migration is not None:
+                config.fault_tolerance_config.enable_kv_migration = startup_kv_migration
             config.validate_config()
 
             finalize_json_config_load(
@@ -395,6 +409,10 @@ class ControllerConfig:
             errors.append("scale_p2d_d_instance_reinit_wait_timeout must be in range 1-600")
 
         ft_config = self.fault_tolerance_config
+        if not isinstance(ft_config.enable_kv_migration, bool):
+            errors.append("enable_kv_migration must be a boolean")
+        if ft_config.enable_kv_migration and not isinstance(ft_config.enable_kv_migration_on_reconfiguration, bool):
+            errors.append("enable_kv_migration_on_reconfiguration must be a boolean")
         scale_down_config = ft_config.dp_scale_down_config
         if not (60 <= ft_config.engine_relaunch_complete_timeout_sec <= 3600):
             errors.append("engine_relaunch_complete_timeout_sec must be in range 60-3600")
@@ -435,6 +453,9 @@ class ControllerConfig:
             errors.append("fault_collection_timeout_seconds must be in range (0, 600]")
         if not (0 < ft_config.hardware_ft_correlation_window_sec <= 60):
             errors.append("hardware_ft_correlation_window_sec must be in range (0, 60]")
+        timeout = ft_config.kv_migration_timeout_sec
+        if ft_config.enable_kv_migration and (type(timeout) not in (int, float) or not 1 <= timeout <= 600):
+            errors.append("kv_migration_timeout_sec must be in range [1, 600]")
         # Validate standby configuration
         if self.standby_config.master_standby_check_interval <= 0:
             errors.append("master_standby_check_interval must be greater than 0")
@@ -456,10 +477,14 @@ class ControllerConfig:
         raise_if_config_errors(errors)
 
     def reload(self) -> bool:
-        """Reload configuration file"""
+        """Reload dynamic settings while keeping the process-wide KV migration opt-in."""
+
+        def load_for_reload(path: str) -> "ControllerConfig":
+            return self.from_json(path, startup_kv_migration=self.fault_tolerance_config.enable_kv_migration)
+
         return reload_dataclass_config_from_json(
             self,
-            self.from_json,
+            load_for_reload,
             skip_private=True,
         )
 

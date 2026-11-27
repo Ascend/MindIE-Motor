@@ -20,6 +20,9 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
+from contextlib import nullcontext
+from pathlib import Path
 
 from motor.common.logger import get_logger
 from motor.common.utils.env import Env
@@ -29,6 +32,12 @@ from motor.node_manager.core.services.registry import register_service, SERVICE_
 logger = get_logger(__name__)
 
 
+def _read_exit_plan(payload: dict, *, timeout: float = 10) -> dict:
+    from motor.node_manager.api_client.controller_api_client import ControllerApiClient
+
+    return ControllerApiClient.plan_provider_exit(payload, timeout=timeout)
+
+
 def _create_local_service(hardware_type: str, config):  # pylint: disable=unused-argument
     """Factory for LocalService — keeps constructor details out of the daemon."""
     return LocalService(
@@ -36,6 +45,7 @@ def _create_local_service(hardware_type: str, config):  # pylint: disable=unused
         kv_cache_store_config=config.kv_cache_store_config,
         local_world_size=config.basic_config.parallel_config.local_world_size,
         restart_local_service=Env.motor_restart_local_service,
+        kv_migration_enabled=config.fault_tolerance_config.enable_kv_migration,
     )
 
 
@@ -60,13 +70,39 @@ class LocalService:
         kv_cache_store_config: KVCacheStoreConfig | None = None,
         local_world_size: int = 1,
         restart_local_service: bool = True,
+        kv_migration_enabled: bool = False,
     ):
         self.hardware_type = hardware_type
         self._kv_cfg = kv_cache_store_config or KVCacheStoreConfig()
         self._local_world_size = local_world_size
         self.restart_local_service = restart_local_service
-
         self._ls_process: subprocess.Popen | None = None
+        self._ls_rank_directory: tempfile.TemporaryDirectory | None = None
+        self.migration = None
+        if kv_migration_enabled:
+            from motor.node_manager.core.services.memcache.migration import MemcacheMigration
+
+            self.migration = MemcacheMigration(
+                os.environ.get("MMC_DRAIN_API_URL", "").rstrip("/"),
+                self._live_storage_rank,
+                _read_exit_plan,
+                lambda: getattr(self._ls_rank_directory, "name", None),
+            )
+
+    def _live_storage_rank(self) -> tuple[subprocess.Popen, int]:
+        process = self._ls_process
+        directory = self._ls_rank_directory
+        if process is None or process.poll() is not None:
+            raise RuntimeError("Cannot identify a live standalone source Pod")
+        if directory is None:
+            raise RuntimeError("Missing standalone storage rank")
+        try:
+            pid, rank = map(int, (Path(directory.name) / "rank").read_text(encoding="ascii").split())
+        except (FileNotFoundError, ValueError) as exc:
+            raise RuntimeError("Missing or invalid standalone storage rank") from exc
+        if pid != process.pid or not 0 <= rank < (1 << 32) - 1:
+            raise RuntimeError("Invalid standalone storage rank for the running worker")
+        return process, rank
 
     # ------------------------------------------------------------------
     # conditional launch
@@ -88,11 +124,38 @@ class LocalService:
     # mmc-local-inprocess.conf preparation
     # ------------------------------------------------------------------
 
-    def prepare(self, **kwargs) -> None:
-        """Ensure mmc-local-inprocess.conf exists and enforce hardware-mode constraints.
+    @staticmethod
+    def _set_node_label(conf_path: str, node_label: str | None) -> None:
+        """Set the storage provider's drain selector, or remove it from a client config."""
+        if not os.path.exists(conf_path):
+            return
+        if node_label is not None and (not node_label or any(char in node_label for char in "\r\n=")):
+            raise ValueError("MMC_LOCAL_SERVICE_NODE_LABEL contains invalid characters")
+        # Memcache LocalService configuration uses the ock.mmc.local_service namespace.
+        key = "ock.mmc.local_service.node_label"
+        with open(conf_path, "r", encoding="utf-8") as conf_file:
+            lines = conf_file.readlines()
+        output = [line for line in lines if line.partition("=")[0].strip() != key]
+        if node_label is not None:
+            if output and not output[-1].endswith("\n"):
+                output[-1] += "\n"
+            output.append(f"{key} = {node_label}\n")
+        if output == lines:
+            return
+        with open(conf_path, "w", encoding="utf-8") as conf_file:
+            conf_file.writelines(output)
 
-        Does NOT modify conf file content — all memcache settings are
-        user-managed in mmc-local-inprocess.conf.
+    def _prepare_drain_label(self, conf_path: str) -> None:
+        provider_path = os.path.join(os.path.dirname(conf_path), "mmc-local-standalone.conf")
+        if os.path.exists(provider_path) and os.path.samefile(conf_path, provider_path):
+            raise ValueError("Standalone Memcache storage and engine clients require separate config files")
+        self._set_node_label(conf_path, None)
+        label = os.environ.get("MMC_LOCAL_SERVICE_NODE_LABEL") or os.environ.get("POD_IP")
+        if label:
+            self._set_node_label(provider_path, label)
+
+    def prepare(self, **kwargs) -> None:
+        """Select the engine config and configure the drain label on the storage provider.
 
         Keyword Args:
             endpoints_count: Number of DP endpoints on this node (informational only).
@@ -120,9 +183,11 @@ class LocalService:
             ls_mode = "inprocess"
             self._kv_cfg.local_service_mode = "inprocess"
 
+        if self.migration is not None and ls_mode == "standalone":
+            self._prepare_drain_label(conf_path)
+
         # vLLM workers read MMC_LOCAL_CONFIG_PATH to locate their conf file.
         os.environ["MMC_LOCAL_CONFIG_PATH"] = conf_path
-
         endpoints_count = kwargs.get("endpoints_count", 0)
         logger.info(
             "Prepared mmc-local-inprocess.conf: mode=%s, path=%s, endpoints=%d",
@@ -151,7 +216,7 @@ class LocalService:
             return
         if self.is_alive():
             return
-
+        rank_directory = None
         try:
             # Switch MMC_LOCAL_CONFIG_PATH to the standalone conf so the
             # subprocess picks up standalone-specific settings.
@@ -163,15 +228,27 @@ class LocalService:
 
             env = os.environ.copy()
             env["MMC_LOCAL_CONFIG_PATH"] = standalone_path
-
             cmd = [sys.executable, "-m", "motor.node_manager.core.services.memcache.worker"]
-            logger.info("Starting standalone LocalService")
-            self._ls_process = subprocess.Popen(cmd, shell=False, env=env)  # pylint: disable=consider-using-with
-            if self._ls_process.poll() is not None:
-                raise RuntimeError("LocalService process exited immediately with code %s" % self._ls_process.returncode)
+            with self.migration.submission_guard() if self.migration is not None else nullcontext():
+                if self.migration is not None:
+                    if self.is_alive():
+                        return
+                    rank_directory = tempfile.TemporaryDirectory(  # pylint: disable=consider-using-with
+                        prefix="motor-memcache-"
+                    )
+                    cmd.append(str(Path(rank_directory.name) / "rank"))
+                logger.info("Starting standalone LocalService")
+                process = subprocess.Popen(cmd, shell=False, env=env)  # pylint: disable=consider-using-with
+                if process.poll() is not None:
+                    raise RuntimeError("LocalService process exited immediately with code %s" % process.returncode)
+                self._ls_rank_directory = rank_directory
+                self._ls_process = process
         except Exception as e:
             logger.error("Failed to start standalone LocalService: %s", e)
-            self._ls_process = None
+            if not self.is_alive():
+                self._ls_process = None
+            if rank_directory is not None:
+                rank_directory.cleanup()
 
     def stop(self) -> None:
         if self._ls_process is None:
@@ -189,6 +266,7 @@ class LocalService:
             logger.error("Failed to kill LocalService process %s: %s", pid, e)
         finally:
             self._ls_process = None
+            self._clear_rank_directory()
 
     def is_started(self) -> bool:
         return self._ls_process is not None
@@ -203,6 +281,12 @@ class LocalService:
         if self._ls_process is not None:
             self._ls_process.poll()
         self._ls_process = None
+        self._clear_rank_directory()
+
+    def _clear_rank_directory(self) -> None:
+        if self._ls_rank_directory is not None:
+            # Its name still identifies the last worker's journal until a replacement starts.
+            self._ls_rank_directory.cleanup()
 
     def health_check(self) -> None:
         """Check LS process health; restart if dead (DaemonService protocol)."""

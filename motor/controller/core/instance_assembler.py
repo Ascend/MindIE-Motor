@@ -400,7 +400,7 @@ class InstanceAssembler(ThreadSafeSingleton):
                         msg.job_name,
                     )
 
-            metadata.instance.add_node_mgr(msg.pod_ip, msg.nm_port, msg.device_num)
+            metadata.instance.add_node_mgr(msg.pod_ip, msg.nm_port, msg.device_num, pod_uid=msg.pod_uid)
             pod_endpoints = self._build_endpoints(msg, metadata, endpoint_ids)
             metadata.instance.add_endpoints(msg.pod_ip, pod_endpoints)
 
@@ -476,7 +476,7 @@ class InstanceAssembler(ThreadSafeSingleton):
         if join_assembled:
             return self._join_or_reject_assembled(msg)
 
-        metadata.instance.add_node_mgr(msg.pod_ip, msg.nm_port, msg.device_num)
+        metadata.instance.add_node_mgr(msg.pod_ip, msg.nm_port, msg.device_num, pod_uid=msg.pod_uid)
         # Re-registration carries original node_rank. PCP slaves (stored nnodes > 1 and
         # node_rank != 0) are headless. Multi-pod DP uses nnodes=1 and node_rank as the pod
         # index, so those endpoints stay routable. Use the instance's stored nnodes rather
@@ -744,7 +744,7 @@ class InstanceAssembler(ThreadSafeSingleton):
                 )
                 return -1
             instance.add_endpoints(msg.pod_ip, new_endpoints)
-            instance.add_node_mgr(msg.pod_ip, msg.nm_port, msg.device_num)
+            instance.add_node_mgr(msg.pod_ip, msg.nm_port, msg.device_num, pod_uid=msg.pod_uid)
 
         try:
             started = self._send_replacement_start_command(instance, msg, new_endpoints)

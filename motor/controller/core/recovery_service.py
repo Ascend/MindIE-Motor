@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from motor.common.alarm.alarm import Alarm
@@ -17,6 +18,7 @@ from motor.common.alarm.enums import Category, Cleared
 from motor.common.alarm.precision_issue_alarm import PRECISION_ISSUE_ALARM_ID
 from motor.common.alarm.record import Record
 from motor.common.logger import get_logger
+from motor.common.resources.instance import Instance, NodeManagerInfo
 from motor.controller.api_client import NodeManagerApiClient
 from motor.controller.api_client.coordinator_api_client import CoordinatorApiClient
 from motor.controller.core.instance_manager import InstanceManager
@@ -33,7 +35,13 @@ class PrecisionRecoveryOutcome:
     scheduler_state_cleared: bool = False
 
 
-def terminate_instance_for_recovery(instance_id: int, reason: str) -> bool:
+def terminate_instance_for_recovery(
+    instance_id: int,
+    reason: str,
+    *,
+    before_stop: Callable[[InstanceManager, Instance], None] | None = None,
+    stop_member: Callable[[NodeManagerInfo], bool] | None = None,
+) -> bool:
     """Isolate instance from scheduling, then request stop on all node managers.
 
     Used by manual terminate API, precision auto-recovery, and northbound (e.g. CCAE) callbacks.
@@ -42,19 +50,27 @@ def terminate_instance_for_recovery(instance_id: int, reason: str) -> bool:
         True if instance existed and stop was attempted for all node managers (all returned True).
         False if instance missing after separation or initially not found.
     """
-    instance = InstanceManager().get_instance(instance_id)
+    manager = InstanceManager()
+    instance = manager.get_instance(instance_id)
     if instance is None:
         logger.error("Recovery: instance %s not found (reason=%s)", instance_id, reason)
         return False
     logger.warning("Recovery: separate_instance id=%s reason=%s", instance_id, reason)
-    InstanceManager().separate_instance(instance_id)
-    instance = InstanceManager().get_instance(instance_id)
+    manager.separate_instance(instance_id)
+    instance = manager.get_instance(instance_id)
     if instance is None:
         logger.error("Recovery: instance %s missing after separate_instance", instance_id)
         return False
+    members = instance.get_node_managers()
+    if before_stop is not None:
+        try:
+            before_stop(manager, instance)
+        except Exception:
+            logger.exception("Recovery: before_stop failed for instance %s, continuing recovery", instance_id)
+    stop = stop_member or NodeManagerApiClient.stop
     ok = True
-    for node_mgr in instance.get_node_managers():
-        ok = NodeManagerApiClient.stop(node_mgr) and ok
+    for node_mgr in members:
+        ok = stop(node_mgr) and ok
     return ok
 
 

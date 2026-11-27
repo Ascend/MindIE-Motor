@@ -190,6 +190,26 @@ def normalize_kv_cache_store_config(user_config):
     k8s_utils.g_mmc_config_store_port = kv_config.get(C.MMC_CONFIG_STORE_PORT_KEY, C.DEFAULT_MMC_CONFIG_STORE_PORT)
     k8s_utils.g_mmc_metrics_port = kv_config.get(C.MMC_METRICS_PORT_KEY, C.DEFAULT_MMC_METRICS_PORT)
     k8s_utils.g_mmc_local_service_mode = kv_config.get(C.MMC_LOCAL_SERVICE_CONFIG_KEY, "")
+    controller = user_config.get(C.MOTOR_CONTROLLER_CONFIG)
+    fault_tolerance = controller.get(C.FAULT_TOLERANCE_CONFIG) if isinstance(controller, dict) else None
+    migration_enabled = (
+        fault_tolerance.get("enable_kv_migration", False) if isinstance(fault_tolerance, dict) else False
+    )
+    if not isinstance(migration_enabled, bool):
+        raise ValueError("enable_kv_migration must be a boolean")  # noqa: TRY004
+    k8s_utils.g_mmc_drain_api_url = ""
+    if migration_enabled:
+        configured_drain_api_url = kv_config.get(C.MMC_DRAIN_API_URL_KEY)
+        k8s_utils.g_mmc_drain_api_url = str(
+            configured_drain_api_url or f"http://{k8s_utils.g_kv_store_service}:{k8s_utils.g_mmc_metrics_port}"
+        )
+    k8s_utils.g_mmc_enable_scale_in_drain = (
+        migration_enabled and kv_config.get(C.MMC_ENABLE_KV_DRAIN_ON_SCALE_IN) is True
+    )
+    if k8s_utils.g_mmc_enable_scale_in_drain and (
+        k8s_utils.g_kv_store_backend != C.MMC_STORE_BACKEND or k8s_utils.g_mmc_local_service_mode != "standalone"
+    ):
+        raise ValueError("enable_kv_drain_on_scale_in requires standalone Memcache")
     k8s_utils.g_yuanrong_etcd_address = kv_config.get(C.YUANRONG_ETCD_ADDRESS_KEY, "")
     if kv_config[C.KV_STORE_BACKEND] == C.YUANRONG_STORE_BACKEND:
         validate_yuanrong_config(kv_config)

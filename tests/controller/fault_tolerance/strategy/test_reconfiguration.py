@@ -11,6 +11,9 @@
 
 from unittest.mock import patch
 
+import pytest
+
+from motor.config.controller import ControllerConfig
 from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, FtRuntime, get_ft_runtime_store
 from motor.controller.fault_tolerance.strategy.reconfiguration import (
     InstanceReconfigurationStrategy,
@@ -76,3 +79,25 @@ def test_failed_original_recovery_remains_reconfiguring_without_using_pod_lifecy
     assert runtime["can_serve"] is False
     stop_pods.assert_not_called()
     store.clear()
+
+
+@pytest.mark.parametrize("master, recovery", [(False, True), (True, False), (True, True)])
+def test_reconfiguration_enables_migration_only_with_both_switches(master, recovery):
+    config = ControllerConfig()
+    config.fault_tolerance_config.enable_kv_migration = master
+    config.fault_tolerance_config.enable_kv_migration_on_reconfiguration = recovery
+    strategy = InstanceReconfigurationStrategy()
+    strategy.bind_config(config)
+    with (
+        patch("motor.controller.core.recovery_service.terminate_instance_for_recovery") as terminate,
+        patch("motor.controller.fault_tolerance.kv_migration_service.evacuate_instance") as migrate,
+    ):
+        try:
+            strategy.execute(7)
+            if master and recovery:
+                terminate.call_args.kwargs["before_stop"]("manager", "instance")
+                migrate.assert_called_once_with("manager", "instance", timeout=30)
+            else:
+                terminate.assert_called_once_with(7, reason="dp_scale_down_reconfiguration")
+        finally:
+            get_ft_runtime_store().clear()

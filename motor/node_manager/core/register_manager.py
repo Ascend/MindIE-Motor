@@ -51,6 +51,7 @@ class RegisterManager(ThreadSafeSingleton):
         if config is None:
             config = NodeManagerConfig.from_json()
         self._config = config
+        self._enable_kv_migration = config.fault_tolerance_config.enable_kv_migration
         self.config_lock = threading.RLock()
         self.instance_id: int = 0
         self.d2d_peer_ips: list[str] | None = None
@@ -426,6 +427,7 @@ class RegisterManager(ThreadSafeSingleton):
             ft_capability=ft_capability,
             role=role,
             pod_ip=pod_ip,
+            pod_uid=os.environ.get("POD_UID") if self._enable_kv_migration else None,
             business_port=business_port,
             bootstrap_port=bootstrap_port,
             kv_events_port=kv_events_port,
@@ -474,6 +476,7 @@ class RegisterManager(ThreadSafeSingleton):
             ft_capability=ft_capability,
             role=role,
             pod_ip=pod_ip,
+            pod_uid=os.environ.get("POD_UID") if self._enable_kv_migration else None,
             nm_port=str(node_manager_port),
             parallel_config=parallel_config,
             enable_multi_endpoints=enable_multi_endpoints,

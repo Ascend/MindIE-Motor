@@ -19,7 +19,7 @@ import threading
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from typing import Any
-from fastapi import FastAPI, Request, HTTPException, status
+from fastapi import APIRouter, Depends, FastAPI, Request, HTTPException, status
 from fastapi.responses import Response
 import uvicorn
 
@@ -66,7 +66,7 @@ async def lifespan(application: FastAPI):
     clear_api_ready()
 
 
-app = FastAPI(lifespan=lifespan)
+routes = APIRouter()
 
 MAX_CONCURRENT_THREADS = 10
 thread_semaphore = asyncio.Semaphore(MAX_CONCURRENT_THREADS)
@@ -143,7 +143,7 @@ async def _run_ft_operation(action: str, operation: Callable[..., Any], *args: A
         ) from err
 
 
-@app.post("/node-manager/fault-tolerance/status")
+@routes.post("/node-manager/fault-tolerance/status")
 async def fault_tolerance_status(request: Request):
     """Proxy local engine FT status; engine HTTP details stay in NodeManager."""
     payload, manager, config = await _ft_request_context(request, "status query")
@@ -155,7 +155,7 @@ async def fault_tolerance_status(request: Request):
     )
 
 
-@app.post("/node-manager/fault-tolerance/apply")
+@routes.post("/node-manager/fault-tolerance/apply")
 async def fault_tolerance_apply(request: Request):
     """Dispatch the broadcast fast-recovery instruction or the explicit-endpoint scale-down protocol."""
     payload = await _parse_ft_payload(request, "apply")
@@ -185,7 +185,7 @@ async def fault_tolerance_apply(request: Request):
     return {"status": "accepted"}
 
 
-@app.post("/node-manager/fault-tolerance/guard")
+@routes.post("/node-manager/fault-tolerance/guard")
 async def fault_tolerance_guard(request: Request):
     """Freeze local suicide before Controller starts the distributed transaction."""
     manager, _ = _require_ft_proxy("guard")
@@ -199,7 +199,7 @@ async def fault_tolerance_guard(request: Request):
     return {"status": "guarded"}
 
 
-@app.post("/node-manager/fault-tolerance/finalize")
+@routes.post("/node-manager/fault-tolerance/finalize")
 async def fault_tolerance_finalize(request: Request):
     """Commit local retired ranks, or abort the local scale-down guard."""
     payload, manager, _ = await _ft_request_context(request, "finalize")
@@ -222,7 +222,7 @@ async def fault_tolerance_finalize(request: Request):
     return {"status": "committed" if commit else "aborted"}
 
 
-@app.post("/node-manager/fault-tolerance/kill-workers")
+@routes.post("/node-manager/fault-tolerance/kill-workers")
 async def fault_tolerance_kill_workers(request: Request):
     """SIGKILL local VLLM::Worker processes for Controller user-recover shrink.
 
@@ -275,7 +275,7 @@ async def fault_tolerance_kill_workers(request: Request):
     return result
 
 
-@app.post("/node-manager/start")
+@routes.post("/node-manager/start")
 async def start_instance(request: Request):
     """post instance and role info"""
     try:
@@ -362,7 +362,7 @@ def _self_terminate() -> None:
     os.kill(os.getpid(), signal.SIGTERM)
 
 
-@app.post("/node-manager/stop")
+@routes.post("/node-manager/stop")
 async def stop_instance(request: Request):
     """Stop all engine processes, then terminate this NodeManager.
 
@@ -385,7 +385,7 @@ async def stop_instance(request: Request):
         ) from err
 
 
-@app.post("/node-manager/engine-restart")
+@routes.post("/node-manager/engine-restart")
 async def engine_restart(request: Request):
     """Controller-driven engine relaunch without container restart.
 
@@ -473,7 +473,7 @@ async def _apply_fast_recovery_payload(payload: dict) -> dict:
         ) from err
 
 
-@app.get("/node-manager/fault-tolerance/status")
+@routes.get("/node-manager/fault-tolerance/status")
 async def query_fault_tolerance_status():
     """Return vLLM FT status for every engine managed by this NodeManager."""
     daemon = _require_fast_recovery_proxy(status_query=True)
@@ -487,7 +487,7 @@ async def query_fault_tolerance_status():
         ) from err
 
 
-@app.post("/node-manager/pause")
+@routes.post("/node-manager/pause")
 async def pause_instance(request: Request):
     """
     PreStop hook: set all endpoints to PAUSED status.
@@ -512,7 +512,7 @@ async def pause_instance(request: Request):
         ) from err
 
 
-@app.post("/node-manager/resume")
+@routes.post("/node-manager/resume")
 async def resume_instance(request: Request):
     """
     Resume instance from PAUSED back to NORMAL status.
@@ -536,7 +536,7 @@ async def _check_node_manager_ready() -> bool:
     return is_normal
 
 
-@app.get("/node-manager/status")
+@routes.get("/node-manager/status")
 async def get_instance_status(relaxed: bool = False):
     """
     Check if all endpoints managed by this node manager are in normal status.
@@ -558,7 +558,7 @@ async def get_instance_status(relaxed: bool = False):
         ) from err
 
 
-@app.get("/readiness")
+@routes.get("/readiness")
 async def readiness():
     """
     Readiness probe - returns 200 when all endpoints are healthy.
@@ -585,6 +585,22 @@ async def readiness():
             detail={msg: "Node manager is not ready", reason: "Endpoints not healthy"},
         )
     return {msg: "Node manager is ready"}
+
+
+def create_app(enable_kv_migration: bool = False) -> FastAPI:
+    application = FastAPI(lifespan=lifespan)
+    application.include_router(routes)
+    if enable_kv_migration:
+        from motor.node_manager.api_server.migration_api import require_source_uid, router
+
+        application.include_router(router)
+        application.add_api_route(
+            "/node-manager/migration/stop", stop_instance, methods=["POST"], dependencies=[Depends(require_source_uid)]
+        )
+    return application
+
+
+app = create_app()
 
 
 class NodeManagerAPI:
@@ -655,7 +671,10 @@ class NodeManagerAPI:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._suppress_probe_access_logs()
-        config = uvicorn.Config(app, host=self.host, port=self.port, loop="asyncio")
+        application = app
+        if self._config and self._config.fault_tolerance_config.enable_kv_migration:
+            application = create_app(enable_kv_migration=True)
+        config = uvicorn.Config(application, host=self.host, port=self.port, loop="asyncio")
         config.load()
         if self._config.mgmt_tls_config.enable_tls:
             context = CertUtil.create_ssl_context(self._config.mgmt_tls_config)

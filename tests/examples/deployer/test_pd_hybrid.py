@@ -173,6 +173,58 @@ def test_apply_engine_ft_labels_requires_both_controller_and_engine_gates(contro
     assert_engine_ft_labels(template[C.METADATA][C.LABELS], False)
 
 
+def configure_memcache_migration(config, migration=True, scale_in=True):
+    config[C.MOTOR_CONTROLLER_CONFIG] = {C.FAULT_TOLERANCE_CONFIG: {"enable_kv_migration": migration}}
+    config[C.KV_CACHE_STORE_CONFIG] = {
+        C.KV_STORE_BACKEND: C.MMC_STORE_BACKEND,
+        C.MMC_LOCAL_SERVICE_CONFIG_KEY: "standalone",
+        C.MMC_ENABLE_KV_DRAIN_ON_SCALE_IN: scale_in,
+    }
+
+
+@pytest.mark.parametrize("migration,scale_in", [(True, True), (False, True), (True, False), (False, False)])
+def test_single_container_scale_in_drain_requires_a_separate_target_pod(tmp_path, monkeypatch, migration, scale_in):
+    monkeypatch.setattr(k8s_utils, "g_kv_store_enabled", False)
+    config = make_pd_separation_user_config()
+    configure_memcache_migration(config, migration, scale_in)
+    paths = make_deploy_paths(tmp_path)
+    if migration and scale_in:
+        with pytest.raises(ValueError, match="single_container"):
+            deploy_module.deploy_services_single_container(paths, config, dry_run=True)
+    else:
+        deploy_module.deploy_services_single_container(paths, config, dry_run=True)
+        assert Path(paths["single_container_output_yaml"]).is_file()
+
+
+@pytest.mark.parametrize("mode", ["deployment", "infer"])
+@pytest.mark.parametrize(
+    "enabled,budget,override,expected",
+    [(False, 30, 13, 13), (True, 30, None, 60), (True, 12.5, None, 43), (True, 30, 90, 90)],
+)
+def test_scale_in_pod_grace_covers_migration_budget(tmp_path, monkeypatch, mode, enabled, budget, override, expected):
+    from lib.generator.kv_cache_store import normalize_kv_cache_store_config
+
+    config = make_pd_hybrid_user_config()
+    configure_memcache_migration(config, migration=enabled)
+    config[C.MOTOR_CONTROLLER_CONFIG][C.FAULT_TOLERANCE_CONFIG]["kv_migration_timeout_sec"] = budget
+    field = "terminationGracePeriodSeconds"
+    if override is not None:
+        config[C.MOTOR_ENGINE_UNION_CONFIG][C.TEMPLATE_SPEC_SNAKE] = {C.SPEC: {C.TEMPLATE: {C.SPEC: {field: override}}}}
+    monkeypatch.setattr(k8s_utils, "g_kv_store_enabled", True)
+    monkeypatch.setattr(k8s_utils, "g_mmc_enable_scale_in_drain", False)
+    monkeypatch.setattr(k8s_utils, "g_generate_yaml_list", [])
+    normalize_kv_cache_store_config(config)
+    paths = make_deploy_paths(tmp_path)
+    if mode == "deployment":
+        generate_yaml_engine(paths["engine_input_yaml"], paths["engine_output_yaml"], config)
+        workload = load_yaml(k8s_utils.g_generate_yaml_list[0], True)
+    else:
+        generate_yaml_infer_service_set(paths["infer_service_input_yaml"], paths["infer_service_output_yaml"], config)
+        doc = _find_infer_service_set_doc(load_yaml(paths["infer_service_output_yaml"], False))
+        workload = get_infer_role(doc, C.ROLE_UNION)
+    assert workload[C.SPEC][C.TEMPLATE][C.SPEC][field] == expected
+
+
 def test_validate_pd_hybrid_config_accepts_union_schema():
     user_config = make_pd_hybrid_user_config()
 
@@ -476,7 +528,42 @@ def test_handle_update_config_rejects_hybrid_instance_count_change(monkeypatch):
         deploy_module.handle_update_config(current_config)
 
 
+def test_infer_serviceset_cli_scale_in_updates_config_before_applying_replicas(tmp_path, monkeypatch):
+    monkeypatch.setattr(k8s_utils, "g_kv_store_enabled", False)
+    baseline = make_pd_hybrid_user_config()
+    user_config = make_pd_hybrid_user_config()
+    for config, count in ((baseline, 2), (user_config, 1)):
+        config[C.MOTOR_DEPLOY_CONFIG][C.DEPLOY_MODE_CONFIG_KEY] = C.DEPLOY_MODE_INFER_SERVICE_SET
+        config[C.MOTOR_DEPLOY_CONFIG][C.HYBRID_INSTANCES_NUM] = count
+        configure_memcache_migration(config)
+    paths = make_deploy_paths(tmp_path)
+    Path(paths["infer_service_output_yaml"]).write_text("kind: InferServiceSet\n", encoding="utf-8")
+    monkeypatch.setattr(deploy_module, "get_baseline_config_from_configmap", lambda _: baseline)
+    monkeypatch.setattr(deploy_module, "get_deploy_paths", lambda: paths)
+    monkeypatch.setattr(deploy_module, "set_env_to_shell", lambda *_: None)
+    monkeypatch.setattr(
+        deploy_module,
+        "update_infer_service_replicas_only",
+        lambda output, *_: k8s_utils.g_generate_yaml_list.append(output),
+    )
+    monkeypatch.setattr(k8s_utils, "resolve_nodeports_for_yaml_files", lambda *_: None)
+    calls = []
+
+    def update_config(job_id, user_config, effective_deploy_mode):
+        calls.append((job_id, user_config[C.MOTOR_DEPLOY_CONFIG][C.HYBRID_INSTANCES_NUM], effective_deploy_mode))
+
+    monkeypatch.setattr(k8s_utils, "create_motor_config_configmap", update_config)
+    monkeypatch.setattr(k8s_utils, "safe_exec_cmd", calls.append)
+    monkeypatch.setattr(k8s_utils, "run_cmd_get_output", lambda *_: pytest.fail("Unexpected kubectl command"))
+    deploy_module.handle_update_instance_num(user_config)
+    assert calls == [
+        ("pd-hybrid", 1, C.DEPLOY_MODE_INFER_SERVICE_SET),
+        ["kubectl", "apply", "-f", paths["infer_service_output_yaml"], "-n", "pd-hybrid"],
+    ]
+
+
 def test_handle_update_instance_num_scales_hybrid_instances(tmp_path, monkeypatch):
+    monkeypatch.setattr(k8s_utils, "get_existing_engine_instance_indices", lambda *_: {0})
     baseline_config = make_pd_hybrid_user_config()
     current_config = make_pd_hybrid_user_config()
     baseline_config[C.MOTOR_DEPLOY_CONFIG][C.DEPLOY_MODE_CONFIG_KEY] = C.DEPLOY_MODE_MULTI_DEPLOYMENT_YAML
@@ -525,6 +612,7 @@ def test_handle_update_instance_num_scales_hybrid_instances(tmp_path, monkeypatc
 
 
 def test_elastic_distributed_engine_deploy_scales_out_hybrid_instances(tmp_path, monkeypatch):
+    monkeypatch.setattr(k8s_utils, "get_existing_engine_instance_indices", lambda *_: {0})
     deploy_config = make_pd_hybrid_user_config()[C.MOTOR_DEPLOY_CONFIG]
     baseline_deploy_config = make_pd_hybrid_user_config()[C.MOTOR_DEPLOY_CONFIG]
     deploy_config[C.HYBRID_INSTANCES_NUM] = 3
@@ -556,6 +644,9 @@ def test_elastic_distributed_engine_deploy_scales_out_hybrid_instances(tmp_path,
 
 
 def test_elastic_distributed_engine_deploy_scales_in_hybrid_instances(tmp_path, monkeypatch):
+    monkeypatch.setattr(k8s_utils, "get_existing_engine_instance_indices", lambda *_: {0, 1, 2})
+    monkeypatch.setattr(k8s_utils, "get_pending_engine_instance_indices", lambda *_: set())
+    monkeypatch.setattr(k8s_utils, "g_kv_store_enabled", False)
     deploy_config = make_pd_hybrid_user_config()[C.MOTOR_DEPLOY_CONFIG]
     baseline_deploy_config = make_pd_hybrid_user_config()[C.MOTOR_DEPLOY_CONFIG]
     deploy_config[C.HYBRID_INSTANCES_NUM] = 1

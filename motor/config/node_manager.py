@@ -92,6 +92,12 @@ SNAPSHOT_METADATA_PATH_KEY = "snapshot_metadata_path"
 logger = get_logger(__name__)
 
 
+def _controller_fault_tolerance(user_config: dict) -> dict:
+    controller = user_config.get(MOTOR_CONTROLLER_CONFIG_KEY)
+    settings = controller.get(FAULT_TOLERANCE_CONFIG_KEY) if isinstance(controller, dict) else None
+    return settings if isinstance(settings, dict) else {}
+
+
 def _validate_yuanrong_etcd_address(address: str) -> str:
     """Validate the effective comma-separated IPv4 / DNS / bracketed IPv6 endpoints."""
     address = address.strip()
@@ -446,6 +452,7 @@ class NodeManagerFaultToleranceConfig:
     # Internal execution gate derived from the Controller-level switches in
     # the shared user_config. It is not a NodeManager user-facing switch.
     enable_dp_scale_down_proxy: bool = False
+    enable_kv_migration: bool = False
     enable_fast_recovery_proxy: bool = False
     # Copied from Controller fault_tolerance_config.enable_dp_scale_up.
     # When true, vLLM launch sets VLLM_ASCEND_ENABLE_MOE_DISTRIBUTE_V3=1.
@@ -657,6 +664,10 @@ class NodeManagerConfig:
                 config_data = raw
 
             cls._update_from_config_data(config, config_data)
+            # KV-only Pods can have no engine role. Read the shared gate independently of role resolution.
+            if isinstance(raw, dict) and MOTOR_CONTROLLER_CONFIG_KEY in raw:
+                controller_ft = _controller_fault_tolerance(raw)
+                config.fault_tolerance_config.enable_kv_migration = controller_ft.get("enable_kv_migration", False)
             cls._set_native_bootstrap_port(config, raw)
         else:
             logger.warning(
@@ -733,12 +744,7 @@ class NodeManagerConfig:
         # Controller is the single source of truth for the Motor feature
         # switch. NodeManager derives a private proxy gate from the same
         # user_config so customers never configure a second P/D switch.
-        controller_config = user_cfg.get(MOTOR_CONTROLLER_CONFIG_KEY, {})
-        if not isinstance(controller_config, dict):
-            controller_config = {}
-        controller_ft = controller_config.get(FAULT_TOLERANCE_CONFIG_KEY, {})
-        if not isinstance(controller_ft, dict):
-            controller_ft = {}
+        controller_ft = _controller_fault_tolerance(user_cfg)
         proxy_enabled = controller_ft.get("enable_fault_tolerance", True) in (True, 1) and controller_ft.get(
             "enable_dp_scale_down", False
         ) in (True, 1)
@@ -1213,6 +1219,8 @@ class NodeManagerConfig:
 
         # Validate fault tolerance configuration
         ft_config = self.fault_tolerance_config
+        if not isinstance(ft_config.enable_kv_migration, bool):
+            errors.append("enable_kv_migration must be a boolean")
         parallel_config = self.basic_config.parallel_config
         if (
             ft_config.enable_dp_scale_down_proxy

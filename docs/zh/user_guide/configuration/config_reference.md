@@ -335,6 +335,9 @@ motor_controller_config字段配置样例如下所示：
 | event_consumer_sleep_interval | float | 事件队列轮询间隔，即每次处理事件后的等待时间，单位：秒，默认值：1.0。 |
 | coordinator_heartbeat_interval | float | Controller 与 Coordinator 间心跳上报间隔，单位：秒，默认值：10.0。 |
 |<a id="fault_tolerance_config"></a>**fault_tolerance_config字段**|-|-|
+| enable_kv_migration | bool | Motor 在启动时读取的 Memcache KV 迁移总开关，默认 false。省略或关闭时，Controller 和 NodeManager 只注册原有管理接口，实例重配置沿用原故障策略，普通 preStop 摘流并等待请求排空。升级时，已有迁移部署需显式设置为 true。实例重配置前的跨实例迁移还需开启同节的 `enable_kv_migration_on_reconfiguration`，主动缩容自动迁移还需开启 `kv_cache_store_config.enable_kv_drain_on_scale_in` 并使用 standalone Memcache。Kubernetes 的 `single_container` 将所有实例部署在同一 Pod，无法启用跨 Pod 的主动缩容迁移。修改后需重新部署，使 Controller、NodeManager 和 Pod 的 preStop 使用同一配置。 |
+| enable_kv_migration_on_reconfiguration | bool | 默认 false。开启总开关后，在故障策略决定重配置整个实例时，先隔离调度，再尝试向同模型、引擎和并行配置的其他活跃实例迁移 standalone Memcache 数据，随后按原流程停止整个实例。快恢或引擎 relaunch 升级为整实例重配置时也走这条路径，从隔离到下发停止之间最多增加一个 `kv_migration_timeout_sec` 迁移预算。快恢或 relaunch 成功时不会触发该迁移。此开关可独立于主动缩容迁移关闭。旧版 PR 配置中的 `enable_hw_evacuate_migration` 仍可读取。同时配置两个字段时，以 `enable_kv_migration_on_reconfiguration` 为准。 |
+| kv_migration_timeout_sec | float | 重配置和主动缩容共用的 KV 迁移时限，默认 30 秒，范围 1～600 秒。重配置并行处理有注册 UID 的源 Pod，所有源共用整个实例的截止时间。缩容在请求摘流后按退出 Pod 计时。目标发现、提交和轮询共用一次预算。所有源的迁移处理结束后可提前进入原恢复流程，到期后尽力取消已知作业。开启缩容迁移时，重新生成并部署工作负载，使 Pod 退出宽限期覆盖迁移预算。 |
 | enable_fault_tolerance | bool | 是否启用 Motor Controller 故障自愈（高级 RAS），默认值：true。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul>该字段不等价于、也不会自动透传为 vLLM 开发分支的 `--enable-fault-tolerance`。 |
 | strategy_center_check_interval | int | 策略中心轮询间隔，单位：秒，默认值：10。 |
 | configmap_namespace |string|ConfigMap命名空间，默认值："kube-system"。|

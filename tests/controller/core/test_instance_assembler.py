@@ -303,9 +303,9 @@ def test_init_with_none_config():
 
 
 def test_register_new_instance(instance_assembler, test_config):
-    """Test registering a new instance"""
+    """Registration retains the Pod UID for identity-scoped recovery."""
     job_name = "test_job"
-    msg = create_register_msg(job_name, test_config['pod_ip1'], test_config)
+    msg = create_register_msg(job_name, test_config['pod_ip1'], test_config, pod_uid="original-pod-uid")
 
     result = instance_assembler.register(msg)
 
@@ -319,6 +319,11 @@ def test_register_new_instance(instance_assembler, test_config):
     # Verify endpoints and node managers were added
     assert len(metadata.instance.endpoints) == 1
     assert len(metadata.instance.node_managers) == 1
+    assert metadata.instance.node_managers[0].pod_uid == "original-pod-uid"
+    # Restarting with migration disabled preserves the member and deduplicates after model validation.
+    metadata.instance.add_node_mgr(msg.pod_ip, msg.nm_port, str(msg.device_num))
+    members = metadata.instance.model_dump()["node_managers"]
+    assert members == [{"pod_ip": msg.pod_ip, "port": msg.nm_port, "device_num": msg.device_num}]
 
 
 def test_register_existing_instance(instance_assembler, test_config):
@@ -635,12 +640,14 @@ def test_reregister_join_accepts_matching_ft_capability(instance_assembler, test
     )
     msg.ft_capability = capability.model_copy()
     msg.device_num = 2 * test_config["tp"]
+    msg.pod_uid = "joined-pod-uid"
 
     with patch.object(instance_assembler, "_send_replacement_start_command", return_value=True):
         assert instance_assembler.reregister(msg) == 0
 
     joined = instance.endpoints[test_config["pod_ip2"]]
-    assert instance.has_node_mgr(test_config["pod_ip2"])
+    joined_manager = next(nm for nm in instance.get_node_managers() if nm.pod_ip == test_config["pod_ip2"])
+    assert joined_manager.pod_uid == "joined-pod-uid"
     assert set(joined) == {2, 3}
     assert joined[2].business_port == "18000"
     assert joined[3].business_port == "18002"
@@ -843,6 +850,7 @@ def test_reregister_new_instance(instance_assembler, test_config):
     msg = create_reregister_msg(
         job_name, test_config['pod_ip1'], instance_id=5, config=test_config, endpoints=endpoints
     )
+    msg.pod_uid = "pod-uid-after-controller-restart"
     result = instance_assembler.reregister(msg)
 
     assert result == 0
@@ -851,6 +859,7 @@ def test_reregister_new_instance(instance_assembler, test_config):
     assert metadata.register_status == RegisterStatus.NOT_REGISTERED  # Initial state
     assert metadata.is_reregister is True
     assert metadata.instance.id == 5
+    assert metadata.instance.node_managers[0].pod_uid == "pod-uid-after-controller-restart"
     assert instance_assembler.ins_id_cnt == 6  # instance_id + 1
 
 

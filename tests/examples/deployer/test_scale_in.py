@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,6 +29,34 @@ def reset_engine_base_name(monkeypatch):
 
 def _resource_list_json(*items):
     return json.dumps({"items": items})
+
+
+@pytest.mark.parametrize("drain_enabled", [False, True])
+def test_deployment_scale_in_updates_config_before_original_delete(monkeypatch, tmp_path, drain_enabled):
+    config = {C.CONFIG_JOB_ID: "target", C.P_INSTANCES_NUM: 1, C.D_INSTANCES_NUM: 1}
+    baseline = {C.MOTOR_DEPLOY_CONFIG: {**config, C.D_INSTANCES_NUM: 2}}
+    user = {C.MOTOR_DEPLOY_CONFIG: config}
+    calls = []
+    monkeypatch.setattr(k8s_utils, "g_kv_store_enabled", True)
+    monkeypatch.setattr(k8s_utils, "g_mmc_enable_scale_in_drain", drain_enabled)
+    monkeypatch.setattr(k8s_utils, "resolve_nodeports_for_yaml_files", lambda *_: None)
+    monkeypatch.setattr(k8s_utils, "get_instance_scale_in_delete_order", lambda *_: [1])
+    monkeypatch.setattr(C, "OUTPUT_ROOT_PATH", str(tmp_path))
+
+    def update_config(job_id, user_config, effective_deploy_mode):
+        calls.append((job_id, user_config, effective_deploy_mode))
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs.get("timeout")))
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    monkeypatch.setattr(k8s_utils, "create_motor_config_configmap", update_config)
+    monkeypatch.setattr(subprocess, "run", run)
+    k8s_utils.exec_all_kubectl_multi(config, baseline, C.DEPLOY_MODE_MULTI_DEPLOYMENT_YAML, user)
+    assert calls == [
+        ("target", user, C.DEPLOY_MODE_MULTI_DEPLOYMENT_YAML),
+        (["kubectl", "delete", "deployment", "mindie-server-d1", "-n", "target", "--ignore-not-found=true"], None),
+    ]
 
 
 def _pod(name, phase):
@@ -268,3 +297,19 @@ def test_scale_engine_by_type_deletes_pending_instance_first(
         ],
     ]
     assert not yaml_to_remove.exists()
+
+
+@pytest.mark.parametrize(
+    "settings, enabled",
+    [
+        ({"enable_kv_migration_on_reconfiguration": True}, True),
+        ({"enable_hw_evacuate_migration": True}, True),
+        ({"enable_hw_evacuate_migration": True, "enable_kv_migration_on_reconfiguration": False}, False),
+    ],
+)
+def test_reconfiguration_only_adds_workload_reader_permissions(settings, enabled):
+    manifest = []
+    user = {C.MOTOR_CONTROLLER_CONFIG: {C.FAULT_TOLERANCE_CONFIG: {"enable_kv_migration": True, **settings}}}
+    controller = {C.SPEC: {C.TEMPLATE: {C.SPEC: {"serviceAccountName": "controller"}}}}
+    k8s_utils.add_scale_in_reader(manifest, user, "ns", controller)
+    assert [item["kind"] for item in manifest] == (["Role", "RoleBinding"] if enabled else [])

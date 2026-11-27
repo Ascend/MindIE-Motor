@@ -1,4 +1,12 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -161,3 +169,27 @@ def test_complete_recovery_skips_clear_when_terminate_fails(
     assert outcome.terminated is False
     observability.add_alarm.assert_not_called()
     mock_coord.notify_precision_alarm_cleared.assert_not_called()
+
+
+@patch("motor.controller.core.recovery_service.NodeManagerApiClient")
+@patch("motor.controller.core.recovery_service.InstanceManager")
+def test_failed_pre_stop_hook_still_stops_every_original_member(mock_im_cls, mock_nm):
+    manager = mock_im_cls.return_value
+    instance = manager.get_instance.return_value
+    members = [MagicMock(pod_uid="a"), MagicMock(pod_uid="b")]
+    instance.get_node_managers.return_value = members
+    order = []
+    manager.separate_instance.side_effect = lambda _: order.append("isolate")
+
+    def fail(owner, source):
+        assert owner is manager and source is instance
+        order.append("migrate")
+        raise RuntimeError("inventory unavailable")
+
+    def stop(node):
+        order.append(node.pod_uid)
+        return node is members[1]
+
+    assert not terminate_instance_for_recovery(7, "reconfigure", before_stop=fail, stop_member=stop)
+    mock_nm.stop.assert_not_called()
+    assert order == ["isolate", "migrate", "a", "b"]

@@ -41,6 +41,16 @@ def _is_node_manager_unreachable(exc: BaseException) -> bool:
 class NodeManagerApiClient:
     tls_config = ControllerConfig.from_json().mgmt_tls_config
 
+    @classmethod
+    def migration_request(
+        cls, node_mgr: NodeManagerInfo, action: str, payload: dict | None = None, *, timeout: float = 12
+    ) -> dict:
+        with SafeHTTPSClient(**cls._generate_client_args(node_mgr), timeout=timeout) as client:
+            path = "/node-manager/migration/" + action
+            if action in ("inventory", "status"):
+                return client.get(path, params=payload)
+            return client.post(path, data=payload)
+
     @staticmethod
     def send_start_command(node_mgr: NodeManagerInfo, start_cmd_msg: StartCmdMsg) -> bool:
         is_succeed = True

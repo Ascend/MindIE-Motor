@@ -9,6 +9,8 @@
 # See the Mulan PSL v2 for more details.
 """Bridge failed fast recovery to Motor's existing whole-instance recovery flow."""
 
+from functools import partial
+
 from motor.common.logger import get_logger
 from motor.controller.fault_tolerance.engine_recovery.runtime import FtPhase, get_ft_runtime_store
 from motor.controller.fault_tolerance.engine_recovery.contracts import FailurePolicy, RecoveryAdvice
@@ -42,10 +44,22 @@ class InstanceReconfigurationStrategy(StrategyBase):
                 terminate_instance_for_recovery,
             )
 
-            succeeded = terminate_instance_for_recovery(
-                instance_id,
-                reason="dp_scale_down_reconfiguration",
-            )
+            ft = self._controller_config.fault_tolerance_config if self._controller_config else None
+            reason = "dp_scale_down_reconfiguration"
+            if ft and ft.enable_kv_migration and ft.enable_kv_migration_on_reconfiguration:
+                from motor.controller.fault_tolerance.kv_migration_service import (
+                    evacuate_instance,
+                    stop_original_member,
+                )
+
+                succeeded = terminate_instance_for_recovery(
+                    instance_id,
+                    reason=reason,
+                    before_stop=partial(evacuate_instance, timeout=ft.kv_migration_timeout_sec),
+                    stop_member=stop_original_member,
+                )
+            else:
+                succeeded = terminate_instance_for_recovery(instance_id, reason=reason)
         except Exception as e:
             self._finish(instance_id, failed=True, error=str(e))
             return

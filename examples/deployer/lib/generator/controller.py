@@ -86,6 +86,7 @@ def modify_controller_yaml(data, user_config):
     deployment_data, service_list, rbac_resources = extract_resources(data)
     set_rbac_namespace(rbac_resources, namespace)
     modify_controller_deployment(deployment_data, user_config)
+    k8s_utils.add_scale_in_reader(data, user_config, namespace, deployment_data)
     for service_data in service_list:
         svc_name = (service_data.get(C.METADATA) or {}).get(C.NAME, "")
         if is_observability_service_name(svc_name):

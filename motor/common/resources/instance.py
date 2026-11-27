@@ -14,7 +14,7 @@ import copy
 from collections.abc import Callable
 from enum import Enum
 from types import MappingProxyType
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 from motor.common.logger import get_logger
 from motor.common.resources.endpoint import Endpoint, EndpointStatus, Workload
 from motor.common.alarm.server_exception_event import ServerExceptionEvent, ServerExceptionReason
@@ -102,13 +102,27 @@ class InsConditionEvent(str, Enum):
         return str.__repr__(self.value)
 
 
-class NodeManagerInfo(BaseModel):
+class PodIdentity(BaseModel):
+    """Serialize the migration identity only when a provider reports one."""
+
+    pod_uid: str | None = Field(default=None, description="Kubernetes Pod UID")
+
+    @model_serializer(mode="wrap")
+    def _serialize_identity(self, handler):
+        data = handler(self)
+        if self.pod_uid is None:
+            data.pop("pod_uid", None)
+        return data
+
+
+class NodeManagerInfo(PodIdentity):
     """Node manager registration data stored on an instance.
 
     Attributes:
         pod_ip: IP address of the node manager pod.
         port: Node manager service port, represented as a string.
         device_num: Number of devices on the node; defaults to zero.
+        pod_uid: Kubernetes Pod UID reported at registration, when available.
     """
 
     pod_ip: str = Field(..., description="Node manager pod ip")
@@ -247,16 +261,17 @@ class Instance(BaseModel):
         self._cached_endpoints_tuple: tuple[Endpoint, ...] | None = None
         self._cached_endpoints_version: int | None = None  # Version at cache time
 
-    def add_node_mgr(self, pod_ip: str, port: str, device_num: int = 0) -> None:
+    def add_node_mgr(self, pod_ip: str, port: str, device_num: int = 0, pod_uid: str | None = None) -> None:
         """Add node manager metadata unless an identical record already exists.
 
-        Records are compared using all ``NodeManagerInfo`` fields, including
-        ``device_num``. A missing pod IP or port leaves the list unchanged.
+        Pod IP, port and device count identify a member. A re-registration
+        refreshes its optional Pod UID. A missing IP or port leaves the list unchanged.
 
         Args:
             pod_ip: IP address of the node manager pod.
             port: Node manager service port, represented as a string.
             device_num: Number of devices on the node; defaults to zero.
+            pod_uid: Kubernetes Pod UID reported at registration, when available.
 
         Returns:
             None.
@@ -265,13 +280,17 @@ class Instance(BaseModel):
             logger.warning("Invalid pod_ip: %s or port: %s", pod_ip, port)
             return
 
-        node_mgr_info = NodeManagerInfo(pod_ip=pod_ip, port=port, device_num=device_num)
+        node_mgr_info = NodeManagerInfo(pod_ip=pod_ip, port=port, device_num=device_num, pod_uid=pod_uid)
+        member_key = (node_mgr_info.pod_ip, node_mgr_info.port, node_mgr_info.device_num)
         with self._lock:
-            if node_mgr_info not in self.node_managers:
-                self.node_managers.append(node_mgr_info)
-                logger.info("Add node manager %s:%s to instance:%s", pod_ip, port, self.job_name)
-            else:
-                logger.info("Node manager %s:%s already in instance:%s", pod_ip, port, self.job_name)
+            for index, member in enumerate(self.node_managers):
+                if (member.pod_ip, member.port, member.device_num) == member_key:
+                    if member.pod_uid != node_mgr_info.pod_uid:
+                        self.node_managers[index] = node_mgr_info
+                    logger.info("Node manager %s:%s already in instance:%s", pod_ip, port, self.job_name)
+                    return
+            self.node_managers.append(node_mgr_info)
+            logger.info("Add node manager %s:%s to instance:%s", pod_ip, port, self.job_name)
 
     def del_node_mgr(self, pod_ip: str, port: str) -> None:
         """Remove the first node manager matching a pod IP and service port.

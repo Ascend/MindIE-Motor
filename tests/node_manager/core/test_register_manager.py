@@ -40,7 +40,7 @@ def snapshot_metadata_loader(values):
 
 
 @pytest.fixture(name="register_manager")
-def _register_manager_fixture(config_data):
+def _register_manager_fixture(config_data, request):
     """Create RegisterManager instance with mocked config"""
     with (
         patch("motor.config.node_manager.safe_open") as mock_safe_open,
@@ -59,6 +59,7 @@ def _register_manager_fixture(config_data):
         config = NodeManagerConfig()
         apply_node_manager_test_config(config, config_data)
 
+        config.fault_tolerance_config.enable_kv_migration = getattr(request, "param", False)
         manager = RegisterManager(config)
         # __init__ starts a register thread; prevent background _register during tests.
         manager._register_thread = MagicMock()
@@ -142,8 +143,10 @@ class TestRegisterManager:
         # If it returns True, that's acceptable behavior for this implementation
         assert result in [True, False]  # Allow either result
 
-    def test_gen_register_msg_success(self, register_manager):
+    @pytest.mark.parametrize("register_manager", [False, True], indirect=True)
+    def test_gen_register_msg_success(self, register_manager, monkeypatch):
         """Test _gen_register_msg with valid config"""
+        monkeypatch.setenv("POD_UID", "active-pod")
         register_manager._config.basic_config.job_name = "test_job"
         register_manager._config.basic_config.model_name = "test_model"
         register_manager._config.basic_config.role = PDRole.ROLE_U
@@ -155,6 +158,10 @@ class TestRegisterManager:
         register_manager._config.basic_config.enable_multi_endpoints = True
 
         msg = register_manager._gen_register_msg()
+        if register_manager._config.fault_tolerance_config.enable_kv_migration:
+            assert msg.model_dump()["pod_uid"] == "active-pod"
+        else:
+            assert "pod_uid" not in msg.model_dump()
         # The method may return None if configuration is incomplete
         if msg is not None:
             assert isinstance(msg, RegisterMsg)

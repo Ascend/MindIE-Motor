@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -47,6 +48,8 @@ g_kv_cache_store_port = C.DEFAULT_KV_CACHE_STORE_PORT
 g_kv_store_backend = C.DEFAULT_KV_STORE_BACKEND
 g_mmc_config_store_port = C.DEFAULT_MMC_CONFIG_STORE_PORT
 g_mmc_metrics_port = C.DEFAULT_MMC_METRICS_PORT
+g_mmc_drain_api_url = ""
+g_mmc_enable_scale_in_drain = False
 g_mmc_local_service_mode = ""  # 空 → 由 common.sh 按硬件默认
 g_yuanrong_etcd_address = ""
 g_engine_base_name = "mindie-server"
@@ -130,10 +133,75 @@ def build_kv_store_env_items():
             items.append(
                 {C.NAME: C.ENV_MMC_LOCAL_SERVICE_MODE, C.VALUE: g_mmc_local_service_mode},
             )
+        if g_mmc_drain_api_url:
+            items.append(
+                {C.NAME: C.ENV_MMC_ENABLE_KV_DRAIN_ON_SCALE_IN, C.VALUE: str(g_mmc_enable_scale_in_drain).lower()}
+            )
+            items.append({C.NAME: C.ENV_MMC_DRAIN_API_URL, C.VALUE: g_mmc_drain_api_url})
+            items.append({C.NAME: "POD_UID", "valueFrom": {"fieldRef": {"fieldPath": "metadata.uid"}}})
     elif g_kv_store_backend == C.YUANRONG_STORE_BACKEND:
         if g_yuanrong_etcd_address:
             items.append({C.NAME: C.ENV_ETCD_ADDRESS, C.VALUE: g_yuanrong_etcd_address})
     return items
+
+
+def apply_scale_in_drain_grace(pod_spec, user_config):
+    if not g_kv_store_enabled or not g_mmc_enable_scale_in_drain:
+        return
+    ft = user_config[C.MOTOR_CONTROLLER_CONFIG][C.FAULT_TOLERANCE_CONFIG]
+    timeout = ft.get("kv_migration_timeout_sec", 30)
+    if type(timeout) not in (int, float) or not 1 <= timeout <= 600:
+        raise ValueError("kv_migration_timeout_sec must be in range [1, 600]")
+    # Keep the standard 30s for pause, request draining and shutdown, plus a full KV migration budget.
+    field = "terminationGracePeriodSeconds"
+    pod_spec[field] = max(pod_spec.get(field, 30), 30 + math.ceil(timeout))
+
+
+def add_scale_in_reader(manifest, user_config, namespace, controller):
+    """Give only the opted-in Controller a namespaced view of surviving engine workloads."""
+    ft = (user_config.get(C.MOTOR_CONTROLLER_CONFIG) or {}).get(C.FAULT_TOLERANCE_CONFIG) or {}
+    kv = user_config.get(C.KV_CACHE_STORE_CONFIG) or {}
+    reconfiguration = ft.get("enable_kv_migration_on_reconfiguration", ft.get("enable_hw_evacuate_migration"))
+    if ft.get("enable_kv_migration") is not True or not (
+        kv.get(C.MMC_ENABLE_KV_DRAIN_ON_SCALE_IN) is True or reconfiguration is True
+    ):
+        return
+    account = controller[C.SPEC][C.TEMPLATE][C.SPEC]["serviceAccountName"]
+    role_name = configmap_name() + "-kv-scale-in"
+    api = "rbac.authorization.k8s.io"
+    metadata = {"name": role_name, "namespace": namespace}
+    rules = [
+        {
+            "apiGroups": ["apps"],
+            "resources": ["deployments", "replicasets", "statefulsets"],
+            "verbs": ["list"],
+        }
+    ]
+    if user_config.get("scaling_policy"):
+        rules.append(
+            {
+                "apiGroups": ["mindcluster.huawei.com"],
+                "resources": ["instancesets"],
+                "verbs": ["get"],
+            }
+        )
+    manifest.extend(
+        [
+            {
+                "apiVersion": api + "/v1",
+                "kind": "Role",
+                "metadata": metadata.copy(),
+                "rules": rules,
+            },
+            {
+                "apiVersion": api + "/v1",
+                "kind": "RoleBinding",
+                "metadata": metadata.copy(),
+                "subjects": [{"kind": "ServiceAccount", "name": account, "namespace": namespace}],
+                "roleRef": {"apiGroup": api, "kind": "Role", "name": role_name},
+            },
+        ]
+    )
 
 
 def set_controller_service(service_name):

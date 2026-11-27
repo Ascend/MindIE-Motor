@@ -466,6 +466,7 @@ def modify_engine_yaml(deployment_data, user_config, index, node_type):
     set_engine_node_selector(deployment_data, user_config, node_type)
     set_engine_weight_mount(deployment_data, container, deploy_config)
     engine_pod_spec = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC]
+    k8s_utils.apply_scale_in_drain_grace(engine_pod_spec, user_config)
     apply_storage_volumes(engine_pod_spec, container, user_config)
     apply_dshm_size(engine_pod_spec, user_config)
     apply_k8s_host_ipc(engine_pod_spec, k8s_utils.g_host_ipc_enabled)

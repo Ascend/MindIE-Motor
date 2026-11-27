@@ -308,6 +308,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
         container,
         build_engine_env_items(env_role, deploy_config, job_name_base, include_kv_store=True),
     )
+    k8s_utils.apply_scale_in_drain_grace(pod_spec, user_config)
     npu_num = int(deploy_config.get(npu_key, 1))
     set_container_npu(container, npu_num, deploy_config)
     weight_path = deploy_config.get(C.WEIGHT_MOUNT_PATH, C.DEFAULT_WEIGHT_MOUNT_PATH)
@@ -465,6 +466,7 @@ def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
     if k8s_utils.g_kv_store_enabled:
         normalize_kv_cache_store_config(user_config)
     _configure_controller_role(infer_doc, user_config)
+    k8s_utils.add_scale_in_reader(all_docs, user_config, namespace, get_infer_role(infer_doc, C.CONTROLLER))
     _configure_coordinator_role(infer_doc, user_config)
     if C.E_INSTANCES_NUM in deploy_config:
         _configure_engine_role(infer_doc, user_config, infer_name, C.ROLE_ENCODE)

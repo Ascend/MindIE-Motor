@@ -334,6 +334,15 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             if getattr(instance, "status", None) == InsStatus.ACTIVE:
                 self._mark_instance_recovery_ready(instance.id)
 
+    def get_instance_fault_level(self, instance_id: int) -> FaultLevel | None:
+        """Read the effective fault level after fault attribution to this instance."""
+        with self.lock:
+            metadata = self.instances.get(instance_id)
+        if metadata is None:
+            return None
+        with metadata.lock:
+            return metadata.fault_level
+
     def get_node_fault_levels(self, instance_id: int) -> dict[str, FaultLevel]:
         """Return the highest fault level per node for a given instance.
 

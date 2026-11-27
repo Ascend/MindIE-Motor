@@ -42,10 +42,12 @@ from motor.common.resources.instance import (  # noqa: E402
 
 from motor.controller.core.observer import ObserverEvent  # noqa: E402
 from examples.deployer.prestop.prestop import (  # noqa: E402
+    _http_post_json,
     build_curl_tls_args,
     get_engine_metrics,
     get_engine_type,
     get_infer_tls_config,
+    get_management_tls_config,
     wait_for_engine_drain,
 )
 
@@ -155,6 +157,26 @@ class TestHeartbeatManagerPrestop:
         with heartbeat_mgr._endpoint_lock:
             heartbeat_mgr._endpoints = []
         heartbeat_mgr.pause_all_endpoints()  # no exception
+
+
+def test_prestop_uses_active_role_credentials_and_honors_deployment_override(monkeypatch):
+    monkeypatch.setenv("ROLE", "both")
+    local = {"enable_tls": True, "cert_file": "union.crt"}
+    config = {"motor_engine_union_config": {"motor_nodemanger_config": {"mgmt_tls_config": local}}}
+    assert get_management_tls_config(config) == local
+    assert get_management_tls_config({"mgmt_tls_config": local}) == local
+    config["motor_deploy_config"] = {"tls_config": {"mgmt_tls_config": {"enable_tls": False}}}
+    assert get_management_tls_config(config) == {"enable_tls": False}
+
+
+def test_prestop_invalid_management_certificate_aborts_before_post():
+    with (
+        patch("motor.common.http.cert_util.CertUtil.create_ssl_context", return_value=None) as create_context,
+        patch("examples.deployer.prestop.prestop.httpx.AsyncClient") as client,
+    ):
+        assert _http_post_json("https://localhost:1026", tls_config={"enable_tls": True}) == (None, None)
+    create_context.assert_called_once()
+    client.assert_not_called()
 
 
 def test_prestop_uses_inference_tls_for_native_metrics():

@@ -34,6 +34,43 @@ def client():
     return TestClient(controller_api.ControllerAPI(config).app)
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_exit_targets_uses_startup_migration_switch(enabled):
+    config = ControllerConfig()
+    config.fault_tolerance_config.enable_kv_migration = enabled
+    api = controller_api.ControllerAPI(config)
+    client = TestClient(api.app)
+    config.fault_tolerance_config.enable_kv_migration = not enabled
+    api.update_config(config)
+    with patch("motor.controller.fault_tolerance.kv_migration_service.plan_provider_exit", return_value={}) as plan:
+        response = client.post(
+            "/controller/migration/exit-targets", json={"source_uid": "uid", "source_ip": "10.0.0.1"}
+        )
+        if enabled:
+            with patch.object(controller_api, "time", monotonic=lambda: 100):
+                budgeted = client.post(
+                    "/controller/migration/exit-targets",
+                    json={"source_uid": "uid", "source_ip": "10.0.0.1", "timeout_sec": 0.5},
+                )
+            assert budgeted.status_code == 200
+            assert plan.call_args.kwargs["deadline"] == 100.5
+    assert response.status_code == (200 if enabled else 404)
+    for invalid in (
+        {"scale_in": False},
+        {"retiring_pod_ips": ["10.0.0.2"]},
+        {"timeout_sec": 0},
+        {"timeout_sec": True},
+        {"timeout_sec": 601},
+    ):
+        invalid_scope = client.post(
+            "/controller/migration/exit-targets", json={"source_uid": "uid", "source_ip": "10.0.0.1", **invalid}
+        )
+        assert invalid_scope.status_code == (400 if enabled else 404)
+    assert plan.call_count == 2 * int(enabled)
+    malformed = client.post("/controller/migration/exit-targets", content=b"{")
+    assert malformed.status_code == (400 if enabled else 404)
+
+
 @pytest.mark.parametrize("enabled", [False, True], ids=["disabled", "enabled"])
 def test_recover_respects_scale_up_switch(enabled):
     config = ControllerConfig()

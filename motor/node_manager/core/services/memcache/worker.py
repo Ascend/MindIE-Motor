@@ -15,7 +15,9 @@ Launched by MemcacheService.pull() as a subprocess via
 """
 
 import os
+import sys
 import threading
+from pathlib import Path
 
 from motor.common.logger import get_logger
 from motor.common.utils.process_utils import set_process_title
@@ -30,7 +32,16 @@ def main() -> None:
 
     from memcache_hybrid import DistributedObjectStore
 
-    DistributedObjectStore().init(0)
+    if len(sys.argv) == 1:
+        DistributedObjectStore().init(0)
+    else:
+        store = DistributedObjectStore()
+        if store.init(0) != 0:
+            raise RuntimeError("Memcache LocalService failed to initialize")
+        path = Path(sys.argv[1])
+        pending = path.with_suffix(".tmp")
+        pending.write_text(f"{os.getpid()} {store.get_local_service_id()}\n", encoding="ascii")
+        pending.replace(path)
     threading.Event().wait()
 
 

@@ -78,6 +78,8 @@ def generate_yaml_single_container(input_yaml, output_file, user_config):
     )
     if k8s_utils.g_kv_store_enabled:
         kv_store_config = normalize_kv_cache_store_config(user_config)
+        if k8s_utils.g_mmc_enable_scale_in_drain:
+            raise ValueError("single_container has no separate target Pod for enable_kv_drain_on_scale_in")
         kv_store_env = gen_kv_store_env(kv_store_config)
         container[C.ENV].extend(kv_store_env)
 

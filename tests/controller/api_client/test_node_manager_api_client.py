@@ -101,6 +101,15 @@ def test_guard_engine_ft_contract(node_mgr, mock_http_client):
     assert mock_http_client.post.call_args.kwargs["data"] == {"request_id": "request", "lease_sec": 45}
 
 
+def test_stop_addresses_the_verified_pod_uid(node_mgr, mock_http_client):
+    from motor.controller.fault_tolerance.kv_migration_service import stop_original_member
+
+    mock_http_client.__enter__.return_value = mock_http_client
+    node_mgr.pod_uid = "survivor-uid"
+    assert stop_original_member(node_mgr)
+    mock_http_client.post.assert_called_once_with("/node-manager/migration/stop", data={"source_uid": "survivor-uid"})
+
+
 def test_stop_timeout_returns_false(node_mgr, mock_http_client):
     """Stop timeout is unreachable, not a dispatch exception to retry as ERROR."""
     mock_http_client.post.side_effect = requests.exceptions.ReadTimeout("read timeout=5")

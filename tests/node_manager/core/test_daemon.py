@@ -75,7 +75,7 @@ def config_data():
 
 
 @pytest.fixture
-def daemon(config_data):
+def daemon(config_data, request):
     # Clear singleton instance (Daemon is still singleton)
     if hasattr(Daemon, '_instances') and Daemon in Daemon._instances:
         del Daemon._instances[Daemon]
@@ -83,6 +83,8 @@ def daemon(config_data):
     config_path = os.path.join(os.path.dirname(__file__), '..', 'jsons', 'user_config.json')
     with patch.dict('os.environ', {'JOB_NAME': 'test_job', 'USER_CONFIG_PATH': config_path, 'ROLE': 'both'}):
         config = NodeManagerConfig()
+        if hasattr(request, "param"):
+            config.fault_tolerance_config.enable_kv_migration = request.param
         # Manually set the configuration data
         config.basic_config.parallel_config = ParallelConfig(
             tp_size=config_data["parallel_config"]["tp_size"], pp_size=config_data["parallel_config"]["pp_size"]
@@ -105,6 +107,35 @@ def daemon(config_data):
 @pytest.fixture
 def endpoints():
     return [Endpoint(id=i, ip=f"192.168.1.{100 + i}", business_port=str(8000 + i * 2)) for i in range(3)]
+
+
+@pytest.mark.parametrize(
+    ("daemon", "mode", "override", "expected"),
+    [
+        (True, "standalone", None, None),
+        (True, "standalone", "from-controller", None),
+        (True, "inprocess", "from-controller", "from-controller"),
+        (False, "standalone", None, "from-pod"),
+        (False, "standalone", "from-controller", "from-controller"),
+    ],
+    indirect=["daemon"],
+)
+def test_engine_launch_scopes_memcache_storage_label(daemon, endpoints, monkeypatch, mode, override, expected):
+    kv = daemon.config.kv_cache_store_config
+    kv.enable = True
+    kv.backend = "memcache"
+    kv.local_service_mode = mode
+    key = "MMC_LOCAL_SERVICE_NODE_LABEL"
+    monkeypatch.setenv(key, "from-pod")
+    engine = daemon._services[SERVICE_ENGINE]
+    with (
+        patch("motor.node_manager.core.register_manager.RegisterManager") as manager,
+        patch.object(engine.supervisor, "start", return_value=True),
+    ):
+        manager.return_value.extra_env = {key: override} if override else {}
+        engine.pull(PDRole.ROLE_U, endpoints[:1], instance_id=1, master_dp_ip="127.0.0.1")
+    assert _last_launch_context(daemon).environment.get(key) == expected
+    assert os.environ[key] == "from-pod"
 
 
 class TestDaemon:

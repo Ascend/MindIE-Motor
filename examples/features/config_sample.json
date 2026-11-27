@@ -100,6 +100,8 @@
       "k8s_cert_path": "",
       "enable_scale_p2d": true,
       "enable_fast_recovery": false,
+      "enable_kv_migration": false,
+      "enable_kv_migration_on_reconfiguration": false,
       "enable_hbm_uce_recovery": true,
       "enable_token_reinference": true,
       "enable_no_fault_code_recovery": true,

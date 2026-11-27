@@ -11,6 +11,7 @@
 import asyncio
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 from collections.abc import Callable
 from typing import Any
@@ -97,6 +98,7 @@ class ControllerAPI:
         self.port = port if port is not None else config.api_config.controller_api_port
         self.server = None
         self.loop = None
+        self.enable_kv_migration = config.fault_tolerance_config.enable_kv_migration
         self.app = self._create_app()
         self.api_server_thread = None
 
@@ -272,6 +274,13 @@ class ControllerAPI:
             self._terminate_instance,
             methods=post_methods,
         )
+        if self.enable_kv_migration:
+            from motor.controller.fault_tolerance.scale_in_migration import (
+                ScaleInIngress,
+            )
+
+            self._scale_in_ingress = ScaleInIngress()
+            app.add_api_route("/controller/migration/exit-targets", self._plan_provider_exit, methods=post_methods)
         app.add_api_route("/controller/check_instance", self._check_instance, methods=post_methods)
 
         app.add_api_route("/startup", self._startup, methods=get_methods)
@@ -426,6 +435,8 @@ class ControllerAPI:
     async def _register(self, request: Request) -> dict:
         body = await request.json()
         try:
+            if not self.enable_kv_migration and isinstance(body, dict):
+                body.pop("pod_uid", None)
             register_msg = RegisterMsg(**body)
         except Exception as e:
             logger.error("Failed to parse RegisterMsg: %s, body: %s", e, body)
@@ -439,6 +450,8 @@ class ControllerAPI:
     async def _reregister(self, request: Request) -> dict:
         body = await request.json()
         try:
+            if not self.enable_kv_migration and isinstance(body, dict):
+                body.pop("pod_uid", None)
             reregister_msg = ReregisterMsg(**body)
         except Exception as e:
             logger.error("Failed to parse ReregisterMsg: %s, body: %s", e, body)
@@ -679,6 +692,42 @@ class ControllerAPI:
         except Exception as e:
             # Never fail the alarm report: heartbeat detection still covers this case.
             logger.error("Failed to push instances after Coordinator master switch: %s", e)
+
+    async def _plan_provider_exit(self, request: Request) -> dict:
+        """Plan cross-instance targets for one exiting Pod."""
+        from motor.controller.fault_tolerance.kv_migration_service import plan_provider_exit
+
+        try:
+            body = await request.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+        if not isinstance(body, dict) or not all(
+            isinstance(body.get(key), str) and body[key].strip() for key in ("source_uid", "source_ip")
+        ):
+            raise HTTPException(status_code=400, detail="Expected source_ip and source_uid")
+        headless = body.get("headless", False)
+        if (
+            not isinstance(headless, bool)
+            or body.get("scale_in", True) is not True
+            or body.get("retiring_pod_ips", []) != []
+        ):
+            raise HTTPException(status_code=400, detail="Invalid exit scope")
+        # Older NodeManagers omit the budget and stop waiting for this request after 10 seconds.
+        timeout = body.get("timeout_sec", 10)
+        if type(timeout) not in (int, float) or not 0 < timeout <= 600:
+            raise HTTPException(status_code=400, detail="Invalid exit planning timeout_sec")
+        try:
+            return await asyncio.to_thread(
+                plan_provider_exit,
+                InstanceManager(),
+                body["source_ip"],
+                body["source_uid"],
+                deadline=time.monotonic() + timeout,
+                ingress=self._scale_in_ingress,
+                headless=headless,
+            )
+        except (ValueError, RuntimeError, TimeoutError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     async def _report_software_fault(self, request: Request) -> dict:
         """Receive software fault reports from NodeManagers at node granularity.

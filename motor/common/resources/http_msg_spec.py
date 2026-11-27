@@ -15,7 +15,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from motor.common.logger import get_logger
 from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.endpoint import Endpoint, EndpointStatus
-from motor.common.resources.instance import FtCapabilitySnapshot, InsStatus, Instance, ParallelConfig, PDRole
+from motor.common.resources.instance import (
+    FtCapabilitySnapshot,
+    InsStatus,
+    Instance,
+    ParallelConfig,
+    PDRole,
+    PodIdentity,
+)
 from motor.common.utils.net import split_address
 
 logger = get_logger(__name__)
@@ -33,7 +40,7 @@ def _require_external_dispatch_plan(value: DispatchPlan) -> DispatchPlan:
     return value
 
 
-class RegisterMsg(BaseModel):
+class RegisterMsg(PodIdentity):
     """
     Registration message format sent from NodeManager to controller.
     """
@@ -111,7 +118,7 @@ class StartCmdMsg(BaseModel):
     )
 
 
-class ReregisterMsg(BaseModel):
+class ReregisterMsg(PodIdentity):
     """
     Re-register message format sent from NodeManager to controller.
     It only occured when controller restarts and NodeManager needs to

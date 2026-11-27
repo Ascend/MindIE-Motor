@@ -21,14 +21,18 @@ Flow:
 Config is read from CONFIG_PATH or CONFIGMAP_PATH env var (same pattern as probe.py).
 """
 
+import asyncio
 import ipaddress
 import json
 import logging
 import os
 import re
+import ssl
 import subprocess
 import sys
 import time
+
+import httpx
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -195,41 +199,38 @@ def build_curl_tls_args(tls_config):
     return args
 
 
-def _http_post_json(url, timeout=10):
-    """HTTP POST via curl. Returns (status_code, body_text) or (None, None)."""
+def get_management_tls_config(config):
+    """Use the same deployment override and role fallback as NodeManager."""
+    tls = get_val_by_key_path(config, "motor_deploy_config.tls_config.mgmt_tls_config")
+    if tls is None:
+        role = os.environ.get("ROLE", "")
+        role = "union" if role == "both" else role
+        section = config.get(f"motor_engine_{role}_config")
+        node_config = section.get("motor_nodemanger_config", {}) if isinstance(section, dict) else config
+        tls = get_val_by_key_path(node_config, "mgmt_tls_config")
+    return tls if isinstance(tls, dict) else {}
+
+
+def _http_post_json(url, timeout=10, payload=None, tls_config=None):
+    """POST to the local NodeManager with a total deadline and its management credentials."""
+
+    async def post():
+        verify = True
+        if tls_config and tls_config.get("enable_tls"):
+            from motor.common.http.cert_util import CertUtil
+            from motor.config.tls_config import TLSConfig
+
+            verify = CertUtil.create_ssl_context(TLSConfig.from_dict(tls_config), purpose=ssl.Purpose.CLIENT_AUTH)
+            if verify is None:
+                raise ValueError("Invalid NodeManager management TLS configuration")
+        async with httpx.AsyncClient(verify=verify, trust_env=False, timeout=timeout) as client:
+            response = await client.post(url, json=payload or {})
+            return response.status_code, response.text
+
     try:
-        result = subprocess.run(  # nosec B607
-            [
-                "curl",
-                "-s",
-                "-w",
-                "\n%{http_code}",
-                "-X",
-                "POST",
-                url,
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-                "{}",
-                "--connect-timeout",
-                str(timeout),
-                "--max-time",
-                str(timeout),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout + 2,
-            check=False,
-        )
-        output = result.stdout.strip()
-        if not output:
-            return None, None
-        lines = output.rsplit("\n", 1)
-        if len(lines) == 2:
-            return int(lines[1]), lines[0]
-        return None, output
-    except (OSError, subprocess.SubprocessError, ValueError) as e:
-        logger.error("curl POST failed: %s", e)
+        return asyncio.run(asyncio.wait_for(post(), timeout=timeout))
+    except (httpx.HTTPError, OSError, ValueError, asyncio.TimeoutError) as exc:
+        logger.error("NodeManager POST failed: %s", exc)
         return None, None
 
 
@@ -254,13 +255,13 @@ def _http_get_text(url, timeout=5, extra_args=None):
     return None
 
 
-def send_pause(node_manager_url, config):
+def send_pause(node_manager_url, tls_config):
     """POST /node-manager/pause to local NodeManager.
 
     Returns parsed JSON response dict, or None on failure.
     """
     url = f"{node_manager_url}/node-manager/pause"
-    status, body = _http_post_json(url, timeout=HTTP_TIMEOUT)
+    status, body = _http_post_json(url, timeout=HTTP_TIMEOUT, tls_config=tls_config)
     if status == 200 and body:
         try:
             result = json.loads(body)
@@ -300,11 +301,11 @@ def get_engine_type(config):
     return "vllm"
 
 
-def get_engine_metrics(metrics_target, tls_config, engine_type="vllm"):
+def get_engine_metrics(metrics_target, tls_config, engine_type="vllm", timeout=10):
     """Query a native engine metrics URL and sum waiting/running requests."""
     text = _http_get_text(
         metrics_target,
-        timeout=10,
+        timeout=timeout,
         extra_args=build_curl_tls_args(tls_config),
     )
     if not text:
@@ -345,7 +346,7 @@ def get_engine_metrics(metrics_target, tls_config, engine_type="vllm"):
     return {"waiting": waiting, "running": running}
 
 
-def wait_for_engine_drain(engine_metrics_targets, tls_config, engine_type, max_wait, poll_interval):
+def wait_for_engine_drain(engine_metrics_targets, tls_config, engine_type, max_wait, poll_interval, *, bounded=False):
     """Wait until every engine reports zero active requests or the deadline expires."""
     start_time = time.monotonic()
     while time.monotonic() - start_time < max_wait:
@@ -354,7 +355,13 @@ def wait_for_engine_drain(engine_metrics_targets, tls_config, engine_type, max_w
         metrics_available = True
 
         for target in engine_metrics_targets:
-            metrics = get_engine_metrics(target, tls_config, engine_type)
+            if bounded:
+                remaining = start_time + max_wait - time.monotonic()
+                if remaining <= 0:
+                    return False
+                metrics = get_engine_metrics(target, tls_config, engine_type, timeout=min(10, remaining))
+            else:
+                metrics = get_engine_metrics(target, tls_config, engine_type)
             if metrics is None:
                 logger.warning("Engine drain metrics unavailable from %s; retrying", target)
                 metrics_available = False
@@ -370,10 +377,54 @@ def wait_for_engine_drain(engine_metrics_targets, tls_config, engine_type, max_w
                 logger.info("All requests drained after %.1fs", elapsed)
                 return True
 
-        time.sleep(poll_interval)
+        delay = min(poll_interval, max(0, start_time + max_wait - time.monotonic())) if bounded else poll_interval
+        time.sleep(delay)
 
     elapsed = time.monotonic() - start_time
     logger.info("Timeout after %.1fs, stopping anyway", elapsed)
+    return False
+
+
+def wait_for_scale_in_drain(nm_url, drained, timeout, tls_config=None):
+    """Keep the source alive until the NodeManager returns a terminal job or the migration budget expires."""
+    deadline = time.monotonic() + timeout
+    uid = os.environ.get("POD_UID")
+    if uid:
+        payload = {"source_uid": uid, "requests_drained": drained, "timeout": timeout}
+        status, body = _http_post_json(
+            f"{nm_url}/node-manager/migration/prepare-exit", timeout=timeout, payload=payload, tls_config=tls_config
+        )
+        try:
+            result = json.loads(body) if body else None
+        except ValueError:
+            result = None
+        detail = result.get("detail") if isinstance(result, dict) else None
+        if (
+            status in (400, 409)
+            and isinstance(detail, dict)
+            and detail.get("source_uid") == uid
+            and detail.get("code") == "drain_not_started"
+        ):
+            logger.warning("KV drain was not submitted for Pod %s: %s", uid, detail.get("reason"))
+            return False
+        if (
+            status == 200
+            and isinstance(result, dict)
+            and result.get("source_uid") == uid
+            and isinstance(result.get("drain_id"), str)
+            and result["drain_id"]
+        ):
+            state = result.get("state")
+            if state in ("migration_completed", "migration_failed", "migration_cancelled"):
+                logger.info("KV drain finished: source_uid=%s drain_id=%s state=%s", uid, result["drain_id"], state)
+                return state == "migration_completed"
+        logger.warning("No terminal KV drain result for Pod %s: status=%s body=%s", uid, status, body)
+    else:
+        logger.error("Missing Pod UID for KV drain")
+    # A lost HTTP reply or a receipt from an older NodeManager must not release the Pod early.
+    remaining = deadline - time.monotonic()
+    if remaining > 0:
+        time.sleep(remaining)
     return False
 
 
@@ -405,20 +456,29 @@ def main():
         logger.error("Failed to load config, exiting")
         sys.exit(0)
 
+    migration_timeout = None
+    if os.environ.get("MMC_ENABLE_KV_DRAIN_ON_SCALE_IN") == "true":
+        ft = get_val_by_key_path(config, "motor_controller_config.fault_tolerance_config")
+        if isinstance(ft, dict) and ft.get("enable_kv_migration") is True:
+            migration_timeout = ft.get("kv_migration_timeout_sec", 30)
     nm_port = get_nm_port(config)
     pod_ip = os.environ.get("POD_IP", "127.0.0.1")
-    nm_url = f"http://{format_address(pod_ip, nm_port)}"
+    mgmt_tls = get_management_tls_config(config)
+    scheme = "https" if mgmt_tls.get("enable_tls") else "http"
+    nm_url = f"{scheme}://{format_address(pod_ip, nm_port)}"
     logger.info("NodeManager URL: %s", nm_url)
 
     # Step 1: Send pause to NodeManager
     logger.info("Sending pause to NodeManager at %s", nm_url)
-    response = send_pause(nm_url, config)
+    response = send_pause(nm_url, mgmt_tls)
     if response is None:
         logger.warning("Terminate request failed, exiting anyway")
-        sys.exit(0)
+        if migration_timeout is None:
+            sys.exit(0)
+        response = {}  # A drain accepted before pause failed can still be queried.
 
     engine_metrics_targets = response.get("engine_metrics_targets", [])
-    if not engine_metrics_targets:
+    if not engine_metrics_targets and migration_timeout is None:
         logger.error("No engine_metrics_targets in pause response, exiting")
         sys.exit(0)
 
@@ -428,14 +488,16 @@ def main():
 
     # Step 2: Poll engine /metrics locally until requests drain
     logger.info("Polling engine metrics...")
-    wait_for_engine_drain(
+    drained = bool(engine_metrics_targets) and wait_for_engine_drain(
         engine_metrics_targets,
         infer_tls_config,
         engine_type,
         args.max_wait,
         args.poll_interval,
+        bounded=migration_timeout is not None,
     )
-
+    if migration_timeout is not None and not wait_for_scale_in_drain(nm_url, drained, migration_timeout, mgmt_tls):
+        sys.exit(1)
     sys.exit(0)
 
 
