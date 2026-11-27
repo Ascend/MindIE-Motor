@@ -21,8 +21,8 @@ from motor.common.utils.snapshot_utils import MOTOR_SNAPSHOT_METADATA_PATH
 from motor.config.node_manager import KVCacheStoreConfig, VLLMStartupAccelerationConfig
 from motor.node_manager.core.services.native_engine.ascend_device_ids import (
     calc_endpoint_visible_device_ids,
+    list_engine_visible_device_ids,
     list_pod_physical_device_ids,
-    list_runtime_device_ids,
 )
 from motor.node_manager.core.services.native_engine.backends.base import SERVICE_ENGINE_LOG_PATH_ENV
 from motor.node_manager.core.services.native_engine.factory import get_backend
@@ -227,7 +227,7 @@ class NativeEngineService:
                 base_env["MC_USE_IPV6"] = base_env.get("MC_USE_IPV6", "1")
             device_size = self.device_num
             plugin_device_ids = list_pod_physical_device_ids(base_env)
-            runtime_ids = list_runtime_device_ids(base_env, device_num=device_size)
+            runtime_ids = list_engine_visible_device_ids(base_env)
             if plugin_device_ids:
                 logger.info("Pod Ascend plugin/env device ids: %s", ",".join(plugin_device_ids))
             if runtime_ids:
@@ -618,7 +618,7 @@ class NativeEngineService:
             index,
             device_size,
             self.parallel_config.local_world_size,
-            pod_physical_ids=list_runtime_device_ids(env, device_num=device_size) or None,
+            pod_physical_ids=list_engine_visible_device_ids(env) or None,
             single_container_flag=self.single_container_flag,
             device_offset=self.device_offset,
         )

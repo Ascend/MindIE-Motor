@@ -105,6 +105,27 @@ def list_runtime_device_ids(
     return []
 
 
+def list_engine_visible_device_ids(
+    env: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Device ids for engine ``ASCEND_RT_VISIBLE_DEVICES`` when slicing a full-host pod.
+
+    CANN ``ASCEND_RT_VISIBLE_DEVICES`` indexes ``0..drvGetDevNum()-1``. Normal
+    device-plugin containers only attach the pod's own cards, so the engine must
+    use logical ``0..n-1`` (returning ``[]``). Only privileged pods that expose
+    all host ``/dev/davinci0..N-1`` share host chip numbering with CANN and slice
+    ``ASCEND_ALLOCATED_DEVICES`` directly.
+    """
+    source = env if env is not None else os.environ
+    allocated = parse_allocated_device_ids(source.get(_ALLOCATED_ENV))
+    if not allocated:
+        return []
+    davinci_ids = list_davinci_char_devices()
+    if davinci_ids and not (_looks_like_full_host(davinci_ids) and set(allocated).issubset(set(davinci_ids))):
+        return []
+    return allocated
+
+
 def parse_device_id_list(raw: str | None) -> list[str]:
     """Parse a comma separated device id list, preserving the caller's order."""
     if not raw:

@@ -8,9 +8,12 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+from unittest.mock import patch
+
 from motor.node_manager.core.services.native_engine.ascend_device_ids import (
     calc_endpoint_visible_device_ids,
     is_contiguous_logical_ids,
+    list_engine_visible_device_ids,
     list_pod_device_ids,
     list_pod_physical_device_ids,
 )
@@ -100,3 +103,31 @@ def test_list_pod_device_ids_falls_back_to_scheduler_allocation():
     env = {"ASCEND_ALLOCATED_DEVICES": "Ascend910-8,Ascend910-9,Ascend910-10,Ascend910-11"}
 
     assert list_pod_device_ids(env, device_num=4) == ["8", "9", "10", "11"]
+
+
+def test_engine_visible_ids_stay_empty_on_device_plugin_pod():
+    """A normal pod only has its own cards, so CANN must use logical 0..n-1."""
+    env = {"ASCEND_ALLOCATED_DEVICES": "Ascend910-1"}
+    with patch(
+        "motor.node_manager.core.services.native_engine.ascend_device_ids.glob.glob",
+        return_value=["/dev/davinci1"],
+    ):
+        assert list_engine_visible_device_ids(env) == []
+
+
+def test_engine_visible_ids_slice_privileged_full_host():
+    env = {"ASCEND_ALLOCATED_DEVICES": "Ascend910-8,Ascend910-9,Ascend910-10,Ascend910-11"}
+    with patch(
+        "motor.node_manager.core.services.native_engine.ascend_device_ids.glob.glob",
+        return_value=[f"/dev/davinci{i}" for i in range(16)],
+    ):
+        assert list_engine_visible_device_ids(env) == ["8", "9", "10", "11"]
+
+
+def test_engine_visible_ids_keep_allocation_when_dev_nodes_are_hidden():
+    env = {"ASCEND_ALLOCATED_DEVICES": "Ascend910-8,Ascend910-9"}
+    with patch(
+        "motor.node_manager.core.services.native_engine.ascend_device_ids.glob.glob",
+        return_value=[],
+    ):
+        assert list_engine_visible_device_ids(env) == ["8", "9"]
