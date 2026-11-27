@@ -25,6 +25,7 @@ from collections.abc import Mapping
 
 _ALLOCATED_ENV = "ASCEND_ALLOCATED_DEVICES"
 _START_DEVICES_ENV = "MOTOR_START_DEVICES"
+A5_DOCKER_PHYSICAL_IDS_ENV = "MOTOR_A5_DOCKER_PHYSICAL_IDS"
 _VISIBLE_ENV_KEYS = ("ASCEND_VISIBLE_DEVICES", "ASCEND_RT_VISIBLE_DEVICES")
 _CHIP_SUFFIX = re.compile(r"(\d+)$")
 _DAVINCI_NODE = re.compile(r"^/dev/davinci(\d+)$")
@@ -90,6 +91,9 @@ def list_runtime_device_ids(
 ) -> list[str]:
     """Device ids this engine may use: scheduler allocation, then /dev, then env."""
     source = env if env is not None else os.environ
+    docker_ids = parse_device_id_list(source.get(A5_DOCKER_PHYSICAL_IDS_ENV))
+    if docker_ids:
+        return docker_ids
     allocated = parse_allocated_device_ids(source.get(_ALLOCATED_ENV))
     if allocated:
         return allocated
@@ -131,6 +135,48 @@ def parse_device_id_list(raw: str | None) -> list[str]:
     if not raw:
         return []
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def select_a5_docker_physical_device_ids(
+    env: Mapping[str, str],
+    mounted_ids: list[str],
+    device_num: int,
+    device_offset: int | None,
+    *,
+    devices_per_endpoint: int,
+) -> list[str]:
+    """Return the role's compute devices in launch order, excluding extra mounts."""
+    explicit_ids = parse_device_id_list(env.get(_START_DEVICES_ENV))
+    if explicit_ids:
+        selected_ids = explicit_ids[:device_num]
+    else:
+        device_offset = device_offset or 0
+        if device_offset < 0:
+            raise ValueError(f"Invalid A5 Docker device offset {device_offset}")
+        selected_ids = mounted_ids[device_offset : device_offset + device_num]
+
+    if (
+        device_num <= 0
+        or len(selected_ids) != device_num
+        or any(not card.isdecimal() or card not in mounted_ids for card in selected_ids)
+        or len(set(map(int, selected_ids))) != device_num
+    ):
+        raise ValueError(
+            f"A5 Docker needs {device_num} distinct mounted cards, selected {selected_ids} from {mounted_ids}"
+        )
+    # CANN accepts only ascending runtime IDs. Keep the assigned cards in each endpoint.
+    for start in range(0, device_num, devices_per_endpoint):
+        end = start + devices_per_endpoint
+        selected_ids[start:end] = sorted(selected_ids[start:end], key=int)
+    return selected_ids
+
+
+def a5_docker_runtime_device_ids(physical_selection: str, physical_ids: list[str]) -> str:
+    """Translate a selection of physical Ascend 950 Docker devices into CANN's local indices."""
+    try:
+        return ",".join(str(physical_ids.index(card)) for card in parse_device_id_list(physical_selection))
+    except ValueError as exc:
+        raise ValueError(f"Selected A5 cards ({physical_selection}) are not all mounted: {physical_ids}") from exc
 
 
 def list_pod_device_ids(

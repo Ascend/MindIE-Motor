@@ -599,3 +599,69 @@ def test_pull_preserves_explicit_device_order_and_plugin_allocation(device_env, 
         service.pull(PDRole.ROLE_U, [_make_endpoint(0), _make_endpoint(1)], instance_id=1, master_dp_ip="127.0.0.1")
     environments = [call.args[0].environment for call in service.backend.prepare.call_args_list]
     assert [env["ASCEND_RT_VISIBLE_DEVICES"] for env in environments] == expected
+
+
+@pytest.mark.parametrize(
+    ("mounted", "selection", "offset", "expected_physical", "expected_logical"),
+    [
+        ("4,7,8,11", None, None, ["4,7", "8,11"], ["0,1", "2,3"]),
+        ("4,7,8,11,12", None, None, ["4,7", "8,11"], ["0,1", "2,3"]),
+        ("4,7,8,11,12", "11,8,7,4,12", None, ["8,11", "4,7"], ["2,3", "0,1"]),
+        ("2,4,6,7", None, 2, ["6,7"], ["2,3"]),
+    ],
+)
+def test_pull_a5_docker_uses_logical_indices_and_retains_physical_ownership(
+    mounted, selection, offset, expected_physical, expected_logical
+):
+    service = _native_engine_service(engine_type="vllm")
+    service.enable_multi_endpoints = True
+    service.device_num = 4 if offset is None else 2
+    service.parallel_config.local_world_size = 2
+    endpoints = [_make_endpoint(0), _make_endpoint(1)] if offset is None else [_make_endpoint(0)]
+    if offset is not None:
+        service.single_container_flag = True
+        service.device_offset = offset
+    device_env = {"MOTOR_A5_DOCKER_PHYSICAL_IDS": mounted}
+    if selection:
+        device_env["MOTOR_START_DEVICES"] = selection
+    service.backend.prepare.return_value = _make_launch_spec(_fake_deploy_config(enable_virtual_inference=False))
+    service.supervisor.start.return_value = True
+    with patch.dict(os.environ, device_env, clear=True):
+        service.pull(PDRole.ROLE_U, endpoints, instance_id=1, master_dp_ip="127.0.0.1")
+    environments = [call.args[0].environment for call in service.backend.prepare.call_args_list]
+    assert [env["ASCEND_VISIBLE_DEVICES"] for env in environments] == expected_physical
+    assert [env["ASCEND_RT_VISIBLE_DEVICES"] for env in environments] == expected_logical
+
+
+@pytest.mark.parametrize(
+    ("offset", "physical_ids", "runtime_ids"),
+    [(None, "2,4", "0,1"), (2, "6,7", "2,3")],
+)
+def test_pull_single_endpoint_a5_docker_limits_visible_devices_to_role(monkeypatch, offset, physical_ids, runtime_ids):
+    service = _native_engine_service(engine_type="vllm")
+    service.device_num = 2
+    service.single_container_flag = True
+    service.device_offset = offset
+    monkeypatch.setenv("MOTOR_A5_DOCKER_PHYSICAL_IDS", "2,4,6,7")
+    monkeypatch.delenv("MOTOR_START_DEVICES", raising=False)
+    service.backend.prepare.return_value = _make_launch_spec(_fake_deploy_config(enable_virtual_inference=False))
+
+    service.pull(PDRole.ROLE_U, [_make_endpoint(0)], instance_id=1, master_dp_ip="127.0.0.1")
+
+    environment = service.backend.prepare.call_args.args[0].environment
+    assert environment["ASCEND_VISIBLE_DEVICES"] == physical_ids
+    assert environment["ASCEND_RT_VISIBLE_DEVICES"] == runtime_ids
+
+
+def test_pull_a5_docker_fails_before_launch_when_role_exceeds_mounted_cards(monkeypatch):
+    service = _native_engine_service(engine_type="vllm")
+    service.device_num = 2
+    service.single_container_flag = True
+    service.device_offset = 3
+    monkeypatch.setenv("MOTOR_A5_DOCKER_PHYSICAL_IDS", "2,4,6,7")
+    monkeypatch.delenv("MOTOR_START_DEVICES", raising=False)
+
+    with pytest.raises(RuntimeError, match="A5 Docker needs 2 distinct mounted cards"):
+        service.pull(PDRole.ROLE_U, [_make_endpoint(0)], instance_id=1, master_dp_ip="127.0.0.1")
+
+    service.supervisor.start.assert_not_called()

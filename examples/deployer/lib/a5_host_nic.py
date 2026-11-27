@@ -8,7 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-"""Shared A5 host-nic overlay detection (K8s + Docker).
+"""A5 host-nic overlay detection for Kubernetes.
 
 Gated by ASCEND_GLOBAL_RESOURCE_CONFIG.comm_resource_config.protocol_desc:
   uboe:device / ub_ctp:device → UBOE (K8s stays on CNI, aligned with !1050)
@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 
 import lib.constant as C
 
@@ -121,26 +120,3 @@ def env_file_requests_a5_ubg_host_network(env_config_path: str | None) -> bool:
     """Read env.json from path; True only for ub_rtp:device."""
     env_config = _load_env_config(env_config_path)
     return False if env_config is None else env_requests_a5_ubg_host_network(env_config)
-
-
-def apply_a5_host_nic_privileged(
-    command: str,
-    hardware_type: str,
-    env_config_path: str | None,
-    *,
-    attach_npu: bool,
-) -> str:
-    """Inject --privileged for A5 engine docker create when AGRC requests overlay.
-
-    Aligns with K8s apply_a5_engine_pod_config (uboe/ub_ctp/ub_rtp:device).
-    CTRL/KVS (attach_npu=False) unchanged. Idempotent if already present.
-    """
-    if not attach_npu or hardware_type not in C.HARDWARE_TYPE_A5:
-        return command
-    if not env_file_requests_a5_host_nic_overlay(env_config_path):
-        return command
-    if re.search(r"(^|\s)--privileged(\s|\\|$)", command):
-        return command
-    if not command.startswith("docker run "):
-        return command
-    return "docker run --privileged " + command[len("docker run ") :]

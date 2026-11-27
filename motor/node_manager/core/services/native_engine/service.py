@@ -20,9 +20,13 @@ from motor.common.utils.net import format_address
 from motor.common.utils.snapshot_utils import MOTOR_SNAPSHOT_METADATA_PATH
 from motor.config.node_manager import KVCacheStoreConfig, VLLMStartupAccelerationConfig
 from motor.node_manager.core.services.native_engine.ascend_device_ids import (
+    A5_DOCKER_PHYSICAL_IDS_ENV,
+    a5_docker_runtime_device_ids,
     calc_endpoint_visible_device_ids,
     list_engine_visible_device_ids,
     list_pod_physical_device_ids,
+    parse_device_id_list,
+    select_a5_docker_physical_device_ids,
 )
 from motor.node_manager.core.services.native_engine.backends.base import SERVICE_ENGINE_LOG_PATH_ENV
 from motor.node_manager.core.services.native_engine.factory import get_backend
@@ -228,6 +232,18 @@ class NativeEngineService:
             device_size = self.device_num
             plugin_device_ids = list_pod_physical_device_ids(base_env)
             runtime_ids = list_engine_visible_device_ids(base_env)
+            docker_physical_ids = parse_device_id_list(base_env.get(A5_DOCKER_PHYSICAL_IDS_ENV))
+            docker_role_ids = []
+            if docker_physical_ids:
+                docker_role_ids = select_a5_docker_physical_device_ids(
+                    base_env,
+                    docker_physical_ids,
+                    device_size,
+                    self.device_offset if self.single_container_flag else 0,
+                    devices_per_endpoint=self.parallel_config.local_world_size
+                    if self.enable_multi_endpoints
+                    else device_size,
+                )
             if plugin_device_ids:
                 logger.info("Pod Ascend plugin/env device ids: %s", ",".join(plugin_device_ids))
             if runtime_ids:
@@ -243,14 +259,21 @@ class NativeEngineService:
                 engine_log_path = env.get(SERVICE_ENGINE_LOG_PATH_ENV)
                 if use_endpoint_log_subdir and engine_log_path:
                     env[SERVICE_ENGINE_LOG_PATH_ENV] = f"{engine_log_path.rstrip('/')}/endpoint-{endpoint.id}"
-                if self.enable_multi_endpoints:
-                    device_ids_str = self._endpoint_visible_device_ids(env, i, device_size)
+                if self.enable_multi_endpoints or docker_role_ids:
+                    device_ids_str = self._endpoint_visible_device_ids(env, i, device_size, docker_role_ids)
+                    if docker_role_ids:
+                        env["ASCEND_VISIBLE_DEVICES"] = device_ids_str
+                        device_ids_str = a5_docker_runtime_device_ids(device_ids_str, docker_physical_ids)
+                        logger.info(
+                            "A5 Docker endpoint %s physical device IDs: %s",
+                            endpoint.id,
+                            env["ASCEND_VISIBLE_DEVICES"],
+                        )
+                    elif runtime_ids:
+                        # Device-plugin allocations may be narrower than the visible /dev nodes.
+                        env["ASCEND_VISIBLE_DEVICES"] = device_ids_str
                     logger.info("Device IDs: %s", device_ids_str)
                     env["ASCEND_RT_VISIBLE_DEVICES"] = device_ids_str
-                    # Slice must match chips this pod owns. Privileged containers see
-                    # every /dev/davinci*; VISIBLE is overwritten to the allocated slice.
-                    if runtime_ids:
-                        env["ASCEND_VISIBLE_DEVICES"] = device_ids_str
 
                 peer_ips = self._get_d2d_peer_ips(endpoint.id, d2d_peer_ips)
                 if d2d_peer_ips:
@@ -602,15 +625,24 @@ class NativeEngineService:
             and identity.port == int(endpoint.business_port)
         )
 
-    def _endpoint_visible_device_ids(self, env: dict, index: int, device_size: int) -> str:
+    def _endpoint_visible_device_ids(self, env: dict, index: int, device_size: int, docker_role_ids: list[str]) -> str:
         """Cards for one engine process.
 
-        --start --devices exports MOTOR_START_DEVICES with the user cards in
-        user order. Slice that list per endpoint the same way the logical
-        0,1,... path does (index * local_world_size). Host one-click inner
-        --start does not set the marker, so keep logical 0,1 after the
-        container remaps attached /dev/davinciN.
+        A5 Docker role ids already incorporate any explicit selection or offset.
+        For other deployments, preserve explicit --start --devices order, or
+        fall back to the device-plugin allocation and runtime device discovery.
         """
+        if docker_role_ids:
+            if not self.enable_multi_endpoints:
+                return ",".join(docker_role_ids)
+            return calc_endpoint_visible_device_ids(
+                index,
+                device_size,
+                self.parallel_config.local_world_size,
+                pod_physical_ids=docker_role_ids,
+                single_container_flag=False,
+                device_offset=0,
+            )
         start_devices = (env.get("MOTOR_START_DEVICES") or "").strip()
         if start_devices:
             return self._slice_start_devices(start_devices, index)

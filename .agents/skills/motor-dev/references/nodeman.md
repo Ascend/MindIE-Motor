@@ -253,11 +253,21 @@ HCCL data.
 - Source order: `MOTOR_START_DEVICES` (host `--start --devices`, user order) →
   `ASCEND_ALLOCATED_DEVICES` → `/dev/davinci*` / `ASCEND[_RT]_VISIBLE_DEVICES`
   (`core/services/native_engine/ascend_device_ids.py`).
-- Single-container mode ignores discovered nodes and reports `device_offset + 0..device_num-1`.
+- Without an A5 Docker mapping, single-container mode ignores discovered nodes and reports
+  `device_offset + 0..device_num-1`.
 - The id count must equal the **configured** `device_num` and be distinct; otherwise the field is
   omitted (warning only) and registration proceeds — never block registration on device discovery.
-- `NativeEngineService` slices the same list per endpoint for `ASCEND_RT_VISIBLE_DEVICES`, so the
-  Controller's ownership and the engine's actual cards cannot drift.
+- On A5 Docker, the deployer records the sorted physical mounts in `MOTOR_A5_DOCKER_PHYSICAL_IDS`.
+  Registration and launch use the same role allocation. They take the first `device_num` cards in
+  `MOTOR_START_DEVICES` order when explicitly set. Otherwise they take `device_num` mounted cards
+  starting at the role's `device_offset`. The start defaults to zero when the offset is unset or in
+  a dedicated container. The selected cards keep their endpoint assignment and are sorted within
+  each endpoint to match CANN's ascending logical device order.
+  Additional devices remain mounted for communication and stay outside the compute selection.
+- `NativeEngineService` slices the allocation per endpoint. On A5 Docker, it translates the
+  selected physical IDs to container-local indices in `ASCEND_RT_VISIBLE_DEVICES`. When multi-endpoint
+  mode is disabled, the one worker receives the whole role allocation. An invalid A5 allocation
+  omits the physical IDs during registration and prevents native engine launch.
 
 ### Phase 2: Start Command and Native Launch
 
@@ -292,8 +302,9 @@ python3 -m sglang.launch_server <native SGLang arguments>
 
 No `engine_server` process is inserted by the Native Runtime path.
 
-Device pinning is applied by `NativeEngineService` when `enable_multi_endpoints` is enabled:
-`ASCEND_RT_VISIBLE_DEVICES` contains the endpoint's calculated local device range. `POD_IP` is
+Device pinning is applied by `NativeEngineService` when `enable_multi_endpoints` is enabled
+and in A5 Docker with a deployer-provided device mapping. `ASCEND_RT_VISIBLE_DEVICES` contains
+the selected runtime device IDs. `POD_IP` is
 used as the default `VLLM_HOST_IP` when it is not already set. When the Mooncake IPv6 experiment is
 enabled, `MC_USE_IPV6=1` is supplied unless the environment already defines it.
 

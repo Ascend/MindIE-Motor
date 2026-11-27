@@ -1654,9 +1654,18 @@ def _device_env_lines(devices: str | None) -> list[str]:
     visible = start_devices_marker(devices)
     if not visible:
         return []
+    attached = os.environ.get(C.A5_DOCKER_PHYSICAL_IDS_ENV)
+    runtime_visible = visible
+    if attached:
+        physical_ids = attached.split(",")
+        try:
+            runtime_ids = sorted(physical_ids.index(card) for card in visible.split(","))
+            runtime_visible = ",".join(map(str, runtime_ids))
+        except ValueError as exc:
+            raise ValueError(f"--devices {visible} must be a subset of the attached A5 cards ({attached}).") from exc
     return [
         f'export ASCEND_VISIBLE_DEVICES="{visible}"',
-        f'export ASCEND_RT_VISIBLE_DEVICES="{visible}"',
+        f'export ASCEND_RT_VISIBLE_DEVICES="{runtime_visible}"',
         # Only --start --devices sets this. Host one-click inner --start does not
         # forward --devices, so NodeManager keeps slicing logical 0,1.
         f'export MOTOR_START_DEVICES="{visible}"',

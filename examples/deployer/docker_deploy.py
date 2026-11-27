@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 
 import lib.constant as C
 import lib.docker_utils as D
-from lib.a5_host_nic import apply_a5_host_nic_privileged
 from lib.docker_utils import (
     logger,
     read_json,
@@ -872,6 +871,26 @@ def _require_host_binds(template: str, env: dict[str, str] | None = None) -> Non
         )
 
 
+def _require_a5_host_devices(template: str) -> None:
+    """Check selected A5 device mappings before replacing any containers."""
+    missing: list[str] = []
+    for line in template.splitlines():
+        entry = line.strip().rstrip("\\").strip()
+        if not entry.startswith(("--device ", "--device=")):
+            continue
+        path = entry[len("--device") + 1 :].strip().split(":", 1)[0]
+        try:
+            mode = os.stat(path).st_mode
+        except OSError:
+            mode = 0
+        if not (stat.S_ISCHR(mode) or stat.S_ISDIR(mode)):
+            missing.append(path)
+    if missing:
+        raise ValueError(
+            "A5 Docker device path(s) unavailable: %s. Check the host driver and --devices." % ", ".join(missing)
+        )
+
+
 def _enter_line_is_weight(line: str) -> bool:
     stripped = line.strip().rstrip("\\").strip()
     return stripped.startswith("-e WEIGHT=") or (stripped.startswith("-v ") and "$WEIGHT" in stripped)
@@ -1491,17 +1510,15 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
                 hardware_type=hardware_type,
                 template_fallback=True,
             )
-            before = command
-            command = apply_a5_host_nic_privileged(
-                command,
-                hardware_type,
-                env_config_path,
-                attach_npu=attach_npu,
-            )
-            if command != before:
-                logger.info(
-                    "A5 host-nic overlay: --privileged enabled "
-                    "(AGRC uboe/ub_ctp/ub_rtp; UBOE=Ascend950, same-host UBG=Ascend950-Pod16)"
+            if hardware_type in C.HARDWARE_TYPE_A5:
+                _require_a5_host_devices(command)
+                physical_ids = sorted(
+                    card
+                    for line in command.splitlines()
+                    if (card := _enter_davinci_id(line.strip().rstrip("\\").strip())) is not None
+                )
+                command = insert_docker_env(
+                    command, C.A5_DOCKER_PHYSICAL_IDS_ENV, ",".join(str(card) for card in physical_ids)
                 )
     except ValueError as exc:
         logger.error("%s", exc)
@@ -1715,8 +1732,9 @@ def parse_arguments() -> argparse.Namespace:
         "ENTER_DOCKER_RUN_A5 (davinci0-7 plus A5 UB paths), or ENTER_DOCKER_RUN_A5_POD16 (davinci0-15) from hardware_type "
         "(every card in that template, or only --devices if passed). "
         "UBOE: hardware_type=Ascend950 and env.json AGRC uboe:device or ub_ctp:device "
-        "(adds --privileged; pass --nic-name on --start). roce:device does not. "
+        "(pass --nic-name on --start). "
         "Same-host UBG: Ascend950-Pod16 and ub_rtp:device. "
+        "A5 engines use the template's explicit device mappings. "
         "Does not write EXAMPLES or CONFIG_DIR into the container; "
         "--start must pass --config_dir again. "
         "Passes NAME into the container so --start workspaces split by container name.",

@@ -34,8 +34,11 @@ from motor.config.node_manager import NodeManagerConfig
 from motor.node_manager.api_client.controller_api_client import ControllerApiClient
 from motor.node_manager.core.api_ready_event import wait_until_api_ready
 from motor.node_manager.core.services.native_engine.ascend_device_ids import (
+    A5_DOCKER_PHYSICAL_IDS_ENV,
     list_pod_device_ids,
     list_visible_device_ids,
+    parse_device_id_list,
+    select_a5_docker_physical_device_ids,
     slice_physical_device_ids,
 )
 
@@ -357,6 +360,19 @@ class RegisterManager(ThreadSafeSingleton):
         try:
             with self.config_lock:
                 single = self._config.single_container_config
+                basic = self._config.basic_config
+
+            mounted_ids = parse_device_id_list(os.environ.get(A5_DOCKER_PHYSICAL_IDS_ENV))
+            if mounted_ids:
+                return select_a5_docker_physical_device_ids(
+                    os.environ,
+                    mounted_ids,
+                    device_num,
+                    single.device_offset if single.single_container_flag else 0,
+                    devices_per_endpoint=basic.parallel_config.local_world_size
+                    if basic.enable_multi_endpoints
+                    else device_num,
+                )
 
             if single.single_container_flag:
                 device_offset = single.device_offset or 0

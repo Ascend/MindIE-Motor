@@ -11,11 +11,13 @@ import json
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -285,6 +287,95 @@ def test_auto_conductor_sidecar_preserves_probe_sources_and_direct_defaults(tmp_
             assert probe_ips[service] == ["192.0.2.11"]
         assert (f"--{service}-probe-ips" in inner) is (source == "cli")
     assert config_path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    ("hardware_type", "protocol", "devices"),
+    [
+        ("Ascend950", "uboe:device", "2,7"),
+        ("Ascend950", "ub_ctp:device", "2,7"),
+        ("Ascend950", "roce:device", "2,7"),
+        ("Ascend950-Pod16", "ub_rtp:device", "8,15"),
+    ],
+)
+@pytest.mark.parametrize("start_service", [False, True])
+def test_a5_docker_create_maps_only_selected_npus(tmp_path, hardware_type, protocol, devices, start_service):
+    env_path = tmp_path / "env.json"
+    env_path.write_text(
+        json.dumps(
+            {
+                "motor_engine_prefill_env": {
+                    "ASCEND_GLOBAL_RESOURCE_CONFIG": json.dumps({"comm_resource_config.protocol_desc": [protocol]}),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(
+        config_dir=None, user_config_path=None, env_config_path=None, role="prefill", devices=devices
+    )
+    with (
+        patch.object(
+            docker_deploy,
+            "resolve_enter_env",
+            return_value={"NAME": "motor-a5", "IMAGE": "img", "EXAMPLES": str(tmp_path), "WEIGHT": ""},
+        ),
+        patch.object(docker_deploy, "resolve_config_paths", return_value=(str(env_path), str(env_path))),
+        patch.object(docker_deploy, "_validate_host_create"),
+        patch.object(docker_deploy, "_validate_one_click_identity"),
+        patch.object(D, "require_pod_ip_and_nic"),
+        patch.object(D, "validate_attached_npu_count"),
+        patch.object(docker_deploy, "_hardware_type_from_args", return_value=hardware_type),
+        patch.object(docker_deploy, "_dshm_size_from_args", return_value=None),
+        patch.object(docker_deploy, "_require_host_binds"),
+        patch.object(docker_deploy, "_require_a5_host_devices") as validate_devices,
+        patch.object(docker_deploy, "_replace_occupied_host_containers"),
+        patch.object(docker_deploy, "_ensure_kv_conductor_sidecar_on_host", return_value=(0, None)),
+        patch.object(docker_deploy, "_ensure_render_sidecar_on_host", return_value=(0, None)),
+        patch.object(docker_deploy, "build_in_place_inner_command", return_value="run-test"),
+        patch.object(os, "execvpe") as execute,
+    ):
+        docker_deploy._run_enter(args, str(DEPLOYER_ROOT), start_service=start_service)
+
+    validate_devices.assert_called_once()
+    command = execute.call_args.args[1][2]
+    assert "--privileged" not in command
+    assert "--net=host" in command
+    assert "--device /dev/ummu" in command
+    assert "--device /dev/uburma" in command
+    assert f"-e ASCEND_VISIBLE_DEVICES={devices}" in command
+    assert f"-e {C.A5_DOCKER_PHYSICAL_IDS_ENV}={devices}" in command
+    mapped_ids = [
+        card_id
+        for line in command.splitlines()
+        if (card_id := docker_deploy._enter_davinci_id(line.strip().rstrip("\\").strip())) is not None
+    ]
+    assert mapped_ids == [int(card_id) for card_id in devices.split(",")]
+
+
+def test_a5_docker_start_converts_selected_physical_cards_to_container_indices(monkeypatch):
+    monkeypatch.setenv(C.A5_DOCKER_PHYSICAL_IDS_ENV, "2,4,7")
+    assert D._device_env_lines("7,2") == [
+        'export ASCEND_VISIBLE_DEVICES="7,2"',
+        'export ASCEND_RT_VISIBLE_DEVICES="0,2"',
+        'export MOTOR_START_DEVICES="7,2"',
+    ]
+    with pytest.raises(ValueError, match="must be a subset"):
+        D._device_env_lines("2,3")
+
+
+def test_a5_device_preflight_rejects_missing_and_regular_files():
+    template = "\n".join(f"--device=/dev/{name}" for name in ("davinci3", "davinci_manager", "ummu", "uburma"))
+    host_modes = {"/dev/davinci3": stat.S_IFCHR, "/dev/davinci_manager": stat.S_IFREG, "/dev/ummu": stat.S_IFDIR}
+
+    def device_stat(path):
+        if path not in host_modes:
+            raise FileNotFoundError(path)
+        return SimpleNamespace(st_mode=host_modes[path])
+
+    with patch.object(docker_deploy, "os", SimpleNamespace(stat=device_stat)):
+        with pytest.raises(ValueError, match=r"/dev/davinci_manager, /dev/uburma"):
+            docker_deploy._require_a5_host_devices(template)
 
 
 class DockerDeployTests(unittest.TestCase):

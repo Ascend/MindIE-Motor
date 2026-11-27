@@ -64,6 +64,7 @@ A5_HOST_PATH_VOLUMES_HOST_NIC = [
 #   UBG   → ub_rtp:device               (same overlay, plus K8s hostNetwork)
 # roce:device is intentionally absent: host RoCE must not select this overlay.
 A5_UBOE_RESOURCE_CONFIG_KEY = "ASCEND_GLOBAL_RESOURCE_CONFIG"
+A5_DOCKER_PHYSICAL_IDS_ENV = "MOTOR_A5_DOCKER_PHYSICAL_IDS"
 A5_UBG_PROTOCOL_TOKEN = "ub_rtp:device"  # nosec B105 -- protocol label, not a credential
 A5_HOST_NIC_PROTOCOL_TOKENS = (
     "uboe:device",

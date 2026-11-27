@@ -831,3 +831,28 @@ def test_registration_single_container_reports_offset_device_ids(register_manage
 
     assert msg.physical_device_ids == ["8", "9", "10", "11"]
     mock_pod_ids.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("mounted", "explicit", "single_container", "offset", "device_num", "expected"),
+    [
+        ("2,3,4,5,6,7", "", False, None, 4, ["2", "3", "4", "5"]),
+        ("2,4,6,7", "", True, None, 2, ["2", "4"]),
+        ("2,4,6,7", "", True, 2, 2, ["6", "7"]),
+        ("2,4,6,7", "7,6,4,2", False, None, 4, ["6", "7", "2", "4"]),
+        ("2,4,6,7", "", True, 3, 2, []),
+    ],
+)
+def test_registration_a5_docker_reports_role_physical_ids(
+    register_manager, monkeypatch, mounted, explicit, single_container, offset, device_num, expected
+):
+    _prepare_physical_device_config(register_manager, device_num=device_num)
+    single = register_manager._config.single_container_config
+    single.single_container_flag = single_container
+    single.device_offset = offset
+    monkeypatch.setenv("MOTOR_A5_DOCKER_PHYSICAL_IDS", mounted)
+    monkeypatch.setenv("MOTOR_START_DEVICES", explicit)
+
+    msg = register_manager._gen_register_msg()
+
+    assert msg.physical_device_ids == expected

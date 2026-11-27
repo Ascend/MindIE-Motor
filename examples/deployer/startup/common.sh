@@ -393,7 +393,10 @@ set_a5_engine_env() {
     # Physical IDs from the device plugin. HIXL loads ub_endpoint_npu_<id>.json
     # from ASCEND_RT_VISIBLE_DEVICES; if that is unset it uses logical IDs 0,1
     # and creates endpoints for the wrong cards.
-    if [ -n "${ASCEND_VISIBLE_DEVICES:-}" ] && [ -z "${ASCEND_RT_VISIBLE_DEVICES:-}" ]; then
+    # A5 Docker containers expose only the selected devices. CANN indexes those
+    # cards locally, so do not feed it physical IDs from the Docker allocation.
+    if [ -z "${MOTOR_A5_DOCKER_PHYSICAL_IDS:-}" ] && [ -n "${ASCEND_VISIBLE_DEVICES:-}" ] && \
+        [ -z "${ASCEND_RT_VISIBLE_DEVICES:-}" ]; then
         export ASCEND_RT_VISIBLE_DEVICES="$ASCEND_VISIBLE_DEVICES"
     fi
 }
