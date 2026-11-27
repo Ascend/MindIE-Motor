@@ -17,10 +17,10 @@ The inference engine is responsible for Device-side suspend and resume; Motor is
 |------|----------|
 | Hardware | <ul><li>Atlas 800I A2</li><li>Atlas 800I A3</li></ul>Container snapshots of the Atlas 800I A2 can be shared only between machines of the same chip generation. |
 | Automatic management mode | Only the default K8s + MindCluster CRD deployment mode with the containerd container runtime is supported. |
-| Inference engine | It must support Device snapshot saving and restoration and provide suspend and resume interfaces. Currently, only vLLM is supported. |
-| Feature mutual exclusion | Hot update of the Node Manager configuration is not supported after container snapshot is enabled. |
+| Inference engine | Device snapshot save and restore must be supported, and the suspend and resume interfaces must be provided. Currently, the container snapshot feature supports only the vLLM 0.30.0 and vLLM-Ascend 0.30.0 combination. |
+| Feature mutual exclusion | After container snapshot is enabled, it cannot be used together with Node Manager configuration hot update, DP domain scale-down, KV pooling, or P2P direct weight transfer. |
 | Operating system | openEuler 24.03 and later versions, and HCE 3.0 are supported. The openEuler-customized CRIU 3.19 must be preinstalled. |
-| Storage | The container Host snapshot image save directory must not be mounted into the container. The runtime model weight directory must be mounted into the container and remain accessible during snapshot creation and restoration. |
+| Storage | The directory for saving container Host snapshot images cannot be mounted into the container. The runtime model weight directory must be mounted into the container and must remain accessible during snapshot creation and restoration. |
 
 ## Feature Usage
 
@@ -30,7 +30,7 @@ Before enabling container snapshot, complete the following preparations:
 
 1. Confirm that the node operating system meets the requirements, and install the openEuler-customized CRIU 3.19 from source on the node.
 
-   1. Install the compilation dependencies:
+   a. Install the compilation dependencies:
 
       ```bash
       dnf --setopt=sslverify=false install -y \
@@ -46,7 +46,7 @@ Before enabling container snapshot, complete the following preparations:
           xmlto
       ```
 
-   2. Download the openEuler-customized CRIU 3.19 source code, and compile and install it:
+   b. Download the openEuler-customized CRIU 3.19 source code, and compile and install it:
 
       ```bash
       git clone https://atomgit.com/src-openeuler/criu.git
@@ -66,7 +66,7 @@ Before enabling container snapshot, complete the following preparations:
       cp /root/rpmbuild/BUILD/criu-3.19/plugins/npu/npu_plugin.so /usr/lib/criu/
       ```
 
-   3. Check the CRIU version to confirm that the installation is successful:
+   c. Check the CRIU version to confirm that the installation is successful:
 
       ```bash
       criu --version
@@ -110,7 +110,7 @@ The user needs to configure the following in `user_config.json`:
 | Configuration Item | Type | Mandatory | Default Value | Description |
 |--------|------|------|--------|------|
 | enable_snapshot | bool | Yes | `false` | Master switch for container snapshots. When this field is set to `false`, all other fields do not take effect. |
-| host_snapshot_image_path | string | Yes | None | Host save directory for the container Host snapshot image, which must be an absolute path. Snapshots in this directory are named after the namespace of the current service. This directory must not be mounted into the container, and must not be the same as or a parent or child directory of `mnt_mount_path`. |
+| host_snapshot_image_path | string | Yes | None | Host directory for saving container Host snapshot images. It must be an absolute path in shared storage. Snapshots are named after the namespace of the current service in this directory. This directory cannot be mounted into the container, and cannot be the same as `mnt_mount_path` or a parent or child directory of it. |
 | mnt_mount_path | string | Yes | None | Host path and container mount path of the `mnt` volume, which must be an absolute path and must not overlap with `host_snapshot_image_path`. |
 | device_snapshot_weight_path | string | Yes | None | Host save directory for Device runtime model weights, which must be an absolute path. Snapshot weights in this directory are named by combining the model weight name, the number of DPs, and the number of TPs; inside the container, they are always mounted to `/snapshot/weight`. |
 
@@ -141,7 +141,7 @@ Each time the service is created or restarted, the deployment environment checks
 
 #### Scenario 2: Other Deployment Modes
 
-Other deployment modes do not automatically generate deployment YAML templates through `deploy.py`, and the script does not perform checkpoint, restore, or snapshot file management. The deployment platform must integrate the following process. If the deployment platform does not provide automatic management capabilities, the user must complete the process manually. The following uses the GRUS tool as an example.
+Motor maintains the parameters required for checkpoint and restore through a snapshot metadata file mounted into the container, and provides a status query interface to determine whether an instance has reached the steady state at which checkpoint can be executed, and whether it has become ready again after restoration from a snapshot. Other deployment platforms can integrate the container snapshot feature by maintaining the snapshot metadata file, querying instance status, and orchestrating the snapshot creation and restoration process. The specific process is as follows.
 
 1. Create a snapshot metadata file and mount it to the instance container. The file must be a valid JSON object, and its initial content can be empty.
 
@@ -178,19 +178,13 @@ Other deployment modes do not automatically generate deployment YAML templates t
    }
    ```
 
-4. After the instance cold-starts, query the Node Manager status to confirm whether the instance has reached the steady state at which checkpoint can be executed.
+4. After the instance is cold-started, run the readiness probe provided by the Motor deployer in each pod of the instance to confirm that all pods have reached the steady state at which checkpoint can be executed. According to the pod role, replace `<role>` in the following command with `decode`, `prefill`, or `union`.
 
    ```bash
-   curl http://{instance-ip}:{node-manager-management-port}/node-manager/status
+   bash /path/to/deployer/probe/probe.sh readiness <role>
    ```
 
-   When the interface returns HTTP 200 and the response is `{"status": true}`, use GRUS to perform the Host-side checkpoint and save the container Host snapshot image:
-
-   ```bash
-   curl -sS -N --unix-socket /var/run/grus/grus.sock \
-     -X POST "http://localhost/checkpoint" \
-     -d "container_id={container-id}&location={host-snapshot-image-path}"
-   ```
+   When the readiness probes of all pods succeed (the exit code is `0`), the instance has reached the steady state. At this point, you can perform a Host-side checkpoint on the target container in each pod of the instance separately, and save the corresponding Host snapshot image.
 
 5. After the checkpoint is completed, set `checkpoint` to `"done"` in the snapshot metadata file. After detecting this state, the inference engine releases the Device lock, and the instance resumes providing inference services.
 
@@ -201,23 +195,7 @@ Other deployment modes do not automatically generate deployment YAML templates t
    }
    ```
 
-6. When the container needs to be restored from the snapshot, configure the GRUS RuntimeClass, the container Host snapshot image path, and the restoration flag in the YAML of the instance to be restored. The following shows only the related configurations.
-
-   ```yaml
-   spec:
-     template:
-       spec:
-         runtimeClassName: grus
-         containers:
-         - name: <container-name>
-           env:
-           - name: GRUS_SNAPSHOT_IMAGE_PATH
-             value: "/path/to/host-snapshot-image"
-           - name: GRUS_SNAPSHOT_RESTORED_FLAG
-             value: "true"
-   ```
-
-7. Before performing restore, supplement the information required for restoration in the snapshot metadata file.
+6. Before restoring the instance from the Host snapshot image, add the configuration information required for inference engine restoration to the snapshot metadata file. If the required configuration is not complete, the inference engine keeps retrying until the configuration is complete and then continues restoration.
 
    ```json
    {
@@ -232,13 +210,13 @@ Other deployment modes do not automatically generate deployment YAML templates t
 
    Configure `namespace` or `controller_ip` according to the Controller communication mode: configure `namespace` when the in-cluster Controller DNS is used; when IP communication is used, replace `namespace` in the preceding example with `"controller_ip": "<controller-ip>"`. `data_parallel_master_ip` can be omitted, and Node Manager writes it after receiving the address delivered by the Controller.
 
-8. After the container is restored, query the Node Manager status.
+7. The deployment platform performs restoration using the corresponding Host snapshot image. After the container in each pod of the instance is restored, run the readiness probe in each pod to confirm whether the instance has been restored and is ready. The values of `<role>` are the same as those in step 4.
 
    ```bash
-   curl http://{instance-ip}:{node-manager-management-port}/node-manager/status
+   bash /path/to/deployer/probe/probe.sh readiness <role>
    ```
 
-   When the interface returns HTTP 200 and the response is `{"status": true}`, the instance has been restored and is ready.
+   When the readiness probes of all pods succeed (the exit code is `0`), the instance has been restored and is ready.
 
    > [!NOTE] Note
    > An instance cannot provide inference services during the checkpoint. Before `checkpoint` is updated to `"done"`, Node Manager does not report normal heartbeats.

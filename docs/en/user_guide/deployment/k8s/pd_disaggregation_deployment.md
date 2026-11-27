@@ -1,19 +1,10 @@
 # PD-Disaggregated Deployment (Based on the vLLM Inference Engine)
 
-This document guides developers through deploying PD disaggregation in a Kubernetes environment based on the vLLM inference engine of MindIE Motor, and provides best-practice guidance for configuration optimization in production environments. If the underlying inference engine is SGLang, see [PD Disaggregation Service Deployment (Based on the SGLang Inference Engine)](./pd_disaggregation_sglang.md).
+This document guides developers through deploying PD disaggregation in a Kubernetes environment based on the vLLM inference engine of MindIE Motor, and provides best-practice guidance for configuration optimization in production environments.
 
-## Environment Pre-Check
+## Preparations
 
-When you deploy an inference service on Ascend 950PR&950DT products, you need to prepare the **hixlep configuration path**. (Skip this step for other hardware products.)
-
-On each server, check whether the `/lib/route.conf` and `/etc/hccl_rootinfo.json` configuration files and the `/etc/hixlep` directory (UB link topology) exist and are correct. If they do not exist or are incorrect, refer to the [hixlep Configuration File Generation Guide](https://gitcode.com/cann/hixl/wiki/A5%20LocalCommRes%E9%85%8D%E7%BD%AE%E6%8C%87%E5%8D%97.md) to generate the corresponding content, and use the "D2D scenario" when generating `/etc/hixlep`.
-
-## Obtaining the Startup Script
-
-1. Prepare the environment as follows.
-   - Prepare inference servers with sufficient storage for the model weights.
-   - Complete [Environment Setup](../../environment_preparation.md) on all servers.
-   - Download the model weights and save them to a path accessible from the servers.
+1. All servers have completed [Environment Setup](../../environment_preparation.md).
 
 2. Prepare the image.
 
@@ -59,41 +50,49 @@ On each server, check whether the `/lib/route.conf` and `/etc/hccl_rootinfo.json
 
    - Method 2: Installing MindIE Motor in an existing image
 
-     After cloning the code repository with git clone, the startup script is located in the `MindIE-Motor/examples` directory.
+     After cloning the code repository with git clone, the startup script is located in the `/examples` directory.
 
-    The structure of the `examples` directory is as follows:
+## Obtaining the Configuration
 
-    ```text
-    examples/
-    ├── deployer/                  # Deployment tool directory
-    │   ├── deploy.py              # Deployment entry script
-    │   ├── delete.sh              # Uninstallation script
-    │   ├── show_log.sh            # Log viewing script
-    │   ├── README.md              # Deployment tool usage instructions
-    │   ├── yaml_template/         # K8s YAML template
-    │   ├── startup/               # Startup script
-    │   ├── probe/                 # Probe script
-    │   ├── log_collect/           # Log collection
-    │   └── output_yamls/          # Generated YAML output directory
-    └── model_configs/             # Configuration examples for each engine
-        └── vllm/                  # vLLM engine configuration
-            ├── user_config.json   # User configuration
-            ├── env.json           # Environment variable configuration
-            └── models/            # Model-specific configuration
-    ```
+1. MindIE Motor provides configuration examples for common models in the following table (DeepSeek-V4.1-Flash, GLM-5.2, GLM-5.3, and others). **Users can use them directly after modifying a small amount of configuration.**
 
-    >[!NOTE] Note
-    >
-    >- The configuration files are located in the `examples/model_configs` directory. Select the corresponding configuration based on the engine type and model.
-    >- For details about how to use the deployment tool, see `examples/deployer/README.md`.
+    <table>
+        <tr><th style="font-size:18px" align="center" colspan="4">Common Models</th></tr>
+        <tr>
+          <th align="left">Model</th>
+          <th align="center">Atlas 800I A2</th>
+          <th align="center">Atlas 800I A3 Super Node</th>
+          <th align="center">Atlas 950 Series Server</th>
+        </tr>
+        <tr><td>DeepSeek-V4.1-Flash </td><td align="center"><a href="../../../../../model_configs/vllm/models/deepseek_v4.1_flash/A2">A2</a></td><td align="center"><a href="../../../../../model_configs/vllm/models/deepseek_v4.1_flash/A3">A3</a></td><td align="center"><a href="../../../../../model_configs/vllm/models/deepseek_v4.1_flash/A5">A5</a></td></tr>
+        <tr><td>GLM-5.3-Flash </td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.3_flash/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.3_flash/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.3_flash/A5">A5</a></td></tr>
+        <tr><td>GLM-5.2 </td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.2/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.2/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.2/A5">A5</a></td></tr>
+        <tr><td>GLM-5.3 </td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.3/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.3/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.3/A5">A5</a></td></tr>
+        <tr><td>DeepSeek-V4-Flash </td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/deepseek_v4_flash/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/deepseek_v4_flash/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/deepseek_v4_flash/A5">A5</a></td></tr>
+        <tr><td>GLM-5.1 </td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.1/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.1/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5.1/A5">A5</a></td></tr>
+        <tr><td>DeepSeek-V3.1</td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/deepseek_v3.1/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/deepseek_v3.1/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/deepseek_v3.1/A5">A5</a></td></tr>
+        <tr><td>DeepSeek-V4-Pro</td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/deepseek_v4_pro/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/deepseek_v4_pro/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/deepseek_v4_pro/A5">A5</a></td></tr>
+        <tr><td>GLM-5</td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5/A3">A3</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/glm_5/A5">A5</a></td></tr>
+        <tr><td>Qwen3-235B</td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/qwen_235b/A2">A2</a></td><td align="center"><a href="https://gitcode.com/Ascend/MindIE-Motor/tree/v3.2.0/model_configs/vllm/models/qwen_235b/A3">A3</a></td><td align="center">—</td></tr>
+      </table>
 
-## Generating the Configuration Files
+        For models without a typical configuration, refer to the [MindIE Motor Configuration Auto-Generation Guide](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.2.0/model_configs/vllm/models/README.md) to automatically generate the `user_config.json` and `env.json` configuration files.
 
-Refer to the [MindIE Motor Configuration Auto-Generation Guide](../../../../../model_configs/vllm/models/README.md) to automatically generate the `user_config.json` and `env.json` configuration files.
+2. Save the configuration to the server.
+
+   Go to the `examples` directory, paste the `user_config.json` and `env.json` from the selected model directory into the `./config` directory, modify them as needed, and save them:
+
+   ```bash
+   cd /examples
+   mkdir -p ./config
+   # Paste user_config.json and env.json from the selected model directory into ./config
+   vim ./config/user_config.json
+   vim ./config/env.json
+   ```
 
 ## Deploying and Verifying the Service
 
-Perform the following operations on the master node of the K8s cluster.
+Perform the following operations on the **master node of the K8s cluster**.
 
 1. Run the following commands to start the service.
 
@@ -107,58 +106,49 @@ Perform the following operations on the master node of the K8s cluster.
     python3 deploy.py --config_dir ../../model_configs/vllm
     ```
 
-    >[!NOTE] Note
-    >- Image and weights: Ensure that image_name can be pulled normally within the cluster and that `weight_mount_path` exists on the host.
-    >- Deployment failure: You can first uninstall the current service using the termination command in step 5, then troubleshoot and modify the configuration, and then redeploy.
-    >- Weight loading timeout: In some vLLM versions, weight loading that takes longer than about 10 minutes may report a `timeout`, which usually does not affect program running. The description for the image/engine version in use takes precedence.
-    >- Instance rescheduling constraint: The instance rescheduling capability depends on MindCluster. When a P/D instance contains multiple Pods, deleting one Pod directly does not trigger instance rescheduling.
-    >- Impact of Prefix Cache on performance testing: Prefix Cache is enabled by default. If you need baseline performance data, add the following to the engine_config parameter block:
-    >   - vLLM inference engine: "no-enable-prefix-caching": true
-    >   - SGLang inference engine: "disable_radix_cache": true
-
 2. Run the following command to view the service status.
 
-   ```bash
-   # View the Pod status: <namespace> must be the same as job_id above
-   kubectl get pods -n <namespace> -o wide
-   ```
+    ```bash
+    # View the Pod status: <namespace> must be the same as job_id above
+    kubectl get pods -n <namespace> -o wide
+    ```
 
-   The names of the Pods/Deployments in the command output may vary with the template and engine_type. Identify them as follows:
+    The names of the Pods/Deployments in the command output may vary with the template and engine_type. Identify them as follows:
 
-   | Runtime Type | Description |
-   | --- | --- |
-   | mindie-motor-controller-xxxxx | Service management Pod, which monitors the health status of each instance. |
-   | mindie-motor-coordinator-xxxx | Request scheduling Pod, which serves as the entry point for service requests. |
-   | vllm-dx-xxxx | D instance Pod, which handles Decode inference. |
-   | vllm-px-xxxx | P instance Pod, which handles Prefill inference. |
+    | Runtime Type | Description |
+    | --- | --- |
+    | mindie-motor-controller-xxxxx | Service management Pod, which monitors the health status of each instance. |
+    | mindie-motor-coordinator-xxxx | Request scheduling Pod, which serves as the entry point for service requests. |
+    | vllm-dx-xxxx | D instance Pod, which handles Decode inference. |
+    | vllm-px-xxxx | P instance Pod, which handles Prefill inference. |
 
-   A Pod status of `Running` only indicates that the Pod has been successfully scheduled and started; whether the service is ready still needs to be further confirmed based on the logs.
+    A Pod status of `Running` only indicates that the Pod has been successfully scheduled and started; whether the service is ready still needs to be further confirmed based on the logs.
 
 3. Run the following commands to view logs.
 
-   ```bash
-   # Edit log_collect/log_config.ini: change name_space to a namespace with the same name as job_id
-   vim log_collect/log_config.ini
-   # Collect and continuously follow logs: output directory log_collect/log/
-   bash show_log.sh
-   ```
+    ```bash
+    # Edit log_collect/log_config.ini: change name_space to a namespace with the same name as job_id
+    vim log_collect/log_config.ini
+    # Collect and continuously follow logs: output directory log_collect/log/
+    bash show_log.sh
+    ```
 
 4. Run the following command to verify the service.
 
-   ```bash
-   # Replace the placeholders: <master_node_ip> is the master node IP, and <served_model_name> is the value of the served_model_name field in user_config.json
-   curl -X POST http://<master_node_ip>:31015/v1/chat/completions \
-     -H "Content-Type: application/json" \
-     -d '{
-       "model": "<served_model_name>",
-       "messages": [{"role": "user", "content": "who are you?"}],
-       "max_tokens": 36,
-       "stream": true
-     }'
-   ```
+    ```bash
+    # Replace the placeholders: <master_node_ip> is the master node IP, and <served_model_name> is the value of the served_model_name field in user_config.json
+    curl -X POST http://<master_node_ip>:31015/v1/chat/completions \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "<served_model_name>",
+        "messages": [{"role": "user", "content": "who are you?"}],
+        "max_tokens": 36,
+        "stream": true
+      }'
+    ```
 
-   - If `{"detail":"Service is not available"}` is returned, the service is not ready yet, which is usually because the P/D or the Coordinator is not fully ready. Wait and retry, and check the logs of each Pod.
-   - If streaming JSON is returned, inference is working properly. For more interfaces, see [Service Interfaces](../../api/service_interfaces.md).
+    - If `{"detail":"Service is not available"}` is returned, the service is not ready yet, which is usually because the P/D or the Coordinator is not fully ready. Wait and retry, and check the logs of each Pod.
+    - If streaming JSON is returned, inference is working properly. For more interfaces, see [Service Interfaces](../../api/service_interfaces.md).
 
 5. Run the following command to terminate the service.
 
@@ -169,7 +159,7 @@ Perform the following operations on the master node of the K8s cluster.
 
 ## Feature Configuration
 
-The user_config.json and env.json configuration files generated in [Generating the Configuration Files](#generating-the-configuration-files) have the following capabilities enabled by default: master/standby switchover, abnormal instance restart, service rate limiting, KV Cache affinity scheduling, KV pooling, and other capabilities. If you only need to adjust one of these capabilities, make the minimal configuration change described in this section.
+The user_config.json and env.json configuration files generated in [Obtaining the Configuration](#obtaining-the-configuration) have the following capabilities enabled by default: master/standby switchover, abnormal instance restart, service rate limiting, KV Cache affinity scheduling, KV pooling, and other capabilities. If you only need to adjust one of these capabilities, make the minimal configuration change described in this section.
 
 ### Master/Standby Switchover
 

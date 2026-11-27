@@ -74,6 +74,8 @@
 
   - [ScaleP2D Fault Recovery](./features/fault_tolerance/scale_p2d.md)
 
+  - [DP Domain Scale-In](./features/fault_tolerance/dp_scale_down.md)
+
   - [Container Snapshot](./features/container_snapshot.md)
 
   - [D2D Weight Loading](./features/startup_acceleration.md)

@@ -18,7 +18,7 @@
 | 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li></ul>Atlas 800I A2推理服务器容器的快照只能在相同芯片代际的机器间共享。 |
 | 自动管理模式 | 仅支持使用 containerd 容器运行时的默认 K8s + MindCluster CRD 部署模式。 |
 | 推理引擎 | 必须支持 Device 快照保存与恢复，并提供 suspend 和 resume 接口，当前容器快照功能仅支持 vLLM 0.30.0 与 vLLM-Ascend 0.30.0 的配套组合。 |
-| 特性互斥 | 启用容器快照后不支持与 Node Manager 配置热更新、[DP域缩容](./fault_tolerance/dp_scale_down.md)、KV 池化、P2P 权重直传特性叠加。 |
+| 特性互斥 | 启用容器快照后不支持与 Node Manager 配置热更新、DP域缩容、KV 池化、P2P 权重直传特性叠加。 |
 | 操作系统 | 支持 openEuler 24.03 及之后版本和 HCE 3.0，需预装openEuler定制版 CRIU 3.19。 |
 | 存储 | 容器 Host 快照镜像保存目录不能挂载到容器内。运行时模型权重目录必须挂载到容器内，并在制作和恢复阶段保持可访问。 |
 
@@ -30,7 +30,7 @@
 
 1. 确认节点操作系统满足要求，并在节点上通过源码安装 openEuler 定制版 CRIU 3.19。
 
-   1. 安装编译依赖：
+   a. 安装编译依赖：
 
       ```bash
       dnf --setopt=sslverify=false install -y \
@@ -46,7 +46,7 @@
           xmlto
       ```
 
-   2. 下载 openEuler 定制版 CRIU 3.19 源码并完成编译安装：
+   b. 下载 openEuler 定制版 CRIU 3.19 源码并完成编译安装：
 
       ```bash
       git clone https://atomgit.com/src-openeuler/criu.git
@@ -66,7 +66,7 @@
       cp /root/rpmbuild/BUILD/criu-3.19/plugins/npu/npu_plugin.so /usr/lib/criu/
       ```
 
-   3. 查看 CRIU 版本，确认安装成功：
+   c. 查看 CRIU 版本，确认安装成功：
 
       ```bash
       criu --version

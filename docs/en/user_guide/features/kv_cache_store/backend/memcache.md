@@ -2,7 +2,7 @@
 
 ## Feature Introduction
 
-MemCache is the default pooled backend of MindIE Motor. It provides efficient KV pooling capabilities based on [memcache_hybrid](https://gitcode.com/Ascend/memcache) and is preinstalled in the MindIE Motor image, requiring no additional installation. The pooling mechanism enables KV cache reuse across requests, improving the cache hit rate, reducing inference TTFT, eliminating repeated computation, and increasing inference throughput.
+MemCache is the default pooling backend of MindIE Motor. Built on memcache_hybrid, it provides efficient KV pooling capabilities and is pre-installed in the MindIE Motor image, requiring no additional installation. The pooling mechanism enables KV cache reuse across requests, improving the cache hit rate, reducing inference Time To First Token (TTFT), eliminating redundant computation, and increasing inference throughput. For parameter plane pooling deployment in cross-supernode scenarios where parameter plane data is transmitted over the 1825 NIC, the UB_RTP protocol, or the UBoE protocol, respectively see [950 Series Server Cross-Supernode Scenario MemCache Pooling Backend Service Deployment Guide](../../../../../zh/user_guide/features/kv_cache_store/backend/memcache_950.md).
 
 ### Working Principle
 

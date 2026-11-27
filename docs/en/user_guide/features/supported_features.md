@@ -69,7 +69,7 @@
       <td>KV pooling capability deployment</td>
       <td>🟢</td>
       <td>✅</td>
-      <td>✅</td>
+      <td>❌</td>
       <td>✅</td>
       <td>✅</td>
       <td><a href="./kv_cache_store/README.md">Link</a></td>
@@ -121,11 +121,11 @@
       <td><a href="./startup_acceleration.md">Link</a></td>
     </tr>
     <tr>
-      <td rowspan="7">Fault and Recovery</td>
+      <td rowspan="8">Fault and Recovery</td>
       <td>Request rescheduling</td>
       <td>🟢</td>
       <td>✅</td>
-      <td>✅</td>
+      <td>❌</td>
       <td>✅</td>
       <td>❌</td>
       <td><a href="./fault_tolerance/rescheduler.md">Link</a></td>
@@ -144,7 +144,7 @@
       <td>🟢</td>
       <td>✅</td>
       <td>✅</td>
-      <td>❌</td>
+      <td>✅</td>
       <td>✅</td>
       <td>This feature takes effect by default</td>
     </tr>
@@ -152,10 +152,19 @@
       <td>ScaleP2D fault recovery</td>
       <td>🟢</td>
       <td>✅</td>
-      <td>✅</td>
+      <td>❌</td>
       <td>✅</td>
       <td>❌</td>
       <td><a href="./fault_tolerance/scale_p2d.md">Link</a></td>
+    </tr>
+    <tr>
+      <td>DP Domain Scale-In</td>
+      <td>🟢</td>
+      <td>✅</td>
+      <td>❌</td>
+      <td>✅</td>
+      <td>❌</td>
+      <td><a href="./fault_tolerance/dp_scale_down.md">Link</a></td>
     </tr>
     <tr>
       <td>Active/standby switchover feature</td>
@@ -170,7 +179,7 @@
       <td>Virtual inference health probe</td>
       <td>🟢</td>
       <td>✅</td>
-      <td>❌</td>
+      <td>✅</td>
       <td>✅</td>
       <td>✅</td>
       <td><a href="./sim_inference.md">Link</a></td>
@@ -198,7 +207,7 @@
       <td>Tracing capability deployment</td>
       <td>🟢</td>
       <td>✅</td>
-      <td>✅</td>
+      <td>❌</td>
       <td>✅</td>
       <td>✅</td>
       <td><a href="./tracing.md">Link</a></td>

@@ -74,7 +74,7 @@ The virtual inference health probe provides the following core functions:
 | -------- | ------------------------------------------------------------------------------ |
 | Hardware     | <ul><li>Atlas 800I A2</li><li>Atlas 800I A3</li><li>Ascend950PR&950DT products</li></ul>               |
 | Deployment scenario | <ul><li>PD disaggregation service deployment</li><li>PD aggregation service deployment</li></ul>                                               |
-| Engine     | Only the vLLM engine is supported.                                                         |
+| Engine     | supports vLLM and SGLANG engines                                                |
 | Feature mutual exclusion | None                                                                             |
 | Software dependency | HDK 26.0.RC1 and later versions. The AI Cube Usage metric provided by `npu-smi info watch -s u` is required. |
 | Other constraints | The `ASCEND_GLOBAL_LOG_LEVEL` log level must be set to ERROR.                           |

@@ -166,7 +166,7 @@ The `kv_transfer_config` of Prefill uses `MultiConnector`, and the UCM configura
 
 Here, `storage_backends: "/mnt/ucm"` corresponds to the preceding `storage[].mount_path`, and `posix_capacity_gb` should be smaller than the actual available capacity of the storage volume.
 
-`connectors[0]` can also use another Mooncake transfer Connector currently recognized by MindIE Motor according to the PD solution, for example `MooncakeHybridConnector` or `MooncakeLayerwiseConnector`. Different Connectors have different execution modes and parameters. And ensure that Prefill and Decode use mutually matching transfer configurations; `UCMConnector` remains in `connectors[1]`.
+`connectors[0]` can also use another Mooncake transfer Connector currently recognized by MindIE Motor according to the PD solution, for example `MooncakeHybridConnector` or `MooncakeLayerwiseConnector`. The execution modes and parameters of different Connectors are not the same and should be configured according to the [PD Disaggregation Feature Description](../../../../../zh/design/pd_disaggregation.md). And ensure that Prefill and Decode use mutually matching transfer configurations; `UCMConnector` remains in `connectors[1]`.
 
 > Hybrid attention models (V4 series) must use `MooncakeHybridConnector`. For details, see [P/D Transfer Connector Selection](../README.md#table_Connector).
 

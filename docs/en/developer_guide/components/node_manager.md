@@ -44,7 +44,7 @@ The startup process is driven by the `Application.run()` template method, and `m
    d. `_daemon_loop()` — a select-based main loop that checks the suicide flag and stdin input every `daemon_loop_interval` seconds.
 4. The initialization behavior of each module remains unchanged: `NodeManagerAPI.__init__` starts FastAPI in a background thread, `RegisterManager.__init__` starts the registration thread, and `Daemon.__init__` starts the process supervision thread.
 
-The first registration is attempted up to 5 times, with retry intervals of 2, 4, 8, and 16 seconds. After consecutive failures, `RegisterManager` sends `SIGTERM` to the current process.
+After the initial registration attempt fails, the system will continue to retry until the registration is successful. the intervals between the first five retries are 2, 4, 8, 16,and 32 seconds. After that, each subsequent retry interval will be fixed at 32 seconds.
 
 ### Starting an Instance
 

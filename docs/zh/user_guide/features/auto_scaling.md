@@ -367,7 +367,7 @@ MindIE Motor /metrics 端点提供了丰富的引擎级指标，下表列出推�
 | vllm:num_requests_running | Gauge | 当前运行中的请求数 | 视 NPU 规格和模型而定 |
 | motor:generation_tokens_per_second | Gauge | 生成 token 速率（Motor 计算） | 按 SLA 目标设定 |
 | vllm:e2e_request_latency_seconds | Histogram | 端到端请求延迟 | 按 SLA 目标（如 p95 < 2s） |
-| vllm:time_per_output_token_seconds | Histogram | 跨 token 延迟（TPOT） | 按 SLA 目标（如 p95 < 50ms） |
+| vllm:time_per_output_token_seconds | Histogram | 每个输出 token 的耗时（TPOT） | 按 SLA 目标（如 p95 < 50ms） |
 
 > [!NOTE] 说明
 >

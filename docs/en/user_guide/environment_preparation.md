@@ -73,8 +73,7 @@ Install Kubernetes from an image source. Both automated script installation and 
     ],
     "registry-mirrors": [
     "https://ascendhub.huawei.cn",
-    "https://quay.io",
-    "https://cr.rnd.huawei.com"
+    "https://quay.io"
     ]
     }
     ```
