@@ -454,6 +454,40 @@ python3 deploy.py --config_dir ../../model_configs/vllm --update_instance_num
 
 根据 `user_config.json` 中的 `p_instances_num` 和 `d_instances_num` 进行实例扩缩容。
 
+## 清理与卸载
+
+进入 `examples/deployer/` 目录执行清理。脚本以当前目录为基准，读取 `output_yamls/` 下的部署清单，并就地修改 `startup/` 下的启动脚本，移除部署时注入的补丁区和环境设置函数。
+
+### 执行前检查
+
+- 确认 `kubectl` context 指向目标集群，并核对本次会读取的每份 YAML。按 namespace 清理时也要核对 `output_yamls/` 根目录的旧清单。
+- 清单声明的 `metadata.namespace` 决定命名空间作用域资源的实际删除范围。清单缺少该字段时，`kubectl` 使用当前 context 的 namespace。集群级资源按清单删除，包括其中声明的 `kind: Namespace` 对象。
+- 共用 namespace 时，核对目标服务的清单和 Pod 标签后，选择单服务清理。按 namespace 清理可能强制删除其他服务处于终止状态的 Pod。
+- 按 namespace 清理前，用 `pgrep -af log_monitor` 检查进程命令行。若其他 namespace 的名称带有相同前缀，先核对 `log_monitor:<namespace>` 会匹配的进程。
+
+### 清理命令
+
+- 清理单个服务时，指定 namespace 和服务名。
+
+  ```bash
+  bash ./delete.sh mindie-motor service1
+  ```
+
+- 清理部署独占的 namespace 时，只指定 namespace。
+
+  ```bash
+  bash ./delete.sh mindie-motor
+  ```
+
+### 清理流程
+
+1. 检查当前 `kubectl` context 中是否存在目标 namespace，单服务模式还检查 `output_yamls/<namespace>/<service_name>/` 是否存在，任一检查失败时退出。
+2. 逐份执行 `kubectl delete -f`。单服务模式读取该服务目录顶层的 `*.yaml`。按 namespace 清理会递归读取 `output_yamls/<namespace>/` 下的 `*.yaml`，也会读取 `output_yamls/` 根目录中的旧版 `*.yaml`。清单文件保留在本地。
+3. 最多轮询 30 次，每次等待 1 秒，随后强制删除仍有 `metadata.deletionTimestamp` 的选中 Pod。单服务模式使用 `motor.mindie.io/service=<service_name>` 标签筛选。按 namespace 清理会检查该 namespace 中的全部 Pod。
+4. 单服务模式删除 `motor-config-<service_name>`。按 namespace 清理删除该 namespace 中的 `motor-config` 及 `motor-config-service<N>`，其中 `N` 是无前导零的正整数。
+5. 两种模式都会回滚当前目录 `startup/` 中部署注入的补丁区和环境设置函数。共用这份启动脚本的其他服务如需重新部署，请在清理前保存所需配置。
+6. 按 namespace 清理会停止命令行匹配 `log_monitor:<namespace>` 的本地进程。单服务清理保留该日志采集进程。
+
 ## 配置文件说明
 
 配置文件位于仓库根目录的 `model_configs/` 下，根据引擎类型和模型选择对应的配置。
