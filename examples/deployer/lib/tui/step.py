@@ -26,8 +26,10 @@ import subprocess
 import sys
 import threading
 import time
+from typing import TYPE_CHECKING
 
-from tqdm import tqdm
+if TYPE_CHECKING:
+    from tqdm import tqdm
 
 import lib.constant as C
 
@@ -171,6 +173,11 @@ class VLLMProgressMonitor:
         incremental progress.  In tqdm mode creates a tqdm progress bar.
         """
         if self._use_tqdm:
+            try:
+                from tqdm import tqdm  # pylint: disable=import-outside-toplevel
+            except ImportError:
+                print(f"[{pod_name}] tqdm is not installed, progress bar disabled. Install with: pip install tqdm")
+                return
             pbar = tqdm(
                 total=PROGRESS_TOTAL,
                 desc="vLLM start step",
