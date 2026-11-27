@@ -199,6 +199,43 @@ class TestSchedulerConnectionManager(unittest.TestCase):
             SchedulerConnectionManager.from_config(config)
             self.assertFalse(mock_cls.call_args[0][0].log_dp_stats)
 
+    def test_from_config_forwards_multi_bucket_layout(self):
+        """Worker clients receive the configured N-bucket boundaries, medians, counts and scales."""
+        from motor.config.coordinator import CoordinatorConfig
+
+        with patch(
+            "motor.coordinator.scheduler.runtime.scheduler_connection_manager.SchedulerClient",
+        ) as mock_cls:
+            mock_cls.return_value = Mock()
+            config = CoordinatorConfig()
+            config.worker_index = 0
+            config.scheduler_config.dynamic_bucket_boundaries = [32768, 65536, 131072]
+            config.scheduler_config.dynamic_bucket_medians = [16384, 49152, 98304, 163840]
+            config.scheduler_config.dynamic_bucket_counts = [2, 2, 4, 8]
+            config.scheduler_config.dynamic_bucket_length_scales = [1.0, 0.5, 1.5, 1.0]
+            config.scheduler_config.dynamic_bucket_load_scales = [4.0, 3.0, 2.0, 1.0]
+
+            SchedulerConnectionManager.from_config(config)
+
+            client_config = mock_cls.call_args[0][0]
+            self.assertEqual(client_config.dynamic_bucket_boundaries, [32768, 65536, 131072])
+            self.assertEqual(client_config.dynamic_bucket_medians, [16384, 49152, 98304, 163840])
+            self.assertEqual(client_config.dynamic_bucket_counts, [2, 2, 4, 8])
+            self.assertEqual(client_config.dynamic_bucket_length_scales, [1.0, 0.5, 1.5, 1.0])
+            self.assertEqual(client_config.dynamic_bucket_load_scales, [4.0, 3.0, 2.0, 1.0])
+            self.assertFalse(client_config.dynamic_bucket_legacy_layout)
+
+    def test_from_config_forwards_legacy_bucket_semantics(self):
+        from motor.config.coordinator import CoordinatorConfig
+
+        config = CoordinatorConfig()
+        config.scheduler_config.dynamic_bucket_legacy_layout = True
+        with patch(
+            "motor.coordinator.scheduler.runtime.scheduler_connection_manager.SchedulerClient",
+        ) as mock_cls:
+            SchedulerConnectionManager.from_config(config)
+            self.assertTrue(mock_cls.call_args[0][0].dynamic_bucket_legacy_layout)
+
     def test_all_workers_emit_1200_allocations_including_final_window(self):
         """Counts must survive repeated windows and graceful disconnect on every worker."""
         from motor.config.coordinator import CoordinatorConfig

@@ -61,7 +61,7 @@ from motor.coordinator.scheduler.allocate_arbitration import (
     select_valid_candidate,
 )
 from motor.coordinator.scheduler.policy.dynamic_bucket import (
-    DynamicBucketSelector,
+    MultiBucketSelector,
 )
 from motor.coordinator.scheduler.policy.api import CandidateId, CandidateSnapshot, RequestContext, SelectionInput
 from motor.coordinator.scheduler.policy.plugin_runner import PolicyRunner
@@ -686,13 +686,16 @@ class SchedulerClientConfig:
     client_index: int = 0
     client_count: int = 1
     endpoint_instance_score_weight: float = 0.05
-    dynamic_bucket_short_median: int = 16 * 1024
-    dynamic_bucket_long_median: int = 96 * 1024
-    dynamic_bucket_border: int = 32 * 1024
-    dynamic_bucket_length_scale: float = 1.0
-    dynamic_bucket_load_scale: float = 4.0
-    dynamic_bucket_short_bucket_count: int = 0
-    dynamic_bucket_long_bucket_count: int = 0
+    # Sequence-length bucket layout. Boundaries are inclusive upper bounds in
+    # tokens; medians/counts/scales are aligned one-to-one with the buckets. An
+    # empty scales list broadcasts its default to every bucket, and an empty or
+    # missing boundaries list falls back to a single 32K boundary.
+    dynamic_bucket_length_scales: list[float] | None = None
+    dynamic_bucket_load_scales: list[float] | None = None
+    dynamic_bucket_boundaries: list[int] | None = None
+    dynamic_bucket_medians: list[int] | None = None
+    dynamic_bucket_counts: list[int] | None = None
+    dynamic_bucket_legacy_layout: bool = False
     # kv_cache_affinity tunables (see SchedulerConfig.kv_affinity).
     kv_affinity: KvAffinityConfig | None = None
     # Soft-priority admission (Agent Hint `priority`, Phase 3): endpoints whose
@@ -742,14 +745,13 @@ class AsyncSchedulerClient:
         self._request_id_prefix = uuid.uuid4().hex
         self._request_seq = 0
         self._endpoint_instance_score_weight = max(0.0, config.endpoint_instance_score_weight)
-        self._dynamic_bucket_selector = DynamicBucketSelector(
-            short_bucket_median=config.dynamic_bucket_short_median,
-            long_bucket_median=config.dynamic_bucket_long_median,
-            bucket_border=config.dynamic_bucket_border,
-            length_scale=config.dynamic_bucket_length_scale,
-            load_scale=config.dynamic_bucket_load_scale,
-            short_bucket_count=config.dynamic_bucket_short_bucket_count,
-            long_bucket_count=config.dynamic_bucket_long_bucket_count,
+        self._dynamic_bucket_selector = MultiBucketSelector(
+            boundaries=config.dynamic_bucket_boundaries or [32 * 1024],
+            medians=config.dynamic_bucket_medians or None,
+            counts=config.dynamic_bucket_counts or None,
+            legacy_layout=config.dynamic_bucket_legacy_layout,
+            length_scales=config.dynamic_bucket_length_scales or None,
+            load_scales=config.dynamic_bucket_load_scales or None,
         )
         affinity = config.kv_affinity or KvAffinityConfig()
         mode = str(affinity.mode or KV_AFFINITY_MODE_UNIFIED).lower()

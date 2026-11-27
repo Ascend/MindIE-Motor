@@ -309,6 +309,68 @@ def _migrate_legacy_kv_affinity_flat_keys(scheduler_dict: dict[str, Any]) -> Non
         nested.setdefault(key, value)
 
 
+# Deprecated flat two-bucket tunables replaced by the list-based layout.
+_LEGACY_DYNAMIC_BUCKET_KEYS = (
+    "dynamic_bucket_short_median",
+    "dynamic_bucket_long_median",
+    "dynamic_bucket_border",
+    "dynamic_bucket_length_scale",
+    "dynamic_bucket_load_scale",
+    "dynamic_bucket_short_bucket_count",
+    "dynamic_bucket_long_bucket_count",
+)
+
+# List-based layout fields; their presence means the legacy layout is superseded.
+_DYNAMIC_BUCKET_LAYOUT_KEYS = (
+    "dynamic_bucket_boundaries",
+    "dynamic_bucket_medians",
+    "dynamic_bucket_counts",
+    "dynamic_bucket_length_scales",
+    "dynamic_bucket_load_scales",
+)
+
+
+def _migrate_legacy_dynamic_bucket_keys(scheduler_dict: dict[str, Any]) -> None:
+    """Translate the deprecated two-bucket tunables into the list-based layout.
+
+    The legacy keys described exactly one short/long split.  When the config
+    already uses any list-based layout field, the new form wins and the legacy
+    keys are dropped with a warning.  Otherwise the legacy values (or their
+    historical defaults) are applied so existing tuning keeps working after an
+    upgrade.
+    """
+    legacy_keys = [key for key in _LEGACY_DYNAMIC_BUCKET_KEYS if key in scheduler_dict]
+    if not legacy_keys:
+        return
+
+    short_median = scheduler_dict.pop("dynamic_bucket_short_median", 16 * 1024)
+    long_median = scheduler_dict.pop("dynamic_bucket_long_median", 96 * 1024)
+    border = scheduler_dict.pop("dynamic_bucket_border", 32 * 1024)
+    length_scale = scheduler_dict.pop("dynamic_bucket_length_scale", 1.0)
+    load_scale = scheduler_dict.pop("dynamic_bucket_load_scale", 4.0)
+    short_count = scheduler_dict.pop("dynamic_bucket_short_bucket_count", 0)
+    long_count = scheduler_dict.pop("dynamic_bucket_long_bucket_count", 0)
+
+    if any(key in scheduler_dict for key in _DYNAMIC_BUCKET_LAYOUT_KEYS):
+        logger.warning(
+            "scheduler_config legacy dynamic_bucket keys (%s) are ignored because "
+            "the list-based dynamic bucket layout is configured",
+            ", ".join(legacy_keys),
+        )
+        return
+
+    logger.warning(
+        "scheduler_config.dynamic_bucket_* flat keys are deprecated; use "
+        "dynamic_bucket_boundaries/medians/counts/length_scales/load_scales instead"
+    )
+    scheduler_dict["dynamic_bucket_boundaries"] = [border]
+    scheduler_dict["dynamic_bucket_medians"] = [short_median, long_median]
+    scheduler_dict["dynamic_bucket_counts"] = [short_count, long_count]
+    scheduler_dict["dynamic_bucket_length_scales"] = [length_scale, length_scale]
+    scheduler_dict["dynamic_bucket_load_scales"] = [load_scale, load_scale]
+    scheduler_dict["dynamic_bucket_legacy_layout"] = True
+
+
 @dataclass
 class KvConductorConfig:
     """KV cache event registration configuration for kv-conductor.
@@ -520,14 +582,17 @@ class SchedulerConfig:
     # Weight of the instance average workload in endpoint-first load balancing.
     # 0 means pure global endpoint minimum; small values preserve instance pressure awareness.
     endpoint_instance_score_weight: float = 0.05
-    # Dynamic long/short sequence bucket tunables.
-    dynamic_bucket_short_median: int = 16 * 1024
-    dynamic_bucket_long_median: int = 96 * 1024
-    dynamic_bucket_border: int = 32 * 1024
-    dynamic_bucket_length_scale: float = 1.0
-    dynamic_bucket_load_scale: float = 4.0
-    dynamic_bucket_short_bucket_count: int = 0
-    dynamic_bucket_long_bucket_count: int = 0
+    # Dynamic sequence-length bucket tunables. Boundaries are inclusive upper
+    # bounds in tokens: bucket i covers (boundaries[i-1], boundaries[i]] and the
+    # last bucket is open-ended. Medians/counts/scales are aligned one-to-one with
+    # the buckets; an empty scales list broadcasts the default to every bucket.
+    dynamic_bucket_length_scales: list[float] = field(default_factory=list)
+    dynamic_bucket_load_scales: list[float] = field(default_factory=list)
+    dynamic_bucket_boundaries: list[int] = field(default_factory=lambda: [32 * 1024])
+    dynamic_bucket_medians: list[int] = field(default_factory=list)
+    dynamic_bucket_counts: list[int] = field(default_factory=list)
+    # Internal migration marker: retain the historical two-bucket constraints and counts.
+    dynamic_bucket_legacy_layout: bool = False
     # Window (seconds) for per-worker per-DP telemetry: one log line per DP
     # with request count and SHM active_tokens (dp_stats). Independent of
     # kv_affinity hit telemetry. 0 disables emission.
@@ -1240,6 +1305,7 @@ class CoordinatorConfig:
             if "scheduler_config" in cfg and isinstance(cfg["scheduler_config"], dict):
                 _migrate_legacy_scheduler_type(cfg["scheduler_config"])
                 _migrate_legacy_kv_affinity_flat_keys(cfg["scheduler_config"])
+                _migrate_legacy_dynamic_bucket_keys(cfg["scheduler_config"])
 
             for section_name, config_obj, special_handlers in config_mappings:
                 if section_name in cfg:
@@ -1876,38 +1942,114 @@ class CoordinatorConfig:
     def _validate_dynamic_bucket_config(self) -> None:
         """Reject invalid bucket tunables before scheduler workers are created."""
         config = self.scheduler_config
-        for name, minimum in (
-            ("dynamic_bucket_short_median", 1),
-            ("dynamic_bucket_long_median", 1),
-            ("dynamic_bucket_border", 1),
-            ("dynamic_bucket_short_bucket_count", 0),
-            ("dynamic_bucket_long_bucket_count", 0),
-        ):
-            value = getattr(config, name)
-            if isinstance(value, bool) or not isinstance(value, int):
-                self._errors.append(f"scheduler_config.{name} must be an integer")
-            elif value < minimum:
-                self._errors.append(f"scheduler_config.{name} must be >= {minimum}")
+        boundaries = config.dynamic_bucket_boundaries
+        medians = config.dynamic_bucket_medians
+        counts = config.dynamic_bucket_counts
+        length_scales = config.dynamic_bucket_length_scales
+        load_scales = config.dynamic_bucket_load_scales
+        if boundaries is None:
+            boundaries = []
+        if medians is None:
+            medians = []
+        if counts is None:
+            counts = []
+        if length_scales is None:
+            length_scales = []
+        if load_scales is None:
+            load_scales = []
+        if not isinstance(boundaries, list):
+            self._errors.append("scheduler_config.dynamic_bucket_boundaries must be a list of integers")
+            return
+        if not boundaries:
+            self._errors.append("scheduler_config.dynamic_bucket_boundaries must not be empty")
+            return
+        if not isinstance(medians, list):
+            self._errors.append("scheduler_config.dynamic_bucket_medians must be a list of integers")
+            medians = []
+        if not isinstance(counts, list):
+            self._errors.append("scheduler_config.dynamic_bucket_counts must be a list of integers")
+            counts = []
+        if not isinstance(length_scales, list):
+            self._errors.append("scheduler_config.dynamic_bucket_length_scales must be a list of numbers")
+            length_scales = []
+        if not isinstance(load_scales, list):
+            self._errors.append("scheduler_config.dynamic_bucket_load_scales must be a list of numbers")
+            load_scales = []
 
-        for name in ("dynamic_bucket_length_scale", "dynamic_bucket_load_scale"):
-            value = getattr(config, name)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                self._errors.append(f"scheduler_config.{name} must be a number")
-            elif value <= 0 or (isinstance(value, float) and not math.isfinite(value)):
-                self._errors.append(f"scheduler_config.{name} must be finite and greater than 0")
+        self._validate_multi_bucket_layout(boundaries, medians, counts, length_scales, load_scales)
 
-        long_median = config.dynamic_bucket_long_median
-        border = config.dynamic_bucket_border
-        if (
-            isinstance(long_median, int)
-            and not isinstance(long_median, bool)
-            and isinstance(border, int)
-            and not isinstance(border, bool)
-            and long_median <= border
+    def _validate_multi_bucket_layout(
+        self,
+        boundaries: list,
+        medians: list,
+        counts: list,
+        length_scales: list,
+        load_scales: list,
+    ) -> None:
+        """Validate the N-bucket boundaries and their aligned medians/counts/scales."""
+        bucket_total = len(boundaries) + 1
+        previous_boundary = 0
+        valid_boundaries = True
+        for index, boundary in enumerate(boundaries):
+            if isinstance(boundary, bool) or not isinstance(boundary, int) or boundary <= previous_boundary:
+                self._errors.append(
+                    "scheduler_config.dynamic_bucket_boundaries"
+                    f"[{index}] must be a positive integer greater than the previous boundary"
+                )
+                valid_boundaries = False
+                continue
+            previous_boundary = boundary
+        if not valid_boundaries:
+            return
+
+        lower_bounds = [0] + boundaries
+        if medians:
+            if len(medians) != bucket_total:
+                self._errors.append(
+                    f"scheduler_config.dynamic_bucket_medians must contain one integer per bucket ({bucket_total})"
+                )
+            else:
+                previous_median = 0
+                for index, median in enumerate(medians):
+                    if isinstance(median, bool) or not isinstance(median, int):
+                        self._errors.append(f"scheduler_config.dynamic_bucket_medians[{index}] must be an integer")
+                        continue
+                    if median <= lower_bounds[index] or (
+                        not self.scheduler_config.dynamic_bucket_legacy_layout and median <= previous_median
+                    ):
+                        self._errors.append(
+                            "scheduler_config.dynamic_bucket_medians"
+                            f"[{index}] must be greater than the bucket lower bound and the previous median"
+                        )
+                        continue
+                    previous_median = median
+
+        if counts:
+            if len(counts) != bucket_total:
+                self._errors.append(
+                    f"scheduler_config.dynamic_bucket_counts must contain one integer per bucket ({bucket_total})"
+                )
+            else:
+                for index, count in enumerate(counts):
+                    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                        self._errors.append(
+                            f"scheduler_config.dynamic_bucket_counts[{index}] must be a non-negative integer"
+                        )
+
+        for name, values in (
+            ("dynamic_bucket_length_scales", length_scales),
+            ("dynamic_bucket_load_scales", load_scales),
         ):
-            self._errors.append(
-                "scheduler_config.dynamic_bucket_long_median must be greater than dynamic_bucket_border"
-            )
+            if not values:
+                continue
+            if len(values) != bucket_total:
+                self._errors.append(f"scheduler_config.{name} must contain one number per bucket ({bucket_total})")
+                continue
+            for index, value in enumerate(values):
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    self._errors.append(f"scheduler_config.{name}[{index}] must be a number")
+                elif value <= 0 or (isinstance(value, float) and not math.isfinite(value)):
+                    self._errors.append(f"scheduler_config.{name}[{index}] must be finite and greater than 0")
 
     def _validate_positive_number(self, value: float | int, field_name: str, allow_zero: bool = False) -> None:
         """Validate that a number is positive (optionally allow zero)"""

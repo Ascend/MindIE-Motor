@@ -473,13 +473,11 @@ motor_coordinator_config字段配置样例如下所示：
     "decode_scheduler_type": "load_balance",
     "enable_pd_separation_fallback_to_hybrid": true,
     "endpoint_instance_score_weight": 0.05,
-    "dynamic_bucket_short_median": 16384,
-    "dynamic_bucket_long_median": 98304,
-    "dynamic_bucket_border": 32768,
-    "dynamic_bucket_length_scale": 1.0,
-    "dynamic_bucket_load_scale": 4.0,
-    "dynamic_bucket_short_bucket_count": 0,
-    "dynamic_bucket_long_bucket_count": 0,
+    "dynamic_bucket_length_scales": [],
+    "dynamic_bucket_load_scales": [],
+    "dynamic_bucket_boundaries": [32768],
+    "dynamic_bucket_medians": [],
+    "dynamic_bucket_counts": [],
     "dp_stats_window": 60,
     "kv_affinity": {
       "mode": "unified",
@@ -693,13 +691,11 @@ motor_coordinator_config字段配置样例如下所示：
 | scheduler_type | string | **已废弃**。存量配置仍可使用，读取时把值迁移到未单独配置的 `prefill_scheduler_type` 和 `decode_scheduler_type` 并打 warning。建议分别配置 `prefill_scheduler_type` 和 `decode_scheduler_type`；历史 `scheduler_type=dynamic_bucket` 会为两个调度平面启用动态分桶。 |
 | enable_pd_separation_fallback_to_hybrid | bool | PD 分离场景下，当不存在兼容且未熔断的 P/D pair 时，是否允许降级使用混部路由，默认值为 `true`。候选优先级为 Union → Prefill → Decode；Decode 兜底仅适用于上报 `decode_colocation` capability 的 vLLM 实例，关闭后无兼容 pair 时返回 503。 |
 | endpoint_instance_score_weight | float | endpoint 优先负载均衡时实例平均负载权重。默认值：`0.05`。 |
-| dynamic_bucket_short_median | int | 短序列桶的特征长度（token），也是短桶长度因子的 Sigmoid 中点，必须大于 `0`。默认值：`16384`。 |
-| dynamic_bucket_long_median | int | 长序列桶的特征长度（token）；与 `dynamic_bucket_border` 的差值是长桶长度因子的归一化跨度。必须大于 `dynamic_bucket_border`，默认值：`98304`。 |
-| dynamic_bucket_border | int | 长短请求的初始分界（token）。请求长度不大于该值时初选短桶，否则初选长桶；必须大于 `0`。默认值：`32768`。 |
-| dynamic_bucket_length_scale | float | 长度因子的缩放系数，控制请求长度在特征长度附近的切换斜率；必须是大于 `0` 的有限数值。默认值：`1.0`。 |
-| dynamic_bucket_load_scale | float | 负载因子的缩放系数，同时参与短桶负载比阈值计算；必须是大于 `0` 的有限数值。默认值：`4.0`。 |
-| dynamic_bucket_short_bucket_count | int | 短桶 endpoint 数量或分桶比例分子，须不小于 `0`。与长桶数量均为 `0` 时自动近似均分；默认值：`0`。 |
-| dynamic_bucket_long_bucket_count | int | 长桶 endpoint 数量或分桶比例分子，须不小于 `0`。与短桶数量同时配置时按两者比例分配；默认值：`0`。 |
+| dynamic_bucket_length_scales | list[float] | 各桶长度因子的缩放系数列表。省略或为空时每个桶取 `1.0`；否则长度必须等于桶数，每项为大于 `0` 的有限数值。第 `i` 项控制桶 `i` 在特征长度附近的切换斜率。 |
+| dynamic_bucket_load_scales | list[float] | 各桶负载因子的缩放系数列表。省略或为空时每个桶取 `4.0`；否则长度必须等于桶数，每项为大于 `0` 的有限数值。切换到桶 `j` 时使用第 `j` 项，并令向更长桶切换的负载比中点为 `1 / dynamic_bucket_load_scales[j]`。 |
+| dynamic_bucket_boundaries | list[int] | 桶上界（token），默认 `[32768]`，不能为空。长度加一即为桶数，要求严格递增且均为正整数；最后一个桶无上界。例如 `[32768, 65536, 131072]` 表示 `0-32K`、`32K-64K`、`64K-128K`、`128K+` 四个桶；只配置一个元素时即为 `0-32K` 与 `32K+` 两个桶。 |
+| dynamic_bucket_medians | list[int] | 各桶特征长度（token），默认 `[]`。长度必须等于桶数；每项必须大于对应桶下界且严格递增。省略时有界桶取区间中点，最后一个桶取“下界 + 2 × 前一桶宽度”；默认单一边界 `[32768]` 时为 `[16384, 98304]`。 |
+| dynamic_bucket_counts | list[int] | 各桶**实例**数量或比例权重，默认 `[]`。长度必须等于桶数，每项不小于 `0`。总和等于实例总数时按精确数量分配，否则按比例分配；全为 `0` 或省略时均分，余数优先给靠后的桶。同一实例的全部 endpoint 跟随该实例所在桶。隔离粒度是实例数而不是卡数 / DP rank；单实例多 endpoint 时无法拆到多个桶。详见[动态分桶调度](../features/inference_scheduling/dynamic_bucket.md)与[旧字段兼容](#scheduler_config-动态分桶旧字段兼容)。 |
 | dp_stats_window | int | worker 0 周期性打印 per-DP 成功提交请求数与 SHM `active_tokens` 的窗口（秒），同一行输出（`dp_stats` 日志）。独立于 KV 亲和命中统计，所有部署与调度类型下均生效；默认 `60`；`0` 禁用。 |
 | kv_affinity | object | KV Cache 亲和性调度参数（见下表） |
 | **kv_affinity 字段** |-|-|
@@ -712,6 +708,17 @@ motor_coordinator_config字段配置样例如下所示：
 | w_cpu | float | 互斥 CPU 命中块权重。默认值：`1.0`。 |
 | w_disk | float | 互斥 Disk 命中块权重。默认值：`0.0`。 |
 | hit_rate_threshold | float | 亲和性命中率门槛，取值 `[0, 1]`。默认 `0` 只关闭该门槛，其他回退仍生效。大于 0 时，全部候选的最大加权前缀命中率必须 **严格大于** 该阈值；相等也回退 `load_balance`，`1` 始终回退。门槛在 `load_gated` 筛选之前计算，不保证最终 endpoint 自身超过阈值。 |
+| **scheduler_config 动态分桶旧字段（已废弃，仍兼容）** |-|-|
+| dynamic_bucket_border | int | **已废弃**。旧双桶请求初选分界（token）。仅存在旧字段时迁移为 `dynamic_bucket_boundaries=[border]`，缺省 `32768`。 |
+| dynamic_bucket_short_median | int | **已废弃**。旧短桶特征长度。仅存在旧字段时写入 `dynamic_bucket_medians[0]`，缺省 `16384`。 |
+| dynamic_bucket_long_median | int | **已废弃**。旧长桶特征长度。仅存在旧字段时写入 `dynamic_bucket_medians[1]`，缺省 `98304`。 |
+| dynamic_bucket_length_scale | float | **已废弃**。旧长度因子缩放。仅存在旧字段时广播到 `dynamic_bucket_length_scales` 两个桶，缺省 `1.0`。 |
+| dynamic_bucket_load_scale | float | **已废弃**。旧负载因子缩放。仅存在旧字段时广播到 `dynamic_bucket_load_scales` 两个桶，缺省 `4.0`。 |
+| dynamic_bucket_short_bucket_count | int | **已废弃**。旧短桶数量或比例分子。仅存在旧字段时写入 `dynamic_bucket_counts[0]`，缺省 `0`。当前按实例计数。 |
+| dynamic_bucket_long_bucket_count | int | **已废弃**。旧长桶数量或比例分子。仅存在旧字段时写入 `dynamic_bucket_counts[1]`，缺省 `0`。当前按实例计数。 |
+| **count_tokens_config字段** |-|-|
+| timeout_seconds | float | Anthropic Count Tokens 从读取请求体到完成转发的总时限（秒），须为有限正数。默认值：`30.0`。 |
+| max_inflight | int | 每个 Inference Worker 同时处理的计数转发上限，须为正整数。默认值：`32`。达到上限时返回 HTTP 429。 |
 | **inference_workers_config字段** |-|-|
 | num_workers | int | Coordinator中业务面worker个数，默认值：4。 |
 | worker_metaserver_base_port | int | vLLM layerwise/trigger PD 时每个 Inference Worker 的 metaserver 起始端口。默认值：`12000`。Worker `i` 监听 `base+i`，仅暴露 `POST /v1/metaserver`。设为 `0` 关闭。须保证 `base+num_workers-1 <= 65535`。同一集群不可混部 handoff 与 trigger。监听地址优先 `POD_IP`，否则用 `coordinator_api_host`（不绑 loopback）。`coordinator_api_host=0.0.0.0`/`::` 仍可启动；走 Trigger 时须有 `POD_IP` 或可达的 `coordinator_api_host`，否则该请求返回 503。端口占用或 metaserver 启动失败时推理口继续服务，该 Worker 的 Trigger 请求返回 503。 |
@@ -820,6 +827,31 @@ motor_coordinator_config字段配置样例如下所示：
 >- **配置一致性**：Render 必须与推理引擎使用兼容的模型和前端处理配置。Deployer 会按请求处理阶段继承常用参数；手动覆盖 `render_config.launch_args` 时，需确保覆盖值与推理引擎兼容，否则可能出现精度异常或响应字段解析错误。
 >- **版本要求**：普通非流式 Derender 要求 vLLM ≥ 0.24，普通流式 Derender 要求 vLLM ≥ 0.27；使用 Tool Call 或 Reasoning 时，非流式要求 vLLM ≥ 0.25，流式要求 vLLM ≥ 0.30。建议 Render 与推理引擎使用相同的 vLLM 版本。
 >- **流式性能**：vLLM 0.30 的 streaming Derender 在高并发场景可能造成 TPOT 劣化，部署前应结合实际并发和输出长度进行性能测试。该限制仅影响 `enable_token_only_decode=true` 的流式请求；默认关闭时 Decode 使用原生 OpenAI 接口，不受影响。
+
+<a id="scheduler_config-动态分桶旧字段兼容"></a>
+
+### scheduler_config 动态分桶旧字段兼容
+
+`scheduler_config` 的动态分桶布局以列表字段为准：`dynamic_bucket_boundaries`、
+`dynamic_bucket_medians`、`dynamic_bucket_counts`、`dynamic_bucket_length_scales`、
+`dynamic_bucket_load_scales`。旧双桶标量仍可出现在存量 `user_config.json` 中，
+Coordinator `from_json` 会迁移并打印 deprecated warning；建议改为列表配置。
+
+任一列表型新字段存在时，旧标量被忽略（仍告警）。否则按缺省补齐后写入：
+
+| 旧字段 | 迁入 |
+|--------|------|
+| `dynamic_bucket_border` | `dynamic_bucket_boundaries=[border]`，缺省 `32768` |
+| `dynamic_bucket_short_median` / `dynamic_bucket_long_median` | `dynamic_bucket_medians=[short, long]`，缺省 `[16384, 98304]` |
+| `dynamic_bucket_length_scale` | `dynamic_bucket_length_scales` 两个桶同值，缺省 `1.0` |
+| `dynamic_bucket_load_scale` | `dynamic_bucket_load_scales` 两个桶同值，缺省 `4.0` |
+| `dynamic_bucket_short_bucket_count` / `dynamic_bucket_long_bucket_count` | `dynamic_bucket_counts=[short, long]`，缺省 `[0, 0]`（均分） |
+
+`dynamic_bucket_counts` 现在按**实例**计数，不再按 endpoint 计数。只配一侧旧 count、另一侧为 `0` 时，
+迁移后保留“指定侧为固定数量、另一侧取剩余实例”的规则；例如 8 个实例只配短桶数量 2 时分为 `[2, 6]`，
+只配长桶数量 2 时分为 `[6, 2]`。实例数不少于 2 时，指定数量最多取 `N - 1`，保证双桶非空。
+两侧 count 均大于 0 时按总实例数计算比例配额，仅对空桶补足 1 个实例；均为 0 时均分。
+旧 median 保留 `short > 0`、`long > border` 的约束，不要求两者递增；新列表配置仍要求递增。算法与隔离粒度见[动态分桶调度](../features/inference_scheduling/dynamic_bucket.md)。
 
 ## motor_engine_union_config
 

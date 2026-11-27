@@ -291,10 +291,9 @@ class _DynamicBucket(BuiltinEndpointPolicy):
             required_engine_type,
             required_dispatch_capability,
         )
-        bucket_endpoints = DynamicBucketPolicy.build_bucket_endpoints(
+        bucket_endpoints = DynamicBucketPolicy.build_bucket_endpoints_for_selector(
             [instance for instance in role_instances if not client.is_instance_blocked(instance.id)],
-            client._dynamic_bucket_selector.short_bucket_count,
-            client._dynamic_bucket_selector.long_bucket_count,
+            client._dynamic_bucket_selector,
         )
         selected_bucket = next(
             (

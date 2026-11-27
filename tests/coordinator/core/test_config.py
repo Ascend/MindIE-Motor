@@ -1532,6 +1532,54 @@ def test_from_json_nested_kv_affinity_wins_over_legacy_flat(_temp_json_file):
     assert affinity.load_weight == 1.5
 
 
+def test_from_json_migrates_legacy_dynamic_bucket_keys(_temp_json_file, caplog):
+    test_config = {
+        "scheduler_config": {
+            "dynamic_bucket_short_median": 2048,
+            "dynamic_bucket_long_median": 8192,
+            "dynamic_bucket_border": 4096,
+            "dynamic_bucket_length_scale": 2.0,
+            "dynamic_bucket_load_scale": 8.0,
+            "dynamic_bucket_short_bucket_count": 1,
+            "dynamic_bucket_long_bucket_count": 2,
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    scheduler = config.scheduler_config
+    assert scheduler.dynamic_bucket_boundaries == [4096]
+    assert scheduler.dynamic_bucket_medians == [2048, 8192]
+    assert scheduler.dynamic_bucket_counts == [1, 2]
+    assert scheduler.dynamic_bucket_legacy_layout is True
+    assert scheduler.dynamic_bucket_length_scales == [2.0, 2.0]
+    assert scheduler.dynamic_bucket_load_scales == [8.0, 8.0]
+    assert "dynamic_bucket_* flat keys are deprecated" in caplog.text
+
+
+def test_from_json_new_dynamic_bucket_layout_wins_over_legacy_keys(_temp_json_file, caplog):
+    test_config = {
+        "scheduler_config": {
+            "dynamic_bucket_boundaries": [1024, 2048],
+            "dynamic_bucket_medians": [512, 1536, 4096],
+            "dynamic_bucket_border": 4096,
+            "dynamic_bucket_short_median": 2048,
+            "dynamic_bucket_long_median": 8192,
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    scheduler = config.scheduler_config
+    assert scheduler.dynamic_bucket_boundaries == [1024, 2048]
+    assert scheduler.dynamic_bucket_medians == [512, 1536, 4096]
+    assert scheduler.dynamic_bucket_legacy_layout is False
+    assert "legacy dynamic_bucket keys" in caplog.text
+    assert "are ignored" in caplog.text
+
+
 def test_kv_affinity_hit_rate_threshold_default_and_validation():
     """hit_rate_threshold defaults to 0 and must stay in [0, 1]."""
     config = CoordinatorConfig()
@@ -1812,6 +1860,76 @@ def test_from_json_loads_prefill_dynamic_bucket(_temp_json_file):
     assert config.scheduler_config.decode_scheduler_type.value == "round_robin"
     assert config.scheduler_config.type_for_role("prefill").value == "dynamic_bucket"
     assert config.scheduler_config.uses_dynamic_bucket() is True
+
+
+def test_from_json_loads_multi_bucket_layout(_temp_json_file):
+    test_config = {
+        "scheduler_config": {
+            "decode_scheduler_type": "dynamic_bucket",
+            "dynamic_bucket_boundaries": [32768, 65536, 131072],
+            "dynamic_bucket_medians": [16384, 49152, 98304, 163840],
+            "dynamic_bucket_counts": [2, 2, 4, 8],
+            "dynamic_bucket_length_scales": [1.0, 0.5, 1.5, 1.0],
+            "dynamic_bucket_load_scales": [4.0, 3.0, 2.0, 1.0],
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    scheduler_config = config.scheduler_config
+    assert scheduler_config.dynamic_bucket_boundaries == [32768, 65536, 131072]
+    assert scheduler_config.dynamic_bucket_medians == [16384, 49152, 98304, 163840]
+    assert scheduler_config.dynamic_bucket_counts == [2, 2, 4, 8]
+    assert scheduler_config.dynamic_bucket_length_scales == [1.0, 0.5, 1.5, 1.0]
+    assert scheduler_config.dynamic_bucket_load_scales == [4.0, 3.0, 2.0, 1.0]
+    assert scheduler_config.uses_dynamic_bucket() is True
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"dynamic_bucket_boundaries": [32768, 32768]}, "greater than the previous boundary"),
+        ({"dynamic_bucket_boundaries": [0]}, "greater than the previous boundary"),
+        (
+            {"dynamic_bucket_boundaries": [32768], "dynamic_bucket_medians": [16384]},
+            "one integer per bucket",
+        ),
+        (
+            {"dynamic_bucket_boundaries": [32768], "dynamic_bucket_medians": [16384, 32768]},
+            "greater than the bucket lower bound",
+        ),
+        (
+            {"dynamic_bucket_boundaries": [32768], "dynamic_bucket_counts": [1]},
+            "one integer per bucket",
+        ),
+        (
+            {"dynamic_bucket_boundaries": [32768], "dynamic_bucket_counts": [1, -1]},
+            "non-negative integer",
+        ),
+        ({"dynamic_bucket_boundaries": [], "dynamic_bucket_counts": [1, 1]}, "must not be empty"),
+        ({"dynamic_bucket_boundaries": [], "dynamic_bucket_medians": [16384, 98304]}, "must not be empty"),
+        (
+            {"dynamic_bucket_boundaries": [32768], "dynamic_bucket_length_scales": [1.0]},
+            "one number per bucket",
+        ),
+        (
+            {"dynamic_bucket_boundaries": [32768], "dynamic_bucket_load_scales": [4.0, 0.0]},
+            "finite and greater than 0",
+        ),
+        (
+            {"dynamic_bucket_boundaries": [32768], "dynamic_bucket_load_scales": "4.0"},
+            "must be a list of numbers",
+        ),
+    ],
+)
+def test_multi_bucket_config_validation(overrides, match):
+    config = CoordinatorConfig()
+    for name, value in overrides.items():
+        setattr(config.scheduler_config, name, value)
+
+    with pytest.raises(ValueError, match=match):
+        config.validate_config()
 
 
 def test_legacy_dynamic_bucket_derives_tokenizer_model_path(_temp_json_file):
