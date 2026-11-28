@@ -882,6 +882,7 @@ class ReadOnlyInstance:
         copied_instance.status = self._instance.status
         copied_instance.recovery_paused = self._instance.recovery_paused
         copied_instance.parallel_config = copy.deepcopy(self._instance.parallel_config, memo)
+        copied_instance.ft_capability = copy.deepcopy(self._instance.ft_capability, memo)
 
         # Deep copy node managers
         copied_instance.node_managers = copy.deepcopy(self._instance.node_managers, memo)
