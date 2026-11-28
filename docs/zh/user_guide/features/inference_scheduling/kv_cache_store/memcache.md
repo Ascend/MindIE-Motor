@@ -80,7 +80,28 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
     >- `mmc-local-standalone.conf`：独立 LocalService 的配置。只有这份文件打开 DRAM 和 SSD。
     >`deploy.py --update_config` 的白名单不包含 `kv_cache_store_config`。修改 `local_service_mode` 或 `local_config_path` 后，需要重新部署引擎 Pod，只刷 ConfigMap 不会改到已经运行的进程。
 
-3. （可选）配置 LocalService 部署模式。
+3. 按机型配置 LocalService 通信协议。
+
+    以下为 MemCache 推荐配置。部署前，在 `examples/deployer/startup/roles/kv_store_backends/memcache/` 目录下，按下表同时修改两份 conf 文件中的 `ock.mmc.local_service.protocol`：
+
+    | 机型 | 组网场景            | conf 文件 | 协议值 |
+    | --- |-----------------| --- | --- |
+    | Atlas 800I A2推理服务器 | RoCE            | `mmc-local-inprocess.conf` 和 `mmc-local-standalone.conf` | `device_rdma` |
+    | Atlas 800I A3超节点服务器 | HCCS            | `mmc-local-inprocess.conf` 和 `mmc-local-standalone.conf` | `device_sdma` |
+    | Ascend 950PR&950DT系列产品（A5） | Device UB       | `mmc-local-inprocess.conf` 和 `mmc-local-standalone.conf` | `device_urma` |
+    | Ascend 950PR&950DT系列产品（A5） | 1825 网卡 / Host RoCE | `mmc-local-inprocess.conf` 和 `mmc-local-standalone.conf` | `device_rdma` |
+    | Ascend 950PR&950DT系列产品（A5） | UB_RTP          | `mmc-local-inprocess.conf` 和 `mmc-local-standalone.conf` | `device_ub_rtp` |
+    | Ascend 950PR&950DT系列产品（A5） | UBoE            | `mmc-local-inprocess.conf` 和 `mmc-local-standalone.conf` | `device_uboe` |
+
+    例如，A2 的配置为：
+
+    ```text
+    ock.mmc.local_service.protocol = device_rdma
+    ```
+
+    所有机型均由用户配置 `ock.mmc.local_service.protocol`。模板默认值为 `device_sdma`，仅作为默认配置，部署前必须按实际机型和组网确认；
+
+4. （可选）配置 LocalService 部署模式。
 
     根据硬件和隔离需求，选择 `inprocess` 或 `standalone` 模式：
 
@@ -89,7 +110,7 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
 
     Atlas 800I A3推理服务器 使用 standalone。如需覆盖 Atlas 800I A2推理服务器与Ascend 950PR系列产品 以外的默认值，在 `user_config.json` 中显式配置 `local_service_mode`。两种模式的差异和部署示例详见 [MemCache 分离部署方案](https://gitcode.com/Ascend/memcache/wiki/MemCache+vLLM+A3分离部署方案.md)。
 
-4. （可选）开启 KV events 广播。<a id="kv-events-affinity"></a>
+5. （可选）开启 KV events 广播。<a id="kv-events-affinity"></a>
 
     启用缓存感知 prefill 调度：
     Motor 侧配置及验收见 [池化亲和配置](../kvcache_affinity.md#pool-affinity)。
@@ -106,13 +127,13 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
         >MultiConnector 补丁（必装）：vLLM 上游未实现 MultiConnector.get_kv_connector_kv_cache_events()（TODO），kv_transfer_config.kv_connector 使用 MultiConnector 时 worker 侧 AscendStoreConnector 收集的 KV 事件会被静默丢弃，导致引擎 offload 事件到不了 kv-conductor、两阶段匹配永远缺引擎侧。vllm-ascend 已将 MultiConnector 注册替换为 AscendMultiConnector，部署时应用 examples/deployer/patch/vllm_ascend_multi_connector_kv_events.patch（为 AscendMultiConnector 补充子 connector 事件代理，一个补丁适配 v0.20.2 ~ v0.26.0）。已同步建议上游 vLLM 合入。
         **前提**：memcache_hybrid 需为包含 KvEvent 功能的版本（**MemCache Hybrid v1.2.0 及以后版本**，对应 memcache PR #334），否则 MetaConfig 不识别 kv_events_* 字段。
 
-5. （可选）启用 SSD 三级缓存。
+6. （可选）启用 SSD 三级缓存。
 
     块设备准备以 [DRAM + SSD 多级池化 Kubernetes 配置示例](https://gitcode.com/Ascend/memcache/wiki/DRAM+%20SSD%20多级池化%20Kubernetes%20配置示例.md) 为准。下面是按该示例，用 `examples/deployer/deploy.py` 启用 MemCache SSD 的步骤。`kv_cache_store_config.backend` 为 `memcache`。Atlas 800I A2 与 Ascend 950PR 使用 `inprocess`，Atlas 800I A3 使用 `standalone`。
 
     >[!NOTE] 说明
     >- 标准 attention 的 `connectors[0]` 使用 `MooncakeConnectorV1` 或 `MooncakeConnectorV2`，`connectors[1]` 使用 `AscendStoreConnector` 且 `"backend": "memcache"`。混合 attention 的 `connectors[0]` 使用 `MooncakeHybridConnector`。选型见 [P/D传输Connector选型](README.md#table_Connector)。
-    >- 协议按硬件填写：A2 为 `device_rdma`，A3 为 `device_sdma`，A5 为 `device_urma`。conf 模板默认值不能直接套到其他硬件。
+    >- 协议由用户按机型及组网填写，参见前面的 LocalService 通信协议配置表。
     >- `storage.enabled` 只在 `ubsio.disk.path` 非空且本进程 `dram.size > 0` 时由该进程打开 SSD。A3 standalone 的 worker 读 inprocess 文件，其中 `dram.size = 0GB`，因此 worker 不打开 SSD。SSD 只由独立 LocalService 按 standalone 文件打开。
     >- `ubsio.disk.path` 填容器内路径，单盘为 `/dev/memcache-ubsio0`，多盘用冒号拼接，例如 `/dev/memcache-ubsio0:/dev/memcache-ubsio1`。不要把宿主机 `/dev/nvme*` 或 `/dev/loop*` 写进 conf。
     >- `examples/deployer` 的 storage 配置是 hostPath 目录挂载，不能传入块设备。块设备用 `volumeMode: Block` 的 PV/PVC，再以 `volumeDevices` 挂到引擎容器。`deploy_mode` 使用 `multi_deployment`。InferServiceSet 展开 Deployment 时会丢掉 `volumeDevices`。

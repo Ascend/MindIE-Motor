@@ -265,15 +265,10 @@ sync_mmc_local_config() {
         sed -E -i.bak "s|^(ock\.mmc\.local_service\.backend_id)\s*=.*|\1 = ${_backend_id}|" "$_dst"
         rm -f "${_dst}.bak"
 
-        # Template default is device_sdma (A3). A5 rejects SDMA
-        # ("A5 or x86 not support batch extend copy") and offload never lands.
-        # A2/A3 keep the file default so IPv4 deployments are unchanged.
         # Inprocess template ships dram.size=0GB (standalone owns DRAM). On A5
         # each vLLM worker is the LocalService, so a 0GB quota builds hbm{0},dram{0}
         # and prefix blocks have nowhere to land. Override only the inprocess file.
         if is_a5_hardware; then
-            sed -E -i.bak "s|^(ock\\.mmc\\.local_service\\.protocol)[[:space:]]*=.*|\\1 = device_urma|" "$_dst"
-            rm -f "${_dst}.bak"
             if [ "$_template" = "local-inprocess" ]; then
                 # 32GB/worker is counted against NPU free memory on A5 and leaves
                 # KV cache negative (weights ~33GiB, budget 0.9 * 84GiB).

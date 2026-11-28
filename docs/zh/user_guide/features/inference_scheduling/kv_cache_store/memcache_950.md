@@ -87,7 +87,7 @@ PD 分离同时通过 MultiConnector 做 KV 池化时，把 `ascend_local_comm_r
 
 ### 修改 memcache conf
 
-`device_sdma` 在 Ascend 950PR&950DT系列产品上会直接拒绝，报 `A5 or x86 not support batch extend copy`。`device_urma` 对不上当前 host RoCE。把 LocalService 协议改成 `device_rdma`。这一步只改下面两份 conf。`startup/common.sh` 保持不动，不要在启动脚本里再写一段命令去替换协议。
+Host RoCE 场景使用 `device_rdma`。协议由用户配置，启动脚本不会自动修改。
 
   1. 打开两份已经存在的 conf。
 
@@ -97,7 +97,11 @@ PD 分离同时通过 MultiConnector 做 KV 池化时，把 `ascend_local_comm_r
       vim mmc-local-standalone.conf
       ```
 
-  2. 搜索协议项，手工改成 `device_rdma` 并保存。不要整篇文件贴出替换。
+  2. 将两份文件中的协议项均改为：
+
+      ```ini
+      ock.mmc.local_service.protocol = device_rdma
+      ```
 
   3. inprocess 模板里每个 worker 的 DRAM 从 `0GB` 改成现场池大小，当前以 `100GB` 为例。
 
@@ -267,6 +271,14 @@ PD 分离同时通过 MultiConnector 做 KV 池化时，把 `ascend_local_comm_r
       >[!NOTE] 说明
       > 该场景会自动开启推理引擎所在容器的 root 权限，并额外挂载 `/dev/ummu`、`/dev/uburma` 两条宿主机路径。同时为引擎 Pod 打开 host 网络（`hostNetwork`）。暂不支持单机多容器场景。
 
+  3. 修改 `examples/deployer/startup/roles/kv_store_backends/memcache/` 下的 `mmc-local-inprocess.conf` 和 `mmc-local-standalone.conf`，将两份文件中的协议项均改为：
+
+      ```ini
+      ock.mmc.local_service.protocol = device_ub_rtp
+      ```
+
+      需使用支持 `device_ub_rtp` 的 MemCache、MemFabric 和 HCOMM 配套版本。`protocol_desc` 不会修改此配置项。
+
 ## 跨超节点场景（基于UBoE协议进行参数面数据传输）
 
 在 PD 分离部署指导的基础上，额外修改以下内容，即可完成部署。
@@ -282,3 +294,11 @@ PD 分离同时通过 MultiConnector 做 KV 池化时，把 `ascend_local_comm_r
 
       >[!NOTE] 说明
       > 该场景会自动开启推理引擎所在容器的 root 权限，并额外挂载 `/dev/ummu`、`/dev/uburma` 两条宿主机路径。
+
+  3. 修改 `examples/deployer/startup/roles/kv_store_backends/memcache/` 下的 `mmc-local-inprocess.conf` 和 `mmc-local-standalone.conf`，将两份文件中的协议项均改为：
+
+      ```ini
+      ock.mmc.local_service.protocol = device_uboe
+      ```
+
+      需使用支持 `device_uboe` 的 MemCache、MemFabric 配套版本。`protocol_desc` 不会修改此配置项。
