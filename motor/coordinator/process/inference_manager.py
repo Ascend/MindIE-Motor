@@ -27,6 +27,7 @@ from motor.common.http.http_client import HTTPClientPool
 from motor.common.utils.env import Env
 from motor.common.utils.net import detect_family, format_address
 from motor.common.logger import get_logger, reconfigure_logging
+from motor.common.security_posture import ensure_secure_bind
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.api_server.inference_server import InferenceServer
 from motor.coordinator.domain.request_manager import RequestManager
@@ -219,6 +220,12 @@ def run_inference_worker_proc(
 
     # Get the inference app and configure uvicorn
     app = inference_server.app
+    ensure_secure_bind(
+        "Coordinator inference API",
+        config.api_config.coordinator_api_host,
+        config.api_key_config.enable_api_key,
+        config.api_key_config.allow_insecure_bind,
+    )
     config_kwargs = InferenceServer.create_base_uvicorn_config(
         app,
         config.api_config.coordinator_api_host,

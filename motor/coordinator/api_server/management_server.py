@@ -30,6 +30,7 @@ from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.common.http.security_utils import sanitize_error_message, log_audit_event
+from motor.common.security_posture import ensure_secure_bind
 from motor.config.coordinator import CoordinatorConfig, DEFAULT_SCHEDULER_PROCESS_CONFIG, MGMT_API_KEY_HEADER
 from motor.coordinator.models.response import RequestResponse
 from motor.coordinator.api_server.base_server import BaseCoordinatorServer
@@ -214,6 +215,12 @@ class ManagementServer(BaseCoordinatorServer):
 
     async def run(self) -> None:
         """Run uvicorn on management port only; does not create or start inference Workers."""
+        ensure_secure_bind(
+            "Coordinator management API",
+            self.coordinator_config.api_config.coordinator_api_host,
+            self._mgmt_api_key_config.enable_api_key,
+            self._mgmt_api_key_config.allow_insecure_bind,
+        )
         mgmt_config_kwargs = self.create_base_uvicorn_config(
             self.management_app,
             self.coordinator_config.api_config.coordinator_api_host,
