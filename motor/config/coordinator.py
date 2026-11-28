@@ -816,6 +816,8 @@ class APIKeyConfig:
     key_prefix: str = "Bearer "
     skip_paths: set[str] = field(default_factory=_default_skip_paths)
     encryption_algorithm: str = "PBKDF2_SHA256"  # Encryption algorithm to use
+    # Explicit opt-in for listening on a non-loopback address without auth.
+    allow_insecure_bind: bool = False
 
     def __post_init__(self):
         """Initialize encryption algorithm after dataclass creation"""
@@ -838,6 +840,8 @@ class MgmtAPIKeyConfig:
 
     enable_api_key: bool = False
     api_key_file: str = ""
+    # Explicit opt-in for listening on a non-loopback address without auth.
+    allow_insecure_bind: bool = False
 
     def load_api_key(self) -> str:
         """Read the management API key without exposing it in JSON configuration."""

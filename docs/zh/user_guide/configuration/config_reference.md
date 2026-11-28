@@ -739,9 +739,11 @@ motor_coordinator_config字段配置样例如下所示：
 | key_prefix | string | 头中 Key 的前缀，如`Bearer`。默认值：`Bearer`。|
 | skip_paths | array | 不校验 API Key 的路径列表（如 `/metrics`、`/liveness`、`/docs`、`/v1/metaserver` 等），可自定义。代码默认包含 `/v1/metaserver`（Decode layerwise 回调不带 Key）。 |
 | encryption_algorithm | string | Key 校验使用的加密算法，如 `PBKDF2_SHA256`。默认值：`PBKDF2_SHA256` |
+| allow_insecure_bind | bool | 未开启鉴权时是否允许监听非回环地址。默认值：`false`；此时若 `coordinator_api_host` 为非回环地址且未开启鉴权，启动会失败。仅在明确接受未鉴权暴露时设为 `true`。 |
 | **mgmt_api_key_config字段** |-|管理面独立 API Key 配置，仅保护实例查询、实例刷新、精度告警状态清理和性能采集接口。启动、存活和就绪探针不鉴权。请求头固定为 `X-Motor-Management-Key`。|
 | enable_api_key | bool | 是否开启管理面 API Key 鉴权。可选：`true` / `false`。默认值：`false`。|
 | api_key_file | string | API Key 文件路径。开启鉴权时必填；文件必须仅含一行非空密钥。Controller 与 Coordinator 分开部署时需挂载内容相同的密钥文件。|
+| allow_insecure_bind | bool | 管理面未开启鉴权时是否允许监听非回环地址。默认值：`false`；此时若 `coordinator_api_host` 为非回环地址且未开启管理面鉴权，启动会失败。仅在明确接受未鉴权暴露时设为 `true`。 |
 | **rate_limit_config字段** |-|行为与示例见 [服务限流](../features/fault_tolerance/rate_limiting.md)。|
 | enable_rate_limit | bool | 是否开启请求限流。可选：`true` / `false`。默认值：`false` |
 | provider |string|限流提供者。simple使用内置令牌桶；OLC使用过载控制库（需额外安装及配置），默认值：`simple`。|
